@@ -2,11 +2,9 @@ name: Release
 
 on:
   push:
-    branches:
-      - master
+    branches: [ master ]
   pull_request:
-    branches:
-      - master
+    branches: [ master ]
 
 jobs:
   release:
@@ -14,24 +12,38 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
-      id-token: write
+      id-token: write       # needed for provenance
       pull-requests: write
       packages: read
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Node
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Setup Node (writes .npmrc for @drzl)
         uses: actions/setup-node@v4
         with:
           node-version: 22
-          registry-url: https://registry.npmjs.org
-
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v4
+          registry-url: 'https://registry.npmjs.org/'
+          scope: '@drzl'
+      # IMPORTANT: supply the auth token to setup-node created .npmrc
+      - name: Prove npm auth
+        run: |
+          npm config get registry
+          npm whoami
+          npm ping
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Install deps
-        run: pnpm i --frozen-lockfile
+        run: pnpm install --frozen-lockfile
+
+      - name: Build packages
+        run: pnpm -r --sort --workspace-concurrency=1 --filter '{packages/*}' run build
 
       - name: Changesets (PR + publish on merge)
         uses: changesets/action@v1
@@ -40,7 +52,10 @@ jobs:
           commit: "chore(release): publish"
           title: "Version Packages"
           createGithubReleases: true
-          publish: pnpm build:publish
+          publish: pnpm -w changeset publish
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Give the token to both conventions
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NPM_CONFIG_PROVENANCE: true
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
