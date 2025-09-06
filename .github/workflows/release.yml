@@ -38,7 +38,7 @@ jobs:
           commit: "chore(release): publish"
           title: "Version Packages"
           createGithubReleases: true
-          publish: pnpm -r run build && pnpm exec changeset publish
+          publish: pnpm -r --filter="./packages/*" run build && pnpm exec changeset publish
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
