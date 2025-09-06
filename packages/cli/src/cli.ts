@@ -119,9 +119,10 @@ program
           } catch (e: any) {
             progress.stop();
             console.error(
-              chalk.red('Service generator missing (install @drzl/generator-service)?'),
-              e?.message ?? e
+              chalk.red('Service generator missing.'),
+              chalk.yellow('\nInstall with: npm install @drzl/generator-service')
             );
+            console.error(chalk.gray('Error details:'), e?.message ?? e);
             process.exit(1);
           }
         } else if (g.kind === 'zod') {
@@ -142,9 +143,10 @@ program
           } catch (e: any) {
             progress.stop();
             console.error(
-              chalk.red('Zod generator missing (install @drzl/generator-zod)?'),
-              e?.message ?? e
+              chalk.red('Zod generator missing.'),
+              chalk.yellow('\nInstall with: npm install @drzl/generator-zod')
             );
+            console.error(chalk.gray('Error details:'), e?.message ?? e);
             process.exit(1);
           }
         } else if (g.kind === 'valibot') {
@@ -165,9 +167,10 @@ program
           } catch (e: any) {
             progress.stop();
             console.error(
-              chalk.red('Valibot generator missing (install @drzl/generator-valibot)?'),
-              e?.message ?? e
+              chalk.red('Valibot generator missing.'),
+              chalk.yellow('\nInstall with: npm install @drzl/generator-valibot')
             );
+            console.error(chalk.gray('Error details:'), e?.message ?? e);
             process.exit(1);
           }
         } else if (g.kind === 'arktype') {
@@ -188,9 +191,10 @@ program
           } catch (e: any) {
             progress.stop();
             console.error(
-              chalk.red('ArkType generator missing (install @drzl/generator-arktype)?'),
-              e?.message ?? e
+              chalk.red('ArkType generator missing.'),
+              chalk.yellow('\nInstall with: npm install @drzl/generator-arktype')
             );
+            console.error(chalk.gray('Error details:'), e?.message ?? e);
             process.exit(1);
           }
         }
