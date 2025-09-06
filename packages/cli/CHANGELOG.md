@@ -1,5 +1,20 @@
 # @drzl/cli
 
+## 0.1.0
+
+### Minor Changes
+
+- 250f5fd: Ensure @drzl/cli builds and exports its config module so consumers can import it directly.
+
+### Patch Changes
+
+- @drzl/analyzer@0.1.0
+- @drzl/generator-arktype@0.1.0
+- @drzl/generator-orpc@0.1.0
+- @drzl/generator-service@0.1.0
+- @drzl/generator-valibot@0.1.0
+- @drzl/generator-zod@0.1.0
+
 ## 0.0.3
 
 ### Patch Changes
