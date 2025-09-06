@@ -10,7 +10,7 @@
   ],
   "scripts": {
     "build": "pnpm -r run build",
-    "build:packages": "pnpm -r --sort --filter='{packages/*}' run build",
+    "build:packages": "pnpm -r --sort --workspace-concurrency=1 --filter='{packages/*}' run build",
     "build:publish": "pnpm build:packages && pnpm exec changeset publish",
     "dev": "pnpm --filter @drzl/cli run dev",
     "test": "pnpm -r test",
