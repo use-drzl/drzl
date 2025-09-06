@@ -10,7 +10,8 @@
   ],
   "scripts": {
     "build": "pnpm -r run build",
-    "build:packages": "pnpm -r --filter='{packages/*}' run build",
+    "build:packages": "pnpm -r --workspace-concurrency=1 --filter='{packages/*}' run build",
+    "build:publish": "pnpm build:packages && pnpm exec changeset publish",
     "dev": "pnpm --filter @drzl/cli run dev",
     "test": "pnpm -r test",
     "lint": "eslint . --ext .ts",
