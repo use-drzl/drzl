@@ -8,11 +8,15 @@
     "drzl": "dist/cli.js"
   },
   "main": "dist/cli.js",
+  "exports": {
+    ".": "./dist/cli.js",
+    "./config": "./dist/config.js"
+  },
   "files": [
     "dist"
   ],
   "scripts": {
-    "build": "tsup src/cli.ts --format esm,cjs --sourcemap",
+    "build": "tsup src/cli.ts src/config.ts --format esm,cjs --sourcemap",
     "dev": "node --loader ts-node/esm src/cli.ts --help",
     "lint": "eslint . --ext .ts",
     "test": "vitest run"

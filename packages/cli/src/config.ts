@@ -100,16 +100,17 @@ export async function loadConfig(customPath?: string): Promise<DrzlConfig | null
     }
     // Try jiti to seamlessly load TS/ESM/CJS
     try {
-      const { default: jiti } = await import('jiti');
-      const jit = (jiti as any)(import.meta.url);
-      const mod = jit(p);
-      const raw = mod && typeof mod === 'object' && 'default' in mod ? (mod as any).default : mod;
+      const { createJiti } = await import('jiti');
+      const jit = createJiti(import.meta.url);
+      const mod = await jit.import(p);
+      const raw = mod && typeof mod === 'object' && 'default' in mod ? mod.default : mod;
       const parsed = ConfigSchema.safeParse(raw);
       if (!parsed.success) {
         throw new Error(parsed.error.message);
       }
       return parsed.data;
     } catch (e) {
+      console.error(`jiti failed to load ${p}:`, e);
       // Fallback: try JSON parse
       try {
         const content = await fs.readFile(p, 'utf8');
