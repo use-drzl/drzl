@@ -1,0 +1,21 @@
+node_modules
+dist
+.DS_Store
+.turbo
+.idea
+.vscode
+.pnpm-store
+*.log
+# Test artifacts
+.vitest
+coverage
+packages/*/.vitest
+packages/*/coverage
+packages/*/test/tmp
+
+# Local registry artifacts
+.verdaccio.pid
+.verdaccio.log
+
+# VitePress build/cache
+docs/.vitepress/cache

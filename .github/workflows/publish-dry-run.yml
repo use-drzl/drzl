@@ -1,0 +1,45 @@
+name: Publish Dry Run
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Optional npm dist-tag
+        required: false
+        default: latest
+
+jobs:
+  dry-run:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Install deps
+        run: pnpm -w i --frozen-lockfile
+
+      - name: Build
+        run: pnpm -w build
+
+      - name: Changesets publish (dry run)
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NPM_CONFIG_DRY_RUN: "true"
+          # Ensure npm registry points to npmjs, regardless of user-level npmrc
+          NPM_CONFIG_REGISTRY: https://registry.npmjs.org
+        run: |
+          pnpm exec changeset publish --no-git-tag ${ { github.event.inputs.tag && format('--tag {0}', github.event.inputs.tag) || '' } }
+

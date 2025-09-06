@@ -1,0 +1,41 @@
+{
+  "name": "@drzl/root",
+  "private": true,
+  "license": "Apache-2.0",
+  "version": "0.0.0",
+  "description": "DRZL monorepo",
+  "packageManager": "pnpm@10.15.1",
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "pnpm -r run build",
+    "dev": "pnpm --filter @drzl/cli run dev",
+    "test": "pnpm -r test",
+    "lint": "eslint . --ext .ts",
+    "format": "prettier -w .",
+    "typecheck": "pnpm -r --filter @drzl/* exec tsc -p tsconfig.json --noEmit",
+    "changeset": "changeset",
+    "changeset:status": "changeset status",
+    "changeset:version": "changeset version",
+    "changeset:publish": "pnpm -w build && changeset publish",
+    "release": "pnpm -w test && pnpm -w build && pnpm -w changeset:version && pnpm -w changeset:publish",
+    "docs:dev": "pnpm -C docs dev",
+    "docs:build": "pnpm -C docs build",
+    "docs:preview": "pnpm -C docs preview",
+    "brand:gen": "node scripts/brand-gen.mjs assets/brand/source.jpeg",
+    "brand:gen:lockup": "node scripts/brand-gen.mjs assets/brand/source.jpeg --mode=lockup"
+  },
+  "devDependencies": {
+    "@changesets/cli": "^2.27.9",
+    "@types/node": "^24.3.1",
+    "@typescript-eslint/eslint-plugin": "^8.42.0",
+    "@typescript-eslint/parser": "^8.42.0",
+    "eslint": "^9.35.0",
+    "prettier": "^3.6.2",
+    "sharp": "^0.33.5",
+    "tsup": "^8.5.0",
+    "typescript": "^5.9.2",
+    "vitest": "^3.2.4"
+  }
+}

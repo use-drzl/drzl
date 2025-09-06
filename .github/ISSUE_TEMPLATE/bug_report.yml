@@ -1,0 +1,79 @@
+name: Bug report
+description: Report a reproducible problem
+title: '[Bug]: '
+labels: [bug]
+assignees: []
+body:
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Pre-flight checklist
+      description: Please confirm before submitting
+      options:
+        - label: I searched existing Issues and Discussions
+          required: true
+        - label: I’m using the latest released versions
+          required: true
+        - label: I can provide a minimal reproduction
+          required: true
+        - label: I have starred the repository ⭐
+          required: false
+        - label: I’m willing to submit a PR to help fix this
+          required: false
+        - label: I’m willing to sponsor this work 💖 (optional)
+          required: false
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: A clear, concise description of the issue
+      placeholder: What happened?
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction
+      description: Steps and a minimal repo/gist/snippet to reproduce
+      placeholder: |
+        1. Go to ...
+        2. Run ...
+        3. See error ...
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      placeholder: What did you expect to happen?
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior (logs/stacktraces)
+      render: shell
+    validations:
+      required: true
+  - type: input
+    id: node
+    attributes:
+      label: Node version
+      placeholder: e.g. 20.11.1
+  - type: input
+    id: pnpm
+    attributes:
+      label: pnpm version
+      placeholder: e.g. 10.15.1
+  - type: textarea
+    id: versions
+    attributes:
+      label: DRZL package versions
+      description: Paste relevant versions (from lockfile or `pnpm list`)
+      render: text
+  - type: textarea
+    id: extra
+    attributes:
+      label: Additional context
+      description: Anything else that might help

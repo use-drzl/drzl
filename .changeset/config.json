@@ -1,0 +1,16 @@
+{
+  "$schema": "https://unpkg.com/@changesets/config/schema.json",
+  "changelog": "@changesets/cli/changelog",
+  "commit": ["../scripts/changeset-commit.cjs", { "skipCI": "version" }],
+  "fixed": [["@drzl/*"]],
+  "linked": [],
+  "access": "public",
+  "baseBranch": "master",
+  "updateInternalDependencies": "patch",
+  "bumpVersionsWithWorkspaceProtocolOnly": true,
+  "ignore": ["@drzl/docs"],
+  "privatePackages": {
+    "version": false,
+    "tag": false
+  }
+}

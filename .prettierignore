@@ -1,0 +1,6 @@
+node_modules/
+dist/
+packages/**/dist/
+packages/**/test/tmp/
+docs/.vitepress/cache/
+docs/.vitepress/dist/

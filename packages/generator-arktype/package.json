@@ -1,0 +1,29 @@
+{
+  "name": "@drzl/generator-arktype",
+  "version": "0.0.0",
+  "private": false,
+  "license": "Apache-2.0",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "sideEffects": false,
+  "scripts": {
+    "build": "tsup src/index.ts --dts --format esm,cjs",
+    "lint": "eslint . --ext .ts",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@drzl/analyzer": "workspace:^",
+    "@drzl/validation-core": "workspace:^"
+  },
+  "devDependencies": {
+    "tsup": "^8.5.0",
+    "typescript": "^5.9.2"
+  },
+  "engines": {
+    "node": ">=18.17.0"
+  }
+}

@@ -1,0 +1,163 @@
+import type { Analysis, Table, Column } from '@drzl/analyzer';
+import type { ValidationRenderer, ValidationGenerateOptions } from '@drzl/validation-core';
+import { insertColumns, updateColumns, selectColumns, formatCode } from '@drzl/validation-core';
+
+type Mode = 'insert' | 'update' | 'select';
+
+function atDateType(
+  mode: Mode,
+  coerceDates: NonNullable<ValidationGenerateOptions['coerceDates']>
+): string {
+  if (coerceDates === 'none') return 'Date';
+  if (coerceDates === 'all') return 'Date | string';
+  // 'input'
+  return mode === 'select' ? 'Date' : 'Date | string';
+}
+
+function atTypeForColumn(
+  c: Column,
+  mode: Mode,
+  coerceDates: NonNullable<ValidationGenerateOptions['coerceDates']>
+): string {
+  if (c.enumValues && c.enumValues.length) {
+    return c.enumValues.map((v) => `'${v.replace(/'/g, "\\'")}'`).join(' | ');
+  }
+  switch (c.tsType) {
+    case 'string':
+      return 'string';
+    case 'number':
+      return 'number';
+    case 'bigint':
+      return 'bigint';
+    case 'boolean':
+      return 'boolean';
+    case 'Date':
+      return atDateType(mode, coerceDates);
+    case 'Uint8Array':
+      return 'Uint8Array';
+    case 'any':
+      return 'unknown';
+    default:
+      return 'unknown';
+  }
+}
+
+function atField(
+  c: Column,
+  mode: Mode,
+  coerceDates: NonNullable<ValidationGenerateOptions['coerceDates']>
+): string {
+  let t = atTypeForColumn(c, mode, coerceDates);
+  if (c.nullable) t = `(${t} | null)`;
+  if (mode !== 'select') {
+    if (mode === 'update' || c.nullable || c.hasDefault) t = `${t}?`;
+  }
+  return t;
+}
+
+function renderObjectShape(
+  cols: Column[],
+  mode: Mode,
+  coerceDates: NonNullable<ValidationGenerateOptions['coerceDates']>
+) {
+  return cols
+    .map((c) => `  ${JSON.stringify(c.name)}: '${atField(c, mode, coerceDates)}',`)
+    .join('\n');
+}
+
+function renderTableSchemas(
+  table: Table,
+  suffix = 'Schema',
+  coerceDates: NonNullable<ValidationGenerateOptions['coerceDates']>
+) {
+  const T = table.tsName;
+  const insertCols = insertColumns(table);
+  const updateCols = updateColumns(table);
+  const selectCols = selectColumns(table);
+  const bodyInsert = renderObjectShape(insertCols, 'insert', coerceDates);
+  const bodyUpdate = renderObjectShape(updateCols, 'update', coerceDates);
+  const bodySelect = renderObjectShape(selectCols, 'select', coerceDates);
+  return `import { type } from 'arktype';
+
+export const Insert${T}${suffix} = type({
+${bodyInsert}
+});
+
+export const Update${T}${suffix} = type({
+${bodyUpdate}
+});
+
+export const Select${T}${suffix} = type({
+${bodySelect}
+});
+
+export type Insert${T}Input = typeof Insert${T}${suffix}["infer"];
+export type Update${T}Input = typeof Update${T}${suffix}["infer"];
+export type Select${T}Output = typeof Select${T}${suffix}["infer"];
+`;
+}
+
+export interface ArkTypeGenerateOptions extends ValidationGenerateOptions {
+  outputHeader?: { enabled?: boolean; text?: string };
+}
+
+export class ArkTypeGenerator implements ValidationRenderer<ArkTypeGenerateOptions> {
+  readonly library = 'arktype' as const;
+  constructor(private analysis: Analysis) {}
+
+  async generate(opts: ArkTypeGenerateOptions) {
+    const fs = await import('node:fs/promises');
+    const path = await import('node:path');
+    const out = path.resolve(process.cwd(), opts.outDir);
+    const files: string[] = [];
+    await fs.mkdir(out, { recursive: true });
+    const suffix = opts.schemaSuffix ?? 'Schema';
+    const coerceDates = opts.coerceDates ?? 'input';
+    const fileSuffix = opts.fileSuffix ?? '.arktype.ts';
+    for (const table of this.analysis.tables) {
+      const filePath = path.join(out, `${table.tsName}${fileSuffix}`);
+      const code = renderTableSchemas(table, suffix, coerceDates);
+      const formatted = await formatCode(
+        buildHeader(opts.outputHeader) + code,
+        filePath,
+        opts.format
+      );
+      await fs.writeFile(filePath, formatted, 'utf8');
+      files.push(filePath);
+    }
+    const indexPath = path.join(out, 'index.ts');
+    const indexCode = this.defaultIndex(this.analysis, opts);
+    const indexFormatted = await formatCode(
+      buildHeader(opts.outputHeader) + indexCode,
+      indexPath,
+      opts.format
+    );
+    await fs.writeFile(indexPath, indexFormatted, 'utf8');
+    files.push(indexPath);
+    return files;
+  }
+
+  renderTable(table: Table, opts?: ArkTypeGenerateOptions) {
+    return renderTableSchemas(table, opts?.schemaSuffix ?? 'Schema', opts?.coerceDates ?? 'input');
+  }
+
+  private defaultIndex(analysis: Analysis, _opts: ArkTypeGenerateOptions) {
+    const exports = analysis.tables.map((t) => `export * from './${t.tsName}.arktype';`).join('\n');
+    return exports + '\n';
+  }
+}
+
+export default ArkTypeGenerator;
+
+function buildHeader(h?: { enabled?: boolean; text?: string }) {
+  if (h && h.enabled === false) return '';
+  const text = h?.text?.trim();
+  const lines = text
+    ? text.split(/\r?\n/).map((l) => `// ${l}`)
+    : [
+        '// Generated by DRZL (@drzl/*)',
+        "// Generated output is granted to you under your project's license.",
+        '// You may use, copy, modify, and distribute without attribution.',
+      ];
+  return lines.join('\n') + '\n\n';
+}

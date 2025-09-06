@@ -1,0 +1,64 @@
+name: Feature request
+description: Suggest an idea or improvement
+title: '[Feature]: '
+labels: [enhancement]
+assignees: []
+body:
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Pre-flight checklist
+      description: Please confirm before submitting
+      options:
+        - label: I searched existing Issues and Discussions
+          required: true
+        - label: I’m on the latest version
+          required: true
+        - label: I read the docs and CONTRIBUTING
+          required: true
+        - label: I have starred the repository ⭐
+          required: false
+        - label: I have bandwidth to contribute a PR for this
+          required: false
+        - label: I’m willing to sponsor this work 💖 (optional)
+          required: false
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What problem does this solve? Who benefits?
+      placeholder: Describe the pain point/use case
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposal
+      description: Describe the solution you’d like. Include API sketches, CLI options, or examples.
+      placeholder: |
+        e.g. New CLI flag, config options, API signatures, sample code
+      render: markdown
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: What else did you try? Why is this better?
+  - type: checkboxes
+    id: breaking
+    attributes:
+      label: Breaking change?
+      options:
+        - label: This feature introduces breaking changes
+          required: false
+  - type: textarea
+    id: migration
+    attributes:
+      label: Migration strategy (if any)
+      description: If breaking, outline migration notes
+  - type: textarea
+    id: impact
+    attributes:
+      label: Impact
+      description: Who benefits and how? Any constraints?
