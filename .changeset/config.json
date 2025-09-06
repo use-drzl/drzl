@@ -8,7 +8,7 @@
   "baseBranch": "master",
   "updateInternalDependencies": "patch",
   "bumpVersionsWithWorkspaceProtocolOnly": true,
-  "ignore": ["@drzl/docs"],
+  "ignore": [],
   "privatePackages": {
     "version": false,
     "tag": false
