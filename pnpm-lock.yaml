@@ -63,9 +63,21 @@ importers:
       '@drzl/analyzer':
         specifier: workspace:^
         version: link:../analyzer
+      '@drzl/generator-arktype':
+        specifier: workspace:^
+        version: link:../generator-arktype
       '@drzl/generator-orpc':
         specifier: workspace:^
         version: link:../generator-orpc
+      '@drzl/generator-service':
+        specifier: workspace:^
+        version: link:../generator-service
+      '@drzl/generator-valibot':
+        specifier: workspace:^
+        version: link:../generator-valibot
+      '@drzl/generator-zod':
+        specifier: workspace:^
+        version: link:../generator-zod
       chalk:
         specifier: ^5.6.0
         version: 5.6.0
