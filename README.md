@@ -12,6 +12,8 @@ Zero‑friction codegen for Drizzle ORM. Analyze your schema. Generate validatio
 <br/>
 
 <p align="center">
+  <a href="https://github.com/use-drzl/drzl/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/use-drzl/drzl/actions/workflows/ci.yml/badge.svg" /></a>
+  <a href="https://www.npmjs.com/package/@drzl/cli"><img alt="npm" src="https://img.shields.io/npm/v/%40drzl%2Fcli" /></a>
   <a href="https://pnpm.io"><img alt="pnpm" src="https://img.shields.io/badge/pnpm-workspace-4B37A5?logo=pnpm&logoColor=white" /></a>
   <img alt="typescript" src="https://img.shields.io/badge/TypeScript-5.x-3178C6?logo=typescript&logoColor=white" />
   <img alt="node" src="https://img.shields.io/badge/Node-18.17%2B-339933?logo=node.js&logoColor=white" />

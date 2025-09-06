@@ -2,6 +2,13 @@
 
 # @drzl/generator-arktype
 
+<div align="center">
+
+[![CI](https://github.com/use-drzl/drzl/actions/workflows/ci.yml/badge.svg)](https://github.com/use-drzl/drzl/actions/workflows/ci.yml)
+[![npm](https://img.shields.io/npm/v/%40drzl%2Fgenerator-arktype)](https://www.npmjs.com/package/@drzl/generator-arktype)
+
+</div>
+
 ArkType schemas from your Drizzle analysis (insert / update / select).
 
 </div>

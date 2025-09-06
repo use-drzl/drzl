@@ -2,6 +2,13 @@
 
 # @drzl/generator-service
 
+<div align="center">
+
+[![CI](https://github.com/use-drzl/drzl/actions/workflows/ci.yml/badge.svg)](https://github.com/use-drzl/drzl/actions/workflows/ci.yml)
+[![npm](https://img.shields.io/npm/v/%40drzl%2Fgenerator-service)](https://www.npmjs.com/package/@drzl/generator-service)
+
+</div>
+
 Typed CRUD service classes per table — Drizzle‑aware or stubbed.
 
 </div>

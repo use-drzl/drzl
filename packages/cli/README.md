@@ -2,6 +2,13 @@
 
 # @drzl/cli
 
+<div align="center">
+
+[![CI](https://github.com/use-drzl/drzl/actions/workflows/ci.yml/badge.svg)](https://github.com/use-drzl/drzl/actions/workflows/ci.yml)
+[![npm](https://img.shields.io/npm/v/%40drzl%2Fcli)](https://www.npmjs.com/package/@drzl/cli)
+
+</div>
+
 Analyze your Drizzle schema and generate validation, services, and routers.
 
 </div>

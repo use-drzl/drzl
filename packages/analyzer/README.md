@@ -2,6 +2,13 @@
 
 # @drzl/analyzer
 
+<div align="center">
+
+[![CI](https://github.com/use-drzl/drzl/actions/workflows/ci.yml/badge.svg)](https://github.com/use-drzl/drzl/actions/workflows/ci.yml)
+[![npm](https://img.shields.io/npm/v/%40drzl%2Fanalyzer)](https://www.npmjs.com/package/@drzl/analyzer)
+
+</div>
+
 Drizzle schema → normalized analysis for fast, reliable codegen.
 
 </div>

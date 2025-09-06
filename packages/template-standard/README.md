@@ -2,6 +2,13 @@
 
 # @drzl/template-standard
 
+<div align="center">
+
+[![CI](https://github.com/use-drzl/drzl/actions/workflows/ci.yml/badge.svg)](https://github.com/use-drzl/drzl/actions/workflows/ci.yml)
+[![npm](https://img.shields.io/npm/v/%40drzl%2Ftemplate-standard)](https://www.npmjs.com/package/@drzl/template-standard)
+
+</div>
+
 Minimal oRPC router template (no service wiring) — great for quick starts.
 
 </div>
