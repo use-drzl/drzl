@@ -10,6 +10,7 @@
   ],
   "scripts": {
     "build": "pnpm -r run build",
+    "build:packages": "pnpm -r --filter='{packages/*}' run build",
     "dev": "pnpm --filter @drzl/cli run dev",
     "test": "pnpm -r test",
     "lint": "eslint . --ext .ts",
