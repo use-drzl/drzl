@@ -1,5 +1,11 @@
 # @drzl/validation-core
 
+## 0.1.0
+
+### Patch Changes
+
+- @drzl/analyzer@0.1.0
+
 ## 0.0.3
 
 ### Patch Changes
