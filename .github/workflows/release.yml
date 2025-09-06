@@ -12,25 +12,26 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
-      id-token: write       # needed for provenance
+      id-token: write      # provenance
       pull-requests: write
       packages: read
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # Install the PNPM version declared in package.json -> "packageManager": "pnpm@10.15.1"
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
-        with:
-          version: 9
+        # ⚠️ Do NOT pass 'version' here; it will read packageManager automatically
 
-      - name: Setup Node (writes .npmrc for @drzl)
+      # Write scoped .npmrc and wire the token so npm commands (incl. whoami) work
+      - name: Setup Node (scoped registry)
         uses: actions/setup-node@v4
         with:
           node-version: 22
           registry-url: 'https://registry.npmjs.org/'
           scope: '@drzl'
-      # IMPORTANT: supply the auth token to setup-node created .npmrc
+
       - name: Prove npm auth
         run: |
           npm config get registry
@@ -54,7 +55,6 @@ jobs:
           createGithubReleases: true
           publish: pnpm -w changeset publish
         env:
-          # Give the token to both conventions
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
           NPM_CONFIG_PROVENANCE: true
