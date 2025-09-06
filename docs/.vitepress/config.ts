@@ -1,6 +1,7 @@
 export default {
   title: 'DRZL',
   description: 'Developer tooling for Drizzle ORM',
+  base: '/drzl/',
   head: [
     ['link', { rel: 'icon', href: '/favicon.ico' }],
     ['link', { rel: 'apple-touch-icon', href: '/apple-touch-icon.png' }],
