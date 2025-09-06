@@ -14,7 +14,9 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      id-token: write
       pull-requests: write
+      packages: read
     steps:
       - name: Checkout
         uses: actions/checkout@v4
