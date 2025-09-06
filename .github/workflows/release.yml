@@ -29,7 +29,7 @@ jobs:
         uses: pnpm/action-setup@v4
 
       - name: Install deps
-        run: pnpm -w i --frozen-lockfile
+        run: pnpm i --frozen-lockfile
 
       - name: Changesets (PR + publish on merge)
         uses: changesets/action@v1
