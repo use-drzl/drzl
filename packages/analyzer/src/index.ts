@@ -291,7 +291,7 @@ export class SchemaAnalyzer {
     const full = path.resolve(process.cwd(), this.schemaPath);
     try {
       await fs.access(full);
-    } catch (e) {
+    } catch (_e) {
       issues.push({
         code: 'DRZL_ANL_NOFILE',
         level: 'error',

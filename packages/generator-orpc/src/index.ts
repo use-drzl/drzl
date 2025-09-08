@@ -233,7 +233,7 @@ export class ORPCGenerator {
         const jit = (jiti as any)(import.meta.url);
         const mod = jit(opts.template);
         template = (mod?.default ?? mod) as ORPCTemplateHooks;
-      } catch (e) {
+      } catch (_e) {
         // fall back to default
       }
     }
