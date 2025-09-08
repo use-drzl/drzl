@@ -1,3 +1,6 @@
+import * as fs from 'node:fs';
+import { createRequire } from 'node:module';
+import * as path from 'node:path';
 import { z } from 'zod';
 
 export const NamingSchema = z
@@ -30,7 +33,7 @@ export const GeneratorSchema = z.object({
   dataAccess: z.enum(['stub', 'drizzle']).default('stub').optional(),
   dbImportPath: z.string().optional(),
   schemaImportPath: z.string().optional(),
-  // zod generator specific options
+  // zod/valibot/arktype generator specific options
   schemaSuffix: z.string().optional(),
   fileSuffix: z.string().optional(),
   // orpc validation sharing
@@ -75,50 +78,117 @@ export function defineConfig<T extends DrzlConfigInput>(cfg: T): T {
 }
 
 export async function loadConfig(customPath?: string): Promise<DrzlConfig | null> {
-  const path = await import('node:path');
-  const fs = await import('node:fs/promises');
+  const fsp = await import('node:fs/promises');
 
   const candidates = customPath
     ? [customPath]
-    : ['drzl.config.ts', 'drzl.config.mjs', 'drzl.config.js', 'drzl.config.json'];
+    : [
+        'drzl.config.ts',
+        'drzl.config.mjs',
+        'drzl.config.js',
+        'drzl.config.cjs',
+        'drzl.config.json',
+      ];
 
   for (const c of candidates) {
     const p = path.resolve(process.cwd(), c);
     try {
-      await fs.access(p);
+      await fsp.access(p);
     } catch {
       continue;
     }
 
-    // JSON path — parse directly
-    if (/\.json$/i.test(p)) {
-      try {
-        const content = await fs.readFile(p, 'utf8');
-        const raw = JSON.parse(content);
-        return ConfigSchema.parse(raw); // -> DrzlConfig (output)
-      } catch (e2) {
-        throw new Error(`Failed to load config from ${p}: ${String(e2)}`);
-      }
+    const ext = path.extname(p).toLowerCase();
+
+    // JSON: read directly
+    if (ext === '.json') {
+      const raw = JSON.parse(await fsp.readFile(p, 'utf8'));
+      return ConfigSchema.parse(raw);
     }
 
-    // TS/ESM/CJS via jiti
+    // Everything else (TS/JS/MJS/CJS) -> Jiti with cache-busting
+    const { createJiti } = await import('jiti');
+    const stat = await fsp.stat(p);
+
+    // Passing __filename is safe in CJS; fallback to cwd if not defined.
+    const base =
+      typeof __filename !== 'undefined' ? __filename : path.join(process.cwd(), 'index.js');
+
+    const jiti = createJiti(base, {
+      moduleCache: false, // re-evaluate each time
+      fsCache: true, // keep transform cache
+      cacheVersion: String(stat.mtimeMs), // bump on edit
+      interopDefault: true,
+      tryNative: false, // <— prevent native import of .ts
+      // debug: true,
+    }) as any;
+
+    const mod = await jiti.import(p);
+    const raw = mod?.default ?? mod;
+    return ConfigSchema.parse(raw);
+  }
+
+  return null;
+}
+
+/** Absolute output dirs for all generators (to ignore in watcher). */
+export function computeGeneratorOutputDirs(cfg: DrzlConfig, cwd = process.cwd()): string[] {
+  const abs = (p: string) => path.resolve(cwd, p);
+  const dirs = new Set<string>();
+  dirs.add(abs(cfg.outDir)); // orpc
+  for (const g of cfg.generators) {
+    if (g.kind === 'service') dirs.add(abs(g.path ?? 'src/services'));
+    if (g.kind === 'zod') dirs.add(abs(g.path ?? 'src/validators/zod'));
+    if (g.kind === 'valibot') dirs.add(abs(g.path ?? 'src/validators/valibot'));
+    if (g.kind === 'arktype') dirs.add(abs(g.path ?? 'src/validators/arktype'));
+  }
+  return [...dirs];
+}
+
+/** Resolve custom template directories (local path or installed package). */
+export function resolveTemplateDirsSync(cfg: DrzlConfig, cwd = process.cwd()): string[] {
+  const results: string[] = [];
+  const req = createRequire(
+    typeof __filename !== 'undefined' ? __filename : path.join(process.cwd(), 'index.js')
+  );
+
+  for (const g of cfg.generators) {
+    const t = g.template;
+    if (!t || t === 'standard' || t === 'minimal') continue;
+
+    // Try package resolution relative to cwd
+    let pkgDir: string | null = null;
     try {
-      const { createJiti } = await import('jiti');
-      const jit = createJiti(import.meta.url);
-      const mod = await jit.import(p);
-      const raw = mod && typeof mod === 'object' && 'default' in mod ? mod.default : mod;
-      return ConfigSchema.parse(raw); // parse to resolved output
-    } catch (e) {
-      console.error(`jiti failed to load ${p}:`, e);
-      // Fallback: try JSON parse
-      try {
-        const content = await fs.readFile(p, 'utf8');
-        const raw = JSON.parse(content);
-        return ConfigSchema.parse(raw);
-      } catch (e2) {
-        throw new Error(`Failed to load config from ${p}: ${String(e2)}`);
-      }
+      const pkg = req.resolve(`${t}/package.json`, { paths: [cwd] as any });
+      pkgDir = path.dirname(pkg);
+    } catch {}
+
+    if (pkgDir) {
+      results.push(pkgDir);
+      continue;
+    }
+
+    // Local path-like template
+    if (/[./\\]/.test(t)) {
+      const abs = path.resolve(cwd, t);
+      if (fs.existsSync(abs)) results.push(abs);
     }
   }
-  return null;
+
+  return Array.from(new Set(results));
+}
+
+/** Build watch targets (exclude output dirs; watcher will ignore those). */
+export function computeWatchTargets(cfg: DrzlConfig, cwd = process.cwd()): string[] {
+  const abs = (p: string) => path.resolve(cwd, p);
+  const schemaAbs = abs(cfg.schema);
+  const targets = new Set<string>([
+    path.join(path.dirname(schemaAbs), '**/*.{ts,tsx,js}'),
+    abs('drzl.config.ts'),
+    abs('drzl.config.js'),
+    abs('drzl.config.mjs'),
+    abs('drzl.config.cjs'),
+  ]);
+  for (const t of resolveTemplateDirsSync(cfg, cwd)) targets.add(t);
+  return [...targets];
 }
