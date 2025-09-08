@@ -1,12 +1,18 @@
 #!/usr/bin/env node
-import { Command } from 'commander';
-import chalk from 'chalk';
-import ora from 'ora';
-import cliProgress from 'cli-progress';
-import { loadConfig } from './config.js';
 import { SchemaAnalyzer } from '@drzl/analyzer';
 import { ORPCGenerator } from '@drzl/generator-orpc';
+import chalk from 'chalk';
 import chokidar from 'chokidar';
+import cliProgress from 'cli-progress';
+import { Command } from 'commander';
+import * as path from 'node:path';
+import ora from 'ora';
+import {
+  computeGeneratorOutputDirs,
+  computeWatchTargets,
+  DrzlConfig,
+  loadConfig,
+} from './config.js';
 
 const program = new Command();
 program.name('drzl').description('DRZL - Drizzle Developer Toolkit').version('0.0.1');
@@ -242,22 +248,104 @@ program
   .option('--pipeline <name>', 'all | analyze | generate-orpc', 'all')
   .option('--debounce <ms>', 'debounce ms', '200')
   .option('--json', 'emit JSON logs', false)
+  .option('--poll', 'force polling (helps WSL/Docker/remote FS)', false)
   .action(async (opts: any) => {
-    const cfg = await loadConfig(opts.config);
+    let cfg = await loadConfig(opts.config);
     if (!cfg) {
       console.error(chalk.red('No config found. Create drzl.config.ts or pass --config.'));
       process.exit(2);
       return;
     }
+
+    const abs = (p: string) => path.resolve(process.cwd(), p);
+    const isInside = (child: string, parent: string) => {
+      const rel = path.relative(parent, child);
+      return !!rel && !rel.startsWith('..') && !path.isAbsolute(rel);
+    };
+
+    const ignoredOutDirs = new Set<string>(computeGeneratorOutputDirs(cfg).map(abs));
+    const currentTargets = new Set<string>(computeWatchTargets(cfg).map(abs));
+
+    const syncWatcherTargets = (watcher: import('chokidar').FSWatcher, next: Set<string>) => {
+      const add: string[] = [];
+      const del: string[] = [];
+      for (const p of next) if (!currentTargets.has(p)) add.push(p);
+      for (const p of currentTargets) if (!next.has(p)) del.push(p);
+      if (add.length) watcher.add(add);
+      if (del.length) watcher.unwatch(del);
+      currentTargets.clear();
+      next.forEach((p) => currentTargets.add(p));
+    };
+
+    const rebuildIgnoreDirsFrom = (cfgNow: DrzlConfig) => {
+      ignoredOutDirs.clear();
+      for (const d of computeGeneratorOutputDirs(cfgNow)) ignoredOutDirs.add(abs(d));
+    };
+
+    const ignoredFn = (p: string) => {
+      const full = abs(p);
+      for (const dir of ignoredOutDirs) {
+        if (full === dir || isInside(full, dir)) return true;
+      }
+      return false;
+    };
+
+    const watcher = chokidar.watch(Array.from(currentTargets), {
+      ignoreInitial: true,
+      awaitWriteFinish: { stabilityThreshold: 400, pollInterval: 50 },
+      usePolling: !!opts.poll,
+      ignored: ignoredFn,
+    });
+
+    const logTrigger = (type: 'add' | 'change' | 'unlink', file: string) => {
+      if (opts.json) console.log(JSON.stringify({ event: 'trigger', type, file }));
+    };
+
+    watcher
+      .on('add', (p) => {
+        logTrigger('add', p);
+        trigger(p);
+      })
+      .on('change', (p) => {
+        logTrigger('change', p);
+        trigger(p);
+      })
+      .on('unlink', (p) => {
+        logTrigger('unlink', p);
+        trigger(p);
+      });
+
     let lastFiles: string[] = [];
+
     const run = async () => {
       try {
+        const reloaded = await loadConfig(opts.config);
+        if (!reloaded) throw new Error('Config disappeared during watch.');
+        cfg = reloaded;
+
+        rebuildIgnoreDirsFrom(cfg);
+        const nextTargets = new Set<string>(computeWatchTargets(cfg).map(abs));
+        syncWatcherTargets(watcher, nextTargets);
+
         if (!opts.json) console.clear();
+
+        if (opts.json) {
+          console.log(
+            JSON.stringify({
+              event: 'watch_config_applied',
+              targets: Array.from(currentTargets),
+              ignored: Array.from(ignoredOutDirs),
+            })
+          );
+        }
+
         const analyzer = new SchemaAnalyzer(cfg.schema);
         const analysis = await analyzer.analyze({
           includeRelations: cfg.analyzer.includeRelations,
           validateConstraints: cfg.analyzer.validateConstraints,
+          includeHeuristicRelations: cfg.analyzer.includeHeuristicRelations,
         });
+
         if (opts.pipeline === 'analyze') {
           if (opts.json) {
             console.log(
@@ -272,66 +360,202 @@ program
           }
           return;
         }
+
         const newFiles: string[] = [];
+
         for (const g of cfg.generators) {
-          if (g.kind === 'orpc' && (opts.pipeline === 'all' || opts.pipeline === 'generate-orpc')) {
+          if (
+            opts.pipeline !== 'all' &&
+            !(opts.pipeline === 'generate-orpc' && g.kind === 'orpc')
+          ) {
+            continue;
+          }
+
+          if (g.kind === 'orpc') {
             const gen = new ORPCGenerator(analysis);
             const { files } = await gen.generate({
               outputDir: cfg.outDir,
               template: g.template,
               includeRelations: g.includeRelations,
               naming: g.naming,
+              outputHeader: g.outputHeader,
+              format: g.format,
+              templateOptions: g.templateOptions,
+              validation: g.validation,
             });
-            if (opts.json) {
-              console.log(JSON.stringify({ event: 'generate_complete', kind: g.kind, files }));
-            } else {
-              console.log(
-                chalk.green(`Generated (${g.kind}):`),
-                files.map((f: string) => chalk.cyan(f)).join(', ')
-              );
-            }
+            opts.json
+              ? console.log(JSON.stringify({ event: 'generate_complete', kind: g.kind, files }))
+              : console.log(
+                  chalk.green(`Generated (${g.kind}):`),
+                  files.map((f: string) => chalk.cyan(f)).join(', ')
+                );
             newFiles.push(...files);
+          } else if (g.kind === 'service') {
+            try {
+              const { ServiceGenerator } = await import('@drzl/generator-service');
+              const gen = new ServiceGenerator(analysis);
+              const target = g.path ?? 'src/services';
+              const files = await gen.generate({
+                outDir: target,
+                outputHeader: g.outputHeader,
+                format: g.format,
+                dataAccess: g.dataAccess,
+                dbImportPath: g.dbImportPath,
+                schemaImportPath: g.schemaImportPath,
+              });
+              opts.json
+                ? console.log(JSON.stringify({ event: 'generate_complete', kind: g.kind, files }))
+                : console.log(
+                    chalk.green(`Generated (service): ${files.length} files`),
+                    files.map((f: string) => chalk.cyan(f)).join(', ')
+                  );
+              newFiles.push(...files);
+            } catch (e: any) {
+              console.error(
+                chalk.red('Service generator missing.'),
+                chalk.yellow('\nInstall with: npm install @drzl/generator-service')
+              );
+              console.error(chalk.gray('Error details:'), e?.message ?? e);
+              return;
+            }
+          } else if (g.kind === 'zod') {
+            try {
+              const { ZodGenerator } = await import('@drzl/generator-zod');
+              const gen = new ZodGenerator(analysis);
+              const target = g.path ?? 'src/validators/zod';
+              const files = await gen.generate({
+                outDir: target,
+                outputHeader: g.outputHeader,
+                format: g.format,
+                schemaSuffix: g.schemaSuffix,
+                fileSuffix: g.fileSuffix,
+              });
+              opts.json
+                ? console.log(JSON.stringify({ event: 'generate_complete', kind: g.kind, files }))
+                : console.log(
+                    chalk.green(`Generated (zod): ${files.length} files`),
+                    files.map((f: string) => chalk.cyan(f)).join(', ')
+                  );
+              newFiles.push(...files);
+            } catch (e: any) {
+              console.error(
+                chalk.red('Zod generator missing.'),
+                chalk.yellow('\nInstall with: npm install @drzl/generator-zod')
+              );
+              console.error(chalk.gray('Error details:'), e?.message ?? e);
+              return;
+            }
+          } else if (g.kind === 'valibot') {
+            try {
+              const { ValibotGenerator } = await import('@drzl/generator-valibot');
+              const gen = new ValibotGenerator(analysis);
+              const target = g.path ?? 'src/validators/valibot';
+              const files = await gen.generate({
+                outDir: target,
+                outputHeader: g.outputHeader,
+                format: g.format,
+                schemaSuffix: g.schemaSuffix,
+                fileSuffix: g.fileSuffix,
+              });
+              opts.json
+                ? console.log(JSON.stringify({ event: 'generate_complete', kind: g.kind, files }))
+                : console.log(
+                    chalk.green(`Generated (valibot): ${files.length} files`),
+                    files.map((f: string) => chalk.cyan(f)).join(', ')
+                  );
+              newFiles.push(...files);
+            } catch (e: any) {
+              console.error(
+                chalk.red('Valibot generator missing.'),
+                chalk.yellow('\nInstall with: npm install @drzl/generator-valibot')
+              );
+              console.error(chalk.gray('Error details:'), e?.message ?? e);
+              return;
+            }
+          } else if (g.kind === 'arktype') {
+            try {
+              const { ArkTypeGenerator } = await import('@drzl/generator-arktype');
+              const gen = new ArkTypeGenerator(analysis);
+              const target = g.path ?? 'src/validators/arktype';
+              const files = await gen.generate({
+                outDir: target,
+                outputHeader: g.outputHeader,
+                format: g.format,
+                schemaSuffix: g.schemaSuffix,
+                fileSuffix: g.fileSuffix,
+              });
+              opts.json
+                ? console.log(JSON.stringify({ event: 'generate_complete', kind: g.kind, files }))
+                : console.log(
+                    chalk.green(`Generated (arktype): ${files.length} files`),
+                    files.map((f: string) => chalk.cyan(f)).join(', ')
+                  );
+              newFiles.push(...files);
+            } catch (e: any) {
+              console.error(
+                chalk.red('ArkType generator missing.'),
+                chalk.yellow('\nInstall with: npm install @drzl/generator-arktype')
+              );
+              console.error(chalk.gray('Error details:'), e?.message ?? e);
+              return;
+            }
           }
         }
-        // Diff
+
         const added = newFiles.filter((f) => !lastFiles.includes(f));
         const removed = lastFiles.filter((f) => !newFiles.includes(f));
-        if (opts.json) {
-          console.log(JSON.stringify({ event: 'diff', added, removed }));
-        } else {
-          if (added.length) console.log(chalk.blue(`Added: ${added.join(', ')}`));
-          if (removed.length) console.log(chalk.yellow(`Removed: ${removed.join(', ')}`));
-        }
+        opts.json
+          ? console.log(JSON.stringify({ event: 'diff', added, removed }))
+          : (() => {
+              if (added.length) console.log(chalk.blue(`Added: ${added.join(', ')}`));
+              if (removed.length) console.log(chalk.yellow(`Removed: ${removed.join(', ')}`));
+            })();
         lastFiles = newFiles;
       } catch (e: any) {
-        if (opts.json)
-          console.log(JSON.stringify({ event: 'error', message: String(e?.message ?? e) }));
-        else console.error(chalk.red('Watch pipeline failed:'), e?.message ?? e);
+        opts.json
+          ? console.log(JSON.stringify({ event: 'error', message: String(e?.message ?? e) }))
+          : console.error(chalk.red('Watch pipeline failed:'), e?.message ?? e);
       }
     };
+
     const debounced = Number(opts.debounce) || 200;
-    let timer: any = null;
+    let timer: NodeJS.Timeout | null = null;
     const trigger = (file?: string) => {
-      // Ignore changes in outDir to avoid loops
-      if (file && file.startsWith(cfg.outDir)) return;
-      clearTimeout(timer);
+      if (file) {
+        const full = abs(file);
+        for (const dir of ignoredOutDirs) {
+          if (full === dir || isInside(full, dir)) return;
+        }
+      }
+      if (timer) clearTimeout(timer);
       timer = setTimeout(run, debounced);
     };
-    console.log(chalk.gray('Watching for changes...'));
-    const watchSet = new Set<string>([cfg.schema]);
-    // Watch template paths (only when path-like and exists)
-    for (const g of cfg.generators) {
-      if (g.template && g.template !== 'standard' && g.template !== 'minimal') {
-        watchSet.add(g.template);
-      }
+
+    if (opts.json) {
+      console.log(
+        JSON.stringify({
+          event: 'watching',
+          targets: Array.from(currentTargets),
+          ignored: Array.from(ignoredOutDirs),
+        })
+      );
+    } else {
+      console.log(
+        chalk.gray(
+          'Watching:\n  ' +
+            Array.from(currentTargets)
+              .map((p) => path.relative(process.cwd(), p))
+              .join('\n  ')
+        )
+      );
     }
-    // Also watch outDir but ignore events from it to report diffs cleanly
-    watchSet.add(cfg.outDir);
-    chokidar
-      .watch(Array.from(watchSet), { ignoreInitial: true })
+
+    watcher
       .on('add', (p) => trigger(p))
       .on('change', (p) => trigger(p))
-      .on('unlink', (p) => trigger(p));
+      .on('unlink', (p) => trigger(p))
+      .on('error', (err) => console.error(chalk.red('Watcher error:'), err));
+
     await run();
   });
 
