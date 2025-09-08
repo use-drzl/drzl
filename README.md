@@ -30,16 +30,17 @@ Zero‑friction codegen for Drizzle ORM. Analyze your schema. Generate validatio
 
 ## Install & Use
 
-- Init a config
+- Install the CLI and init a config
 
 ```bash
-pnpm dlx drzl init
+pnpm add @drzl/cli -D
+pnpm drzl init
 ```
 
 - Generate code
 
 ```bash
-pnpm dlx drzl generate -c drzl.config.ts
+pnpm drzl generate -c drzl.config.ts
 ```
 
 Minimal config
