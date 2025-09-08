@@ -46,29 +46,31 @@ export const GeneratorSchema = z.object({
   templateOptions: z.record(z.string(), z.any()).optional(),
 });
 
+export const AnalyzerSchema = z.object({
+  includeRelations: z.boolean().default(true),
+  validateConstraints: z.boolean().default(true),
+  includeHeuristicRelations: z.boolean().default(false),
+});
+
 export const ConfigSchema = z.object({
   schema: z.string(),
   outDir: z.string().default('src/api'),
-  analyzer: z
-    .object({
-      includeRelations: z.boolean().default(true),
-      validateConstraints: z.boolean().default(true),
-      includeHeuristicRelations: z.boolean().default(false),
-    })
-    .default({
-      includeRelations: true,
-      validateConstraints: true,
-      includeHeuristicRelations: false,
-    }),
+  analyzer: AnalyzerSchema.default({
+    includeRelations: true,
+    validateConstraints: true,
+    includeHeuristicRelations: false,
+  }),
   generators: z
     .array(GeneratorSchema)
     .min(1)
     .default([{ kind: 'orpc' } as any]),
 });
 
-export type DrzlConfig = z.infer<typeof ConfigSchema>;
+// ✨ Separate input vs output types
+export type DrzlConfigInput = z.input<typeof ConfigSchema>;
+export type DrzlConfig = z.output<typeof ConfigSchema>;
 
-export function defineConfig(cfg: DrzlConfig) {
+export function defineConfig<T extends DrzlConfigInput>(cfg: T): T {
   return cfg;
 }
 
@@ -78,7 +80,7 @@ export async function loadConfig(customPath?: string): Promise<DrzlConfig | null
 
   const candidates = customPath
     ? [customPath]
-    : ['drzl.config.ts', 'drzl.config.mjs', 'drzl.config.js'];
+    : ['drzl.config.ts', 'drzl.config.mjs', 'drzl.config.js', 'drzl.config.json'];
 
   for (const c of candidates) {
     const p = path.resolve(process.cwd(), c);
@@ -87,36 +89,32 @@ export async function loadConfig(customPath?: string): Promise<DrzlConfig | null
     } catch {
       continue;
     }
-    // If JSON, parse directly and skip module loading
+
+    // JSON path — parse directly
     if (/\.json$/i.test(p)) {
       try {
         const content = await fs.readFile(p, 'utf8');
         const raw = JSON.parse(content);
-        const parsed = ConfigSchema.parse(raw);
-        return parsed;
+        return ConfigSchema.parse(raw); // -> DrzlConfig (output)
       } catch (e2) {
         throw new Error(`Failed to load config from ${p}: ${String(e2)}`);
       }
     }
-    // Try jiti to seamlessly load TS/ESM/CJS
+
+    // TS/ESM/CJS via jiti
     try {
       const { createJiti } = await import('jiti');
       const jit = createJiti(import.meta.url);
       const mod = await jit.import(p);
       const raw = mod && typeof mod === 'object' && 'default' in mod ? mod.default : mod;
-      const parsed = ConfigSchema.safeParse(raw);
-      if (!parsed.success) {
-        throw new Error(parsed.error.message);
-      }
-      return parsed.data;
+      return ConfigSchema.parse(raw); // parse to resolved output
     } catch (e) {
       console.error(`jiti failed to load ${p}:`, e);
       // Fallback: try JSON parse
       try {
         const content = await fs.readFile(p, 'utf8');
         const raw = JSON.parse(content);
-        const parsed = ConfigSchema.parse(raw);
-        return parsed;
+        return ConfigSchema.parse(raw);
       } catch (e2) {
         throw new Error(`Failed to load config from ${p}: ${String(e2)}`);
       }
