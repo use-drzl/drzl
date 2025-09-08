@@ -7,19 +7,19 @@ Usage:
 ::: code-group
 
 ```bash [pnpm]
-pnpm drzl generate -c drzl.config.ts
+pnpm dlx @drzl/cli generate -c drzl.config.ts
 ```
 
 ```bash [npm]
-npx drzl generate -c drzl.config.ts
+npx @drzl/cli generate -c drzl.config.ts
 ```
 
 ```bash [yarn]
-yarn drzl generate -c drzl.config.ts
+yarn dlx @drzl/cli generate -c drzl.config.ts
 ```
 
 ```bash [bun]
-bunx drzl generate -c drzl.config.ts
+bunx @drzl/cli generate -c drzl.config.ts
 ```
 
 :::

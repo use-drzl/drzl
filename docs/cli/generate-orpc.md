@@ -7,19 +7,19 @@ Usage:
 ::: code-group
 
 ```bash [pnpm]
-pnpm dlx drzl generate:orpc <schema> -o src/api --template standard --includeRelations
+pnpm dlx @drzl/cli generate:orpc <schema> -o src/api --template standard --includeRelations
 ```
 
 ```bash [npm]
-npx drzl generate:orpc <schema> -o src/api --template standard --includeRelations
+npx @drzl/cli generate:orpc <schema> -o src/api --template standard --includeRelations
 ```
 
 ```bash [yarn]
-yarn dlx drzl generate:orpc <schema> -o src/api --template standard --includeRelations
+yarn dlx @drzl/cli generate:orpc <schema> -o src/api --template standard --includeRelations
 ```
 
 ```bash [bun]
-bunx drzl generate:orpc <schema> -o src/api --template standard --includeRelations
+bunx @drzl/cli generate:orpc <schema> -o src/api --template standard --includeRelations
 ```
 
 :::

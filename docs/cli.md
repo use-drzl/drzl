@@ -7,19 +7,19 @@ Quick help:
 ::: code-group
 
 ```bash [pnpm]
-pnpm dlx drzl --help
+pnpm dlx @drzl/cli --help
 ```
 
 ```bash [npm]
-npx drzl --help
+npx @drzl/cli --help
 ```
 
 ```bash [yarn]
-yarn dlx drzl --help
+yarn dlx @drzl/cli --help
 ```
 
 ```bash [bun]
-bunx drzl --help
+bunx @drzl/cli --help
 ```
 
 :::
@@ -43,19 +43,19 @@ Usage (by package manager):
 ::: code-group
 
 ```bash [pnpm]
-pnpm dlx drzl analyze <schema> [--relations] [--validate] [--out FILE] [--json]
+pnpm dlx @drzl/cli analyze <schema> [--relations] [--validate] [--out FILE] [--json]
 ```
 
 ```bash [npm]
-npx drzl analyze <schema> [--relations] [--validate] [--out FILE] [--json]
+npx @drzl/cli analyze <schema> [--relations] [--validate] [--out FILE] [--json]
 ```
 
 ```bash [yarn]
-yarn dlx drzl analyze <schema> [--relations] [--validate] [--out FILE] [--json]
+yarn dlx @drzl/cli analyze <schema> [--relations] [--validate] [--out FILE] [--json]
 ```
 
 ```bash [bun]
-bunx drzl analyze <schema> [--relations] [--validate] [--out FILE] [--json]
+bunx @drzl/cli analyze <schema> [--relations] [--validate] [--out FILE] [--json]
 ```
 
 :::
@@ -78,19 +78,19 @@ Usage:
 ::: code-group
 
 ```bash [pnpm]
-pnpm drzl generate -c drzl.config.ts
+pnpm dlx @drzl/cli generate -c drzl.config.ts
 ```
 
 ```bash [npm]
-npx drzl generate -c drzl.config.ts
+npx @drzl/cli generate -c drzl.config.ts
 ```
 
 ```bash [yarn]
-yarn drzl generate -c drzl.config.ts
+yarn dlx @drzl/cli generate -c drzl.config.ts
 ```
 
 ```bash [bun]
-bunx drzl generate -c drzl.config.ts
+bunx @drzl/cli generate -c drzl.config.ts
 ```
 
 :::
@@ -113,19 +113,19 @@ Usage:
 ::: code-group
 
 ```bash [pnpm]
-pnpm dlx drzl generate:orpc <schema> -o src/api --template standard --includeRelations
+pnpm dlx @drzl/cli generate:orpc <schema> -o src/api --template standard --includeRelations
 ```
 
 ```bash [npm]
-npx drzl generate:orpc <schema> -o src/api --template standard --includeRelations
+npx @drzl/cli generate:orpc <schema> -o src/api --template standard --includeRelations
 ```
 
 ```bash [yarn]
-yarn dlx drzl generate:orpc <schema> -o src/api --template standard --includeRelations
+yarn dlx @drzl/cli generate:orpc <schema> -o src/api --template standard --includeRelations
 ```
 
 ```bash [bun]
-bunx drzl generate:orpc <schema> -o src/api --template standard --includeRelations
+bunx @drzl/cli generate:orpc <schema> -o src/api --template standard --includeRelations
 ```
 
 :::
@@ -145,19 +145,19 @@ Usage:
 ::: code-group
 
 ```bash [pnpm]
-pnpm drzl watch -c drzl.config.ts --pipeline all --debounce 200 [--json]
+pnpm dlx @drzl/cli watch -c drzl.config.ts --pipeline all --debounce 200 [--json]
 ```
 
 ```bash [npm]
-npx drzl watch -c drzl.config.ts --pipeline all --debounce 200 [--json]
+npx @drzl/cli watch -c drzl.config.ts --pipeline all --debounce 200 [--json]
 ```
 
 ```bash [yarn]
-yarn drzl watch -c drzl.config.ts --pipeline all --debounce 200 [--json]
+yarn dlx @drzl/cli watch -c drzl.config.ts --pipeline all --debounce 200 [--json]
 ```
 
 ```bash [bun]
-bunx drzl watch -c drzl.config.ts --pipeline all --debounce 200 [--json]
+bunx @drzl/cli watch -c drzl.config.ts --pipeline all --debounce 200 [--json]
 ```
 
 :::
@@ -176,19 +176,19 @@ Scaffold a minimal `drzl.config.ts` in the current directory.
 ::: code-group
 
 ```bash [pnpm]
-pnpm dlx drzl init
+pnpm dlx @drzl/cli init
 ```
 
 ```bash [npm]
-npx drzl init
+npx @drzl/cli init
 ```
 
 ```bash [yarn]
-yarn dlx drzl init
+yarn dlx @drzl/cli init
 ```
 
 ```bash [bun]
-bunx drzl init
+bunx @drzl/cli init
 ```
 
 :::

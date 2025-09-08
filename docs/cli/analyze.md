@@ -7,19 +7,19 @@ Usage:
 ::: code-group
 
 ```bash [pnpm]
-pnpm dlx drzl analyze <schema> [--relations] [--validate] [--out FILE] [--json]
+pnpm dlx @drzl/cli analyze <schema> [--relations] [--validate] [--out FILE] [--json]
 ```
 
 ```bash [npm]
-npx drzl analyze <schema> [--relations] [--validate] [--out FILE] [--json]
+npx @drzl/cli analyze <schema> [--relations] [--validate] [--out FILE] [--json]
 ```
 
 ```bash [yarn]
-yarn dlx drzl analyze <schema> [--relations] [--validate] [--out FILE] [--json]
+yarn dlx @drzl/cli analyze <schema> [--relations] [--validate] [--out FILE] [--json]
 ```
 
 ```bash [bun]
-bunx drzl analyze <schema> [--relations] [--validate] [--out FILE] [--json]
+bunx @drzl/cli analyze <schema> [--relations] [--validate] [--out FILE] [--json]
 ```
 
 :::

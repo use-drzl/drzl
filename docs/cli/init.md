@@ -7,19 +7,19 @@ Usage:
 ::: code-group
 
 ```bash [pnpm]
-pnpm dlx drzl init
+pnpm dlx @drzl/cli init
 ```
 
 ```bash [npm]
-npx drzl init
+npx @drzl/cli init
 ```
 
 ```bash [yarn]
-yarn dlx drzl init
+yarn dlx @drzl/cli init
 ```
 
 ```bash [bun]
-bunx drzl init
+bunx @drzl/cli init
 ```
 
 :::

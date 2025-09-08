@@ -7,19 +7,19 @@ Usage:
 ::: code-group
 
 ```bash [pnpm]
-pnpm drzl watch -c drzl.config.ts --pipeline all --debounce 200 [--json]
+pnpm dlx @drzl/cli watch -c drzl.config.ts --pipeline all --debounce 200 [--json]
 ```
 
 ```bash [npm]
-npx drzl watch -c drzl.config.ts --pipeline all --debounce 200 [--json]
+npx @drzl/cli watch -c drzl.config.ts --pipeline all --debounce 200 [--json]
 ```
 
 ```bash [yarn]
-yarn drzl watch -c drzl.config.ts --pipeline all --debounce 200 [--json]
+yarn dlx @drzl/cli watch -c drzl.config.ts --pipeline all --debounce 200 [--json]
 ```
 
 ```bash [bun]
-bunx drzl watch -c drzl.config.ts --pipeline all --debounce 200 [--json]
+bunx @drzl/cli watch -c drzl.config.ts --pipeline all --debounce 200 [--json]
 ```
 
 :::

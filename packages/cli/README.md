@@ -15,10 +15,10 @@ Analyze your Drizzle schema and generate validation, services, and routers.
 
 ## Commands
 
-- Init: `drzl init`
-- Analyze: `drzl analyze <schema.ts> [--relations] [--validate]`
-- Generate: `drzl generate -c drzl.config.ts`
-- Watch: `drzl watch -c drzl.config.ts`
+- Init: `pnpm dlx @drzl/cli init`
+- Analyze: `pnpm dlx @drzl/cli analyze <schema.ts> [--relations] [--validate]`
+- Generate: `pnpm dlx @drzl/cli generate -c drzl.config.ts`
+- Watch: `pnpm dlx @drzl/cli watch -c drzl.config.ts`
 
 ## Minimal config
 

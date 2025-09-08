@@ -71,39 +71,29 @@ export default defineConfig({
 });
 ```
 
-3. Install packages (no install needed for the oRPC generator — it ships with the CLI)
+3. Install Templates
 
-Install Zod + Service generators and the oRPC service template:
+The CLI comes with all the generators you need. You only need to install any templates you want to use. For this example, we'll install the oRPC service template:
 
 ::: code-group
 
 ```bash [pnpm]
-pnpm add -D @drzl/generator-zod @drzl/generator-service @drzl/template-orpc-service
+pnpm add -D @drzl/template-orpc-service
 ```
 
 ```bash [npm]
-npm i -D @drzl/generator-zod @drzl/generator-service @drzl/template-orpc-service
+npm i -D @drzl/template-orpc-service
 ```
 
 ```bash [yarn]
-yarn add -D @drzl/generator-zod @drzl/generator-service @drzl/template-orpc-service
+yarn add -D @drzl/template-orpc-service
 ```
 
 ```bash [bun]
-bun add -d @drzl/generator-zod @drzl/generator-service @drzl/template-orpc-service
+bun add -d @drzl/template-orpc-service
 ```
 
 :::
-
-::: tip Which packages do I need?
-
-- Required: `@drzl/cli` (Step 1)
-- Bundled with CLI: oRPC generator (no extra install)
-- Install if used:
-  - Validation generators: `@drzl/generator-zod` (or `@drzl/generator-valibot`, `@drzl/generator-arktype`)
-  - Service generator: `@drzl/generator-service`
-  - Router template referenced in your config: `@drzl/template-orpc-service` (or your custom template path)
-    :::
 
 4. Generate:
 
