@@ -1,5 +1,20 @@
 # @drzl/cli
 
+## 0.2.0
+
+### Minor Changes
+
+- f007329: fix(cli): correct config types and update readme
+
+### Patch Changes
+
+- @drzl/analyzer@0.2.0
+- @drzl/generator-arktype@0.2.0
+- @drzl/generator-orpc@0.2.0
+- @drzl/generator-service@0.2.0
+- @drzl/generator-valibot@0.2.0
+- @drzl/generator-zod@0.2.0
+
 ## 0.1.0
 
 ### Minor Changes
