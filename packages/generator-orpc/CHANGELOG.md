@@ -1,5 +1,12 @@
 # @drzl/generator-orpc
 
+## 0.2.0
+
+### Patch Changes
+
+- @drzl/analyzer@0.2.0
+- @drzl/template-standard@0.2.0
+
 ## 0.1.0
 
 ### Patch Changes
