@@ -1,5 +1,20 @@
 # @drzl/cli
 
+## 0.3.0
+
+### Minor Changes
+
+- b2b8e35: fix(cli-config): improve watch and config loading
+
+### Patch Changes
+
+- @drzl/analyzer@0.3.0
+- @drzl/generator-arktype@0.3.0
+- @drzl/generator-orpc@0.3.0
+- @drzl/generator-service@0.3.0
+- @drzl/generator-valibot@0.3.0
+- @drzl/generator-zod@0.3.0
+
 ## 0.2.0
 
 ### Minor Changes
