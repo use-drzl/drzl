@@ -7,6 +7,10 @@ export interface ServiceGenerateOptions {
   dbImportPath?: string; // e.g. src/db/client
   schemaImportPath?: string; // e.g. src/db/schemas
   outputHeader?: { enabled?: boolean; text?: string };
+  databaseInjection?: {
+    enabled?: boolean; // Enable database injection mode (default: false for backward compatibility)
+    databaseType?: string; // Type annotation for injected database (e.g. 'DrizzleD1Database', 'Database')
+  };
 }
 
 function cap(s: string) {
@@ -54,14 +58,52 @@ function renderService(
   table: Table,
   mode: 'stub' | 'drizzle',
   dbImportPath?: string,
-  schemaImportPath?: string
+  schemaImportPath?: string,
+  databaseInjection?: ServiceGenerateOptions['databaseInjection']
 ) {
   const T = table.tsName;
   const singular = singularize(T);
   const Service = `${cap(singular)}Service`;
   const pk = (table.primaryKey?.columns ?? ['id'])[0];
   if (mode === 'drizzle' && dbImportPath && schemaImportPath) {
-    return `import { db } from '${dbImportPath}';
+    const isInjectionMode = databaseInjection?.enabled === true;
+    const dbType = databaseInjection?.databaseType ?? 'any';
+    
+    if (isInjectionMode) {
+      // Database injection mode - services accept database as parameter
+      return `import { ${T} } from '${schemaImportPath}';
+import { eq } from 'drizzle-orm';
+
+type Select${T} = typeof ${T}.$inferSelect;
+type Insert${T} = typeof ${T}.$inferInsert;
+type Update${T} = Partial<Omit<typeof ${T}.$inferInsert, '${pk}'>>;
+
+export class ${Service} {
+  static async getAll(db: ${dbType}): Promise<Select${T}[]> {
+    const rows = await db.select().from(${T});
+    return rows;
+  }
+  static async getById(db: ${dbType}, id: number): Promise<Select${T} | null> {
+    const rows = await db.select().from(${T}).where(eq(${T}.${pk}, id)).limit(1);
+    return rows[0] ?? null;
+  }
+  static async create(db: ${dbType}, input: Insert${T}): Promise<Select${T}> {
+    const rows = await db.insert(${T}).values(input).returning();
+    return rows[0];
+  }
+  static async update(db: ${dbType}, id: number, data: Update${T}): Promise<Select${T}> {
+    const rows = await db.update(${T}).set(data).where(eq(${T}.${pk}, id)).returning();
+    return rows[0];
+  }
+  static async delete(db: ${dbType}, id: number): Promise<boolean> {
+    await db.delete(${T}).where(eq(${T}.${pk}, id));
+    return true;
+  }
+}
+`;
+    } else {
+      // Traditional mode - global database import (backward compatibility)
+      return `import { db } from '${dbImportPath}';
 import { ${T} } from '${schemaImportPath}';
 import { eq } from 'drizzle-orm';
 
@@ -92,6 +134,7 @@ export class ${Service} {
   }
 }
 `;
+    }
   }
   return `import type { Insert${T}, Update${T}, Select${T} } from './types/${T}';
 
@@ -148,7 +191,8 @@ export class ServiceGenerator {
         table,
         opts.dataAccess ?? 'stub',
         opts.dbImportPath,
-        opts.schemaImportPath
+        opts.schemaImportPath,
+        opts.databaseInjection
       );
       const formattedTypes = await this.format(
         buildHeader(opts.outputHeader) + typesCode,
