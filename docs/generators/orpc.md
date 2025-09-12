@@ -18,7 +18,35 @@ interface GenerateOptions {
     importPath?: string;
     schemaSuffix?: string;
   };
+  databaseInjection?: {
+    enabled?: boolean;
+    databaseType?: string;
+    databaseTypeImport?: { name: string; from: string };
+  };
+  servicesDir?: string;
 }
+```
+
+## Database injection
+
+When used with `@drzl/template-orpc-service`, the generator wires a `dbMiddleware` and passes `context.db` to your services. Configure the context type via `databaseInjection`.
+
+```ts
+validation: { library: 'valibot' },
+databaseInjection: {
+  enabled: true,
+  databaseType: 'Database',
+  databaseTypeImport: { name: 'Database', from: 'src/db/db' },
+},
+servicesDir: 'src/services',
+```
+
+In the generated router:
+
+```ts
+import type { Database } from 'src/db/db';
+
+export const dbMiddleware = os.$context<{ db?: Database }>().middleware(/* ... */);
 ```
 
 ## Validation reuse

@@ -16,13 +16,13 @@ Drizzle schema → normalized analysis for fast, reliable codegen.
 ## Use
 
 ```ts
-import { SchemaAnalyzer } from '@drzl/analyzer'
+import { SchemaAnalyzer } from '@drzl/analyzer';
 
-const analyzer = new SchemaAnalyzer('src/db/schemas/index.ts')
+const analyzer = new SchemaAnalyzer('src/db/schemas/index.ts');
 const analysis = await analyzer.analyze({
   includeRelations: true,
   validateConstraints: true,
-})
+});
 ```
 
 The CLI consumes this analysis to generate validation, services, and routers.

@@ -23,14 +23,19 @@ generators: [
     kind: 'orpc',
     template: '@drzl/template-orpc-service',
     includeRelations: true,
-    validation: { useShared: true, library: 'zod', importPath: 'src/validators/zod' },
+    validation: { library: 'valibot' },
+    databaseInjection: {
+      enabled: true,
+      databaseType: 'Database',
+      databaseTypeImport: { name: 'Database', from: 'src/db/db' },
+    },
+    servicesDir: 'src/services',
   },
-]
+];
 ```
 
 ## Behavior
 
 - Reuses pre-generated Insert/Update/Select schemas when `validation.useShared` is true.
 - Otherwise, inlines schemas using the chosen library (zod/valibot/arktype).
-- Works with templates for different wiring (service-backed, minimal, custom).
-
+- Works with templates for different wiring (service-backed, minimal, custom). With `@drzl/template-orpc-service`, a `dbMiddleware` is emitted and `context.db` is passed to services.

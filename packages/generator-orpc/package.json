@@ -17,6 +17,7 @@
   },
   "dependencies": {
     "@drzl/analyzer": "workspace:^",
+    "@drzl/template-orpc-service": "workspace:^",
     "@drzl/template-standard": "workspace:^",
     "zod": "^4.1.5"
   },

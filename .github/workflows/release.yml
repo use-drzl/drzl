@@ -2,7 +2,7 @@ name: Release
 
 on:
   push:
-    branches: [ master ]
+    branches: [master]
     paths-ignore:
       - 'docs/**'
 
@@ -12,7 +12,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
-      id-token: write      # provenance
+      id-token: write # provenance
       pull-requests: write
       packages: read
     steps:
@@ -50,8 +50,8 @@ jobs:
         uses: changesets/action@v1
         with:
           version: pnpm -w changeset:version
-          commit: "chore(release): publish"
-          title: "Version Packages"
+          commit: 'chore(release): publish'
+          title: 'Version Packages'
           createGithubReleases: true
           publish: pnpm -w changeset publish
         env:

@@ -5,8 +5,48 @@ Generates typed CRUD service classes per table (Drizzle or stub).
 Key options:
 
 - `outDir`, `dataAccess`, `dbImportPath`, `schemaImportPath`
+- `databaseInjection`: make services accept a database instance (serverless‑friendly)
 
 See the [package README](https://github.com/use-drzl/drzl/blob/master/packages/generator-service/README.md) for details.
+
+## Database Injection (serverless)
+
+Pass a database into service methods instead of importing a global singleton.
+
+```ts
+export default defineConfig({
+  generators: [
+    {
+      kind: 'service',
+      path: 'src/services',
+      dataAccess: 'drizzle',
+      schemaImportPath: 'src/db/schema',
+      databaseInjection: {
+        enabled: true,
+        databaseType: 'Database',
+        databaseTypeImport: { name: 'Database', from: 'src/db/db' },
+      },
+    },
+  ],
+});
+```
+
+Generated methods (example):
+
+```ts
+import type { Database } from 'src/db/db';
+
+export class UserService {
+  static async getAll(db: Database) {
+    /* ... */
+  }
+  static async getById(db: Database, id: number) {
+    /* ... */
+  }
+}
+```
+
+This aligns with Cloudflare Workers/Astro patterns where a db is created per request/context.
 
 ## Examples
 

@@ -25,8 +25,28 @@ export interface ORPCTemplateHooks {
     table: Table,
     ctx: { naming?: { routerSuffix?: string; procedureCase?: 'camel' | 'kebab' | 'snake' } }
   ): string;
-  procedures(table: Table): ProcedureSpec[];
-  imports?(tables: Table[], ctx?: { outDir: string; servicesDir?: string }): string;
+  procedures(
+    table: Table,
+    ctx?: {
+      databaseInjection?: {
+        enabled?: boolean;
+        databaseType?: string;
+        databaseTypeImport?: { name: string; from: string };
+      };
+    }
+  ): ProcedureSpec[];
+  imports?(
+    tables: Table[],
+    ctx?: {
+      outDir: string;
+      servicesDir?: string;
+      databaseInjection?: {
+        enabled?: boolean;
+        databaseType?: string;
+        databaseTypeImport?: { name: string; from: string };
+      };
+    }
+  ): string;
   header?(table: Table): string;
 }
 
@@ -76,45 +96,108 @@ const template: ORPCTemplateHooks = {
     const outDir = ctx?.outDir ?? 'src/api';
     const servicesDir = (ctx as any)?.servicesDir ?? servicesDirDefault;
     const rel = path.relative(outDir, servicesDir) || '.';
-    return `import { os } from '@orpc/server'\nimport { z } from 'zod'\nimport { ${Service} } from '${rel}/${singular}Service'`;
+
+    const isInjectionMode = ctx?.databaseInjection?.enabled === true;
+    const dbType = ctx?.databaseInjection?.databaseType ?? 'any';
+
+    if (isInjectionMode) {
+      const typeImport = ctx?.databaseInjection?.databaseTypeImport
+        ? `\nimport type { ${ctx.databaseInjection.databaseTypeImport.name} } from '${ctx.databaseInjection.databaseTypeImport.from}';`
+        : '';
+      return `import { os, ORPCError } from '@orpc/server'
+import { z } from 'zod'
+import { ${Service} } from '${rel}/${singular}Service'
+${typeImport}
+
+export const dbMiddleware = os
+  .$context<{ db?: ${dbType} }>()
+  .middleware(async ({ context, next }) => {
+    if (!context.db) {
+      console.error('No database provided in context');
+      throw new ORPCError('INTERNAL_SERVER_ERROR');
+    }
+    return next({
+      context: {
+        db: context.db
+      }
+    });
+  });`;
+    } else {
+      return `import { os } from '@orpc/server'\nimport { z } from 'zod'\nimport { ${Service} } from '${rel}/${singular}Service'`;
+    }
   },
   header: (table) => `// Router for table: ${table.name}`,
-  procedures: (table) => {
+  procedures: (table, ctx) => {
     const T = cap(table.tsName);
     const singular = singularize(table.tsName);
     const Service = `${cap(singular)}Service`;
+    const isInjectionMode = ctx?.databaseInjection?.enabled === true;
+
     const make = (proc: string, varName: string, code: string): ProcedureSpec => ({
       name: proc,
       varName,
       code,
     });
-    return [
-      make(
-        'list',
-        `list${T}`,
-        `const list${T} = os.handler(async () => {\n  return await ${Service}.getAll();\n});`
-      ),
-      make(
-        'get',
-        `get${T}`,
-        `const get${T} = os\n  .input(z.object({ id: z.number() }))\n  .handler(async ({ input }) => {\n    return await ${Service}.getById(input.id);\n  });`
-      ),
-      make(
-        'create',
-        `create${T}`,
-        `const create${T} = os\n  .input(z.any())\n  .handler(async ({ input }) => {\n    return await ${Service}.create(input);\n  });`
-      ),
-      make(
-        'update',
-        `update${T}`,
-        `const update${T} = os\n  .input(z.object({ id: z.number(), data: z.any() }))\n  .handler(async ({ input }) => {\n    return await ${Service}.update(input.id, input.data);\n  });`
-      ),
-      make(
-        'delete',
-        `delete${T}`,
-        `const delete${T} = os\n  .input(z.object({ id: z.number() }))\n  .handler(async ({ input }) => {\n    return await ${Service}.delete(input.id);\n  });`
-      ),
-    ];
+
+    if (isInjectionMode) {
+      // Database injection mode - use middleware and context
+      return [
+        make(
+          'list',
+          `list${T}`,
+          `const list${T} = os\n  .use(dbMiddleware)\n  .handler(async ({ context }) => {\n    return await ${Service}.getAll(context.db);\n  });`
+        ),
+        make(
+          'get',
+          `get${T}`,
+          `const get${T} = os\n  .use(dbMiddleware)\n  .input(z.object({ id: z.number() }))\n  .handler(async ({ context, input }) => {\n    return await ${Service}.getById(context.db, input.id);\n  });`
+        ),
+        make(
+          'create',
+          `create${T}`,
+          `const create${T} = os\n  .use(dbMiddleware)\n  .input(z.any())\n  .handler(async ({ context, input }) => {\n    return await ${Service}.create(context.db, input);\n  });`
+        ),
+        make(
+          'update',
+          `update${T}`,
+          `const update${T} = os\n  .use(dbMiddleware)\n  .input(z.object({ id: z.number(), data: z.any() }))\n  .handler(async ({ context, input }) => {\n    return await ${Service}.update(context.db, input.id, input.data);\n  });`
+        ),
+        make(
+          'delete',
+          `delete${T}`,
+          `const delete${T} = os\n  .use(dbMiddleware)\n  .input(z.object({ id: z.number() }))\n  .handler(async ({ context, input }) => {\n    return await ${Service}.delete(context.db, input.id);\n  });`
+        ),
+      ];
+    } else {
+      // Traditional mode - backward compatibility
+      return [
+        make(
+          'list',
+          `list${T}`,
+          `const list${T} = os.handler(async () => {\n  return await ${Service}.getAll();\n});`
+        ),
+        make(
+          'get',
+          `get${T}`,
+          `const get${T} = os\n  .input(z.object({ id: z.number() }))\n  .handler(async ({ input }) => {\n    return await ${Service}.getById(input.id);\n  });`
+        ),
+        make(
+          'create',
+          `create${T}`,
+          `const create${T} = os\n  .input(z.any())\n  .handler(async ({ input }) => {\n    return await ${Service}.create(input);\n  });`
+        ),
+        make(
+          'update',
+          `update${T}`,
+          `const update${T} = os\n  .input(z.object({ id: z.number(), data: z.any() }))\n  .handler(async ({ input }) => {\n    return await ${Service}.update(input.id, input.data);\n  });`
+        ),
+        make(
+          'delete',
+          `delete${T}`,
+          `const delete${T} = os\n  .input(z.object({ id: z.number() }))\n  .handler(async ({ input }) => {\n    return await ${Service}.delete(input.id);\n  });`
+        ),
+      ];
+    }
   },
 };
 

@@ -12,6 +12,7 @@ coverage
 packages/*/.vitest
 packages/*/coverage
 packages/*/test/tmp
+real-world-example
 
 # Local registry artifacts
 .verdaccio.pid

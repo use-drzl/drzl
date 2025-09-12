@@ -23,4 +23,3 @@ Shared interfaces and helpers used by validation generators.
 - Helpers
   - `insertColumns(table)`, `updateColumns(table)`, `selectColumns(table)`
   - `formatCode(code, filePath, formatOpts)`
-

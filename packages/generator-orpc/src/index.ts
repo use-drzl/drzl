@@ -21,6 +21,12 @@ export interface GenerateOptions {
     importPath?: string; // barrel path like src/validators/zod
     schemaSuffix?: string; // default 'Schema'
   };
+  databaseInjection?: {
+    enabled?: boolean; // Enable database injection mode (default: false for backward compatibility)
+    databaseType?: string; // Type annotation for injected database (e.g. 'DrizzleD1Database', 'Database')
+    databaseTypeImport?: { name: string; from: string };
+  };
+  servicesDir?: string; // Path to services directory (e.g. 'src/services')
 }
 
 export interface ProcedureSpec {
@@ -32,8 +38,19 @@ export interface ProcedureSpec {
 export interface ORPCTemplateHooks {
   filePath(table: Table, ctx: { outDir: string; naming?: NamingOptions }): string;
   routerName(table: Table, ctx: { naming?: NamingOptions }): string;
-  procedures(table: Table): ProcedureSpec[];
-  imports?(tables: Table[], ctx?: { outDir: string; naming?: NamingOptions }): string;
+  procedures(
+    table: Table,
+    ctx?: { databaseInjection?: { enabled?: boolean; databaseType?: string } }
+  ): ProcedureSpec[];
+  imports?(
+    tables: Table[],
+    ctx?: {
+      outDir: string;
+      naming?: NamingOptions;
+      servicesDir?: string;
+      databaseInjection?: { enabled?: boolean; databaseType?: string };
+    }
+  ): string;
   prelude?(tables: Table[], ctx?: { outDir: string; naming?: NamingOptions }): string;
   header?(table: Table): string;
 }
@@ -227,12 +244,22 @@ export class ORPCGenerator {
         const { default: hooks } = await import('@drzl/template-standard');
         template = hooks as ORPCTemplateHooks;
       } catch {}
+    } else if (opts.template === '@drzl/template-orpc-service') {
+      try {
+        const tmplName: any = '@drzl/template-orpc-service';
+        const mod: any = await import(tmplName);
+        const hooks = mod?.default ?? mod;
+        template = hooks as ORPCTemplateHooks;
+      } catch {}
     } else if (opts.template && opts.template !== 'minimal') {
       try {
-        const { default: jiti } = await import('jiti');
-        const jit = (jiti as any)(import.meta.url);
-        const mod = jit(opts.template);
+        const { pathToFileURL } = await import('node:url');
+        const url = opts.template.startsWith('file://')
+          ? opts.template
+          : pathToFileURL(opts.template).href;
+        const mod: any = await import(url);
         template = (mod?.default ?? mod) as ORPCTemplateHooks;
+        console.log('[orpc] Loaded custom template from', url);
       } catch (_e) {
         // fall back to default
       }
@@ -263,7 +290,9 @@ export class ORPCGenerator {
         opts.naming,
         out,
         opts.templateOptions,
-        opts.validation
+        opts.validation,
+        opts.databaseInjection,
+        opts.servicesDir
       );
       const formatted = await this.formatCode(
         buildHeader(opts.outputHeader) + content,
@@ -320,7 +349,9 @@ export const exampleRouter = {
     naming?: NamingOptions,
     outDir?: string,
     templateOptions?: Record<string, unknown>,
-    validation?: GenerateOptions['validation']
+    validation?: GenerateOptions['validation'],
+    databaseInjection?: GenerateOptions['databaseInjection'],
+    servicesDir?: string
   ) {
     // Build shared schemas (library-aware)
     const lib: Lib = (validation?.library ?? 'zod') as Lib;
@@ -330,7 +361,7 @@ export const exampleRouter = {
     const sharedSchemasInline = `export const ${createSchemaName} = ${renderSchema(table, lib, 'insert')}\nexport const ${updateSchemaName} = ${renderSchema(table, lib, 'update')}\nexport const ${selectSchemaName} = ${renderSchema(table, lib, 'select')}`;
 
     // Template procedures (fallback default uses inline zod; we replace to use shared)
-    const hooksProcs = template.procedures(table);
+    const hooksProcs = template.procedures(table, { databaseInjection: databaseInjection });
     const replaceInputArg = (code: string, newArg: string) => {
       const sig = '.input(';
       const start = code.indexOf(sig);
@@ -440,7 +471,13 @@ export const exampleRouter = {
     });
     const procedures = procCodes.join('\n\n');
     const routerName = template.routerName(table, { naming });
-    const ctx = { outDir: outDir ?? '', naming, ...(templateOptions ?? {}) } as any;
+    const ctx = {
+      outDir: outDir ?? '',
+      naming,
+      servicesDir,
+      databaseInjection,
+      ...(templateOptions ?? {}),
+    } as any;
     const libImport =
       lib === 'zod'
         ? `import { z } from 'zod'`

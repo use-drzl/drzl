@@ -35,7 +35,7 @@ jobs:
       - name: Changesets publish (dry run)
         env:
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
-          NPM_CONFIG_DRY_RUN: "true"
+          NPM_CONFIG_DRY_RUN: 'true'
           # Ensure npm registry points to npmjs, regardless of user-level npmrc
           NPM_CONFIG_REGISTRY: https://registry.npmjs.org
         run: |
