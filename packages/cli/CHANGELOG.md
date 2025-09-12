@@ -1,5 +1,13 @@
 # @drzl/cli
 
+## 0.3.1
+
+### Patch Changes
+
+- Updated dependencies [811dd61]
+  - @drzl/generator-service@0.4.0
+  - @drzl/generator-orpc@0.4.0
+
 ## 0.3.0
 
 ### Minor Changes
