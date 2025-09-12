@@ -11,6 +11,9 @@ export default [
       'packages/**/test/tmp/**',
       'packages/**/test/fixtures/**',
       'docs/.vitepress/**',
+      'real-world-example/**',
+      '**/.tmp-e2e/**',
+      '**/.wrangler/**',
     ],
   },
   {

@@ -18,9 +18,7 @@ Zod schemas from your Drizzle analysis (insert / update / select).
 Add to `drzl.config.ts`:
 
 ```ts
-generators: [
-  { kind: 'zod', path: 'src/validators/zod' },
-]
+generators: [{ kind: 'zod', path: 'src/validators/zod' }];
 ```
 
 ## Output

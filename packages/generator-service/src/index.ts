@@ -72,7 +72,7 @@ function renderService(
     const typeImport = databaseInjection?.databaseTypeImport
       ? `\nimport type { ${databaseInjection.databaseTypeImport.name} } from '${databaseInjection.databaseTypeImport.from}';\n`
       : '';
-    
+
     if (isInjectionMode) {
       // Database injection mode - services accept database as parameter
       return `import { ${T} } from '${schemaImportPath}';

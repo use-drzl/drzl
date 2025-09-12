@@ -32,8 +32,10 @@ const handler = new RPCHandler(router);
 export default {
   async fetch(request, env) {
     const db = createDatabase(env.DATABASE);
-    return (await handler.handle(request, { prefix: '/api', context: { db } })).response
-      ?? new Response('Not Found', { status: 404 });
-  }
+    return (
+      (await handler.handle(request, { prefix: '/api', context: { db } })).response ??
+      new Response('Not Found', { status: 404 })
+    );
+  },
 };
 ```

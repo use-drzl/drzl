@@ -18,9 +18,7 @@ Minimal oRPC router template (no service wiring) — great for quick starts.
 Reference from the oRPC generator:
 
 ```ts
-generators: [
-  { kind: 'orpc', template: '@drzl/template-standard' },
-]
+generators: [{ kind: 'orpc', template: '@drzl/template-standard' }];
 ```
 
 ## Hooks (template API)
@@ -29,4 +27,3 @@ generators: [
 - routerName(table, ctx)
 - procedures(table)
 - imports?(), prelude?(), header?(table)
-

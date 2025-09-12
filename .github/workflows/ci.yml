@@ -20,7 +20,7 @@ jobs:
       - run: pnpm build
       - run: pnpm -r test
       - run: pnpm lint
-      
+
   changeset-check:
     runs-on: ubuntu-latest
     if: github.event_name == 'pull_request'

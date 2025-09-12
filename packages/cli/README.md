@@ -23,7 +23,7 @@ Analyze your Drizzle schema and generate validation, services, and routers.
 ## Minimal config
 
 ```ts
-import { defineConfig } from '@drzl/cli/config'
+import { defineConfig } from '@drzl/cli/config';
 
 export default defineConfig({
   schema: 'src/db/schemas/index.ts',
@@ -33,7 +33,7 @@ export default defineConfig({
     { kind: 'service', path: 'src/services', dataAccess: 'drizzle' },
     { kind: 'orpc', template: '@drzl/template-orpc-service' },
   ],
-})
+});
 ```
 
 Notes

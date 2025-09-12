@@ -18,9 +18,7 @@ Valibot schemas from your Drizzle analysis (insert / update / select).
 Add to `drzl.config.ts`:
 
 ```ts
-generators: [
-  { kind: 'valibot', path: 'src/validators/valibot' },
-]
+generators: [{ kind: 'valibot', path: 'src/validators/valibot' }];
 ```
 
 ## Output

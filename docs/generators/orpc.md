@@ -46,9 +46,7 @@ In the generated router:
 ```ts
 import type { Database } from 'src/db/db';
 
-export const dbMiddleware = os
-  .$context<{ db?: Database }>()
-  .middleware(/* ... */)
+export const dbMiddleware = os.$context<{ db?: Database }>().middleware(/* ... */);
 ```
 
 ## Validation reuse

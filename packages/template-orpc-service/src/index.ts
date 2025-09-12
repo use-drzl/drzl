@@ -25,8 +25,28 @@ export interface ORPCTemplateHooks {
     table: Table,
     ctx: { naming?: { routerSuffix?: string; procedureCase?: 'camel' | 'kebab' | 'snake' } }
   ): string;
-  procedures(table: Table, ctx?: { databaseInjection?: { enabled?: boolean; databaseType?: string; databaseTypeImport?: { name: string; from: string } } }): ProcedureSpec[];
-  imports?(tables: Table[], ctx?: { outDir: string; servicesDir?: string; databaseInjection?: { enabled?: boolean; databaseType?: string; databaseTypeImport?: { name: string; from: string } } }): string;
+  procedures(
+    table: Table,
+    ctx?: {
+      databaseInjection?: {
+        enabled?: boolean;
+        databaseType?: string;
+        databaseTypeImport?: { name: string; from: string };
+      };
+    }
+  ): ProcedureSpec[];
+  imports?(
+    tables: Table[],
+    ctx?: {
+      outDir: string;
+      servicesDir?: string;
+      databaseInjection?: {
+        enabled?: boolean;
+        databaseType?: string;
+        databaseTypeImport?: { name: string; from: string };
+      };
+    }
+  ): string;
   header?(table: Table): string;
 }
 
@@ -76,10 +96,10 @@ const template: ORPCTemplateHooks = {
     const outDir = ctx?.outDir ?? 'src/api';
     const servicesDir = (ctx as any)?.servicesDir ?? servicesDirDefault;
     const rel = path.relative(outDir, servicesDir) || '.';
-    
+
     const isInjectionMode = ctx?.databaseInjection?.enabled === true;
     const dbType = ctx?.databaseInjection?.databaseType ?? 'any';
-    
+
     if (isInjectionMode) {
       const typeImport = ctx?.databaseInjection?.databaseTypeImport
         ? `\nimport type { ${ctx.databaseInjection.databaseTypeImport.name} } from '${ctx.databaseInjection.databaseTypeImport.from}';`
@@ -112,13 +132,13 @@ export const dbMiddleware = os
     const singular = singularize(table.tsName);
     const Service = `${cap(singular)}Service`;
     const isInjectionMode = ctx?.databaseInjection?.enabled === true;
-    
+
     const make = (proc: string, varName: string, code: string): ProcedureSpec => ({
       name: proc,
       varName,
       code,
     });
-    
+
     if (isInjectionMode) {
       // Database injection mode - use middleware and context
       return [

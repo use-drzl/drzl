@@ -20,14 +20,14 @@ async function getAddMessage(changeset, options) {
  */
 async function getVersionMessage(releasePlan, options) {
   const skipCI = options?.skipCI === 'version' || options?.skipCI === true;
-  const publishable = releasePlan.releases.filter(r => r.type !== 'none');
+  const publishable = releasePlan.releases.filter((r) => r.type !== 'none');
   const count = publishable.length;
   // If all packages share same version (lockstep), show that; otherwise list first few
-  const versions = new Set(publishable.map(r => r.newVersion));
+  const versions = new Set(publishable.map((r) => r.newVersion));
   const versionPart = versions.size === 1 ? `v${[...versions][0]}` : `${count} packages`;
   const lines = publishable
     .slice(0, 20)
-    .map(r => `  - ${r.name}@${r.newVersion}`)
+    .map((r) => `  - ${r.name}@${r.newVersion}`)
     .join('\n');
   const more = publishable.length > 20 ? `\n  - ...and ${publishable.length - 20} more` : '';
   const body = publishable.length ? `\n\nReleases:\n${lines}${more}` : '';
@@ -38,4 +38,3 @@ module.exports = {
   getAddMessage,
   getVersionMessage,
 };
-

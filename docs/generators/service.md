@@ -28,7 +28,7 @@ export default defineConfig({
       },
     },
   ],
-})
+});
 ```
 
 Generated methods (example):
@@ -37,8 +37,12 @@ Generated methods (example):
 import type { Database } from 'src/db/db';
 
 export class UserService {
-  static async getAll(db: Database) { /* ... */ }
-  static async getById(db: Database, id: number) { /* ... */ }
+  static async getAll(db: Database) {
+    /* ... */
+  }
+  static async getById(db: Database, id: number) {
+    /* ... */
+  }
 }
 ```
 

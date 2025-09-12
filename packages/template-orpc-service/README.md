@@ -26,11 +26,11 @@ generators: [
     databaseInjection: {
       enabled: true,
       databaseType: 'Database',
-      databaseTypeImport: { name: 'Database', from: 'src/db/db' }
+      databaseTypeImport: { name: 'Database', from: 'src/db/db' },
     },
     servicesDir: 'src/services',
   },
-]
+];
 ```
 
 ## Hooks (template API)

@@ -38,8 +38,19 @@ export interface ProcedureSpec {
 export interface ORPCTemplateHooks {
   filePath(table: Table, ctx: { outDir: string; naming?: NamingOptions }): string;
   routerName(table: Table, ctx: { naming?: NamingOptions }): string;
-  procedures(table: Table, ctx?: { databaseInjection?: { enabled?: boolean; databaseType?: string } }): ProcedureSpec[];
-  imports?(tables: Table[], ctx?: { outDir: string; naming?: NamingOptions; servicesDir?: string; databaseInjection?: { enabled?: boolean; databaseType?: string } }): string;
+  procedures(
+    table: Table,
+    ctx?: { databaseInjection?: { enabled?: boolean; databaseType?: string } }
+  ): ProcedureSpec[];
+  imports?(
+    tables: Table[],
+    ctx?: {
+      outDir: string;
+      naming?: NamingOptions;
+      servicesDir?: string;
+      databaseInjection?: { enabled?: boolean; databaseType?: string };
+    }
+  ): string;
   prelude?(tables: Table[], ctx?: { outDir: string; naming?: NamingOptions }): string;
   header?(table: Table): string;
 }
@@ -434,7 +445,8 @@ export const exampleRouter = {
         if (p.name === 'list') {
           outExpr = lib === 'zod' ? `z.array(${selectSchemaName})` : `v.array(${selectSchemaName})`;
         } else if (p.name === 'get') {
-          outExpr = lib === 'zod' ? `${selectSchemaName}.nullable()` : `v.nullable(${selectSchemaName})`;
+          outExpr =
+            lib === 'zod' ? `${selectSchemaName}.nullable()` : `v.nullable(${selectSchemaName})`;
         } else if (p.name === 'create' || p.name === 'update') {
           outExpr = selectSchemaName;
         } else if (p.name === 'delete') {
@@ -459,12 +471,12 @@ export const exampleRouter = {
     });
     const procedures = procCodes.join('\n\n');
     const routerName = template.routerName(table, { naming });
-    const ctx = { 
-      outDir: outDir ?? '', 
-      naming, 
+    const ctx = {
+      outDir: outDir ?? '',
+      naming,
       servicesDir,
       databaseInjection,
-      ...(templateOptions ?? {}) 
+      ...(templateOptions ?? {}),
     } as any;
     const libImport =
       lib === 'zod'
