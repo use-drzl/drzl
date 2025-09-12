@@ -22,7 +22,13 @@ generators: [
   {
     kind: 'orpc',
     template: '@drzl/template-orpc-service',
-    validation: { useShared: true, library: 'zod', importPath: 'src/validators/zod' },
+    validation: { library: 'valibot' },
+    databaseInjection: {
+      enabled: true,
+      databaseType: 'Database',
+      databaseTypeImport: { name: 'Database', from: 'src/db/db' }
+    },
+    servicesDir: 'src/services',
   },
 ]
 ```
@@ -35,3 +41,4 @@ generators: [
 - imports?(tables, ctx)
 - header?(table)
 
+When `databaseInjection.enabled` is true, the template emits a `dbMiddleware` and expects `context.db` to be provided by your runtime (e.g., Cloudflare Workers via D1).

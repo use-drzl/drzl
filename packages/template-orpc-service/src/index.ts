@@ -25,8 +25,8 @@ export interface ORPCTemplateHooks {
     table: Table,
     ctx: { naming?: { routerSuffix?: string; procedureCase?: 'camel' | 'kebab' | 'snake' } }
   ): string;
-  procedures(table: Table, ctx?: { databaseInjection?: { enabled?: boolean; databaseType?: string } }): ProcedureSpec[];
-  imports?(tables: Table[], ctx?: { outDir: string; servicesDir?: string; databaseInjection?: { enabled?: boolean; databaseType?: string } }): string;
+  procedures(table: Table, ctx?: { databaseInjection?: { enabled?: boolean; databaseType?: string; databaseTypeImport?: { name: string; from: string } } }): ProcedureSpec[];
+  imports?(tables: Table[], ctx?: { outDir: string; servicesDir?: string; databaseInjection?: { enabled?: boolean; databaseType?: string; databaseTypeImport?: { name: string; from: string } } }): string;
   header?(table: Table): string;
 }
 
@@ -81,16 +81,20 @@ const template: ORPCTemplateHooks = {
     const dbType = ctx?.databaseInjection?.databaseType ?? 'any';
     
     if (isInjectionMode) {
+      const typeImport = ctx?.databaseInjection?.databaseTypeImport
+        ? `\nimport type { ${ctx.databaseInjection.databaseTypeImport.name} } from '${ctx.databaseInjection.databaseTypeImport.from}';`
+        : '';
       return `import { os, ORPCError } from '@orpc/server'
 import { z } from 'zod'
 import { ${Service} } from '${rel}/${singular}Service'
+${typeImport}
 
 export const dbMiddleware = os
   .$context<{ db?: ${dbType} }>()
   .middleware(async ({ context, next }) => {
     if (!context.db) {
       console.error('No database provided in context');
-      throw new ORPCError({ code: 'INTERNAL_SERVER_ERROR' });
+      throw new ORPCError('INTERNAL_SERVER_ERROR');
     }
     return next({
       context: {

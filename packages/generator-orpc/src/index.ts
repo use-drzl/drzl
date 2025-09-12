@@ -24,6 +24,7 @@ export interface GenerateOptions {
   databaseInjection?: {
     enabled?: boolean; // Enable database injection mode (default: false for backward compatibility)
     databaseType?: string; // Type annotation for injected database (e.g. 'DrizzleD1Database', 'Database')
+    databaseTypeImport?: { name: string; from: string };
   };
   servicesDir?: string; // Path to services directory (e.g. 'src/services')
 }
@@ -234,17 +235,20 @@ export class ORPCGenerator {
       } catch {}
     } else if (opts.template === '@drzl/template-orpc-service') {
       try {
-        const { default: jiti } = await import('jiti');
-        const jit = (jiti as any)(import.meta.url);
-        const mod = jit('@drzl/template-orpc-service');
-        template = (mod?.default ?? mod) as ORPCTemplateHooks;
+        const tmplName: any = '@drzl/template-orpc-service';
+        const mod: any = await import(tmplName);
+        const hooks = mod?.default ?? mod;
+        template = hooks as ORPCTemplateHooks;
       } catch {}
     } else if (opts.template && opts.template !== 'minimal') {
       try {
-        const { default: jiti } = await import('jiti');
-        const jit = (jiti as any)(import.meta.url);
-        const mod = jit(opts.template);
+        const { pathToFileURL } = await import('node:url');
+        const url = opts.template.startsWith('file://')
+          ? opts.template
+          : pathToFileURL(opts.template).href;
+        const mod: any = await import(url);
         template = (mod?.default ?? mod) as ORPCTemplateHooks;
+        console.log('[orpc] Loaded custom template from', url);
       } catch (_e) {
         // fall back to default
       }
@@ -430,8 +434,7 @@ export const exampleRouter = {
         if (p.name === 'list') {
           outExpr = lib === 'zod' ? `z.array(${selectSchemaName})` : `v.array(${selectSchemaName})`;
         } else if (p.name === 'get') {
-          outExpr =
-            lib === 'zod' ? `${selectSchemaName}.nullable()` : `v.nullable(${selectSchemaName})`;
+          outExpr = lib === 'zod' ? `${selectSchemaName}.nullable()` : `v.nullable(${selectSchemaName})`;
         } else if (p.name === 'create' || p.name === 'update') {
           outExpr = selectSchemaName;
         } else if (p.name === 'delete') {

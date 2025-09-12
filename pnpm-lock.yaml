@@ -131,6 +131,9 @@ importers:
       '@drzl/analyzer':
         specifier: workspace:^
         version: link:../analyzer
+      '@drzl/template-orpc-service':
+        specifier: workspace:^
+        version: link:../template-orpc-service
       '@drzl/template-standard':
         specifier: workspace:^
         version: link:../template-standard

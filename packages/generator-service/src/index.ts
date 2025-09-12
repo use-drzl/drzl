@@ -9,7 +9,8 @@ export interface ServiceGenerateOptions {
   outputHeader?: { enabled?: boolean; text?: string };
   databaseInjection?: {
     enabled?: boolean; // Enable database injection mode (default: false for backward compatibility)
-    databaseType?: string; // Type annotation for injected database (e.g. 'DrizzleD1Database', 'Database')
+    databaseType?: string; // Type annotation for injected database (e.g. 'DrizzleD1Database', 'Database' or 'import("../db").Database')
+    databaseTypeImport?: { name: string; from: string }; // Optional: import type { name } from 'from'
   };
 }
 
@@ -65,14 +66,18 @@ function renderService(
   const singular = singularize(T);
   const Service = `${cap(singular)}Service`;
   const pk = (table.primaryKey?.columns ?? ['id'])[0];
-  if (mode === 'drizzle' && dbImportPath && schemaImportPath) {
+  if (mode === 'drizzle' && schemaImportPath) {
     const isInjectionMode = databaseInjection?.enabled === true;
-    const dbType = databaseInjection?.databaseType ?? 'any';
+    const dbType = databaseInjection?.databaseType ?? 'unknown';
+    const typeImport = databaseInjection?.databaseTypeImport
+      ? `\nimport type { ${databaseInjection.databaseTypeImport.name} } from '${databaseInjection.databaseTypeImport.from}';\n`
+      : '';
     
     if (isInjectionMode) {
       // Database injection mode - services accept database as parameter
       return `import { ${T} } from '${schemaImportPath}';
 import { eq } from 'drizzle-orm';
+${typeImport}
 
 type Select${T} = typeof ${T}.$inferSelect;
 type Insert${T} = typeof ${T}.$inferInsert;
@@ -101,7 +106,7 @@ export class ${Service} {
   }
 }
 `;
-    } else {
+    } else if (dbImportPath) {
       // Traditional mode - global database import (backward compatibility)
       return `import { db } from '${dbImportPath}';
 import { ${T} } from '${schemaImportPath}';

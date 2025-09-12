@@ -20,7 +20,7 @@ features:
   - title: Schema Analyzer
     details: Normalize Drizzle schemas into a portable Analysis for generators.
   - title: Generators
-    details: Routers (adapter-based; currently oRPC), typed services, and validation schemas (Zod, Valibot, ArkType).
+    details: Routers (adapter-based; currently oRPC), typed services (with serverless-friendly database injection), and validation schemas (Zod, Valibot, ArkType).
   - title: Templates
     details: Adapter templates for quick scaffolding or service wiring. Request custom templates as a paid service.
 ---

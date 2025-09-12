@@ -15,20 +15,25 @@ export default defineConfig({
       kind: 'service',
       path: 'src/services',
       dataAccess: 'drizzle',
-      dbImportPath: 'src/db/connection',
-      schemaImportPath: 'src/db/schemas',
+      schemaImportPath: 'src/db/schema',
+      databaseInjection: {
+        enabled: true,
+        databaseType: 'Database',
+        databaseTypeImport: { name: 'Database', from: 'src/db/db' },
+      },
     },
     {
       kind: 'orpc',
       template: '@drzl/template-orpc-service',
       includeRelations: true,
       naming: { routerSuffix: 'Router', procedureCase: 'kebab' },
-      validation: {
-        useShared: true,
-        library: 'zod',
-        importPath: 'src/validators/zod',
-        schemaSuffix: 'Schema',
+      validation: { library: 'valibot' },
+      databaseInjection: {
+        enabled: true,
+        databaseType: 'Database',
+        databaseTypeImport: { name: 'Database', from: 'src/db/db' },
       },
+      servicesDir: 'src/services',
     },
   ],
 });
