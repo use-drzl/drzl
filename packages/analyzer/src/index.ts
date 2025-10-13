@@ -1,4 +1,4 @@
-export type Dialect = 'sqlite' | 'postgres' | 'unknown';
+export type Dialect = 'sqlite' | 'postgres' | 'mysql' | 'singlestore' | 'gel' | 'unknown';
 
 export interface Issue {
   code: string;
@@ -147,12 +147,130 @@ export class SchemaAnalyzer {
         }
         // coarse inference for Pg types by name
         if (/^Pg/.test(ctor)) {
+          // Textual + identifiers
           if (/Text|Varchar|Char|Uuid/i.test(ctor)) return { tsType: 'string', dbType: 'TEXT' };
-          if (/Int|Serial/i.test(ctor)) return { tsType: 'number', dbType: 'INTEGER' };
+          if (/Inet|Cidr|Macaddr8?|Uuid/i.test(ctor)) return { tsType: 'string', dbType: 'TEXT' };
+          if (/Point|Line/i.test(ctor)) return { tsType: 'string', dbType: 'TEXT' };
+
+          // Temporal
+          if (/TimestampString|DateString/i.test(ctor)) return { tsType: 'string', dbType: 'TIMESTAMP' };
+          if (/Timestamptz/i.test(ctor)) return { tsType: 'Date', dbType: 'TIMESTAMPTZ' };
+          if (/Timestamp/i.test(ctor)) return { tsType: 'Date', dbType: 'TIMESTAMP' };
+          if (/Date/i.test(ctor)) return { tsType: 'Date', dbType: 'TIMESTAMP' };
+          if (/Time/i.test(ctor)) return { tsType: 'string', dbType: 'TIME' };
+          if (/Interval/i.test(ctor)) return { tsType: 'string', dbType: 'INTERVAL' };
+
+          // Integers/serials
+          if (/\bInt(eger)?\b|Serial/i.test(ctor)) return { tsType: 'number', dbType: 'INTEGER' };
+          if (/BigInt/i.test(ctor)) return { tsType: 'bigint', dbType: 'BIGINT' };
+
+          // Booleans
           if (/Bool/i.test(ctor)) return { tsType: 'boolean', dbType: 'BOOLEAN' };
-          if (/Time|Date/i.test(ctor)) return { tsType: 'Date', dbType: 'TIMESTAMP' };
+
+          // JSON
+          if (/Jsonb?/i.test(ctor)) return { tsType: 'any', dbType: /Jsonb/i.test(ctor) ? 'JSONB' : 'JSON' };
+
+          // Numbers
+          if (/Numeric|Float|Double|Real/i.test(ctor)) return { tsType: 'number', dbType: 'NUMERIC' };
+        }
+        // coarse inference for MySQL types by name
+        if (/^MySql/i.test(ctor)) {
+          // BigInt variants
+          if (/BigInt64/i.test(ctor)) return { tsType: 'bigint', dbType: 'BIGINT' };
+          if (/BigInt53/i.test(ctor)) return { tsType: 'number', dbType: 'BIGINT' };
+          if (/\bBigInt\b/i.test(ctor)) return { tsType: 'bigint', dbType: 'BIGINT' };
+
+          // Numeric/real numbers
+          if (/Decimal|Numeric|Float|Double|Real/i.test(ctor))
+            return { tsType: 'number', dbType: 'NUMERIC' };
+
+          // Integer family
+          if (/Int|Serial|TinyInt|SmallInt|MediumInt/i.test(ctor))
+            return { tsType: 'number', dbType: 'INTEGER' };
+
+          // Boolean
+          if (/Bool|Boolean/i.test(ctor)) return { tsType: 'boolean', dbType: 'BOOLEAN' };
+
+          // Temporal types
+          if (/TimestampString|DateTimeString|DateString/i.test(ctor))
+            return { tsType: 'string', dbType: 'TIMESTAMP' };
+          if (/Timestamp|DateTime/i.test(ctor)) return { tsType: 'Date', dbType: 'TIMESTAMP' };
+          if (/Date/i.test(ctor)) return { tsType: 'Date', dbType: 'TIMESTAMP' };
+          if (/Time/i.test(ctor)) return { tsType: 'string', dbType: 'TIME' };
+          if (/Year/i.test(ctor)) return { tsType: 'number', dbType: 'INTEGER' };
+
+          // Textual
+          if (/Text|Varchar|VarChar|Char/i.test(ctor)) return { tsType: 'string', dbType: 'TEXT' };
+
+          // JSON
           if (/Json/i.test(ctor)) return { tsType: 'any', dbType: 'JSON' };
-          if (/Numeric|Float|Double/i.test(ctor)) return { tsType: 'number', dbType: 'NUMERIC' };
+
+          // Binary
+          if (/Blob|Binary|VarBinary/i.test(ctor)) return { tsType: 'Uint8Array', dbType: 'BLOB' };
+        }
+        // coarse inference for SingleStore types by name (largely MySQL-compatible)
+        if (/^SingleStore/i.test(ctor)) {
+          // Vector: model as any to avoid unknown in generators
+          if (/Vector/i.test(ctor)) return { tsType: 'any', dbType: 'VECTOR' };
+          // BigInt variants
+          if (/BigInt64/i.test(ctor)) return { tsType: 'bigint', dbType: 'BIGINT' };
+          if (/BigInt53/i.test(ctor)) return { tsType: 'number', dbType: 'BIGINT' };
+
+          // Numeric/real numbers
+          if (/Decimal|Numeric|Float|Double|Real/i.test(ctor))
+            return { tsType: 'number', dbType: 'NUMERIC' };
+
+          // Integer family
+          if (/Int|Serial|TinyInt|SmallInt|MediumInt/i.test(ctor))
+            return { tsType: 'number', dbType: 'INTEGER' };
+
+          // Boolean
+          if (/Bool|Boolean/i.test(ctor)) return { tsType: 'boolean', dbType: 'BOOLEAN' };
+
+          // Temporal types
+          if (/TimestampString|DateTimeString|DateString/i.test(ctor))
+            return { tsType: 'string', dbType: 'TIMESTAMP' };
+          if (/Timestamp|DateTime/i.test(ctor)) return { tsType: 'Date', dbType: 'TIMESTAMP' };
+          if (/Date/i.test(ctor)) return { tsType: 'Date', dbType: 'TIMESTAMP' };
+          if (/Time/i.test(ctor)) return { tsType: 'string', dbType: 'TIME' };
+          if (/Year/i.test(ctor)) return { tsType: 'number', dbType: 'INTEGER' };
+
+          // Textual
+          if (/Text|Varchar|VarChar|Char/i.test(ctor)) return { tsType: 'string', dbType: 'TEXT' };
+
+          // JSON
+          if (/Json/i.test(ctor)) return { tsType: 'any', dbType: 'JSON' };
+
+          // Binary
+          if (/Blob|Binary|VarBinary/i.test(ctor)) return { tsType: 'Uint8Array', dbType: 'BLOB' };
+        }
+        // coarse inference for Gel (EdgeDB via Drizzle) types by name
+        if (/^Gel/i.test(ctor)) {
+          // Bigints and ints
+          if (/BigInt64/i.test(ctor)) return { tsType: 'bigint', dbType: 'BIGINT' };
+          if (/Int53|Integer|SmallInt/i.test(ctor)) return { tsType: 'number', dbType: 'INTEGER' };
+
+          // Floating/decimal
+          if (/Real|DoublePrecision/i.test(ctor)) return { tsType: 'number', dbType: 'NUMERIC' };
+          if (/Decimal/i.test(ctor)) return { tsType: 'string', dbType: 'NUMERIC' };
+
+          // UUID
+          if (/UUID/i.test(ctor)) return { tsType: 'string', dbType: 'UUID' };
+
+          // JSON
+          if (/Json/i.test(ctor)) return { tsType: 'any', dbType: 'JSON' };
+
+          // Text
+          if (/Text/i.test(ctor)) return { tsType: 'string', dbType: 'TEXT' };
+
+          // Bytes
+          if (/Bytes/i.test(ctor)) return { tsType: 'Uint8Array', dbType: 'BLOB' };
+
+          // Temporal and calendar types
+          if (/TimestampTz/i.test(ctor)) return { tsType: 'Date', dbType: 'TIMESTAMPTZ' };
+          if (/Timestamp/i.test(ctor)) return { tsType: 'string', dbType: 'TIMESTAMP' };
+          if (/LocalDateString|LocalTime/i.test(ctor)) return { tsType: 'string', dbType: 'TEXT' };
+          if (/DateDuration|RelDuration|Duration/i.test(ctor)) return { tsType: 'string', dbType: 'TEXT' };
         }
         return { tsType: 'unknown', dbType: 'UNKNOWN' };
     }
@@ -399,7 +517,9 @@ export class SchemaAnalyzer {
     const names = Array.from(ctorNames).join(',');
     if (/SQLite/i.test(names)) dialect = 'sqlite';
     else if (/Pg|Postgres/i.test(names)) dialect = 'postgres';
-    else if (/MySql|Mysql/i.test(names)) dialect = 'unknown';
+    else if (/MySql|Mysql/i.test(names)) dialect = 'mysql';
+    else if (/SingleStore/i.test(names)) dialect = 'singlestore';
+    else if (/Gel/i.test(names)) dialect = 'gel';
     // Fallback by dbType heuristics
     if (dialect === 'unknown') {
       const looksSqlite = tables.some((t) =>
