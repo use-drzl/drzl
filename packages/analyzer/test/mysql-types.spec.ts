@@ -1,7 +1,7 @@
-import { describe, it, expect } from 'vitest';
-import { SchemaAnalyzer } from '../src/index';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
+import { describe, expect, it } from 'vitest';
+import { SchemaAnalyzer } from '../src/index';
 
 // This test simulates MySQL column classes by name and ensures
 // the analyzer's coarse MySQL inference does not return `unknown`.
@@ -69,7 +69,6 @@ export { table as users };
     expect(map.get('name')).toBe('string');
     expect(map.get('age')).toBe('number');
     expect(map.get('isActive')).toBe('boolean');
-    expect(map.get('createdAt')).toBe('Date');
     expect(map.get('createdAt')).toBe('Date');
     expect(map.get('createdAtStr')).toBe('string');
     expect(map.get('dateCol')).toBe('Date');
