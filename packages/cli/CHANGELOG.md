@@ -1,5 +1,21 @@
 # @drzl/cli
 
+## 1.0.0
+
+### Major Changes
+
+- 5da6f6b: support MySQL, SingleStore, and Gel; expand Postgres/SQLite; add tests (fixes #13)
+
+### Patch Changes
+
+- Updated dependencies [5da6f6b]
+  - @drzl/analyzer@1.0.0
+  - @drzl/generator-arktype@1.0.0
+  - @drzl/generator-orpc@1.0.0
+  - @drzl/generator-service@1.0.0
+  - @drzl/generator-valibot@1.0.0
+  - @drzl/generator-zod@1.0.0
+
 ## 0.3.1
 
 ### Patch Changes
