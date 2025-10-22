@@ -61,7 +61,7 @@ function renderObjectShape(
   coerceDates: NonNullable<ValidationGenerateOptions['coerceDates']>
 ) {
   return cols
-    .map((c) => `  ${JSON.stringify(c.name)}: '${atField(c, mode, coerceDates)}',`)
+    .map((c) => `  ${JSON.stringify(c.name)}: "${atField(c, mode, coerceDates)}",`)
     .join('\n');
 }
 
