@@ -13,6 +13,20 @@ Typed CRUD service classes per table — Drizzle‑aware or stubbed.
 
 </div>
 
+## 💚 Sponsor DRZL
+
+<div align="center">
+
+<strong>DRZL is crafted nights & weekends. Sponsorships keep the generators fast, tested, and free.</strong>
+
+[![Sponsor DRZL](https://img.shields.io/badge/GitHub%20Sponsors-Support%20the%20project-ff69b4?logo=github)](https://github.com/sponsors/omar-dulaimi)
+
+</div>
+
+- Every dollar speeds up CI hardware and offsets long test runs on my aging laptop.
+- Sponsors get roadmap input and priority responses in GitHub Issues.
+- Prefer a quick overview? Check `docs/sponsor.md` for the current goals and thank-yous.
+
 ## Use
 
 Add to `drzl.config.ts`:

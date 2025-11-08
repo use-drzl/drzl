@@ -85,6 +85,12 @@ Examples:
 - Use descriptive titles and steps to reproduce (when applicable).
 - For feature proposals, outline the problem, the proposed solution, and alternatives considered.
 
+## Sponsor-Wanted & Priority Issues
+
+- Issues tagged `sponsor-wanted` include a scoped brief, and desired outcome. If you’d like to fund one, comment or DM @omardulaimidev on X (https://x.com/omardulaimidev) so we can reserve it for you.
+- Issues tagged `priority` are high-impact items the maintainers plan to tackle next—sponsorship accelerates them.
+- Funded work always lands in this repo under Apache‑2.0 (no private forks or exclusivity).
+
 ## Code of Conduct
 
 Be respectful and inclusive. By participating, you agree to uphold a welcoming environment for everyone. If you encounter unacceptable behavior, please open an issue or contact the maintainers.

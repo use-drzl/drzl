@@ -28,3 +28,7 @@ export default defineConfig({
 ## Switch libraries
 
 Change `validation.library` to `valibot` or `arktype` and the generator will adapt input/output wiring accordingly.
+
+::: tip Need something else?
+If this example doesn't cover what you need, DM me on X (https://x.com/omardulaimidev) and we can scope it together.
+:::

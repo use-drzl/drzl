@@ -132,3 +132,7 @@ See also: [oRPC + Service Template](/templates/orpc-service) and [Standard Templ
 - A short header is added by default. Configure via `outputHeader` in `drzl.config.ts`:
   - `outputHeader.enabled = false` to disable
   - `outputHeader.text = '...'` to customize
+
+::: tip Need something else?
+If this generator doesn't cover what you need, DM me on X (https://x.com/omardulaimidev) and we can scope it together.
+:::

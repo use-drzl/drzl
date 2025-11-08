@@ -22,6 +22,12 @@ export default {
     nav: [
       { text: 'Roadmap', link: '/roadmap/premium-templates' },
       { text: 'Sponsor', link: '/sponsor' },
+      {
+        text: 'Request Template',
+        link: 'https://x.com/omardulaimidev',
+        target: '_blank',
+        rel: 'noreferrer',
+      },
     ],
     sidebar: [
       {
@@ -97,5 +103,9 @@ export default {
       { icon: 'github', link: 'https://github.com/use-drzl/drzl' },
       { icon: 'discord', link: 'https://github.com/use-drzl/drzl/discussions' },
     ],
+    footer: {
+      message: 'Need a custom template or integration? DM @omardulaimidev on X.',
+      copyright: 'Copyright © 2025 Omar Dulaimi · DRZL is Apache-2.0',
+    },
   },
 };

@@ -38,3 +38,7 @@ export default template;
 ```
 
 See also: [Template Hooks API](/generators/orpc#template-hooks-api)
+
+::: tip Need something else?
+If this template doesn't cover what you need, DM me on X (https://x.com/omardulaimidev) and we can scope it together.
+:::
