@@ -1,5 +1,11 @@
 # @drzl/analyzer
 
+## 1.2.0
+
+### Minor Changes
+
+- c48d79a: sponsor initiatives
+
 ## 1.1.0
 
 ### Minor Changes

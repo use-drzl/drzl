@@ -1,5 +1,17 @@
 # @drzl/generator-arktype
 
+## 1.2.0
+
+### Minor Changes
+
+- c48d79a: sponsor initiatives
+
+### Patch Changes
+
+- Updated dependencies [c48d79a]
+  - @drzl/validation-core@1.1.0
+  - @drzl/analyzer@1.2.0
+
 ## 1.1.0
 
 ### Minor Changes

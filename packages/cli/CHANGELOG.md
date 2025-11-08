@@ -1,5 +1,21 @@
 # @drzl/cli
 
+## 1.1.0
+
+### Minor Changes
+
+- c48d79a: sponsor initiatives
+
+### Patch Changes
+
+- Updated dependencies [c48d79a]
+  - @drzl/generator-arktype@1.2.0
+  - @drzl/generator-service@1.1.0
+  - @drzl/generator-valibot@1.1.0
+  - @drzl/generator-orpc@1.1.0
+  - @drzl/generator-zod@1.1.0
+  - @drzl/analyzer@1.2.0
+
 ## 1.0.0
 
 ### Major Changes
