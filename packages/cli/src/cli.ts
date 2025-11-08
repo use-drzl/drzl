@@ -13,9 +13,14 @@ import {
   DrzlConfig,
   loadConfig,
 } from './config.js';
+import { maybeShowSponsorMessage } from './sponsor.js';
 
 const program = new Command();
 program.name('drzl').description('DRZL - Drizzle Developer Toolkit').version('0.0.1');
+program.addHelpText(
+  'afterAll',
+  `\nNeed a template, adapter, or generator DRZL doesn't ship yet?\n→ DM @omardulaimidev on X: https://x.com/omardulaimidev\n`
+);
 
 program
   .command('analyze')
@@ -205,6 +210,9 @@ program
           }
         }
       }
+      if (cfg.generators.length) {
+        maybeShowSponsorMessage({ reason: 'generate' });
+      }
     } catch (e: any) {
       console.error(
         chalk.red('Generate failed (DRZL_GEN_001):'),
@@ -235,6 +243,7 @@ program
         includeRelations: !!opts.includeRelations,
       });
       console.log(chalk.green(`Generated:`), files.map((f) => chalk.cyan(f)).join(', '));
+      maybeShowSponsorMessage({ reason: 'generate:orpc' });
     } catch (e: any) {
       console.error(chalk.red('Generate orpc failed:'), e?.message ?? e);
       process.exit(1);
@@ -510,6 +519,11 @@ program
               if (added.length) console.log(chalk.blue(`Added: ${added.join(', ')}`));
               if (removed.length) console.log(chalk.yellow(`Removed: ${removed.join(', ')}`));
             })();
+        if (newFiles.length && !opts.json) {
+          const reason =
+            opts.pipeline && opts.pipeline !== 'all' ? `watch:${opts.pipeline}` : 'watch';
+          maybeShowSponsorMessage({ reason });
+        }
         lastFiles = newFiles;
       } catch (e: any) {
         opts.json

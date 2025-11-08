@@ -21,6 +21,12 @@ Zero‑friction codegen for Drizzle ORM. Analyze your schema. Generate validatio
 
 </div>
 
+## Sponsor
+
+- GitHub Sponsors: https://github.com/sponsors/omar-dulaimi
+- Want something prioritized? Look for issues labeled `sponsor-wanted` (or open one) and DM @omardulaimidev so we can reserve it for you.
+- Custom template/generator/adapter requests happen via X DM. Paid work ships back into DRZL so everyone benefits.
+
 ## What’s Inside
 
 - Analyzer: turns Drizzle schemas into a normalized analysis model
@@ -94,6 +100,10 @@ VitePress site lives in `docs/` (kept out of releases). Local dev:
 ```bash
 pnpm -C docs dev
 ```
+
+## Funded Features
+
+- _None yet — be the first!_ If you need a template, generator, or adapter that doesn’t exist yet, DM me on X (https://x.com/omardulaimidev) and we can scope a sponsored build. Funded work lands in this repo under Apache‑2.0 so everyone benefits.
 
 ## Contributing
 

@@ -33,5 +33,9 @@
     "type": "git",
     "url": "https://github.com/use-drzl/drzl",
     "directory": "packages/validation-core"
+  },
+  "funding": {
+    "type": "github",
+    "url": "https://github.com/sponsors/omar-dulaimi"
   }
 }

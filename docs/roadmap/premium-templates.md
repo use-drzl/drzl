@@ -4,13 +4,11 @@ We plan to offer premium adapter templates and deeper integrations as paid add�
 
 Have a specific stack or pattern in mind (e.g., tRPC, Express, Nest, Next.js, Prisma, auth, multi‑tenant)?
 
-Request a custom template (paid service):
+**How to request a premium/custom template**
 
-- Open a Discussion with your requirements
-- Or contact via GitHub Sponsors message
+- DM me on X: https://x.com/omardulaimidev (mention DRZL + the stack you need)
 
 Licensing & Access
 
-- Premium templates are offered under a commercial license
-- Open core remains Apache‑2.0
-- Sponsors may receive early access
+- Deliverables land in this repo under the same Apache‑2.0 license
+- Payments cover build/maintenance time; no exclusive ownership or private licensing

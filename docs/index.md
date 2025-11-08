@@ -24,3 +24,7 @@ features:
   - title: Templates
     details: Adapter templates for quick scaffolding or service wiring. Request custom templates as a paid service.
 ---
+
+## Funded Features
+
+- _None yet — be the first!_ Need a template, generator, or adapter that doesn’t exist yet? DM me on X (https://x.com/omardulaimidev) to fund it. All funded work ships back into DRZL under Apache‑2.0.
