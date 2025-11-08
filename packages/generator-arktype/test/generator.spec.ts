@@ -43,4 +43,54 @@ describe('@drzl/generator-arktype', () => {
     expect(code).toContain('export const UpdatecommentsSchema');
     expect(code).toContain('export const SelectcommentsSchema');
   });
+
+  it('renders enums while escaping quotes in generated output', () => {
+    const analysis: Analysis = {
+      dialect: 'postgres',
+      tables: [
+        {
+          name: 'users',
+          tsName: 'users',
+          columns: [
+            {
+              name: 'role',
+              tsType: 'string',
+              dbType: 'TEXT',
+              enumValues: ['admin', 'cashier', 'he said "hi"'],
+              nullable: false,
+              hasDefault: false,
+              isGenerated: false,
+            },
+            {
+              name: 'status',
+              tsType: 'string',
+              dbType: 'TEXT',
+              enumValues: ['pending', "needs'Escaping"],
+              nullable: true,
+              hasDefault: false,
+              isGenerated: false,
+            },
+          ],
+          unique: [],
+          indexes: [],
+        } as any,
+      ],
+      enums: [],
+      relations: [],
+      issues: [],
+    };
+
+    const gen = new ArkTypeGenerator(analysis);
+    const code = gen.renderTable(analysis.tables[0]);
+
+    const expectedRoleLine = `  ${JSON.stringify('role')}: ${JSON.stringify(
+      "'admin' | 'cashier' | 'he said \"hi\"'"
+    )},`;
+    const expectedStatusLine = `  ${JSON.stringify('status')}: ${JSON.stringify(
+      "('pending' | 'needs\\'Escaping' | null)?"
+    )},`;
+
+    expect(code).toContain(expectedRoleLine);
+    expect(code).toContain(expectedStatusLine);
+  });
 });
