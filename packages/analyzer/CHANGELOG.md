@@ -1,5 +1,11 @@
 # @drzl/analyzer
 
+## 1.1.0
+
+### Minor Changes
+
+- 2ca4b77: Fix ArkType generator emitting double-wrapped enum strings; pgEnum unions now render with JSON-escaped literals so `drzl generate` succeeds even when
+
 ## 1.0.0
 
 ### Major Changes
