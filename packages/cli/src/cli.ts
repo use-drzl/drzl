@@ -106,6 +106,8 @@ program
             format: g.format,
             templateOptions: g.templateOptions,
             validation: g.validation,
+            databaseInjection: g.databaseInjection,
+            servicesDir: g.servicesDir,
             onProgress: ({ index }) => progress.update(index),
           });
           progress.stop();
@@ -391,6 +393,8 @@ program
               format: g.format,
               templateOptions: g.templateOptions,
               validation: g.validation,
+              databaseInjection: g.databaseInjection,
+              servicesDir: g.servicesDir,
             });
             opts.json
               ? console.log(JSON.stringify({ event: 'generate_complete', kind: g.kind, files }))
