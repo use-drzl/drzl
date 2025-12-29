@@ -47,6 +47,20 @@ export const GeneratorSchema = z.object({
     .optional(),
   // template options
   templateOptions: z.record(z.string(), z.any()).optional(),
+  // orpc generator specific options
+  servicesDir: z.string().optional(),
+  databaseInjection: z
+    .object({
+      enabled: z.boolean().optional(),
+      databaseType: z.string().optional(),
+      databaseTypeImport: z
+        .object({
+          name: z.string(),
+          from: z.string(),
+        })
+        .optional(),
+    })
+    .optional(),
 });
 
 export const AnalyzerSchema = z.object({
