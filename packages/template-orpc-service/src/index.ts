@@ -1,61 +1,10 @@
-// Minimal local Table shape to avoid cross-package DTS complexity
-interface Table {
-  name: string;
-  tsName: string;
-}
-
-const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
-const singularize = (s: string) =>
-  s.endsWith('ies') ? s.slice(0, -3) + 'y' : s.endsWith('s') ? s.slice(0, -1) : s;
-
-export interface ProcedureSpec {
-  name: string;
-  varName: string;
-  code: string;
-}
-export interface ORPCTemplateHooks {
-  filePath(
-    table: Table,
-    ctx: {
-      outDir: string;
-      naming?: { routerSuffix?: string; procedureCase?: 'camel' | 'kebab' | 'snake' };
-    }
-  ): string;
-  routerName(
-    table: Table,
-    ctx: { naming?: { routerSuffix?: string; procedureCase?: 'camel' | 'kebab' | 'snake' } }
-  ): string;
-  procedures(
-    table: Table,
-    ctx?: {
-      databaseInjection?: {
-        enabled?: boolean;
-        databaseType?: string;
-        databaseTypeImport?: { name: string; from: string };
-      };
-    }
-  ): ProcedureSpec[];
-  imports?(
-    tables: Table[],
-    ctx?: {
-      outDir: string;
-      servicesDir?: string;
-      databaseInjection?: {
-        enabled?: boolean;
-        databaseType?: string;
-        databaseTypeImport?: { name: string; from: string };
-      };
-    }
-  ): string;
-  header?(table: Table): string;
-}
+import path from 'node:path';
+import { cap, singularize } from './utils.js';
 
 const servicesDirDefault = 'src/services';
 
-import path from 'node:path';
-
-const template: ORPCTemplateHooks = {
-  filePath: (table, ctx) => {
+const template = {
+  filePath: (table: any, ctx: any) => {
     const suffix = ctx.naming?.routerSuffix ?? '';
     const base = `${table.tsName}${suffix}`;
     const toCase = (s: string) => {
@@ -72,7 +21,7 @@ const template: ORPCTemplateHooks = {
     };
     return `${ctx.outDir}/${toCase(base)}.ts`;
   },
-  routerName: (table, ctx) => {
+  routerName: (table: any, ctx: any) => {
     const suffix = ctx.naming?.routerSuffix ?? '';
     const base = `${table.tsName}${suffix}`;
     const toCase = (s: string) => {
@@ -89,13 +38,29 @@ const template: ORPCTemplateHooks = {
     };
     return toCase(base);
   },
-  imports: (tables, ctx) => {
+  imports: (tables: any[], ctx: any) => {
     const t = tables[0];
     const singular = singularize(t.tsName);
     const Service = `${cap(singular)}Service`;
     const outDir = ctx?.outDir ?? 'src/api';
-    const servicesDir = (ctx as any)?.servicesDir ?? servicesDirDefault;
-    const rel = path.relative(outDir, servicesDir) || '.';
+    const servicesDir = ctx?.servicesDir ?? servicesDirDefault;
+    // Resolve both paths to absolute for correct relative calculation in monorepos
+    // outDir should be the directory where router files are generated
+    const outDirResolved = outDir
+      ? path.isAbsolute(outDir)
+        ? outDir
+        : path.resolve(process.cwd(), outDir)
+      : path.resolve(process.cwd(), 'src/api');
+    // servicesDir should be the directory where service files are located
+    const servicesDirResolved = servicesDir
+      ? path.isAbsolute(servicesDir)
+        ? servicesDir
+        : path.resolve(process.cwd(), servicesDir)
+      : path.resolve(process.cwd(), servicesDirDefault);
+    // Calculate relative path from router directory to services directory
+    const rel = path.relative(outDirResolved, servicesDirResolved) || '.';
+    // Normalize path separators for cross-platform compatibility
+    const relNormalized = rel.replace(/\\/g, '/');
 
     const isInjectionMode = ctx?.databaseInjection?.enabled === true;
     const dbType = ctx?.databaseInjection?.databaseType ?? 'any';
@@ -106,7 +71,7 @@ const template: ORPCTemplateHooks = {
         : '';
       return `import { os, ORPCError } from '@orpc/server'
 import { z } from 'zod'
-import { ${Service} } from '${rel}/${singular}Service'
+import { ${Service} } from '${relNormalized}/${singular}Service'
 ${typeImport}
 
 export const dbMiddleware = os
@@ -123,17 +88,19 @@ export const dbMiddleware = os
     });
   });`;
     } else {
-      return `import { os } from '@orpc/server'\nimport { z } from 'zod'\nimport { ${Service} } from '${rel}/${singular}Service'`;
+      return `import { os } from '@orpc/server'
+import { z } from 'zod'
+import { ${Service} } from '${relNormalized}/${singular}Service'`;
     }
   },
-  header: (table) => `// Router for table: ${table.name}`,
-  procedures: (table, ctx) => {
+  header: (table: any) => `// Router for table: ${table.name}`,
+  procedures: (table: any, ctx: any) => {
     const T = cap(table.tsName);
     const singular = singularize(table.tsName);
     const Service = `${cap(singular)}Service`;
     const isInjectionMode = ctx?.databaseInjection?.enabled === true;
 
-    const make = (proc: string, varName: string, code: string): ProcedureSpec => ({
+    const make = (proc: string, varName: string, code: string) => ({
       name: proc,
       varName,
       code,
