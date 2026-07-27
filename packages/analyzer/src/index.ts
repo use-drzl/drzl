@@ -109,14 +109,19 @@ export class SchemaAnalyzer {
       case 'SQLiteBlob':
         return { tsType: 'Uint8Array', dbType: 'BLOB' };
       case 'SQLiteNumeric':
-        return { tsType: 'number', dbType: 'NUMERIC' };
+        // Drizzle returns numeric as a string; a JS number cannot hold arbitrary precision.
+        return { tsType: 'string', dbType: 'NUMERIC' };
       case 'SQLiteBoolean':
         return { tsType: 'boolean', dbType: 'INTEGER' };
       case 'PgInteger':
       case 'PgSmallInt':
         return { tsType: 'number', dbType: 'INTEGER' };
       case 'PgBigInt':
-        return { tsType: 'bigint', dbType: 'BIGINT' };
+        // `bigint({ mode: 'number' })` returns a JS number, not a bigint.
+        return {
+          tsType: column?.config?.mode === 'number' ? 'number' : 'bigint',
+          dbType: 'BIGINT',
+        };
       case 'PgSerial':
       case 'PgSmallSerial':
       case 'PgBigSerial':
@@ -134,9 +139,14 @@ export class SchemaAnalyzer {
       case 'PgDate':
         return { tsType: 'Date', dbType: 'TIMESTAMP' };
       case 'PgNumeric':
+        // Drizzle returns numeric and decimal as strings, because a JS number cannot represent
+        // arbitrary precision. Typing them as numbers made the select validator reject every row
+        // the database returned, and the insert validator reject the string the driver wants.
+        return { tsType: 'string', dbType: 'NUMERIC' };
       case 'PgFloat':
       case 'PgDoublePrecision':
-        return { tsType: 'number', dbType: 'NUMERIC' };
+        // These really are JS numbers.
+        return { tsType: 'number', dbType: 'DOUBLE' };
       case 'PgJson':
       case 'PgJsonb':
         return { tsType: 'any', dbType: ctor === 'PgJsonb' ? 'JSONB' : 'JSON' };

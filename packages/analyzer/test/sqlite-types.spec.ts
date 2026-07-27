@@ -43,7 +43,8 @@ export { table as sq_table };
     expect(get('t')).toBe('string');
     expect(get('r')).toBe('number');
     expect(get('b')).toBe('Uint8Array');
-    expect(get('n')).toBe('number');
+    // numeric is a string, matching what Drizzle returns.
+    expect(get('n')).toBe('string');
     expect(get('bool')).toBe('boolean');
     expect(get('createdAt')).toBe('Date');
   });

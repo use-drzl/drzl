@@ -80,6 +80,8 @@ export { table as pg_table };
     expect(t).toBeTruthy();
     const get = (n: string) => new Map(t!.columns.map((c) => [c.name, c.tsType])).get(n);
     expect(get('i')).toBe('number');
+    // numeric is a string: a JS number cannot hold arbitrary precision, and Drizzle returns one.
+    expect(get('n')).toBe('string');
     expect(get('si')).toBe('number');
     expect(get('bi')).toBe('bigint');
     expect(get('s')).toBe('number');
@@ -99,7 +101,7 @@ export { table as pg_table };
     expect(get('jb')).toBe('any');
     expect(get('r')).toBe('number');
     expect(get('d')).toBe('number');
-    expect(get('n')).toBe('number');
+
     expect(get('dateCol')).toBe('Date');
     expect(get('dateStr')).toBe('string');
     expect(get('ts')).toBe('Date');
