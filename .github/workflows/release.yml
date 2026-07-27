@@ -24,21 +24,14 @@ jobs:
         uses: pnpm/action-setup@v4
         # ⚠️ Do NOT pass 'version' here; it will read packageManager automatically
 
-      # Write scoped .npmrc and wire the token so npm commands (incl. whoami) work
-      - name: Setup Node (scoped registry)
+      - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: 22
-          registry-url: 'https://registry.npmjs.org/'
-          scope: '@drzl'
-
-      - name: Prove npm auth
-        run: |
-          npm config get registry
-          npm whoami
-          npm ping
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          # Trusted publishing needs npm >= 11.5.1, which ships with Node 24. Node 22 carries npm 10
+          # and cannot perform the OIDC exchange.
+          node-version: 24
+          # Deliberately no `registry-url`: it writes an .npmrc holding an authToken placeholder,
+          # which with no token present gets in the way of the OIDC exchange.
 
       - name: Install deps
         run: pnpm install --frozen-lockfile
@@ -55,7 +48,7 @@ jobs:
           createGithubReleases: true
           publish: pnpm -w changeset publish
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+          # No npm token: npm 11.5.1+ performs the OIDC exchange itself when publishing from Actions
+          # with `id-token: write`, which is granted above. Provenance comes with it.
           NPM_CONFIG_PROVENANCE: true
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
