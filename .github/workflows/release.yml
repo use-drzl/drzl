@@ -27,8 +27,9 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          # Trusted publishing needs npm >= 11.5.1, which ships with Node 24. Node 22 carries npm 10
-          # and cannot perform the OIDC exchange.
+          # Node 24 so the bundled npm is >= 11.5.1. Note this alone does NOT enable trusted
+          # publishing here: `changeset publish` shells out to `pnpm publish`, not `npm publish`,
+          # so it is pnpm's version that has to support the OIDC exchange. See the publish step.
           node-version: 24
           # Deliberately no `registry-url`: it writes an .npmrc holding an authToken placeholder,
           # which with no token present gets in the way of the OIDC exchange.
@@ -48,7 +49,10 @@ jobs:
           createGithubReleases: true
           publish: pnpm -w changeset publish
         env:
-          # No npm token: npm 11.5.1+ performs the OIDC exchange itself when publishing from Actions
-          # with `id-token: write`, which is granted above. Provenance comes with it.
+          # No npm token: auth is meant to be the OIDC exchange alone, using the `id-token: write`
+          # granted above. BLOCKER: `changeset publish` delegates to `pnpm publish`, and no pnpm 10.x
+          # can do that exchange (no /-/npm/v1/oidc/token/exchange call exists in the binary); the
+          # first release that supports it is pnpm 11. Until "packageManager" in package.json is
+          # moved to pnpm@11+, this step authenticates with nothing and publishes nothing.
           NPM_CONFIG_PROVENANCE: true
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
