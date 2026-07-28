@@ -327,7 +327,7 @@ export async function loadConfig(customPath?: string): Promise<DrzlConfig | null
       fsCache: true, // keep transform cache
       cacheVersion: String(stat.mtimeMs), // bump on edit
       interopDefault: true,
-      tryNative: false, // <— prevent native import of .ts
+      tryNative: false, // <-- prevent native import of .ts
       // debug: true,
     }) as any;
 

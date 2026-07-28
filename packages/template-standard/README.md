@@ -9,7 +9,7 @@
 
 </div>
 
-Minimal oRPC router template (no service wiring) — great for quick starts.
+Minimal oRPC router template (no service wiring), great for quick starts.
 
 </div>
 

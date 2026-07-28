@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/public/banner.png" alt="DRZL – Zero‑friction codegen for Drizzle ORM" width="1200" />
+  <img src="docs/public/banner.png" alt="DRZL: Zero‑friction codegen for Drizzle ORM" width="1200" />
   
 </p>
 
@@ -7,7 +7,7 @@
 
 # DRZL
 
-Zero‑friction codegen for Drizzle ORM. Analyze your schema. Generate validation, services, and routers — fast.
+Zero‑friction codegen for Drizzle ORM. Analyze your schema. Generate validation, services, and routers fast.
 
 <br/>
 
@@ -73,16 +73,16 @@ Runtime
 
 ## Packages
 
-- `packages/analyzer` — schema analysis
-- `packages/cli` — CLI (`drzl`)
-- `packages/generator-orpc` — oRPC router generator
-- `packages/generator-service` — typed service generator
-- `packages/generator-zod` — Zod generator
-- `packages/generator-valibot` — Valibot generator
-- `packages/generator-arktype` — ArkType generator
-- `packages/validation-core` — shared validation utilities
-- `packages/template-orpc-service` — oRPC router template (service‑backed)
-- `packages/template-standard` — minimal oRPC router template
+- `packages/analyzer`: schema analysis
+- `packages/cli`: CLI (`drzl`)
+- `packages/generator-orpc`: oRPC router generator
+- `packages/generator-service`: typed service generator
+- `packages/generator-zod`: Zod generator
+- `packages/generator-valibot`: Valibot generator
+- `packages/generator-arktype`: ArkType generator
+- `packages/validation-core`: shared validation utilities
+- `packages/template-orpc-service`: oRPC router template (service‑backed)
+- `packages/template-standard`: minimal oRPC router template
 
 See each package’s README for details.
 
@@ -103,11 +103,11 @@ pnpm -C docs dev
 
 ## Funded Features
 
-- _None yet — be the first!_ If you need a template, generator, or adapter that doesn’t exist yet, DM me on X (https://x.com/omardulaimidev) and we can scope a sponsored build. Funded work lands in this repo under Apache‑2.0 so everyone benefits.
+- _None yet. Be the first!_ If you need a template, generator, or adapter that doesn’t exist yet, DM me on X (https://x.com/omardulaimidev) and we can scope a sponsored build. Funded work lands in this repo under Apache‑2.0 so everyone benefits.
 
 ## Contributing
 
-Contributions welcome — see [CONTRIBUTING.md](./CONTRIBUTING.md).
+Contributions welcome. See [CONTRIBUTING.md](./CONTRIBUTING.md).
 
 ## License
 

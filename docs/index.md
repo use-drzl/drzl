@@ -27,4 +27,4 @@ features:
 
 ## Funded Features
 
-- _None yet — be the first!_ Need a template, generator, or adapter that doesn’t exist yet? DM me on X (https://x.com/omardulaimidev) to fund it. All funded work ships back into DRZL under Apache‑2.0.
+- _None yet. Be the first!_ Need a template, generator, or adapter that doesn’t exist yet? DM me on X (https://x.com/omardulaimidev) to fund it. All funded work ships back into DRZL under Apache‑2.0.

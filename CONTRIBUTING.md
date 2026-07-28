@@ -18,11 +18,11 @@ Thanks for your interest in contributing! This guide explains how to set up your
 
 ## Repo Structure (packages/)
 
-- `analyzer` — Drizzle schema analysis
-- `cli` — drzl CLI
-- `generator-*` — code generators (oRPC, service, zod, valibot, arktype)
-- `template-*` — oRPC templates
-- `validation-core` — shared validation codegen helpers
+- `analyzer`: Drizzle schema analysis
+- `cli`: drzl CLI
+- `generator-*`: code generators (oRPC, service, zod, valibot, arktype)
+- `template-*`: oRPC templates
+- `validation-core`: shared validation codegen helpers
 
 ## Development Workflow
 
@@ -89,7 +89,7 @@ Examples:
 ## Sponsor-Wanted & Priority Issues
 
 - Issues tagged `sponsor-wanted` include a scoped brief, and desired outcome. If you’d like to fund one, comment or DM @omardulaimidev on X (https://x.com/omardulaimidev) so we can reserve it for you.
-- Issues tagged `priority` are high-impact items the maintainers plan to tackle next—sponsorship accelerates them.
+- Issues tagged `priority` are high-impact items the maintainers plan to tackle next, and sponsorship accelerates them.
 - Funded work always lands in this repo under Apache‑2.0 (no private forks or exclusivity).
 
 ## Code of Conduct

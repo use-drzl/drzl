@@ -9,7 +9,7 @@
 
 </div>
 
-Typed CRUD service classes per table — Drizzle‑aware or stubbed.
+Typed CRUD service classes per table, either Drizzle‑aware or stubbed.
 
 </div>
 
@@ -51,4 +51,4 @@ generators: [
 
 - In drizzle mode, uses `$inferSelect` / `$inferInsert` for end‑to‑end types.
 - `Update<T>` is derived from `Insert<T>` with PKs omitted and fields partial.
-- `databaseInjection` makes services accept `db: Database` (or your chosen type) instead of importing a global singleton — ideal for serverless runtimes.
+- `databaseInjection` makes services accept `db: Database` (or your chosen type) instead of importing a global singleton, which is ideal for serverless runtimes.

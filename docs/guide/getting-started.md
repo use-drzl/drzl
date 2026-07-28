@@ -1,6 +1,6 @@
 # Getting Started
 
-Get up and running in seconds — no global installs required.
+Get up and running in seconds, with no global installs required.
 
 Prereqs
 

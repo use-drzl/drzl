@@ -9,7 +9,7 @@
 
 </div>
 
-oRPC routers per table — with optional reuse of shared validation schemas.
+oRPC routers per table, with optional reuse of shared validation schemas.
 
 </div>
 

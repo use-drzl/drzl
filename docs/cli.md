@@ -133,8 +133,8 @@ bunx @drzl/cli generate:orpc <schema> -o src/api --template standard --includeRe
 Options:
 
 - `-o, --outDir <dir>` (default `src/api`)
-- `--template <name>` (default `standard`) — can be `standard` or a custom path
-- `--includeRelations` — include relation endpoints
+- `--template <name>` (default `standard`): can be `standard` or a custom path
+- `--includeRelations`: include relation endpoints
 
 ### watch
 
