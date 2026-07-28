@@ -146,12 +146,19 @@ function defaultTemplate(): ORPCTemplateHooks {
 type Lib = 'zod' | 'valibot' | 'arktype';
 
 function mapExpr(column: Column, lib: Lib, mode: 'insert' | 'update' | 'select'): string {
+  // Values are quoted with JSON.stringify rather than by hand. Interpolating them raw meant an
+  // enum value containing an apostrophe emitted unparseable code, which crashed prettier and took
+  // the whole generate run down with it. The three standalone validation generators already escape
+  // here; this path was the one that did not.
+  const q = (v: string) => JSON.stringify(v);
   const enumExpr = (vals: string[]) =>
     lib === 'zod'
-      ? `z.enum([${vals.map((v) => `'${v}'`).join(', ')}])`
+      ? `z.enum([${vals.map(q).join(', ')}] as const)`
       : lib === 'valibot'
-        ? `v.picklist([${vals.map((v) => `'${v}'`).join(', ')}] as const)`
-        : `${vals.map((v) => `'${v}'`).join(' | ')}`;
+        ? `v.picklist([${vals.map(q).join(', ')}] as const)`
+        : // arktype types are strings, and renderSchema wraps this one in quotes of its own, so the
+          // union is built with the inner quoting arktype expects and left for that wrap to encode.
+          vals.map((v) => `'${v.replace(/'/g, "\\'")}'`).join(' | ');
   let base = (() => {
     if (column.enumValues && column.enumValues.length) return enumExpr(column.enumValues);
     switch (column.tsType) {
@@ -190,9 +197,15 @@ function mapExpr(column: Column, lib: Lib, mode: 'insert' | 'update' | 'select')
 
 function renderSchema(table: Table, lib: Lib, mode: 'insert' | 'update' | 'select'): string {
   const cols = table.columns.filter((c) => (mode === 'select' ? true : !c.isGenerated));
-  const body = cols.map((c) => `  ${c.name}: ${mapExpr(c, lib, mode)},`).join('\n');
+  // Keys go through JSON.stringify, matching the standalone generators. A column named with
+  // anything that is not a bare identifier produced invalid object syntax here.
+  const body = cols.map((c) => `  ${JSON.stringify(c.name)}: ${mapExpr(c, lib, mode)},`).join('\n');
   if (lib === 'arktype') {
-    const bodyAT = cols.map((c) => `  ${c.name}: '${mapExpr(c, lib, mode)}',`).join('\n');
+    // The value is a string in arktype, so it is encoded rather than wrapped in bare single quotes.
+    // The old `'${...}'` produced `''admin' | 'user''` for an enum column, which does not parse.
+    const bodyAT = cols
+      .map((c) => `  ${JSON.stringify(c.name)}: ${JSON.stringify(mapExpr(c, lib, mode))},`)
+      .join('\n');
     return `type({\n${bodyAT}\n})`;
   }
   const obj = lib === 'zod' ? 'z.object' : 'v.object';
