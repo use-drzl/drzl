@@ -1,6 +1,18 @@
 import type { Analysis, Table, Column } from '@drzl/analyzer';
-import type { ValidationRenderer, ValidationGenerateOptions } from '@drzl/validation-core';
-import { insertColumns, updateColumns, selectColumns, formatCode } from '@drzl/validation-core';
+import type {
+  ResolvedAffix,
+  ValidationRenderer,
+  ValidationGenerateOptions,
+} from '@drzl/validation-core';
+import {
+  insertColumns,
+  updateColumns,
+  selectColumns,
+  formatCode,
+  resolveAffix,
+  schemaName,
+  typeName,
+} from '@drzl/validation-core';
 
 type Mode = 'insert' | 'update' | 'select';
 
@@ -71,10 +83,16 @@ function renderObjectShape(
 
 function renderTableSchemas(
   table: Table,
-  suffix = 'Schema',
+  affix: ResolvedAffix,
   coerceDates: NonNullable<ValidationGenerateOptions['coerceDates']>
 ) {
   const T = table.tsName;
+  const insertSchema = schemaName('insert', T, affix);
+  const updateSchema = schemaName('update', T, affix);
+  const selectSchema = schemaName('select', T, affix);
+  const insertType = typeName('insert', T, affix);
+  const updateType = typeName('update', T, affix);
+  const selectType = typeName('select', T, affix);
   const insertCols = insertColumns(table);
   const updateCols = updateColumns(table);
   const selectCols = selectColumns(table);
@@ -84,21 +102,21 @@ function renderTableSchemas(
   return `import * as v from 'valibot';
 import type { InferInput, InferOutput } from 'valibot';
 
-export const Insert${T}${suffix} = v.object({
+export const ${insertSchema} = v.object({
 ${bodyInsert}
 });
 
-export const Update${T}${suffix} = v.object({
+export const ${updateSchema} = v.object({
 ${bodyUpdate}
 });
 
-export const Select${T}${suffix} = v.object({
+export const ${selectSchema} = v.object({
 ${bodySelect}
 });
 
-export type Insert${T}Input = InferInput<typeof Insert${T}${suffix}>;
-export type Update${T}Input = InferInput<typeof Update${T}${suffix}>;
-export type Select${T}Output = InferOutput<typeof Select${T}${suffix}>;
+export type ${insertType} = InferInput<typeof ${insertSchema}>;
+export type ${updateType} = InferInput<typeof ${updateSchema}>;
+export type ${selectType} = InferOutput<typeof ${selectSchema}>;
 `;
 }
 
@@ -116,12 +134,14 @@ export class ValibotGenerator implements ValidationRenderer<ValibotGenerateOptio
     const out = path.resolve(process.cwd(), opts.outDir);
     const files: string[] = [];
     await fs.mkdir(out, { recursive: true });
-    const suffix = opts.schemaSuffix ?? 'Schema';
+    const affix = resolveAffix(opts);
     const coerceDates = opts.coerceDates ?? 'input';
     const fileSuffix = opts.fileSuffix ?? '.valibot.ts';
     for (const table of this.analysis.tables) {
+      // File names deliberately stay on the raw Drizzle export name: affixes and tableCase
+      // rename identifiers, never modules, so the barrel and importPath keep resolving.
       const filePath = path.join(out, `${table.tsName}${fileSuffix}`);
-      const code = renderTableSchemas(table, suffix, coerceDates);
+      const code = renderTableSchemas(table, affix, coerceDates);
       const formatted = await formatCode(
         buildHeader(opts.outputHeader) + code,
         filePath,
@@ -143,7 +163,7 @@ export class ValibotGenerator implements ValidationRenderer<ValibotGenerateOptio
   }
 
   renderTable(table: Table, opts?: ValibotGenerateOptions) {
-    return renderTableSchemas(table, opts?.schemaSuffix ?? 'Schema', opts?.coerceDates ?? 'input');
+    return renderTableSchemas(table, resolveAffix(opts), opts?.coerceDates ?? 'input');
   }
 
   private defaultIndex(analysis: Analysis, _opts: ValibotGenerateOptions) {

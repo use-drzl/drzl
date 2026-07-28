@@ -1,6 +1,18 @@
 import type { Analysis, Column, Table } from '@drzl/analyzer';
-import type { ValidationGenerateOptions, ValidationRenderer } from '@drzl/validation-core';
-import { formatCode, insertColumns, selectColumns, updateColumns } from '@drzl/validation-core';
+import type {
+  ResolvedAffix,
+  ValidationGenerateOptions,
+  ValidationRenderer,
+} from '@drzl/validation-core';
+import {
+  formatCode,
+  insertColumns,
+  resolveAffix,
+  schemaName,
+  selectColumns,
+  typeName,
+  updateColumns,
+} from '@drzl/validation-core';
 
 type Mode = 'insert' | 'update' | 'select';
 
@@ -69,10 +81,16 @@ function renderObjectShape(
 
 function renderTableSchemas(
   table: Table,
-  suffix = 'Schema',
+  affix: ResolvedAffix,
   coerceDates: NonNullable<ValidationGenerateOptions['coerceDates']>
 ) {
   const T = table.tsName;
+  const insertSchema = schemaName('insert', T, affix);
+  const updateSchema = schemaName('update', T, affix);
+  const selectSchema = schemaName('select', T, affix);
+  const insertType = typeName('insert', T, affix);
+  const updateType = typeName('update', T, affix);
+  const selectType = typeName('select', T, affix);
   const insertCols = insertColumns(table);
   const updateCols = updateColumns(table);
   const selectCols = selectColumns(table);
@@ -81,21 +99,21 @@ function renderTableSchemas(
   const bodySelect = renderObjectShape(selectCols, 'select', coerceDates);
   return `import { z } from 'zod';
 
-export const Insert${T}${suffix} = z.object({
+export const ${insertSchema} = z.object({
 ${bodyInsert}
 });
 
-export const Update${T}${suffix} = z.object({
+export const ${updateSchema} = z.object({
 ${bodyUpdate}
 });
 
-export const Select${T}${suffix} = z.object({
+export const ${selectSchema} = z.object({
 ${bodySelect}
 });
 
-export type Insert${T}Input = z.input<typeof Insert${T}${suffix}>;
-export type Update${T}Input = z.input<typeof Update${T}${suffix}>;
-export type Select${T}Output = z.output<typeof Select${T}${suffix}>;
+export type ${insertType} = z.input<typeof ${insertSchema}>;
+export type ${updateType} = z.input<typeof ${updateSchema}>;
+export type ${selectType} = z.output<typeof ${selectSchema}>;
 `;
 }
 
@@ -113,12 +131,14 @@ export class ZodGenerator implements ValidationRenderer<ZodGenerateOptions> {
     const out = path.resolve(process.cwd(), opts.outDir);
     const files: string[] = [];
     await fs.mkdir(out, { recursive: true });
-    const suffix = opts.schemaSuffix ?? 'Schema';
+    const affix = resolveAffix(opts);
     const coerceDates = opts.coerceDates ?? 'input';
     const fileSuffix = opts.fileSuffix ?? '.zod.ts';
     for (const table of this.analysis.tables) {
+      // File names deliberately stay on the raw Drizzle export name: affixes and tableCase
+      // rename identifiers, never modules, so the barrel and importPath keep resolving.
       const filePath = path.join(out, `${table.tsName}${fileSuffix}`);
-      const code = renderTableSchemas(table, suffix, coerceDates);
+      const code = renderTableSchemas(table, affix, coerceDates);
       const formatted = await formatCode(
         buildHeader(opts.outputHeader) + code,
         filePath,
@@ -142,7 +162,7 @@ export class ZodGenerator implements ValidationRenderer<ZodGenerateOptions> {
   }
 
   renderTable(table: Table, opts?: ZodGenerateOptions) {
-    return renderTableSchemas(table, opts?.schemaSuffix ?? 'Schema', opts?.coerceDates ?? 'input');
+    return renderTableSchemas(table, resolveAffix(opts), opts?.coerceDates ?? 'input');
   }
 
   renderIndex?(analysis: Analysis, opts?: ZodGenerateOptions): string;

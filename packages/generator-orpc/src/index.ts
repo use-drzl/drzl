@@ -1,4 +1,6 @@
 import type { Analysis, Column, Table } from '@drzl/analyzer';
+import type { AffixOptions } from '@drzl/validation-core';
+import { resolveAffix, schemaName } from '@drzl/validation-core';
 
 export type Case = 'camel' | 'kebab' | 'snake';
 export interface NamingOptions {
@@ -20,6 +22,15 @@ export interface GenerateOptions {
     library?: 'zod' | 'valibot' | 'arktype';
     importPath?: string; // barrel path like src/validators/zod
     schemaSuffix?: string; // default 'Schema'
+    /**
+     * Must describe how the validation generator named its exports, because it is what
+     * spells the import specifier this router pulls them out of. The CLI copies it from the
+     * sibling validation generator when it is not set here, so the two cannot drift.
+     *
+     * It does not rename anything the router itself declares: the local aliases stay
+     * `Insert<tsName>Schema` so the router body is unaffected either way.
+     */
+    affix?: AffixOptions;
   };
   databaseInjection?: {
     enabled?: boolean; // Enable database injection mode (default: false for backward compatibility)
@@ -499,9 +510,17 @@ export const exampleRouter = {
       importsBase = replaced === importsBase ? `${importsBase}\n${libImport}` : replaced;
     }
     const useShared = !!validation?.useShared && !!validation?.importPath;
-    const schemaSuffix = validation?.schemaSuffix ?? 'Schema';
+    // The single line that has to agree with generator-zod/valibot/arktype. Both sides now
+    // derive the name from the same resolver, so `affix` and `schemaSuffix` cannot be
+    // interpreted two different ways.
+    const sharedAffix = resolveAffix({
+      affix: validation?.affix,
+      schemaSuffix: validation?.schemaSuffix,
+    });
+    const sharedName = (mode: 'insert' | 'update' | 'select') =>
+      schemaName(mode, table.tsName, sharedAffix);
     const importSchemas = useShared
-      ? `\nimport { Insert${table.tsName}${schemaSuffix} as ${createSchemaName}, Update${table.tsName}${schemaSuffix} as ${updateSchemaName}, Select${table.tsName}${schemaSuffix} as ${selectSchemaName} } from '${validation!.importPath}';`
+      ? `\nimport { ${sharedName('insert')} as ${createSchemaName}, ${sharedName('update')} as ${updateSchemaName}, ${sharedName('select')} as ${selectSchemaName} } from '${validation!.importPath}';`
       : '';
     const imports = importsBase + importSchemas;
     const prelude = template.prelude ? template.prelude([table], ctx) : '';

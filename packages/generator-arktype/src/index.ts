@@ -1,6 +1,18 @@
 import type { Analysis, Table, Column } from '@drzl/analyzer';
-import type { ValidationRenderer, ValidationGenerateOptions } from '@drzl/validation-core';
-import { insertColumns, updateColumns, selectColumns, formatCode } from '@drzl/validation-core';
+import type {
+  ResolvedAffix,
+  ValidationRenderer,
+  ValidationGenerateOptions,
+} from '@drzl/validation-core';
+import {
+  insertColumns,
+  updateColumns,
+  selectColumns,
+  formatCode,
+  resolveAffix,
+  schemaName,
+  typeName,
+} from '@drzl/validation-core';
 
 type Mode = 'insert' | 'update' | 'select';
 
@@ -61,19 +73,22 @@ function renderObjectShape(
   coerceDates: NonNullable<ValidationGenerateOptions['coerceDates']>
 ) {
   return cols
-    .map(
-      (c) =>
-        `  ${JSON.stringify(c.name)}: ${JSON.stringify(atField(c, mode, coerceDates))},`
-    )
+    .map((c) => `  ${JSON.stringify(c.name)}: ${JSON.stringify(atField(c, mode, coerceDates))},`)
     .join('\n');
 }
 
 function renderTableSchemas(
   table: Table,
-  suffix = 'Schema',
+  affix: ResolvedAffix,
   coerceDates: NonNullable<ValidationGenerateOptions['coerceDates']>
 ) {
   const T = table.tsName;
+  const insertSchema = schemaName('insert', T, affix);
+  const updateSchema = schemaName('update', T, affix);
+  const selectSchema = schemaName('select', T, affix);
+  const insertType = typeName('insert', T, affix);
+  const updateType = typeName('update', T, affix);
+  const selectType = typeName('select', T, affix);
   const insertCols = insertColumns(table);
   const updateCols = updateColumns(table);
   const selectCols = selectColumns(table);
@@ -82,21 +97,21 @@ function renderTableSchemas(
   const bodySelect = renderObjectShape(selectCols, 'select', coerceDates);
   return `import { type } from 'arktype';
 
-export const Insert${T}${suffix} = type({
+export const ${insertSchema} = type({
 ${bodyInsert}
 });
 
-export const Update${T}${suffix} = type({
+export const ${updateSchema} = type({
 ${bodyUpdate}
 });
 
-export const Select${T}${suffix} = type({
+export const ${selectSchema} = type({
 ${bodySelect}
 });
 
-export type Insert${T}Input = typeof Insert${T}${suffix}["infer"];
-export type Update${T}Input = typeof Update${T}${suffix}["infer"];
-export type Select${T}Output = typeof Select${T}${suffix}["infer"];
+export type ${insertType} = typeof ${insertSchema}["infer"];
+export type ${updateType} = typeof ${updateSchema}["infer"];
+export type ${selectType} = typeof ${selectSchema}["infer"];
 `;
 }
 
@@ -114,12 +129,14 @@ export class ArkTypeGenerator implements ValidationRenderer<ArkTypeGenerateOptio
     const out = path.resolve(process.cwd(), opts.outDir);
     const files: string[] = [];
     await fs.mkdir(out, { recursive: true });
-    const suffix = opts.schemaSuffix ?? 'Schema';
+    const affix = resolveAffix(opts);
     const coerceDates = opts.coerceDates ?? 'input';
     const fileSuffix = opts.fileSuffix ?? '.arktype.ts';
     for (const table of this.analysis.tables) {
+      // File names deliberately stay on the raw Drizzle export name: affixes and tableCase
+      // rename identifiers, never modules, so the barrel and importPath keep resolving.
       const filePath = path.join(out, `${table.tsName}${fileSuffix}`);
-      const code = renderTableSchemas(table, suffix, coerceDates);
+      const code = renderTableSchemas(table, affix, coerceDates);
       const formatted = await formatCode(
         buildHeader(opts.outputHeader) + code,
         filePath,
@@ -141,7 +158,7 @@ export class ArkTypeGenerator implements ValidationRenderer<ArkTypeGenerateOptio
   }
 
   renderTable(table: Table, opts?: ArkTypeGenerateOptions) {
-    return renderTableSchemas(table, opts?.schemaSuffix ?? 'Schema', opts?.coerceDates ?? 'input');
+    return renderTableSchemas(table, resolveAffix(opts), opts?.coerceDates ?? 'input');
   }
 
   private defaultIndex(analysis: Analysis, _opts: ArkTypeGenerateOptions) {

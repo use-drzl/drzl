@@ -17,6 +17,12 @@ interface GenerateOptions {
     library?: 'zod' | 'valibot' | 'arktype';
     importPath?: string;
     schemaSuffix?: string;
+    // How the validation generator named its exports. Normally inherited, see below.
+    affix?: {
+      tableCase?: 'preserve' | 'pascal';
+      schema?: { prefix?: Affix; suffix?: Affix };
+      type?: { prefix?: Affix; suffix?: Affix };
+    };
   };
   databaseInjection?: {
     enabled?: boolean;
@@ -52,6 +58,33 @@ export const dbMiddleware = os.$context<{ db?: Database }>().middleware(/* ... *
 ## Validation reuse
 
 When `validation.useShared` is true, the generator imports `Insert<Table>Schema`, `Update<Table>Schema`, and `Select<Table>Schema` from your `validation.importPath` and wires them into handlers (inputs and outputs) based on the selected `library`.
+
+### Renamed schemas
+
+If the validation generator uses an [`affix`](/guide/configuration#naming-generated-identifiers), the router has to import the renamed identifiers. You do not configure it twice. When exactly one other generator in the config produces the library named in `validation.library`, the CLI copies that generator's `affix` onto this one:
+
+```ts
+generators: [
+  { kind: 'zod', path: 'src/validators/zod', affix: { tableCase: 'pascal' } },
+  {
+    kind: 'orpc',
+    validation: { useShared: true, library: 'zod', importPath: '../validators/zod' },
+  },
+],
+```
+
+```ts
+// src/api/users.ts
+import {
+  InsertUsersSchema as InsertusersSchema,
+  UpdateUsersSchema as UpdateusersSchema,
+  SelectUsersSchema as SelectusersSchema,
+} from '../validators/zod';
+```
+
+The local aliases stay `Insert<tsName>Schema` on purpose. They never leave the file, and keeping them fixed means an affix change never rewrites the router body.
+
+Set `validation.affix` yourself only when the schemas come from somewhere DRZL does not generate. If you set it and it disagrees with the sibling generator, `drzl generate` fails with both sets of names in the error instead of emitting a router that cannot compile.
 
 ### Output typing
 

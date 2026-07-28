@@ -147,6 +147,7 @@ program
               format: g.format,
               schemaSuffix: g.schemaSuffix,
               fileSuffix: g.fileSuffix,
+              affix: g.affix,
             });
             progress.stop();
             ora().succeed(chalk.green(`Generated (zod): ${files.length} files`));
@@ -171,6 +172,7 @@ program
               format: g.format,
               schemaSuffix: g.schemaSuffix,
               fileSuffix: g.fileSuffix,
+              affix: g.affix,
             });
             progress.stop();
             ora().succeed(chalk.green(`Generated (valibot): ${files.length} files`));
@@ -195,6 +197,7 @@ program
               format: g.format,
               schemaSuffix: g.schemaSuffix,
               fileSuffix: g.fileSuffix,
+              affix: g.affix,
             });
             progress.stop();
             ora().succeed(chalk.green(`Generated (arktype): ${files.length} files`));
@@ -438,6 +441,7 @@ program
                 format: g.format,
                 schemaSuffix: g.schemaSuffix,
                 fileSuffix: g.fileSuffix,
+                affix: g.affix,
               });
               opts.json
                 ? console.log(JSON.stringify({ event: 'generate_complete', kind: g.kind, files }))
@@ -465,6 +469,7 @@ program
                 format: g.format,
                 schemaSuffix: g.schemaSuffix,
                 fileSuffix: g.fileSuffix,
+                affix: g.affix,
               });
               opts.json
                 ? console.log(JSON.stringify({ event: 'generate_complete', kind: g.kind, files }))
@@ -492,6 +497,7 @@ program
                 format: g.format,
                 schemaSuffix: g.schemaSuffix,
                 fileSuffix: g.fileSuffix,
+                affix: g.affix,
               });
               opts.json
                 ? console.log(JSON.stringify({ event: 'generate_complete', kind: g.kind, files }))

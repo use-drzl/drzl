@@ -40,3 +40,31 @@ generators: [{ kind: 'valibot', path: 'src/validators/valibot' }];
 - `Insert<Table>Schema`, `Update<Table>Schema`, `Select<Table>Schema`
 - Optional `index` barrel
 - Shared vs inlined schemas supported
+
+## Custom names
+
+`affix` renames the exported schemas and type aliases, and `tableCase: 'pascal'` upper-camels
+the Drizzle export name (`users` -> `Users`) instead of interpolating it verbatim. Omit it and
+the names above are unchanged.
+
+```ts
+generators: [
+  {
+    kind: 'valibot',
+    path: 'src/validators/valibot',
+    affix: {
+      tableCase: 'pascal',
+      schema: { suffix: 'Schema' },
+      type: {
+        prefix: { insert: 'Create', update: 'Edit', select: '' },
+        suffix: { insert: 'Input', update: 'Input', select: '' },
+      },
+    },
+  },
+];
+```
+
+Emits `InsertUsersSchema` / `UpdateUsersSchema` / `SelectUsersSchema` plus `CreateUsersInput`,
+`EditUsersInput` and a bare `Users`. Every prefix and suffix takes a string or a per-mode
+object keyed by `insert`, `update`, `select`. The legacy `schemaSuffix` still works and is the
+default for `affix.schema.suffix`.

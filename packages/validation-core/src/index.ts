@@ -1,4 +1,7 @@
 import type { Analysis, Column } from '@drzl/analyzer';
+import type { AffixOptions } from './naming.js';
+
+export * from './naming.js';
 
 // Minimal local Table shape for codegen logic and tests
 export interface Table {
@@ -21,6 +24,12 @@ export interface ValidationGenerateOptions {
   format?: FormatOptions;
   fileSuffix?: string; // e.g. .zod.ts
   schemaSuffix?: string; // e.g. Schema
+  /**
+   * Prefixes, suffixes and table casing for the generated identifiers. Omit it and the
+   * output is identical to every previous version; `schemaSuffix` stays the fallback for
+   * `affix.schema.suffix`.
+   */
+  affix?: AffixOptions;
   coerceDates?: 'input' | 'all' | 'none';
   emit?: {
     select?: boolean;

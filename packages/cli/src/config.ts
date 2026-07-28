@@ -1,3 +1,11 @@
+import type { AffixOptions } from '@drzl/validation-core';
+import {
+  AFFIX_PROBE_TABLE,
+  NAME_MODES,
+  resolveAffix,
+  schemaName,
+  validateAffix,
+} from '@drzl/validation-core';
 import * as fs from 'node:fs';
 import { createRequire } from 'node:module';
 import * as path from 'node:path';
@@ -9,6 +17,46 @@ export const NamingSchema = z
     procedureCase: z.enum(['camel', 'kebab', 'snake']).default('camel'),
   })
   .partial();
+
+/** One affix for every mode, or a per-mode map. Keys match drzl's internal mode names. */
+const AffixValueSchema = z.union(
+  [
+    z.string(),
+    z
+      .object({
+        insert: z.string().optional(),
+        update: z.string().optional(),
+        select: z.string().optional(),
+      })
+      .strict(),
+  ],
+  {
+    error:
+      'Expected a string to use for every mode, or an object with any of the keys "insert", ' +
+      '"update" and "select". Those keys are lowercase, matching the mode names drzl uses ' +
+      'everywhere else.',
+  }
+);
+
+const AffixPartSchema = z
+  .object({
+    prefix: AffixValueSchema.optional(),
+    suffix: AffixValueSchema.optional(),
+  })
+  .strict();
+
+export const AffixSchema = z
+  .object({
+    /**
+     * `preserve` (default) keeps today's output: the Drizzle export name goes into the
+     * identifier verbatim, so `export const users` yields `InsertusersSchema`. `pascal`
+     * upper-camels it first, yielding `InsertUsersSchema`.
+     */
+    tableCase: z.enum(['preserve', 'pascal']).optional(),
+    schema: AffixPartSchema.optional(),
+    type: AffixPartSchema.optional(),
+  })
+  .strict();
 
 export const GeneratorSchema = z.object({
   kind: z.enum(['orpc', 'service', 'zod', 'valibot', 'arktype']),
@@ -36,6 +84,11 @@ export const GeneratorSchema = z.object({
   // zod/valibot/arktype generator specific options
   schemaSuffix: z.string().optional(),
   fileSuffix: z.string().optional(),
+  /**
+   * Prefixes, suffixes and table casing for generated identifiers (zod/valibot/arktype).
+   * Omitting it reproduces the output of every previous release exactly.
+   */
+  affix: AffixSchema.optional(),
   // orpc validation sharing
   validation: z
     .object({
@@ -43,6 +96,11 @@ export const GeneratorSchema = z.object({
       library: z.enum(['zod', 'valibot', 'arktype']).default('zod').optional(),
       importPath: z.string().optional(),
       schemaSuffix: z.string().optional(),
+      /**
+       * How the validation generator named its exports. Usually left unset: the CLI copies
+       * it from the sibling generator whose `kind` matches `library`.
+       */
+      affix: AffixSchema.optional(),
     })
     .optional(),
   // template options
@@ -55,19 +113,42 @@ export const AnalyzerSchema = z.object({
   includeHeuristicRelations: z.boolean().default(false),
 });
 
-export const ConfigSchema = z.object({
-  schema: z.string(),
-  outDir: z.string().default('src/api'),
-  analyzer: AnalyzerSchema.default({
-    includeRelations: true,
-    validateConstraints: true,
-    includeHeuristicRelations: false,
-  }),
-  generators: z
-    .array(GeneratorSchema)
-    .min(1)
-    .default([{ kind: 'orpc' } as any]),
-});
+export const ConfigSchema = z
+  .object({
+    schema: z.string(),
+    outDir: z.string().default('src/api'),
+    analyzer: AnalyzerSchema.default({
+      includeRelations: true,
+      validateConstraints: true,
+      includeHeuristicRelations: false,
+    }),
+    generators: z
+      .array(GeneratorSchema)
+      .min(1)
+      .default([{ kind: 'orpc' } as any]),
+  })
+  // Reject an affix before anything is written, rather than emitting a file that cannot
+  // compile. Only `affix` is inspected; the legacy flat `schemaSuffix` is left alone so
+  // configs that parse today keep parsing.
+  .superRefine((cfg, ctx) => {
+    cfg.generators.forEach((g, i) => {
+      const report = (base: (string | number)[], affix?: AffixOptions, schemaSuffix?: string) => {
+        for (const issue of validateAffix(affix, schemaSuffix)) {
+          ctx.addIssue({
+            code: 'custom',
+            path: ['generators', i, ...base, ...issue.path],
+            message: issue.message,
+          });
+        }
+      };
+      report(['affix'], g.affix as AffixOptions | undefined, g.schemaSuffix);
+      report(
+        ['validation', 'affix'],
+        g.validation?.affix as AffixOptions | undefined,
+        g.validation?.schemaSuffix
+      );
+    });
+  });
 
 // ✨ Separate input vs output types
 export type DrzlConfigInput = z.input<typeof ConfigSchema>;
@@ -75,6 +156,102 @@ export type DrzlConfig = z.output<typeof ConfigSchema>;
 
 export function defineConfig<T extends DrzlConfigInput>(cfg: T): T {
   return cfg;
+}
+
+type GeneratorConfig = DrzlConfig['generators'][number];
+
+function sharedSchemaNames(opts: { affix?: AffixOptions; schemaSuffix?: string }): string[] {
+  const resolved = resolveAffix(opts);
+  return NAME_MODES.map((mode) => schemaName(mode, AFFIX_PROBE_TABLE, resolved));
+}
+
+/**
+ * Fill in cross-generator defaults and refuse configs whose generators would disagree.
+ *
+ * An oRPC router that imports shared schemas has to spell the exact names the validation
+ * generator exported. Both sides used to be configured independently, so they could silently
+ * drift into a router that does not compile. When an oRPC generator uses shared validation
+ * and exactly one sibling generator produces that library, its `affix` is copied across.
+ *
+ * Deliberately conservative about the pre-existing flat `schemaSuffix`: a disagreement there
+ * is only reported, never repaired, because repairing it would change the bytes an existing
+ * config emits.
+ */
+export function resolveConfig(cfg: DrzlConfig): { config: DrzlConfig; warnings: string[] } {
+  const warnings: string[] = [];
+  const generators: GeneratorConfig[] = cfg.generators.map((g) => ({ ...g }));
+
+  for (const g of generators) {
+    if (g.kind !== 'orpc') continue;
+    const v = g.validation;
+    if (!v?.useShared) continue;
+
+    const library = v.library ?? 'zod';
+    const siblings = generators.filter((s) => s.kind === library);
+    // Zero siblings means the user points at a barrel drzl does not generate; more than one
+    // means there is no single source of truth. Either way, leave the config alone.
+    if (siblings.length !== 1) continue;
+    const sibling = siblings[0];
+
+    const theirs = sharedSchemaNames({
+      affix: sibling.affix as AffixOptions | undefined,
+      schemaSuffix: sibling.schemaSuffix,
+    });
+
+    if (!v.affix) {
+      if (sibling.affix) {
+        // Bake the sibling's fully resolved naming in, so its own schemaSuffix fallback
+        // travels with it and cannot be re-interpreted on the oRPC side.
+        g.validation = {
+          ...v,
+          affix: resolveAffix({
+            affix: sibling.affix as AffixOptions,
+            schemaSuffix: sibling.schemaSuffix,
+          }),
+        };
+        continue;
+      }
+      const mine = sharedSchemaNames({ schemaSuffix: v.schemaSuffix });
+      if (mine.join(',') !== theirs.join(',')) {
+        warnings.push(
+          `drzl config: the "orpc" generator's validation.schemaSuffix ` +
+            `(${JSON.stringify(v.schemaSuffix ?? 'Schema')}) does not match the "${library}" ` +
+            `generator's schemaSuffix (${JSON.stringify(sibling.schemaSuffix ?? 'Schema')}). ` +
+            `The router will import ${mine.join(', ')} but the "${library}" generator exports ` +
+            `${theirs.join(', ')}, so the generated router will not compile. Set both to the ` +
+            `same value, or move to "affix", which is inherited automatically.`
+        );
+      }
+      continue;
+    }
+
+    const mine = sharedSchemaNames({
+      affix: v.affix as AffixOptions,
+      schemaSuffix: v.schemaSuffix,
+    });
+    if (mine.join(',') !== theirs.join(',')) {
+      throw new Error(
+        `drzl config: the "orpc" generator imports shared ${library} schemas, but its ` +
+          `validation.affix disagrees with the "${library}" generator's own naming. The router ` +
+          `would import ${mine.join(', ')} while the "${library}" generator exports ` +
+          `${theirs.join(', ')}. Make them match, or drop validation.affix and let it be ` +
+          `inherited from the "${library}" generator.`
+      );
+    }
+  }
+
+  return { config: { ...cfg, generators }, warnings };
+}
+
+/**
+ * Parse, then resolve cross-generator defaults. Both `generate` and `watch` go through
+ * loadConfig, so putting the resolution here is what keeps the two duplicated generator
+ * dispatch blocks in cli.ts from needing the logic twice.
+ */
+function finalize(raw: unknown): DrzlConfig {
+  const { config, warnings } = resolveConfig(ConfigSchema.parse(raw));
+  for (const w of warnings) console.warn(w);
+  return config;
 }
 
 export async function loadConfig(customPath?: string): Promise<DrzlConfig | null> {
@@ -103,7 +280,7 @@ export async function loadConfig(customPath?: string): Promise<DrzlConfig | null
     // JSON: read directly
     if (ext === '.json') {
       const raw = JSON.parse(await fsp.readFile(p, 'utf8'));
-      return ConfigSchema.parse(raw);
+      return finalize(raw);
     }
 
     // Everything else (TS/JS/MJS/CJS) -> Jiti with cache-busting
@@ -125,7 +302,7 @@ export async function loadConfig(customPath?: string): Promise<DrzlConfig | null
 
     const mod = await jiti.import(p);
     const raw = mod?.default ?? mod;
-    return ConfigSchema.parse(raw);
+    return finalize(raw);
   }
 
   return null;

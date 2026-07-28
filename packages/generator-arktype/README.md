@@ -44,3 +44,31 @@ generators: [{ kind: 'arktype', path: 'src/validators/arktype' }];
 ## Notes
 
 - Formatting integrates with Prettier/Biome (via `format.engine: 'auto'`).
+
+## Custom names
+
+`affix` renames the exported schemas and type aliases, and `tableCase: 'pascal'` upper-camels
+the Drizzle export name (`users` -> `Users`) instead of interpolating it verbatim. Omit it and
+the names above are unchanged.
+
+```ts
+generators: [
+  {
+    kind: 'arktype',
+    path: 'src/validators/arktype',
+    affix: {
+      tableCase: 'pascal',
+      schema: { suffix: 'Schema' },
+      type: {
+        prefix: { insert: 'Create', update: 'Edit', select: '' },
+        suffix: { insert: 'Input', update: 'Input', select: '' },
+      },
+    },
+  },
+];
+```
+
+Emits `InsertUsersSchema` / `UpdateUsersSchema` / `SelectUsersSchema` plus `CreateUsersInput`,
+`EditUsersInput` and a bare `Users`. Every prefix and suffix takes a string or a per-mode
+object keyed by `insert`, `update`, `select`. The legacy `schemaSuffix` still works and is the
+default for `affix.schema.suffix`.

@@ -93,4 +93,53 @@ describe('@drzl/generator-arktype', () => {
     expect(code).toContain(expectedRoleLine);
     expect(code).toContain(expectedStatusLine);
   });
+
+  it('honours affix prefixes, suffixes and tableCase', async () => {
+    const analysis: Analysis = {
+      dialect: 'sqlite',
+      tables: [
+        {
+          name: 'audit_logs',
+          tsName: 'audit_logs',
+          columns: [
+            {
+              name: 'id',
+              tsType: 'number',
+              dbType: 'INTEGER',
+              nullable: false,
+              hasDefault: true,
+              isGenerated: true,
+            },
+            {
+              name: 'body',
+              tsType: 'string',
+              dbType: 'TEXT',
+              nullable: false,
+              hasDefault: false,
+              isGenerated: false,
+            },
+          ],
+          unique: [],
+          indexes: [],
+        } as any,
+      ],
+      enums: [],
+      relations: [],
+      issues: [],
+    };
+    const gen = new ArkTypeGenerator(analysis);
+    const code = gen.renderTable(analysis.tables[0], {
+      outDir: 'x',
+      affix: {
+        tableCase: 'pascal',
+        type: { prefix: { select: '' }, suffix: { select: '' } },
+      },
+    });
+    expect(code).toContain('export const InsertAuditLogsSchema');
+    expect(code).toContain('export const SelectAuditLogsSchema');
+    expect(code).toContain(
+      'export type InsertAuditLogsInput = typeof InsertAuditLogsSchema["infer"];'
+    );
+    expect(code).toContain('export type AuditLogs = typeof SelectAuditLogsSchema["infer"];');
+  });
 });

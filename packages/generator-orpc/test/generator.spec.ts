@@ -115,4 +115,60 @@ describe('@drzl/generator-orpc', () => {
       await fs.rm(outDir, { recursive: true, force: true });
     }
   });
+
+  it('imports shared validation schemas under the configured affix', async () => {
+    const analysis: Analysis = {
+      dialect: 'sqlite',
+      tables: [
+        {
+          name: 'user_profiles',
+          tsName: 'userProfiles',
+          columns: [
+            {
+              name: 'id',
+              tsType: 'number',
+              dbType: 'INTEGER',
+              nullable: false,
+              hasDefault: true,
+              isGenerated: true,
+            },
+            {
+              name: 'email',
+              tsType: 'string',
+              dbType: 'TEXT',
+              nullable: false,
+              hasDefault: false,
+              isGenerated: false,
+            },
+          ],
+          unique: [],
+          indexes: [],
+        } as any,
+      ],
+      enums: [],
+      relations: [],
+      issues: [],
+    };
+    const outDir = await fs.mkdtemp(path.join(os.tmpdir(), 'drzl-orpc-affix-'));
+    try {
+      const gen = new ORPCGenerator(analysis);
+      const { files } = await gen.generate({
+        outputDir: outDir,
+        template: 'standard',
+        validation: {
+          useShared: true,
+          library: 'zod',
+          importPath: '../validators/zod',
+          affix: { tableCase: 'pascal', schema: { prefix: { insert: 'Create' }, suffix: 'Doc' } },
+        },
+      });
+      const routerFile = files.find((f) => /userProfiles/i.test(path.basename(f))) ?? files[0];
+      const content = await fs.readFile(routerFile, 'utf8');
+      expect(content).toContain('CreateUserProfilesDoc as InsertuserProfilesSchema');
+      expect(content).toContain('UpdateUserProfilesDoc as UpdateuserProfilesSchema');
+      expect(content).toContain('SelectUserProfilesDoc as SelectuserProfilesSchema');
+    } finally {
+      await fs.rm(outDir, { recursive: true, force: true });
+    }
+  });
 });

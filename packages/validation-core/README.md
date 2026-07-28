@@ -37,3 +37,10 @@ Shared interfaces and helpers used by validation generators.
 - Helpers
   - `insertColumns(table)`, `updateColumns(table)`, `selectColumns(table)`
   - `formatCode(code, filePath, formatOpts)`
+- Naming (shared by every generator that emits a schema name)
+  - `resolveAffix({ affix, schemaSuffix })` -> `ResolvedAffix`
+  - `schemaName(mode, tsName, resolved)`, `typeName(mode, tsName, resolved)`
+  - `validateAffix(affix, schemaSuffix)` -> issues for unusable or colliding names
+  - `pascalCase(s)`, `applyTableCase(tsName, 'preserve' | 'pascal')`
+  - Calling `resolveAffix()` with no options reproduces the original naming exactly, so the
+    generators and the oRPC router can never interpret one config two ways.
