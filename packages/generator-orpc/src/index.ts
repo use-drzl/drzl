@@ -1,6 +1,6 @@
 import type { Analysis, Column, Table } from '@drzl/analyzer';
-import type { AffixOptions } from '@drzl/validation-core';
-import { resolveAffix, schemaName } from '@drzl/validation-core';
+import type { AffixOptions, ImportExtension } from '@drzl/validation-core';
+import { importSpecifier, resolveAffix, schemaName } from '@drzl/validation-core';
 
 export type Case = 'camel' | 'kebab' | 'snake';
 export interface NamingOptions {
@@ -17,6 +17,16 @@ export interface GenerateOptions {
   format?: { enabled?: boolean; engine?: 'auto' | 'prettier' | 'biome'; configPath?: string };
   templateOptions?: Record<string, unknown>;
   outputHeader?: { enabled?: boolean; text?: string };
+  /**
+   * How the router barrel spells the extension of the router files it imports. Defaults to
+   * `'js'`, so `users.ts` is imported as `./users.js`, the only form that resolves under
+   * every `moduleResolution` without a compiler flag. Use `'none'` for the extensionless
+   * specifiers drzl emitted before 2.0.
+   *
+   * It does not touch `validation.importPath`, which is spelled by the config and emitted
+   * verbatim.
+   */
+  importExtension?: ImportExtension;
   validation?: {
     useShared?: boolean;
     library?: 'zod' | 'valibot' | 'arktype';
@@ -334,7 +344,10 @@ export class ORPCGenerator {
     const groupName = 'router';
     if (generatedRouters.length) {
       const relImports = generatedRouters.map(({ filePath, exportName, table }) => {
-        const rel = './' + path.relative(out, filePath).replace(/\\/g, '/').replace(/\.ts$/i, '');
+        const rel = importSpecifier(
+          './' + path.relative(out, filePath).replace(/\\/g, '/'),
+          opts.importExtension
+        );
         const key = table.tsName.toLowerCase();
         return { rel, exportName, key };
       });

@@ -1,4 +1,5 @@
 import type { Analysis } from '@drzl/analyzer';
+import type { ImportExtension } from '@drzl/validation-core';
 import { existsSync } from 'node:fs';
 import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -45,70 +46,147 @@ function specifiers(barrel: string): string[] {
 }
 
 /**
- * The file names a TypeScript import of `spec` is allowed to reach, as verified against
- * tsc with moduleResolution bundler, node10 and node16:
+ * The file names a TypeScript import of `spec` is allowed to reach. Encodes what
+ * `@drzl/validation-core` measures against TypeScript's own resolver in
+ * `import-extension.spec.ts`:
+ *  - `.js` reaches `.ts` and `.tsx`, `.mjs` reaches `.mts`, `.cjs` reaches `.cts`
  *  - an extensionless specifier reaches `.ts` and `.tsx`, and never `.mts` or `.cts`
- *  - `.mjs` reaches `.mts`, `.cjs` reaches `.cts`
+ *  - a `.ts`/`.tsx`/`.mts`/`.cts` specifier reaches only its own file
  */
 function candidates(spec: string): string[] {
   const base = spec.replace(/^\.\//, '');
   if (base.endsWith('.mjs')) return [base.slice(0, -4) + '.mts'];
   if (base.endsWith('.cjs')) return [base.slice(0, -4) + '.cts'];
+  if (base.endsWith('.js')) return [base.slice(0, -3) + '.ts', base.slice(0, -3) + '.tsx'];
+  if (/\.(m|c)?tsx?$/.test(base)) return [base];
   return [base + '.ts', base + '.tsx'];
 }
 
-async function generateInto(fileSuffix?: string) {
+async function generateInto(fileSuffix?: string, importExtension?: ImportExtension) {
   const dir = await mkdtemp(join(tmpdir(), 'drzl-valibot-barrel-'));
   await new ValibotGenerator(analysis).generate({
     outDir: dir,
     fileSuffix,
+    importExtension,
     format: { enabled: false },
   });
   const barrel = await readFile(join(dir, 'index.ts'), 'utf8');
   return { dir, barrel, entries: await readdir(dir) };
 }
 
+type Case = {
+  fileSuffix?: string;
+  file: string;
+  /** Per importExtension; `undefined` is the default and has to match `js`. */
+  specifier: Record<ImportExtension, string>;
+  importable?: boolean;
+};
+
 describe('@drzl/generator-valibot barrel', () => {
-  const cases: { fileSuffix?: string; file: string; specifier: string; importable?: boolean }[] = [
-    { fileSuffix: undefined, file: 'users.valibot.ts', specifier: './users.valibot' },
-    { fileSuffix: '.schema.ts', file: 'users.schema.ts', specifier: './users.schema' },
+  const cases: Case[] = [
+    {
+      fileSuffix: undefined,
+      file: 'users.valibot.ts',
+      specifier: {
+        js: './users.valibot.js',
+        none: './users.valibot',
+        ts: './users.valibot.ts',
+      },
+    },
+    {
+      fileSuffix: '.schema.ts',
+      file: 'users.schema.ts',
+      specifier: { js: './users.schema.js', none: './users.schema', ts: './users.schema.ts' },
+    },
     // No leading dot: the suffix runs straight onto the table name.
-    { fileSuffix: 'Schema.ts', file: 'usersSchema.ts', specifier: './usersSchema' },
+    {
+      fileSuffix: 'Schema.ts',
+      file: 'usersSchema.ts',
+      specifier: { js: './usersSchema.js', none: './usersSchema', ts: './usersSchema.ts' },
+    },
     // Nothing but an extension.
-    { fileSuffix: '.ts', file: 'users.ts', specifier: './users' },
-    { fileSuffix: '.valibot.tsx', file: 'users.valibot.tsx', specifier: './users.valibot' },
-    // .mts and .cts are unreachable extensionless, so the specifier takes the output
-    // extension instead. That form also resolves under node16/nodenext.
-    { fileSuffix: '.valibot.mts', file: 'users.valibot.mts', specifier: './users.valibot.mjs' },
-    { fileSuffix: '.valibot.cts', file: 'users.valibot.cts', specifier: './users.valibot.cjs' },
+    {
+      fileSuffix: '.ts',
+      file: 'users.ts',
+      specifier: { js: './users.js', none: './users', ts: './users.ts' },
+    },
+    {
+      fileSuffix: '.valibot.tsx',
+      file: 'users.valibot.tsx',
+      specifier: {
+        js: './users.valibot.js',
+        none: './users.valibot',
+        ts: './users.valibot.tsx',
+      },
+    },
+    // .mts and .cts are unreachable extensionless, so even `none` spells the output
+    // extension.
+    {
+      fileSuffix: '.valibot.mts',
+      file: 'users.valibot.mts',
+      specifier: {
+        js: './users.valibot.mjs',
+        none: './users.valibot.mjs',
+        ts: './users.valibot.mts',
+      },
+    },
+    {
+      fileSuffix: '.valibot.cts',
+      file: 'users.valibot.cts',
+      specifier: {
+        js: './users.valibot.cjs',
+        none: './users.valibot.cjs',
+        ts: './users.valibot.cts',
+      },
+    },
     // Not a TypeScript extension at all. Nothing can import such a file, but the barrel
     // still has to name the file that was written rather than invent another one.
     {
       fileSuffix: '.valibot',
       file: 'users.valibot',
-      specifier: './users.valibot',
+      specifier: {
+        js: './users.valibot',
+        none: './users.valibot',
+        ts: './users.valibot',
+      },
       importable: false,
     },
   ];
 
+  async function check(c: Case, expected: string, importExtension?: ImportExtension) {
+    const { dir, barrel, entries } = await generateInto(c.fileSuffix, importExtension);
+    try {
+      expect(entries.sort()).toEqual(['index.ts', c.file].sort());
+      expect(specifiers(barrel)).toEqual([expected]);
+      if (c.importable === false) {
+        // Nothing to resolve, so all that is left to check is that the barrel names the
+        // file that was written.
+        expect(expected).toBe(`./${c.file}`);
+        return;
+      }
+      const reached = candidates(expected).filter((f) => existsSync(join(dir, f)));
+      expect(reached).toEqual([c.file]);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  }
+
   for (const c of cases) {
     const label = c.fileSuffix === undefined ? 'the default suffix' : `fileSuffix ${c.fileSuffix}`;
     it(`points at a file that exists with ${label}`, async () => {
-      const { dir, barrel, entries } = await generateInto(c.fileSuffix);
-      try {
-        expect(entries.sort()).toEqual(['index.ts', c.file].sort());
-        expect(specifiers(barrel)).toEqual([c.specifier]);
-        if (c.importable === false) {
-          // Nothing to resolve, so all that is left to check is that the barrel names the
-          // file that was written.
-          expect(c.specifier).toBe(`./${c.file}`);
-          return;
-        }
-        const reached = candidates(c.specifier).filter((f) => existsSync(join(dir, f)));
-        expect(reached).toEqual([c.file]);
-      } finally {
-        await rm(dir, { recursive: true, force: true });
-      }
+      // Leaving importExtension unset has to behave exactly like asking for 'js'.
+      await check(c, c.specifier.js);
+      await check(c, c.specifier.js, 'js');
+    });
+
+    it(`follows importExtension with ${label}`, async () => {
+      await check(c, c.specifier.none, 'none');
+      await check(c, c.specifier.ts, 'ts');
     });
   }
+
+  it('emits the .js form the default promises', async () => {
+    const { barrel } = await generateInto();
+    expect(barrel).toContain("export * from './users.valibot.js';");
+  });
 });

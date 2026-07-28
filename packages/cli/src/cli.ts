@@ -105,6 +105,7 @@ program
             outputHeader: g.outputHeader,
             format: g.format,
             templateOptions: g.templateOptions,
+            importExtension: g.importExtension,
             validation: g.validation,
             onProgress: ({ index }) => progress.update(index),
           });
@@ -123,6 +124,7 @@ program
               dataAccess: g.dataAccess,
               dbImportPath: g.dbImportPath,
               schemaImportPath: g.schemaImportPath,
+              importExtension: g.importExtension,
             });
             progress.stop();
             ora().succeed(chalk.green(`Generated (service): ${files.length} files`));
@@ -147,6 +149,7 @@ program
               format: g.format,
               schemaSuffix: g.schemaSuffix,
               fileSuffix: g.fileSuffix,
+              importExtension: g.importExtension,
               affix: g.affix,
             });
             progress.stop();
@@ -172,6 +175,7 @@ program
               format: g.format,
               schemaSuffix: g.schemaSuffix,
               fileSuffix: g.fileSuffix,
+              importExtension: g.importExtension,
               affix: g.affix,
             });
             progress.stop();
@@ -197,6 +201,7 @@ program
               format: g.format,
               schemaSuffix: g.schemaSuffix,
               fileSuffix: g.fileSuffix,
+              importExtension: g.importExtension,
               affix: g.affix,
             });
             progress.stop();
@@ -393,6 +398,7 @@ program
               outputHeader: g.outputHeader,
               format: g.format,
               templateOptions: g.templateOptions,
+              importExtension: g.importExtension,
               validation: g.validation,
             });
             opts.json
@@ -414,6 +420,7 @@ program
                 dataAccess: g.dataAccess,
                 dbImportPath: g.dbImportPath,
                 schemaImportPath: g.schemaImportPath,
+                importExtension: g.importExtension,
               });
               opts.json
                 ? console.log(JSON.stringify({ event: 'generate_complete', kind: g.kind, files }))
@@ -441,6 +448,7 @@ program
                 format: g.format,
                 schemaSuffix: g.schemaSuffix,
                 fileSuffix: g.fileSuffix,
+                importExtension: g.importExtension,
                 affix: g.affix,
               });
               opts.json
@@ -469,6 +477,7 @@ program
                 format: g.format,
                 schemaSuffix: g.schemaSuffix,
                 fileSuffix: g.fileSuffix,
+                importExtension: g.importExtension,
                 affix: g.affix,
               });
               opts.json
@@ -497,6 +506,7 @@ program
                 format: g.format,
                 schemaSuffix: g.schemaSuffix,
                 fileSuffix: g.fileSuffix,
+                importExtension: g.importExtension,
                 affix: g.affix,
               });
               opts.json

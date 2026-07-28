@@ -178,7 +178,7 @@ export class ValibotGenerator implements ValidationRenderer<ValibotGenerateOptio
   private defaultIndex(analysis: Analysis, opts: ValibotGenerateOptions) {
     const fileSuffix = opts.fileSuffix ?? DEFAULT_FILE_SUFFIX;
     const exports = analysis.tables
-      .map((t) => `export * from '${moduleSpecifier(t.tsName, fileSuffix)}';`)
+      .map((t) => `export * from '${moduleSpecifier(t.tsName, fileSuffix, opts.importExtension)}';`)
       .join('\n');
     return exports + '\n';
   }

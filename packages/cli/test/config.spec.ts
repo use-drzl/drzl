@@ -223,7 +223,7 @@ describe('@drzl/cli config affix', () => {
     expect(warnings.join('\n')).toMatch(/schemaSuffix/);
   });
 
-  it('leaves a legacy config with no naming options completely untouched', () => {
+  it('leaves the naming of a legacy config untouched', () => {
     const parsed = ConfigSchema.parse(
       base([
         { kind: 'zod' },
@@ -235,7 +235,15 @@ describe('@drzl/cli config affix', () => {
     );
     const before = JSON.parse(JSON.stringify(parsed));
     const { config, warnings } = resolveConfig(parsed);
-    expect(JSON.parse(JSON.stringify(config))).toEqual(before);
+    // `importExtension` is the one key resolveConfig stamps onto every generator, so that
+    // each of them can read the effective value without knowing the top-level default.
+    // Nothing to do with naming, and it is already present on `parsed` at the top level.
+    const withoutExtension = (cfg: unknown) =>
+      JSON.parse(
+        JSON.stringify(cfg, (key, value) => (key === 'importExtension' ? undefined : value))
+      );
+    expect(withoutExtension(config)).toEqual(withoutExtension(before));
+    expect(config.generators.map((g) => g.importExtension)).toEqual(['js', 'js']);
     expect(warnings).toEqual([]);
   });
 });

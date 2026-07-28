@@ -1,6 +1,8 @@
 import type { AffixOptions } from '@drzl/validation-core';
 import {
   AFFIX_PROBE_TABLE,
+  DEFAULT_IMPORT_EXTENSION,
+  IMPORT_EXTENSIONS,
   NAME_MODES,
   resolveAffix,
   schemaName,
@@ -58,8 +60,23 @@ export const AffixSchema = z
   })
   .strict();
 
+/**
+ * How every relative specifier drzl invents spells its extension.
+ *
+ * The generated files land in the consumer's own source tree, so the consumer's
+ * `moduleResolution` decides which forms resolve. `js` is the only one that resolves under
+ * all of `bundler`, `node10`, `node16` and `nodenext` with no compiler flag, so it is the
+ * default. See the `ImportExtension` docs in `@drzl/validation-core` for the measured grid.
+ */
+export const ImportExtensionSchema = z.enum(IMPORT_EXTENSIONS);
+
 export const GeneratorSchema = z.object({
   kind: z.enum(['orpc', 'service', 'zod', 'valibot', 'arktype']),
+  /**
+   * Overrides the top-level `importExtension` for this generator alone, for a project whose
+   * generated directories are compiled by different tsconfigs.
+   */
+  importExtension: ImportExtensionSchema.optional(),
   template: z.string().optional(),
   includeRelations: z.boolean().optional(),
   naming: NamingSchema.optional(),
@@ -117,6 +134,12 @@ export const ConfigSchema = z
   .object({
     schema: z.string(),
     outDir: z.string().default('src/api'),
+    /**
+     * How every relative specifier drzl invents spells its extension, for every generator.
+     * A generator may override it. Defaults to `js`, which is the only form that resolves
+     * under every `moduleResolution` without a compiler flag.
+     */
+    importExtension: ImportExtensionSchema.default(DEFAULT_IMPORT_EXTENSION),
     analyzer: AnalyzerSchema.default({
       includeRelations: true,
       validateConstraints: true,
@@ -176,10 +199,18 @@ function sharedSchemaNames(opts: { affix?: AffixOptions; schemaSuffix?: string }
  * Deliberately conservative about the pre-existing flat `schemaSuffix`: a disagreement there
  * is only reported, never repaired, because repairing it would change the bytes an existing
  * config emits.
+ *
+ * `importExtension` is pushed down here too. A consumer compiles the whole generated tree
+ * with one tsconfig, so the setting that has to hold is the same for every generator, and
+ * every call site downstream can then read it off the generator without knowing about the
+ * top-level default.
  */
 export function resolveConfig(cfg: DrzlConfig): { config: DrzlConfig; warnings: string[] } {
   const warnings: string[] = [];
-  const generators: GeneratorConfig[] = cfg.generators.map((g) => ({ ...g }));
+  const generators: GeneratorConfig[] = cfg.generators.map((g) => ({
+    ...g,
+    importExtension: g.importExtension ?? cfg.importExtension,
+  }));
 
   for (const g of generators) {
     if (g.kind !== 'orpc') continue;

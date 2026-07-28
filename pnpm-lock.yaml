@@ -158,6 +158,9 @@ importers:
       '@drzl/analyzer':
         specifier: workspace:^
         version: link:../analyzer
+      '@drzl/validation-core':
+        specifier: workspace:^
+        version: link:../validation-core
     devDependencies:
       tsup:
         specifier: ^8.5.0

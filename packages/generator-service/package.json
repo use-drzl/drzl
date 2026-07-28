@@ -16,7 +16,8 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@drzl/analyzer": "workspace:^"
+    "@drzl/analyzer": "workspace:^",
+    "@drzl/validation-core": "workspace:^"
   },
   "devDependencies": {
     "tsup": "^8.5.0",

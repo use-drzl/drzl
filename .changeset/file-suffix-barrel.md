@@ -29,11 +29,14 @@ value, so the barrel renames along with the files.
 
 Suffixes that are not simply `.<name>.ts` are handled too. A suffix with no leading dot
 runs straight onto the table name (`Schema.ts` gives `usersSchema.ts` and
-`./usersSchema`), a suffix that is only an extension drops away entirely (`.ts` gives
-`users.ts` and `./users`), and `.mts` and `.cts` are written as `.mjs` and `.cjs` in the
-specifier, which is the only form TypeScript resolves for them.
+`./usersSchema.js`), a suffix that is only an extension leaves the bare table name (`.ts`
+gives `users.ts` and `./users.js`), and `.mts` and `.cts` are written as `.mjs` and `.cjs`,
+which is the only form TypeScript resolves for them.
 
-Leaving `fileSuffix` unset is unaffected: the default output is byte for byte what it was.
+Leaving `fileSuffix` unset no longer reproduces the pre-2.0 barrel byte for byte, but that
+is down to the separate `importExtension` change in this same release, which puts a `.js` on
+every specifier DRZL generates. Set `importExtension: 'none'` and the default output is what
+it always was.
 
 `@drzl/validation-core` exports the two helpers the generators share, `moduleFileName` and
 `moduleSpecifier`, so the file name and the import specifier cannot drift apart again.

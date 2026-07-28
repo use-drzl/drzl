@@ -1,4 +1,5 @@
 import type { Analysis, Column } from '@drzl/analyzer';
+import type { ImportExtension } from './files.js';
 import type { AffixOptions } from './naming.js';
 
 export * from './files.js';
@@ -26,10 +27,16 @@ export interface ValidationGenerateOptions {
   /**
    * What every generated file is called after the Drizzle export name, e.g. `.zod.ts`
    * yields `users.zod.ts`. The barrel derives its import specifiers from this same value,
-   * so a custom suffix keeps resolving. `.mts` and `.cts` are written as `.mjs` and `.cjs`
-   * in the specifier, because that is the only form TypeScript resolves.
+   * so a custom suffix keeps resolving.
    */
   fileSuffix?: string;
+  /**
+   * How the barrel spells the extension of the files it re-exports. Defaults to `'js'`,
+   * so `users.zod.ts` is imported as `./users.zod.js`, the only form that resolves under
+   * every `moduleResolution` without a compiler flag. Use `'none'` for the extensionless
+   * specifiers drzl emitted before 2.0.
+   */
+  importExtension?: ImportExtension;
   schemaSuffix?: string; // e.g. Schema
   /**
    * Prefixes, suffixes and table casing for the generated identifiers. Omit it and the

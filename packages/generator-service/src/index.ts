@@ -1,4 +1,6 @@
 import type { Analysis, Table, Column } from '@drzl/analyzer';
+import type { ImportExtension } from '@drzl/validation-core';
+import { importSpecifier } from '@drzl/validation-core';
 
 export interface ServiceGenerateOptions {
   outDir: string;
@@ -7,6 +9,16 @@ export interface ServiceGenerateOptions {
   dbImportPath?: string; // e.g. src/db/client
   schemaImportPath?: string; // e.g. src/db/schemas
   outputHeader?: { enabled?: boolean; text?: string };
+  /**
+   * How a stub service spells the extension of the `types/<table>.ts` file it imports.
+   * Defaults to `'js'`, so it emits `./types/users.js`, the only form that resolves under
+   * every `moduleResolution` without a compiler flag. Use `'none'` for the extensionless
+   * specifiers drzl emitted before 2.0.
+   *
+   * It does not touch `dbImportPath` or `schemaImportPath`, which are spelled by the config
+   * and emitted verbatim.
+   */
+  importExtension?: ImportExtension;
   databaseInjection?: {
     enabled?: boolean; // Enable database injection mode (default: false for backward compatibility)
     databaseType?: string; // Type annotation for injected database (e.g. 'DrizzleD1Database', 'Database' or 'import("../db").Database')
@@ -60,7 +72,8 @@ function renderService(
   mode: 'stub' | 'drizzle',
   dbImportPath?: string,
   schemaImportPath?: string,
-  databaseInjection?: ServiceGenerateOptions['databaseInjection']
+  databaseInjection?: ServiceGenerateOptions['databaseInjection'],
+  importExtension?: ImportExtension
 ) {
   const T = table.tsName;
   const singular = singularize(T);
@@ -141,7 +154,7 @@ export class ${Service} {
 `;
     }
   }
-  return `import type { Insert${T}, Update${T}, Select${T} } from './types/${T}';
+  return `import type { Insert${T}, Update${T}, Select${T} } from '${importSpecifier(`./types/${T}.ts`, importExtension)}';
 
 export class ${Service} {
   static async getAll(): Promise<Select${T}[]> { return [] as any }
@@ -197,7 +210,8 @@ export class ServiceGenerator {
         opts.dataAccess ?? 'stub',
         opts.dbImportPath,
         opts.schemaImportPath,
-        opts.databaseInjection
+        opts.databaseInjection,
+        opts.importExtension
       );
       const formattedTypes = await this.format(
         buildHeader(opts.outputHeader) + typesCode,
