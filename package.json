@@ -4,7 +4,7 @@
   "license": "Apache-2.0",
   "version": "0.0.0",
   "description": "DRZL monorepo",
-  "packageManager": "pnpm@10.15.1",
+  "packageManager": "pnpm@11.17.0",
   "workspaces": [
     "packages/*"
   ],
@@ -16,7 +16,7 @@
     "test": "pnpm -r test",
     "lint": "eslint . --ext .ts",
     "format": "prettier -w .",
-    "typecheck": "pnpm -r --filter @drzl/* exec tsc -p tsconfig.json --noEmit",
+    "typecheck": "pnpm -r --filter='{packages/*}' exec tsc -p tsconfig.json --noEmit",
     "changeset": "changeset",
     "changeset:status": "changeset status",
     "changeset:version": "changeset version",

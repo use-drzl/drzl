@@ -20,7 +20,8 @@
 
 ## Coding Style & Naming
 
-- Language: TypeScript (ESM, Node >= 18.17; dev on Node 20+ preferred).
+- Language: TypeScript (ESM). Published packages support Node >= 18.17; developing this repo
+  needs Node >= 22.13, because `packageManager` pins pnpm 11.
 - Formatting: Prettier; run `pnpm format` before committing.
 - Linting: ESLint (`eslint.config.js`, `@typescript-eslint/*`). Fix warnings where feasible.
 - Indentation: 2 spaces; limit line length to ~100–120 chars.

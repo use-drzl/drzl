@@ -11,13 +11,18 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - uses: pnpm/action-setup@v4
+      # v6 is the first action-setup major that supports pnpm 11.
+      - uses: pnpm/action-setup@v6
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          # pnpm 11 declares engines.node ">=22.13", so Node 20 can no longer run it.
+          node-version: 22
           cache: 'pnpm'
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
+      # Runs tsc over the ten publishable packages. This was never wired into CI, which is
+      # how it came to be failing unnoticed.
+      - run: pnpm typecheck
       - run: pnpm -r test
       - run: pnpm lint
 
@@ -30,10 +35,10 @@ jobs:
           fetch-depth: 0
       - name: Fetch master branch
         run: git fetch origin master:master
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           cache: 'pnpm'
       - run: pnpm install --frozen-lockfile
       - name: Check for changeset

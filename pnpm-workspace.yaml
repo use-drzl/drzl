@@ -2,5 +2,23 @@ packages:
   - packages/*
   - docs
 
-onlyBuiltDependencies:
-  - esbuild
+# pnpm 11 removed onlyBuiltDependencies / ignoredBuiltDependencies /
+# neverBuiltDependencies / onlyBuiltDependenciesFile / ignoreDepScripts and replaced
+# them with this single map. The old keys are not read at all in pnpm 11 and no warning
+# is emitted for them, so leaving one here would look like an allowlist while doing
+# nothing. A bare package name covers every resolved version of that package, so the two
+# esbuild copies in the tree (0.21.5 via vitest, 0.25.9 via tsup) need only one entry.
+#
+# strictDepBuilds also defaults to true in pnpm 11, so every dependency with an install
+# script must get an explicit true or false here or the install exits 1.
+#
+# esbuild: true  -> matches pnpm 10 behaviour; its postinstall links the platform binary
+#                   for tsup and vitest.
+# sharp: false   -> sharp is a root-only devDependency used by `pnpm brand:gen`. Its build
+#                   was already skipped under pnpm 10 (node_modules/.modules.yaml recorded
+#                   it in ignoredBuilds) and it resolves its native binding from the
+#                   prebuilt @img/sharp-* optional deps, so the install script is not
+#                   needed. Denying it keeps the pnpm 10 tree and shrinks the trust surface.
+allowBuilds:
+  esbuild: true
+  sharp: false

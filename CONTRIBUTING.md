@@ -5,8 +5,9 @@ Thanks for your interest in contributing! This guide explains how to set up your
 ## Project Setup
 
 - Requirements:
-  - Node.js 20+
-  - pnpm 10+
+  - Node.js 22.13+ (required by pnpm 11)
+  - pnpm 11+ (the exact version is pinned in `packageManager`; run `corepack enable` and let
+    it pick that up rather than installing pnpm yourself)
 - Install:
   - `pnpm install`
 - Build, Test, Lint, Format:

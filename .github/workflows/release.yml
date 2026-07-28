@@ -12,27 +12,30 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
-      id-token: write # provenance
+      id-token: write # the npm OIDC exchange below, and provenance
       pull-requests: write
       packages: read
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # Install the PNPM version declared in package.json -> "packageManager": "pnpm@10.15.1"
+      # Install the pnpm version declared in package.json -> "packageManager": "pnpm@11.17.0"
+      # v6 is the first action-setup major that supports pnpm 11.
       - name: Setup pnpm
-        uses: pnpm/action-setup@v4
-        # ⚠️ Do NOT pass 'version' here; it will read packageManager automatically
+        uses: pnpm/action-setup@v6
+        # Do NOT pass 'version' here; it reads packageManager automatically.
 
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          # Node 24 so the bundled npm is >= 11.5.1. Note this alone does NOT enable trusted
-          # publishing here: `changeset publish` shells out to `pnpm publish`, not `npm publish`,
-          # so it is pnpm's version that has to support the OIDC exchange. See the publish step.
+          # pnpm 11 declares engines.node ">=22.13". The bundled npm version is irrelevant:
+          # `changeset publish` shells out to `pnpm publish`, not `npm publish`, so it is
+          # pnpm's version that has to support the OIDC exchange. See the publish step.
           node-version: 24
-          # Deliberately no `registry-url`: it writes an .npmrc holding an authToken placeholder,
-          # which with no token present gets in the way of the OIDC exchange.
+          # Deliberately no `registry-url`: it writes an .npmrc holding an authToken
+          # placeholder. pnpm overwrites that token only when the exchange succeeds, so on a
+          # failed exchange the placeholder is what gets sent and you get a bare 401 instead
+          # of pnpm's "Skipped OIDC" diagnostic.
 
       - name: Install deps
         run: pnpm install --frozen-lockfile
@@ -49,10 +52,13 @@ jobs:
           createGithubReleases: true
           publish: pnpm -w changeset publish
         env:
-          # No npm token: auth is meant to be the OIDC exchange alone, using the `id-token: write`
-          # granted above. BLOCKER: `changeset publish` delegates to `pnpm publish`, and no pnpm 10.x
-          # can do that exchange (no /-/npm/v1/oidc/token/exchange call exists in the binary); the
-          # first release that supports it is pnpm 11. Until "packageManager" in package.json is
-          # moved to pnpm@11+, this step authenticates with nothing and publishes nothing.
+          # No npm token: auth is the OIDC exchange alone, using the `id-token: write` granted
+          # above. `changeset publish` spawns `pnpm publish`, and pnpm 11 then requests an ID
+          # token from ACTIONS_ID_TOKEN_REQUEST_URL with audience `npm:registry.npmjs.org`,
+          # POSTs it to /-/npm/v1/oidc/token/exchange/package/<name>, and publishes with the
+          # token that comes back. No pnpm 10.x contains that code path, which is why
+          # "packageManager" has to stay on pnpm 11 or newer for this step to authenticate.
+          # The exchange is per package name, so every one of the ten packages needs a trusted
+          # publisher configured on npmjs pointing at this repo and this workflow file.
           NPM_CONFIG_PROVENANCE: true
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

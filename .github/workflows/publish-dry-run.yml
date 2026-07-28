@@ -13,30 +13,57 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      # Needed so pnpm can request an OIDC ID token. The exchange happens before the
+      # dry-run short-circuit inside `pnpm publish`, so this job really does rehearse
+      # trusted publishing end to end without publishing anything.
+      id-token: write
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # Installs the pnpm version from package.json -> "packageManager".
+      # v6 is the first action-setup major that supports pnpm 11.
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
+          # pnpm 11 declares engines.node ">=22.13".
           node-version: 22
-          registry-url: https://registry.npmjs.org
-
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v4
+          # Deliberately no `registry-url`: it writes an .npmrc containing
+          # //registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}, and with no token in the
+          # environment that leaves a junk credential behind. pnpm only overwrites the token
+          # if the OIDC exchange succeeds, so on any failure the junk value is what gets
+          # sent, turning a clear "OIDC was skipped" diagnostic into a bare 401.
 
       - name: Install deps
-        run: pnpm -w i --frozen-lockfile
+        run: pnpm -w install --frozen-lockfile
 
       - name: Build
-        run: pnpm -w build
+        run: pnpm -w build:packages
 
-      - name: Changesets publish (dry run)
+      # Deliberately NOT `changeset publish`, for two reasons:
+      #  1. `changeset publish` has no dry-run mode. It builds its own argument list
+      #     (--access / --tag / --otp / --no-git-checks) and forwards nothing else, so there
+      #     is no way to ask it to hold back.
+      #  2. `dry-run` is a CLI-only option for `pnpm publish`; it is not in that command's
+      #     rc-readable option list, so the NPM_CONFIG_DRY_RUN env var this job used to rely
+      #     on was silently ignored. Under pnpm 11 that turned this "dry run" into a real
+      #     publish attempt which only failed because it had no credentials.
+      # `pnpm publish --dry-run` does perform the full OIDC exchange for every package and
+      # then skips the upload, which is precisely the rehearsal we want.
+      #
+      # Note: like `changeset publish`, recursive publish skips versions that already exist on
+      # the registry. Dispatched against master with no pending bump it just prints "There are
+      # no new packages that should be published" and exercises nothing. Dispatch it against a
+      # "Version Packages" branch to actually rehearse the exchange.
+      - name: Publish dry run
         env:
-          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
-          NPM_CONFIG_DRY_RUN: 'true'
-          # Ensure npm registry points to npmjs, regardless of user-level npmrc
+          # Pin the registry regardless of any runner-level npmrc.
           NPM_CONFIG_REGISTRY: https://registry.npmjs.org
         run: |
-          pnpm exec changeset publish --no-git-tag ${ { github.event.inputs.tag && format('--tag {0}', github.event.inputs.tag) || '' } }
+          pnpm -r --filter='{packages/*}' publish \
+            --dry-run \
+            --no-git-checks \
+            --tag "${{ inputs.tag || 'latest' }}"
