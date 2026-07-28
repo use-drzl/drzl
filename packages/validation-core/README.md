@@ -37,6 +37,12 @@ Shared interfaces and helpers used by validation generators.
 - Helpers
   - `insertColumns(table)`, `updateColumns(table)`, `selectColumns(table)`
   - `formatCode(code, filePath, formatOpts)`
+- File names (shared by every generator that writes a file and a barrel)
+  - `moduleFileName(tsName, fileSuffix)` -> `users.zod.ts`
+  - `moduleSpecifier(tsName, fileSuffix)` -> `./users.zod`, the specifier a sibling module
+    needs to import that file. `.mts` and `.cts` become `.mjs` and `.cjs`, since an
+    extensionless specifier never resolves to them.
+  - Both read the same `fileSuffix`, so a barrel can never name a file that was not written.
 - Naming (shared by every generator that emits a schema name)
   - `resolveAffix({ affix, schemaSuffix })` -> `ResolvedAffix`
   - `schemaName(mode, tsName, resolved)`, `typeName(mode, tsName, resolved)`

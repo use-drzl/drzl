@@ -101,7 +101,8 @@ export type UserProfiles = z.output<typeof SelectUserProfilesSchema>;
 - `schema` and `type` do not inherit from each other. Setting `schema.prefix` leaves the type
   aliases on their defaults, and the other way round.
 - Affixes rename identifiers only. File names stay on the raw Drizzle export name
-  (`users.zod.ts`), so the barrel and any `importPath` keep resolving.
+  (`users.zod.ts`), so the barrel and any `importPath` keep resolving. Use `fileSuffix`
+  below to rename the files.
 - The older flat `schemaSuffix` option still works and acts as the default for
   `affix.schema.suffix`. `affix.schema.suffix` wins when both are set.
 - A config that would emit a name TypeScript cannot parse, or two exports in one file with
@@ -129,6 +130,34 @@ Set `validation.affix` explicitly only when the schemas come from somewhere DRZL
 generate. If you set it and it disagrees with the sibling generator, `drzl generate` stops
 with an error naming both sets of identifiers rather than writing a router that cannot
 compile.
+
+## Naming generated files
+
+A `zod`, `valibot` or `arktype` generator writes one file per table, named after the Drizzle
+export name plus a suffix that defaults to `.zod.ts`, `.valibot.ts` or `.arktype.ts`, and an
+`index.ts` barrel that re-exports them. `fileSuffix` replaces that suffix.
+
+```ts
+{ kind: 'zod', path: 'src/validators/zod', fileSuffix: '.schema.ts' }
+```
+
+```
+src/validators/zod/
+  users.schema.ts
+  posts.schema.ts
+  index.ts        // export * from './users.schema';
+```
+
+The barrel follows whatever you set, so the generated tree always compiles:
+
+- A suffix with no leading dot runs straight onto the table name. `'Schema.ts'` gives
+  `usersSchema.ts` and `./usersSchema`.
+- A suffix that is only an extension leaves the bare table name. `'.ts'` gives `users.ts`
+  and `./users`.
+- `.mts` and `.cts` are written as `.mjs` and `.cjs` in the barrel, because that is the only
+  form TypeScript resolves for them. Those two are also the only suffixes whose barrel
+  resolves under `moduleResolution: 'node16'` or `'nodenext'`; every other suffix produces
+  the extensionless specifiers that `'bundler'` and `'node10'` expect.
 
 ## Config File Formats
 

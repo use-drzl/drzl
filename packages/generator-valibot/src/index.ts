@@ -9,12 +9,21 @@ import {
   updateColumns,
   selectColumns,
   formatCode,
+  moduleFileName,
+  moduleSpecifier,
   resolveAffix,
   schemaName,
   typeName,
 } from '@drzl/validation-core';
 
 type Mode = 'insert' | 'update' | 'select';
+
+/**
+ * Suffix appended to the Drizzle export name for every emitted file. The barrel derives
+ * its import specifiers from whatever value wins here, so overriding it with `fileSuffix`
+ * renames the files and the exports together.
+ */
+const DEFAULT_FILE_SUFFIX = '.valibot.ts';
 
 function vDateExpr(
   mode: Mode,
@@ -136,11 +145,11 @@ export class ValibotGenerator implements ValidationRenderer<ValibotGenerateOptio
     await fs.mkdir(out, { recursive: true });
     const affix = resolveAffix(opts);
     const coerceDates = opts.coerceDates ?? 'input';
-    const fileSuffix = opts.fileSuffix ?? '.valibot.ts';
+    const fileSuffix = opts.fileSuffix ?? DEFAULT_FILE_SUFFIX;
+    // File names deliberately stay on the raw Drizzle export name: affixes and tableCase
+    // rename identifiers, never modules, so the barrel and importPath keep resolving.
     for (const table of this.analysis.tables) {
-      // File names deliberately stay on the raw Drizzle export name: affixes and tableCase
-      // rename identifiers, never modules, so the barrel and importPath keep resolving.
-      const filePath = path.join(out, `${table.tsName}${fileSuffix}`);
+      const filePath = path.join(out, moduleFileName(table.tsName, fileSuffix));
       const code = renderTableSchemas(table, affix, coerceDates);
       const formatted = await formatCode(
         buildHeader(opts.outputHeader) + code,
@@ -166,8 +175,11 @@ export class ValibotGenerator implements ValidationRenderer<ValibotGenerateOptio
     return renderTableSchemas(table, resolveAffix(opts), opts?.coerceDates ?? 'input');
   }
 
-  private defaultIndex(analysis: Analysis, _opts: ValibotGenerateOptions) {
-    const exports = analysis.tables.map((t) => `export * from './${t.tsName}.valibot';`).join('\n');
+  private defaultIndex(analysis: Analysis, opts: ValibotGenerateOptions) {
+    const fileSuffix = opts.fileSuffix ?? DEFAULT_FILE_SUFFIX;
+    const exports = analysis.tables
+      .map((t) => `export * from '${moduleSpecifier(t.tsName, fileSuffix)}';`)
+      .join('\n');
     return exports + '\n';
   }
 }

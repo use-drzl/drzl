@@ -1,6 +1,7 @@
 import type { Analysis, Column } from '@drzl/analyzer';
 import type { AffixOptions } from './naming.js';
 
+export * from './files.js';
 export * from './naming.js';
 
 // Minimal local Table shape for codegen logic and tests
@@ -22,7 +23,13 @@ export interface FormatOptions {
 export interface ValidationGenerateOptions {
   outDir: string;
   format?: FormatOptions;
-  fileSuffix?: string; // e.g. .zod.ts
+  /**
+   * What every generated file is called after the Drizzle export name, e.g. `.zod.ts`
+   * yields `users.zod.ts`. The barrel derives its import specifiers from this same value,
+   * so a custom suffix keeps resolving. `.mts` and `.cts` are written as `.mjs` and `.cjs`
+   * in the specifier, because that is the only form TypeScript resolves.
+   */
+  fileSuffix?: string;
   schemaSuffix?: string; // e.g. Schema
   /**
    * Prefixes, suffixes and table casing for the generated identifiers. Omit it and the

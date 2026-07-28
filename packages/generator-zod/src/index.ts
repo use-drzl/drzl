@@ -7,6 +7,8 @@ import type {
 import {
   formatCode,
   insertColumns,
+  moduleFileName,
+  moduleSpecifier,
   resolveAffix,
   schemaName,
   selectColumns,
@@ -15,6 +17,13 @@ import {
 } from '@drzl/validation-core';
 
 type Mode = 'insert' | 'update' | 'select';
+
+/**
+ * Suffix appended to the Drizzle export name for every emitted file. The barrel derives
+ * its import specifiers from whatever value wins here, so overriding it with `fileSuffix`
+ * renames the files and the exports together.
+ */
+const DEFAULT_FILE_SUFFIX = '.zod.ts';
 
 function zodExprForColumn(
   c: Column,
@@ -133,11 +142,11 @@ export class ZodGenerator implements ValidationRenderer<ZodGenerateOptions> {
     await fs.mkdir(out, { recursive: true });
     const affix = resolveAffix(opts);
     const coerceDates = opts.coerceDates ?? 'input';
-    const fileSuffix = opts.fileSuffix ?? '.zod.ts';
+    const fileSuffix = opts.fileSuffix ?? DEFAULT_FILE_SUFFIX;
+    // File names deliberately stay on the raw Drizzle export name: affixes and tableCase
+    // rename identifiers, never modules, so the barrel and importPath keep resolving.
     for (const table of this.analysis.tables) {
-      // File names deliberately stay on the raw Drizzle export name: affixes and tableCase
-      // rename identifiers, never modules, so the barrel and importPath keep resolving.
-      const filePath = path.join(out, `${table.tsName}${fileSuffix}`);
+      const filePath = path.join(out, moduleFileName(table.tsName, fileSuffix));
       const code = renderTableSchemas(table, affix, coerceDates);
       const formatted = await formatCode(
         buildHeader(opts.outputHeader) + code,
@@ -167,8 +176,11 @@ export class ZodGenerator implements ValidationRenderer<ZodGenerateOptions> {
 
   renderIndex?(analysis: Analysis, opts?: ZodGenerateOptions): string;
 
-  private defaultIndex(analysis: Analysis, _opts: ZodGenerateOptions) {
-    const exports = analysis.tables.map((t) => `export * from './${t.tsName}.zod';`).join('\n');
+  private defaultIndex(analysis: Analysis, opts: ZodGenerateOptions) {
+    const fileSuffix = opts.fileSuffix ?? DEFAULT_FILE_SUFFIX;
+    const exports = analysis.tables
+      .map((t) => `export * from '${moduleSpecifier(t.tsName, fileSuffix)}';`)
+      .join('\n');
     return exports + '\n';
   }
 }
