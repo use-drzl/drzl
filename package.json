@@ -17,6 +17,7 @@
     "lint": "eslint . --ext .ts",
     "format": "prettier -w .",
     "typecheck": "pnpm -r --filter='{packages/*}' exec tsc -p tsconfig.json --noEmit",
+    "verify:packed": "bash scripts/verify-packed.sh",
     "changeset": "changeset",
     "changeset:status": "changeset status",
     "changeset:version": "changeset version",

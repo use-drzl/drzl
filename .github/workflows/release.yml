@@ -43,6 +43,15 @@ jobs:
       - name: Build packages
         run: pnpm -r --sort --workspace-concurrency=1 --filter '{packages/*}' run build
 
+      # Gate the publish on the artefact, not on the workspace. This runs here rather than
+      # relying on the `verify-packed` job in ci.yml because that job races this one: both
+      # trigger on the same push to master, and nothing makes the publish wait for it. By the
+      # time a failure was visible in CI the version would already be on npm, and npm versions
+      # are immutable. Packing after the version bump means it checks the exact tarballs that
+      # are about to be published.
+      - name: Verify the packed artefacts
+        run: pnpm verify:packed
+
       - name: Changesets (PR + publish on merge)
         uses: changesets/action@v1
         with:

@@ -26,6 +26,25 @@ jobs:
       - run: pnpm -r test
       - run: pnpm lint
 
+  # Everything above imports from source. This job is the only one that exercises what a
+  # consumer actually gets: the packed tarballs, installed with npm into a tree that shares
+  # nothing with this workspace, driven through `drzl generate`, with the emitted output
+  # typechecked under every moduleResolution TypeScript still supports.
+  #
+  # It is deliberately a separate job rather than another step, so a green build-test-lint
+  # can never be mistaken for a shippable artefact.
+  verify-packed:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: 'pnpm'
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm verify:packed
+
   changeset-check:
     runs-on: ubuntu-latest
     if: github.event_name == 'pull_request'
