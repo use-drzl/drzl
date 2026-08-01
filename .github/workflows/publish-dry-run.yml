@@ -69,7 +69,33 @@ jobs:
           # Pin the registry regardless of any runner-level npmrc.
           NPM_CONFIG_REGISTRY: https://registry.npmjs.org
         run: |
+          set -o pipefail
           pnpm -r --filter='{packages/*}' publish \
             --dry-run \
             --no-git-checks \
-            --tag "${{ inputs.tag || 'latest' }}"
+            --tag "${{ inputs.tag || 'latest' }}" 2>&1 | tee /tmp/dry-run.log
+
+          # pnpm treats a failed OIDC exchange as a WARNING and carries on, so without this
+          # check the job goes green having authenticated nothing. That is the worst possible
+          # outcome for a rehearsal: the first run of this workflow reported success while all
+          # eight exchanges returned 404, which is npm's answer for "no trusted publisher is
+          # configured for this package". A real publish would have got that far and then
+          # failed at the upload.
+          #
+          # The GitHub side is not the part that breaks. Requesting the ID token returns 200
+          # every time; it is the POST to npm's exchange endpoint that 404s. So grep for
+          # pnpm's own marker rather than trying to infer success from the exit code.
+          if grep -q 'Skipped OIDC' /tmp/dry-run.log; then
+            echo
+            echo "FAIL: the OIDC token exchange did not succeed for every package."
+            echo "Packages whose exchange was skipped:"
+            grep -B1 'Skipped OIDC' /tmp/dry-run.log | grep -oE '@drzl/[a-z-]+@[0-9][^ ]*' || true
+            echo
+            echo "A 404 from the exchange endpoint means npm has no trusted publisher for that"
+            echo "package name. Connect it on npmjs.com (Settings, Trusted Publisher, GitHub"
+            echo "Actions) with organization use-drzl, repository drzl, workflow release.yml,"
+            echo "and Environment left blank, then dispatch this workflow again."
+            exit 1
+          fi
+
+          echo "OK: every package completed the OIDC token exchange."
