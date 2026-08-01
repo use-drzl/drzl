@@ -140,6 +140,34 @@ describe('drzl generate, end to end', () => {
     expect(posts).toMatch(/listByAuthorId:\s*listByAuthorIdPosts/);
   }, 120_000);
 
+  it('points the service template at wherever the services were actually written', async () => {
+    // `servicesDir` is declared on the oRPC generator's options and read by
+    // @drzl/template-orpc-service, but the CLI never passed it, so the template fell back to
+    // its `src/services` default. With the service generator configured anywhere else, the
+    // emitted router imported a module that does not exist.
+    await fs.writeFile(
+      path.join(workdir, 'drzl.config.ts'),
+      `export default {
+         schema: './src/schema.ts',
+         outDir: './out-svc/api',
+         generators: [
+           { kind: 'orpc', template: '@drzl/template-orpc-service' },
+           { kind: 'service', path: './out-svc/services' },
+         ],
+       };`,
+      'utf8'
+    );
+    await run(process.execPath, [CLI, 'generate'], { cwd: workdir, maxBuffer: 20 * 1024 * 1024 });
+
+    const router = await fs.readFile(path.join(workdir, 'out-svc', 'api', 'posts.ts'), 'utf8');
+    const spec = router.match(/from ['"]([^'"]*postService[^'"]*)['"]/)?.[1];
+    expect(spec, `no postService import in:\n${router}`).toBeTruthy();
+
+    // Resolve the specifier the way Node would, and require the file to be there.
+    const resolved = path.resolve(path.join(workdir, 'out-svc', 'api'), spec!.replace(/\.js$/, ''));
+    await expect(fs.access(`${resolved}.ts`)).resolves.toBeUndefined();
+  }, 120_000);
+
   it('leaves the router untouched when the flag is absent', async () => {
     const posts = await generate(
       `export default {

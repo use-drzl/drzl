@@ -94,6 +94,13 @@ program
       );
       const total = analysis.tables.length || 1;
       progress.start(total, 0);
+      // Where the service generator is actually writing, so a router template that imports
+      // services spells a path that exists. Templates default this to 'src/services', and with
+      // nothing passed that default was used no matter where the services really went, emitting
+      // an import of a module that was never created. Must match the `g.path ?? 'src/services'`
+      // used by the service branch below.
+      const servicesDir =
+        cfg.generators.find((x: { kind: string }) => x.kind === 'service')?.path ?? 'src/services';
       for (const g of cfg.generators) {
         if (g.kind === 'orpc') {
           const gen = new ORPCGenerator(analysis);
@@ -107,6 +114,7 @@ program
             templateOptions: g.templateOptions,
             importExtension: g.importExtension,
             validation: g.validation,
+            servicesDir,
             onProgress: ({ index }) => progress.update(index),
           });
           progress.stop();

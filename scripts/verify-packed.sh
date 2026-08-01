@@ -49,6 +49,8 @@ if [ "$count" -eq 0 ]; then
 fi
 
 echo "==> installing them into an empty project"
+# A real foreign key, because the oRPC generator derives relation endpoints from one and a
+# schema without any would exercise none of that path.
 cat > "$APP/src/db/schema.ts" <<'SCHEMA'
 import { sqliteTable, text, integer, real } from 'drizzle-orm/sqlite-core';
 
@@ -59,25 +61,46 @@ export const users = sqliteTable('users', {
 });
 
 export const posts = sqliteTable('posts', {
-  slug: text('slug').primaryKey(),
+  id: integer('id').primaryKey(),
   title: text('title').notNull(),
-  authorId: integer('author_id'),
+  authorId: integer('author_id').references(() => users.id),
 });
 SCHEMA
 
+# Every generator kind, not just zod. Covering one of five is how the published oRPC generator
+# came to emit routers that fail `tsc --strict` while this guard stayed green.
 cat > "$APP/drzl.config.ts" <<'CONFIG'
 export default {
   schema: './src/db/schema.ts',
-  generators: [{ kind: 'zod', path: './src/generated/zod' }],
+  outDir: './src/generated/api',
+  generators: [
+    { kind: 'zod', path: './src/generated/zod' },
+    { kind: 'valibot', path: './src/generated/valibot' },
+    { kind: 'arktype', path: './src/generated/arktype' },
+    { kind: 'service', path: './src/generated/services' },
+    { kind: 'orpc', includeRelations: true },
+  ],
 };
 CONFIG
 
 cd "$APP"
 npm init -y >/dev/null
+# ESM, because arktype and @orpc/server ship ESM only. Under `moduleResolution: node16` a
+# CommonJS consumer genuinely cannot import them, and tsc says so with TS1479. That is correct
+# behaviour rather than a defect in generated code, so the fixture has to be the kind of project
+# these packages can actually be used from.
+node -e "
+  const fs = require('fs');
+  const p = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+  p.type = 'module';
+  fs.writeFileSync('package.json', JSON.stringify(p, null, 2));
+"
 # npm rather than pnpm on purpose: a consumer is unlikely to share this repo's package manager,
 # and npm's flat layout is the harsher test of whether `dependencies` are actually declared.
+# valibot, arktype and @orpc/server are peers of the generators, so the generated tree cannot
+# typecheck without them present, exactly as in a consumer's project.
 npm install --no-audit --no-fund --loglevel=error \
-  "$TARS"/*.tgz drizzle-orm zod typescript >/dev/null
+  "$TARS"/*.tgz drizzle-orm zod valibot arktype @orpc/server typescript >/dev/null
 
 if [ ! -e node_modules/.bin/drzl ]; then
   echo "FAIL: the drzl bin did not resolve after a real install." >&2
@@ -92,6 +115,19 @@ BARREL="src/generated/zod/index.ts"
 for f in src/generated/zod/users.zod.ts src/generated/zod/posts.zod.ts; do
   [ -f "$f" ] || { echo "FAIL: expected emitted file missing: $f" >&2; exit 1; }
 done
+
+# One representative file per generator kind, so a kind that silently emitted nothing is caught
+# here rather than by the typecheck passing over an empty directory.
+for f in src/generated/valibot/index.ts src/generated/arktype/index.ts \
+         src/generated/services/postService.ts src/generated/api/posts.ts; do
+  [ -f "$f" ] || { echo "FAIL: expected emitted file missing: $f" >&2; exit 1; }
+done
+
+# The relation endpoint the foreign key above should have produced.
+grep -q 'listByAuthorId' src/generated/api/posts.ts || {
+  echo "FAIL: includeRelations did not emit a lookup for the authorId foreign key." >&2
+  exit 1
+}
 
 # Exit code alone is not enough: a generator that writes an empty barrel still exits 0.
 grep -q 'export \* from "./users.zod.js";' "$BARREL" || {

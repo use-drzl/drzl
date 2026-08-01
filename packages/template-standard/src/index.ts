@@ -97,15 +97,21 @@ const template: ORPCTemplateHooks = {
         getVar,
         `const ${getVar} = os.input(z.object({ id: z.number() })).handler(async ({ input: _input }) => { return null; });`
       ),
+      // These two throw rather than returning the input. The generator declares
+      // `.output(SelectSchema)` on both, and the input is the *insert* shape, where generated
+      // and defaulted columns are optional and in select they are required. Returning it did
+      // not typecheck, and would not have been correct if it had: a created row carries columns
+      // the input never had. A body that only throws has type `never`, so it honours the
+      // declared contract and says plainly that the work is not done.
       make(
         'create',
         createVar,
-        `const ${createVar} = os.input(z.any()).handler(async ({ input: _input }) => { return _input; });`
+        `const ${createVar} = os.input(z.any()).handler(async ({ input: _input }) => { throw new Error('Not implemented: create ${table.tsName}. Persist the input and return the created row.'); });`
       ),
       make(
         'update',
         updateVar,
-        `const ${updateVar} = os.input(z.object({ id: z.number(), data: z.any() })).handler(async ({ input: _input }) => { return _input.data; });`
+        `const ${updateVar} = os.input(z.object({ id: z.number(), data: z.any() })).handler(async ({ input: _input }) => { throw new Error('Not implemented: update ${table.tsName}. Apply the patch and return the updated row.'); });`
       ),
       make(
         'delete',
