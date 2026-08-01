@@ -89,7 +89,11 @@ jobs:
             echo
             echo "FAIL: the OIDC token exchange did not succeed for every package."
             echo "Packages whose exchange was skipped:"
-            grep -B1 'Skipped OIDC' /tmp/dry-run.log | grep -oE '@drzl/[a-z-]+@[0-9][^ ]*' || true
+            # -A1, not -B1: pnpm logs the warning first and the package it was about on the
+            # NEXT line, so looking backwards silently prints nothing and the list reads as
+            # "no packages affected" during the exact failure it exists to explain.
+            grep -A1 'Skipped OIDC' /tmp/dry-run.log \
+              | grep -oE '@drzl/[a-z-]+@[0-9][^ ]*' | sed 's/^/  /' || true
             echo
             echo "A 404 from the exchange endpoint means npm has no trusted publisher for that"
             echo "package name. Connect it on npmjs.com (Settings, Trusted Publisher, GitHub"
