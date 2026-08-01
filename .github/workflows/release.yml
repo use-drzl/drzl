@@ -5,6 +5,20 @@ on:
     branches: [master]
     paths-ignore:
       - 'docs/**'
+  # The OIDC rehearsal has to live in THIS file. npm matches a trusted publisher on the exact
+  # workflow filename and allows only one per package, so a separate dry-run workflow can never
+  # authenticate: its token carries its own filename and the exchange returns 404 whether or not
+  # the publisher is correctly configured. That makes a standalone rehearsal worse than useless,
+  # since its failure is indistinguishable from a genuinely missing publisher.
+  #
+  # Dispatch against the changeset-release/master branch. On master every version already exists
+  # on the registry, so recursive publish skips them all and nothing is exercised.
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Rehearse the OIDC exchange without publishing anything
+        type: boolean
+        default: true
 
 jobs:
   release:
@@ -61,7 +75,42 @@ jobs:
       - name: Verify the packed artefacts
         run: pnpm verify:packed
 
+      # Runs the real exchange for every package and stops short of the upload, from the same
+      # workflow filename the trusted publishers are registered against, so a pass here means
+      # the publishers really are configured correctly.
+      - name: Rehearse trusted publishing (publishes nothing)
+        if: github.event_name == 'workflow_dispatch' && inputs.dry_run
+        env:
+          NPM_CONFIG_REGISTRY: https://registry.npmjs.org
+        run: |
+          set -o pipefail
+          pnpm -r --filter='{packages/*}' publish \
+            --dry-run --no-git-checks 2>&1 | tee /tmp/dry-run.log
+
+          # pnpm logs a failed exchange as a warning and exits 0, so without this the job goes
+          # green having authenticated nothing.
+          if grep -q 'Skipped OIDC' /tmp/dry-run.log; then
+            echo
+            echo "FAIL: the OIDC exchange did not succeed for every package."
+            echo "Packages still without a working trusted publisher:"
+            # -A1: pnpm prints the warning first and the package on the NEXT line.
+            grep -A1 'Skipped OIDC' /tmp/dry-run.log \
+              | grep -oE '@drzl/[a-z-]+@[0-9][^ ]*' | sed 's/^/  /' || true
+            echo
+            echo "On npmjs.com: package page, Settings, Trusted Publisher, GitHub Actions."
+            echo "  Organization or user: use-drzl"
+            echo "  Repository:           drzl"
+            echo "  Workflow filename:    release.yml"
+            echo "  Environment:          leave blank"
+            exit 1
+          fi
+
+          echo "OK: every package completed the OIDC exchange. Safe to merge the release PR."
+
+      # Gated so a dispatched rehearsal can never publish. Pushes behave exactly as before, and
+      # dispatching with dry_run unchecked is the manual release path.
       - name: Changesets (PR + publish on merge)
+        if: github.event_name == 'push' || inputs.dry_run == false
         uses: changesets/action@v1
         with:
           version: pnpm -w changeset:version
