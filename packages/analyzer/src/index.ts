@@ -46,6 +46,22 @@ export interface Check {
   expression?: string;
 }
 
+/**
+ * A foreign key as declared, which may span several columns. Single-column keys are also
+ * mirrored onto `Column.references` for convenience; composite ones exist only here, because
+ * they cannot be attributed to any one column.
+ *
+ * Column names are TypeScript property names, matching `Column.name`.
+ */
+export interface ForeignKey {
+  name?: string;
+  columns: string[];
+  foreignTable: string;
+  foreignColumns: string[];
+  onDelete?: string;
+  onUpdate?: string;
+}
+
 export interface Table {
   name: string;
   tsName: string;
@@ -55,6 +71,7 @@ export interface Table {
   unique: Key[];
   indexes: Index[];
   checks?: Check[];
+  foreignKeys?: ForeignKey[];
   meta?: Record<string, unknown>;
 }
 
@@ -92,6 +109,216 @@ export class SchemaAnalyzer {
       }
     } catch {}
     return (table as any)[Symbol.for(key)];
+  }
+
+  /**
+   * Drizzle keys the Columns object by TypeScript property name, but every other piece of
+   * metadata (foreign keys, indexes, composite primary keys) reports the *database* column
+   * name. We report the TS name, since that is what a generated schema has to spell, so
+   * anything coming from that other metadata has to be translated back.
+   *
+   * Falls through to the input when a name is unknown, which keeps raw SQL expressions and
+   * columns belonging to another table readable rather than dropping them.
+   */
+  private dbToTsNames(columnsObj: any): (dbName: unknown) => string {
+    const map = new Map<string, string>();
+    for (const [tsName, col] of Object.entries(columnsObj ?? {})) {
+      const dbName = (col as any)?.name;
+      if (typeof dbName === 'string') map.set(dbName, tsName);
+    }
+    return (dbName: unknown) => {
+      const raw = typeof dbName === 'string' ? dbName : ((dbName as any)?.name ?? String(dbName));
+      return map.get(raw) ?? raw;
+    };
+  }
+
+  /**
+   * Entries from a table's third argument, the extra-config callback.
+   *
+   * Drizzle invokes this callback with the table's ExtraConfigColumns, NOT with the table.
+   * Passing the table throws, and because the whole block used to sit under a bare `catch {}`
+   * the throw was swallowed and every index, unique index, composite primary key, check
+   * constraint and table-level foreign key silently vanished from the analysis.
+   *
+   * Both shapes are accepted: modern Drizzle returns an array, older versions an object.
+   */
+  private extraConfigEntries(tbl: any, issues: Issue[], tableName: string): any[] {
+    const builder = this.getSymbol(tbl, 'drizzle:ExtraConfigBuilder');
+    if (typeof builder !== 'function') return [];
+    const cols = this.getSymbol(tbl, 'drizzle:ExtraConfigColumns') ?? tbl;
+    try {
+      const built = builder(cols);
+      if (!built) return [];
+      return Array.isArray(built) ? built : Object.values(built);
+    } catch (e) {
+      issues.push({
+        code: 'DRZL_ANL_EXTRACONFIG',
+        level: 'warn',
+        message: `Could not evaluate the extra-config callback for table "${tableName}": ${(e as Error).message}`,
+        hint: 'Indexes, composite keys, checks and table-level foreign keys will be missing for this table.',
+      });
+      return [];
+    }
+  }
+
+  /**
+   * Foreign keys declared inline with `.references()`.
+   *
+   * Drizzle stores these per dialect under `drizzle:PgInlineForeignKeys`,
+   * `drizzle:MySqlInlineForeignKeys` and `drizzle:SQLiteInlineForeignKeys`. Matching the
+   * suffix rather than listing the three keeps new dialects working without a change here.
+   * SingleStore has no entry because it does not support foreign keys at all, which is why
+   * `.references()` is not even a function there.
+   */
+  private inlineForeignKeys(tbl: any): any[] {
+    try {
+      for (const s of Object.getOwnPropertySymbols(tbl)) {
+        if (/InlineForeignKeys$/.test((s as any).description ?? '')) {
+          const v = (tbl as any)[s];
+          if (Array.isArray(v)) return v;
+        }
+      }
+    } catch {}
+    return [];
+  }
+
+  /**
+   * Normalise one foreign key, inline or table-level, into a common shape.
+   *
+   * `.reference()` yields the resolved columns on both. The referential actions do not live
+   * in the same place: a built ForeignKey exposes `onDelete`/`onUpdate` as strings, while an
+   * unbuilt ForeignKeyBuilder exposes them as the chainable setter functions and keeps the
+   * values in `_onDelete`/`_onUpdate`. Reading the wrong one yields a function where a string
+   * is expected, so check the type rather than the property's presence.
+   *
+   * Postgres reports 'no action' where MySQL and SQLite report nothing, for identical schemas.
+   * Since 'no action' *is* the default, it is normalised away so the same schema analyses the
+   * same across dialects.
+   */
+  private readForeignKey(fk: any, toTs: (n: unknown) => string) {
+    let ref: any;
+    try {
+      ref = fk?.reference?.();
+    } catch {
+      return undefined;
+    }
+    if (!ref?.foreignTable) return undefined;
+
+    const action = (v: unknown, fallback: unknown) => {
+      const raw = typeof v === 'string' ? v : typeof fallback === 'string' ? fallback : undefined;
+      return raw && raw.toLowerCase() !== 'no action' ? raw : undefined;
+    };
+
+    const foreignColumnsObj = this.getSymbol(ref.foreignTable, 'drizzle:Columns') ?? {};
+    const toForeignTs = this.dbToTsNames(foreignColumnsObj);
+
+    return {
+      columns: (ref.columns ?? []).map((c: any) => toTs(c?.name)),
+      foreignTable: (this.getSymbol(ref.foreignTable, 'drizzle:Name') as string) ?? 'unknown',
+      foreignColumns: (ref.foreignColumns ?? []).map((c: any) => toForeignTs(c?.name)),
+      onDelete: action(fk?.onDelete, fk?._onDelete),
+      onUpdate: action(fk?.onUpdate, fk?._onUpdate),
+      name: typeof fk?.getName === 'function' ? undefined : fk?.name,
+    };
+  }
+
+  /**
+   * Render a Drizzle SQL template back into readable text.
+   *
+   * A `sql` tagged template is stored as alternating chunks: literal fragments holding a
+   * string array, and column references. `String()` on that array yields "[object Object]",
+   * so a check constraint's expression has to be assembled rather than stringified.
+   * Anything unrecognised becomes `?`, which is honest about the gap without inventing SQL.
+   */
+  private renderSql(value: any, toTs: (n: unknown) => string): string {
+    const chunks = value?.queryChunks;
+    if (!Array.isArray(chunks)) return String(value ?? '');
+    return chunks
+      .map((c: any) => {
+        if (Array.isArray(c?.value)) return c.value.join('');
+        if (typeof c?.name === 'string') return toTs(c.name);
+        if (c?.queryChunks) return this.renderSql(c, toTs);
+        return '?';
+      })
+      .join('')
+      .trim();
+  }
+
+  /** A value produced by Drizzle's `relations()` helper: a source table plus a callback. */
+  private isRelationsObject(val: any): boolean {
+    return (
+      !!val &&
+      typeof val === 'object' &&
+      typeof val.config === 'function' &&
+      !!this.getSymbol(val.table, 'drizzle:Columns')
+    );
+  }
+
+  /**
+   * Read the relations declared by `relations(table, ({ one, many }) => ...)`.
+   *
+   * The previous implementation looked for `val.config.relations`. That property does not
+   * exist: `config` is a *function*, so the expression was always undefined and the branch
+   * never ran. Nothing failed loudly, relations simply came back empty forever.
+   *
+   * `config` cannot just be read, it has to be invoked with the builder Drizzle would pass.
+   * Rather than depend on drizzle-orm to obtain the real builder, which this package
+   * deliberately does not do anywhere else, a stand-in supplies the only two functions a
+   * user's callback can call. `relations()` wraps that callback and calls `.withFieldName()`
+   * on each returned value, so the stand-in results must carry that method or the call throws.
+   */
+  private readRelationsObject(val: any, exportName: string, issues: Issue[]): Relation[] {
+    const from = (this.getSymbol(val.table, 'drizzle:Name') as string) ?? exportName;
+    const make = (kind: 'one' | 'many') => (table: any, cfg: any) => ({
+      kind,
+      referencedTable: table,
+      cfg,
+      withFieldName(this: any, n: string) {
+        this.fieldName = n;
+        return this;
+      },
+    });
+
+    try {
+      const built = val.config({ one: make('one'), many: make('many') });
+      const out: Relation[] = [];
+      for (const rel of Object.values(built ?? {}) as any[]) {
+        const to = this.getSymbol(rel?.referencedTable, 'drizzle:Name') as string | undefined;
+        if (to) out.push({ kind: rel.kind, from, to });
+      }
+      return out;
+    } catch (e) {
+      issues.push({
+        code: 'DRZL_ANL_RELATIONS',
+        level: 'warn',
+        message: `Could not read the relations declared in "${exportName}": ${(e as Error).message}`,
+        hint: 'Relations for this table will be missing from the analysis.',
+      });
+      return [];
+    }
+  }
+
+  /**
+   * Infer many-to-many links through a join table.
+   *
+   * A join table is taken to be one whose every column participates in a foreign key, and
+   * which points at exactly two distinct tables. Requiring *all* columns to be foreign keys
+   * is deliberate: a table carrying its own data is a real entity, not plumbing, and calling
+   * it a join table would invent a relation the author never declared.
+   */
+  private inferManyToMany(tables: Table[]): Relation[] {
+    const out: Relation[] = [];
+    for (const t of tables) {
+      const fks = t.foreignKeys ?? [];
+      if (fks.length < 2) continue;
+      const fkCols = new Set(fks.flatMap((f) => f.columns));
+      if (!t.columns.every((c) => fkCols.has(c.name))) continue;
+      const targets = [...new Set(fks.map((f) => f.foreignTable))];
+      if (targets.length !== 2) continue;
+      out.push({ kind: 'manyToMany', from: targets[0], to: targets[1], via: t.name });
+      out.push({ kind: 'manyToMany', from: targets[1], to: targets[0], via: t.name });
+    }
+    return out;
   }
 
   private mapColumnType(column: any): { tsType: string; dbType: string } {
@@ -286,12 +513,13 @@ export class SchemaAnalyzer {
     }
   }
 
-  private analyzeTable(tsName: string, tbl: any): Table {
+  private analyzeTable(tsName: string, tbl: any, issues: Issue[] = []): Table {
     const columnsObj = this.getSymbol(tbl, 'drizzle:Columns') ?? {};
     const columns: Column[] = [];
     const unique: Key[] = [];
     const indexes: Index[] = [];
     const checks: Check[] = [];
+    const foreignKeys: ForeignKey[] = [];
     const pkCols: string[] = [];
     const uniqueGroups = new Map<string, string[]>();
 
@@ -309,15 +537,10 @@ export class SchemaAnalyzer {
         (col as any)?.default !== undefined ||
         (col as any)?.config?.default !== undefined ||
         isGenerated;
-      const ref = (col as any)?.references;
-      const references = ref
-        ? {
-            table: ref.table ?? 'unknown',
-            column: ref.column ?? 'id',
-            onDelete: ref.onDelete,
-            onUpdate: ref.onUpdate,
-          }
-        : undefined;
+      // `col.references` does not exist on a Drizzle column; reading it always produced
+      // undefined, so no foreign key was ever reported. The real data is collected from the
+      // table's inline and table-level foreign keys below and attached afterwards.
+      const references = undefined as Column['references'];
       const isUnique = !!((col as any)?.isUnique || (col as any)?.config?.isUnique);
       const isPk = !!((col as any)?.primary || (col as any)?.config?.primaryKey);
       if (isPk) pkCols.push(colName);
@@ -345,54 +568,79 @@ export class SchemaAnalyzer {
     const name = (this.getSymbol(tbl, 'drizzle:Name') as string) || tsName;
     const schema = this.getSymbol(tbl, 'drizzle:Schema') as string | undefined;
 
-    // Try to read composite PK / indexes from known symbols (best-effort)
+    const toTs = this.dbToTsNames(columnsObj);
+
     try {
-      const pkDef: any = (tbl as any)[Symbol.for('drizzle:PrimaryKey')];
+      const pkDef: any = this.getSymbol(tbl, 'drizzle:PrimaryKey');
       if (pkDef && Array.isArray(pkDef.columns)) {
-        const cols = pkDef.columns.map((c: any) => c?.name ?? String(c)).filter(Boolean);
+        const cols = pkDef.columns.map((c: any) => toTs(c?.name)).filter(Boolean);
         if (cols.length) {
           pkCols.splice(0, pkCols.length, ...cols);
         }
       }
     } catch {}
     try {
-      const idxDef: any = (tbl as any)[Symbol.for('drizzle:Indexes')];
+      const idxDef: any = this.getSymbol(tbl, 'drizzle:Indexes');
       if (Array.isArray(idxDef)) {
         for (const i of idxDef) {
-          const cols = (i?.columns ?? []).map((c: any) => c?.name ?? String(c)).filter(Boolean);
+          const cols = (i?.columns ?? []).map((c: any) => toTs(c?.name)).filter(Boolean);
           if (cols.length) indexes.push({ columns: cols, name: i?.name });
           if (i?.unique && cols.length) unique.push({ columns: cols });
         }
       }
     } catch {}
 
-    // Evaluate ExtraConfigBuilder if present to extract composite indexes/uniques
-    try {
-      const builder: any = (tbl as any)[Symbol.for('drizzle:ExtraConfigBuilder')];
-      if (typeof builder === 'function') {
-        const built = builder(tbl);
-        const entries: Array<[string, any]> = Array.isArray(built)
-          ? built.map((v: any, i: number) => [v?.config?.name ?? v?.name ?? `idx_${i}`, v])
-          : Object.entries(built ?? {});
-        for (const [key, val] of entries) {
-          const cfg: any = (val as any)?.config ?? val;
-          const cols = (cfg?.columns ?? []).map((c: any) => c?.name ?? String(c)).filter(Boolean);
-          const uniqueFlag = !!(
-            cfg?.unique ||
-            /unique/i.test((val as any)?.constructor?.name ?? '') ||
-            /unique/i.test(key)
-          );
-          const idxName = cfg?.name ?? (val as any)?.name ?? key;
-          const expr: string | undefined = cfg?.where || cfg?.expression;
-          if (expr && !cols.length) {
-            checks.push({ name: idxName, expression: String(expr) });
-          } else if (cols.length) {
-            indexes.push({ columns: cols, name: idxName });
-            if (uniqueFlag) unique.push({ columns: cols });
-          }
-        }
+    // Everything declared in the table's third argument. Each builder keeps its data in a
+    // different place, so they are matched on shape rather than on constructor name, which
+    // survives minification and does not assume a dialect's class naming.
+    for (const entry of this.extraConfigEntries(tbl, issues, name)) {
+      // Foreign keys carry a reference() and are handled with the inline ones below.
+      if (typeof entry?.reference === 'function') {
+        const fk = this.readForeignKey(entry, toTs);
+        if (fk) foreignKeys.push(fk);
+        continue;
       }
-    } catch {}
+
+      // A check keeps `name` and a SQL `value` on the builder itself and has no `config`.
+      if (entry?.value?.queryChunks && entry?.name !== undefined) {
+        checks.push({ name: entry.name, expression: this.renderSql(entry.value, toTs) });
+        continue;
+      }
+
+      // Index builders keep their data in `config`; a primary key builder keeps it directly
+      // on the instance. Reading only `config` is why composite primary keys went missing.
+      const cfg: any = entry?.config ?? entry ?? {};
+      const cols = (cfg.columns ?? []).map((c: any) => toTs(c?.name)).filter(Boolean);
+      if (!cols.length) continue;
+
+      // Only an index has a `unique` flag, so its absence identifies the primary key.
+      if (cfg.unique === undefined) {
+        pkCols.splice(0, pkCols.length, ...cols);
+        continue;
+      }
+
+      indexes.push({ columns: cols, name: cfg.name });
+      if (cfg.unique) unique.push({ columns: cols, name: cfg.name });
+    }
+
+    for (const fk of this.inlineForeignKeys(tbl)) {
+      const read = this.readForeignKey(fk, toTs);
+      if (read) foreignKeys.push(read);
+    }
+
+    // Attach single-column foreign keys to their column. A composite key cannot be expressed
+    // on one column, so it stays on the table only; dropping it there would silently lose it.
+    for (const fk of foreignKeys) {
+      if (fk.columns.length !== 1 || fk.foreignColumns.length !== 1) continue;
+      const col = columns.find((c) => c.name === fk.columns[0]);
+      if (!col) continue;
+      col.references = {
+        table: fk.foreignTable,
+        column: fk.foreignColumns[0],
+        onDelete: fk.onDelete,
+        onUpdate: fk.onUpdate,
+      };
+    }
 
     return {
       name,
@@ -408,6 +656,7 @@ export class SchemaAnalyzer {
       ],
       indexes: [...(pkCols.length ? ([{ columns: pkCols }] as Index[]) : []), ...indexes],
       checks,
+      foreignKeys,
       meta: {},
     };
   }
@@ -448,45 +697,43 @@ export class SchemaAnalyzer {
     const tables: Table[] = [];
     const relations: Relation[] = [];
     const enums: Enum[] = [];
+    // Enums seen on a column, resolved against the exported ones once the loop below ends.
+    const columnEnums: Enum[] = [];
 
     // Identify table-like exports by presence of Drizzle symbols
     for (const [name, val] of Object.entries(exportsObj)) {
       try {
         const cols = this.getSymbol(val, 'drizzle:Columns');
         if (cols && typeof cols === 'object') {
-          const table = this.analyzeTable(name, val);
+          const table = this.analyzeTable(name, val, issues);
           tables.push(table);
 
-          // Relations from FK
-          if (opts.includeRelations) {
-            for (const col of table.columns) {
-              if (col.references) {
-                relations.push({
-                  kind: 'many',
-                  from: table.name,
-                  to: col.references.table,
-                });
-              }
-              // Enum capture: if enumValues present in drizzle column (best-effort)
-              const enumVals = (cols as any)[col.name]?.enumValues as string[] | undefined;
-              if (enumVals && enumVals.length) {
-                const enumName = `${table.name}_${col.name}_enum`;
-                if (!enums.find((e) => e.name === enumName))
-                  enums.push({ name: enumName, values: enumVals });
-              }
+          // Enum capture is deliberately outside any relations guard. It used to sit inside
+          // `if (opts.includeRelations)`, so a caller that only wanted tables silently lost
+          // every enum.
+          //
+          // Only collected here. A column carrying a named enum (pgEnum) is the same object
+          // the schema exports separately, and naming it `<table>_<column>_enum` as well
+          // reported one enum twice. Resolving that needs every export seen first, so the
+          // decision is deferred to a pass after this loop.
+          for (const col of table.columns) {
+            const enumVals = (cols as any)[col.name]?.enumValues as string[] | undefined;
+            if (enumVals && enumVals.length) {
+              columnEnums.push({ name: `${table.name}_${col.name}_enum`, values: enumVals });
             }
           }
-        } else if ((val as any)?.config?.relations) {
-          const cfg = (val as any).config.relations;
-          const base = name.replace(/Relations$/, '');
-          for (const entry of Object.values(cfg) as any[]) {
-            const target = entry?.referencedTable;
-            const targetName = target
-              ? (this.getSymbol(target, 'drizzle:Name') as string)
-              : undefined;
-            if (targetName) {
-              relations.push({ kind: 'many', from: base, to: targetName });
+
+          // A foreign key is a relation in both directions: the child has one parent, and
+          // the parent has many children. Generators need both to emit nested endpoints.
+          if (opts.includeRelations) {
+            for (const fk of table.foreignKeys ?? []) {
+              relations.push({ kind: 'one', from: table.name, to: fk.foreignTable });
+              relations.push({ kind: 'many', from: fk.foreignTable, to: table.name });
             }
+          }
+        } else if (this.isRelationsObject(val)) {
+          if (opts.includeRelations) {
+            relations.push(...this.readRelationsObject(val, name, issues));
           }
         } else {
           // Detect exported enums (e.g., pgEnum('name', [...]))
@@ -510,6 +757,18 @@ export class SchemaAnalyzer {
           message: `Failed to analyze export ${name}: ${String(e)}`,
         });
       }
+    }
+
+    // Add a column's enum only when the schema does not already export the same one. A named
+    // enum (pgEnum) is exported and reached through its columns, so both paths see it; an
+    // inline enum, e.g. `text({ enum: [...] })`, is only ever visible on the column and would
+    // otherwise be lost. Matching on values rather than name is what distinguishes the two,
+    // since the exported name and the synthesised one never agree.
+    for (const candidate of columnEnums) {
+      const key = JSON.stringify(candidate.values);
+      if (enums.some((e) => JSON.stringify(e.values) === key)) continue;
+      if (enums.some((e) => e.name === candidate.name)) continue;
+      enums.push(candidate);
     }
 
     // Dialect detection heuristic
@@ -538,7 +797,12 @@ export class SchemaAnalyzer {
       if (looksSqlite) dialect = 'sqlite';
     }
 
-    // Heuristic FK-based relations if none captured via column metadata
+    if (opts.includeRelations) {
+      relations.push(...this.inferManyToMany(tables));
+    }
+
+    // Name-based guessing, off by default. It only fires for columns that carry no real
+    // foreign key, so a schema with proper constraints is never second-guessed by a heuristic.
     if (opts.includeRelations && opts.includeHeuristicRelations) {
       const tableNames = new Set(tables.map((t) => t.name));
       const findTarget = (base: string): string | undefined => {
@@ -549,20 +813,31 @@ export class SchemaAnalyzer {
       };
       for (const t of tables) {
         for (const c of t.columns) {
+          if (c.references) continue;
           if (c.name.endsWith('Id')) {
             const base = c.name.slice(0, -2);
             const target = findTarget(base);
-            if (target) relations.push({ kind: 'many', from: t.name, to: target });
+            if (target) relations.push({ kind: 'one', from: t.name, to: target });
           }
         }
       }
     }
 
+    // A foreign key and an explicit relations() declaration describe the same link, so both
+    // paths routinely produce it. Deduplicate on the whole tuple, keeping first occurrence.
+    const seen = new Set<string>();
+    const deduped = relations.filter((r) => {
+      const key = `${r.kind}|${r.from}|${r.to}|${r.via ?? ''}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+
     return {
       dialect,
       tables,
       enums,
-      relations,
+      relations: deduped,
       issues,
     };
   }

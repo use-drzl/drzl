@@ -26,6 +26,7 @@
     "jiti": "^2.5.1"
   },
   "devDependencies": {
+    "drizzle-orm": "^0.45.2",
     "tsup": "^8.5.0",
     "typescript": "^5.9.2"
   },

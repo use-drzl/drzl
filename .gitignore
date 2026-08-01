@@ -20,3 +20,6 @@ real-world-example
 
 # VitePress build/cache
 docs/.vitepress/cache
+# Fixture tree written by the CLI e2e test. It lives inside the package so the schema it
+# writes can resolve drizzle-orm by the normal node_modules walk.
+packages/*/test/.e2e-tmp
