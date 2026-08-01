@@ -56,6 +56,26 @@ export interface ProcedureSpec {
   code: string; // procedure implementation
 }
 
+/**
+ * The scalar for a foreign key column, in whichever validation library is in play.
+ *
+ * Only the types a key can actually be are listed. Anything else falls back to the library's
+ * permissive type rather than guessing, since a foreign key on an exotic column is still a
+ * lookup worth exposing.
+ */
+function scalarExpr(tsType: string, lib: Lib): string {
+  switch (tsType) {
+    case 'number':
+      return lib === 'arktype' ? "'number'" : lib === 'zod' ? 'z.number()' : 'v.number()';
+    case 'string':
+      return lib === 'arktype' ? "'string'" : lib === 'zod' ? 'z.string()' : 'v.string()';
+    case 'boolean':
+      return lib === 'arktype' ? "'boolean'" : lib === 'zod' ? 'z.boolean()' : 'v.boolean()';
+    default:
+      return lib === 'arktype' ? "'unknown'" : lib === 'zod' ? 'z.unknown()' : 'v.unknown()';
+  }
+}
+
 export interface ORPCTemplateHooks {
   filePath(table: Table, ctx: { outDir: string; naming?: NamingOptions }): string;
   routerName(table: Table, ctx: { naming?: NamingOptions }): string;
@@ -227,6 +247,77 @@ function renderSchema(table: Table, lib: Lib, mode: 'insert' | 'update' | 'selec
 export class ORPCGenerator {
   constructor(private analysis: Analysis) {}
 
+  /**
+   * One lookup per single-column foreign key: `listByAuthorId({ authorId })`.
+   *
+   * Synthesised here rather than in the template so that enabling `includeRelations` works
+   * with every template, including custom ones, which is what setting the flag implies. A
+   * template that already declares a procedure of the same name wins, so this can only ever
+   * add to the surface.
+   *
+   * Named after the *column*, not the referenced table. Two keys frequently point at the same
+   * table, `authorId` and `editorId` both referencing `users` being the ordinary case, and
+   * naming by table would emit one procedure twice under the same key.
+   *
+   * Restricted to single-column keys. A composite key has no single scalar to accept, and
+   * inventing a shape for it would be guessing at an API rather than deriving one. It also
+   * only ever returns rows of its own table, whose select schema is already in scope: the
+   * inverse direction would return another table's rows and require an import this file has
+   * no way to resolve.
+   */
+  private relationProcedures(
+    table: Table,
+    lib: Lib,
+    selectSchemaName: string,
+    taken: Set<string>
+  ): ProcedureSpec[] {
+    const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
+    const T = cap(table.tsName);
+    const specs: ProcedureSpec[] = [];
+
+    for (const fk of table.foreignKeys ?? []) {
+      if (fk.columns.length !== 1) continue;
+      const colName = fk.columns[0];
+      const column = table.columns.find((c) => c.name === colName);
+      if (!column) continue;
+
+      const name = `listBy${cap(colName)}`;
+      if (taken.has(name)) continue;
+      taken.add(name);
+
+      const varName = `${name}${T}`;
+      const key = JSON.stringify(colName);
+      const input =
+        lib === 'arktype'
+          ? `type({ ${colName}: ${scalarExpr(column.tsType, lib)} })`
+          : lib === 'zod'
+            ? `z.object({ ${colName}: ${scalarExpr(column.tsType, lib)} })`
+            : `v.object({ ${colName}: ${scalarExpr(column.tsType, lib)} })`;
+      const output =
+        lib === 'arktype'
+          ? `${selectSchemaName}.array()`
+          : lib === 'zod'
+            ? `z.array(${selectSchemaName})`
+            : `v.array(${selectSchemaName})`;
+
+      specs.push({
+        name,
+        varName,
+        // The body is a stub, exactly like every other generated procedure here: this package
+        // emits the router surface and leaves the query to the service layer.
+        code:
+          `const ${varName} = os\n` +
+          `  .input(${input})\n` +
+          `  .output(${output})\n` +
+          `  .handler(async ({ input: _input }) => {\n` +
+          `    // Rows of ${table.name} whose ${key} matches _input.${colName}.\n` +
+          `    return [];\n` +
+          `  });`,
+      });
+    }
+    return specs;
+  }
+
   private async formatCode(
     code: string,
     filePath: string,
@@ -326,7 +417,8 @@ export class ORPCGenerator {
         opts.templateOptions,
         opts.validation,
         opts.databaseInjection,
-        opts.servicesDir
+        opts.servicesDir,
+        opts.includeRelations
       );
       const formatted = await this.formatCode(
         buildHeader(opts.outputHeader) + content,
@@ -388,7 +480,8 @@ export const exampleRouter = {
     templateOptions?: Record<string, unknown>,
     validation?: GenerateOptions['validation'],
     databaseInjection?: GenerateOptions['databaseInjection'],
-    servicesDir?: string
+    servicesDir?: string,
+    includeRelations?: boolean
   ) {
     // Build shared schemas (library-aware)
     const lib: Lib = (validation?.library ?? 'zod') as Lib;
@@ -398,7 +491,20 @@ export const exampleRouter = {
     const sharedSchemasInline = `export const ${createSchemaName} = ${renderSchema(table, lib, 'insert')}\nexport const ${updateSchemaName} = ${renderSchema(table, lib, 'update')}\nexport const ${selectSchemaName} = ${renderSchema(table, lib, 'select')}`;
 
     // Template procedures (fallback default uses inline zod; we replace to use shared)
-    const hooksProcs = template.procedures(table, { databaseInjection: databaseInjection });
+    const templateProcs = template.procedures(table, { databaseInjection: databaseInjection });
+    // Relation lookups are appended, never substituted, so the CRUD surface is identical
+    // whether or not the flag is set.
+    const hooksProcs = includeRelations
+      ? [
+          ...templateProcs,
+          ...this.relationProcedures(
+            table,
+            lib,
+            selectSchemaName,
+            new Set(templateProcs.map((p) => p.name))
+          ),
+        ]
+      : templateProcs;
     const replaceInputArg = (code: string, newArg: string) => {
       const sig = '.input(';
       const start = code.indexOf(sig);

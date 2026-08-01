@@ -115,3 +115,41 @@ describe('drzl analyze, end to end', () => {
     expect(out.dialect).toBe('postgres');
   }, 60_000);
 });
+
+describe('drzl generate, end to end', () => {
+  /** Run the real binary against a config, exactly as documented. */
+  async function generate(config: string, outDir: string) {
+    await fs.writeFile(path.join(workdir, 'drzl.config.ts'), config, 'utf8');
+    await run(process.execPath, [CLI, 'generate'], { cwd: workdir, maxBuffer: 20 * 1024 * 1024 });
+    return fs.readFile(path.join(workdir, outDir, 'posts.ts'), 'utf8');
+  }
+
+  it('emits relation endpoints for the config shown in the docs', async () => {
+    // docs/examples/relations.md verbatim: `outDir` is top level, the flag sits on the
+    // generator, and nothing under `analyzer` is set. Foreign keys are structural and always
+    // analysed, so that is sufficient, and the documented example has to work as written.
+    const posts = await generate(
+      `export default {
+         schema: './src/schema.ts',
+         outDir: './out-docs',
+         generators: [{ kind: 'orpc', includeRelations: true }],
+       };`,
+      'out-docs'
+    );
+    expect(posts).toContain('listByAuthorId');
+    expect(posts).toMatch(/listByAuthorId:\s*listByAuthorIdPosts/);
+  }, 120_000);
+
+  it('leaves the router untouched when the flag is absent', async () => {
+    const posts = await generate(
+      `export default {
+         schema: './src/schema.ts',
+         outDir: './out-plain',
+         generators: [{ kind: 'orpc' }],
+       };`,
+      'out-plain'
+    );
+    expect(posts).not.toContain('listBy');
+    expect(posts).toContain('list:');
+  }, 120_000);
+});
