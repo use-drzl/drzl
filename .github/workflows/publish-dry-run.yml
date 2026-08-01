@@ -37,8 +37,14 @@ jobs:
           # if the OIDC exchange succeeds, so on any failure the junk value is what gets
           # sent, turning a clear "OIDC was skipped" diagnostic into a bare 401.
 
+      # No `-w` here. On `install`, `-w` means --workspace-root and restricts the install to
+      # the root project alone, so every package under packages/ is left without its
+      # dependencies: `packages/validation-core/node_modules/@drzl/analyzer` is never linked.
+      # The build then dies with "TS2307: Cannot find module '@drzl/analyzer'" during the dts
+      # step, which reads like a broken package and is really a half-finished install. ci.yml
+      # and release.yml both use the plain form, which is why only this workflow ever failed.
       - name: Install deps
-        run: pnpm -w install --frozen-lockfile
+        run: pnpm install --frozen-lockfile
 
       - name: Build
         run: pnpm -w build:packages
