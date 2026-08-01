@@ -49,20 +49,38 @@ function tsTypeOf(c: Column): string {
   }
 }
 
+/**
+ * Optional and nullable are different things, and conflating them is what made these types
+ * wrong for every nullable column.
+ *
+ *   `foo?: T`         the key may be absent. Admits `undefined`, NOT `null`.
+ *   `foo: T | null`   the key is always there and its value may be null.
+ *
+ * A nullable column was emitted as `foo?: T`, so a row read back with a real `null` in it did
+ * not match `Select`, and passing `null` to update was a type error. Meanwhile the validation
+ * generators emitted `z.number().nullable()` for the same column, so the two halves of one
+ * generated project disagreed about the same database.
+ */
+function fieldType(c: Column): string {
+  return c.nullable ? `${tsTypeOf(c)} | null` : tsTypeOf(c);
+}
+
 function renderTypes(table: Table) {
   const cols = table.columns;
   const pk = table.primaryKey?.columns ?? [];
+  // Absent is allowed where the database can supply the value itself.
   const insertFields = cols
     .filter((c: Column) => !c.isGenerated && !pk.includes(c.name))
-    .map((c: Column) => `  ${c.name}${c.nullable || c.hasDefault ? '?' : ''}: ${tsTypeOf(c)};`)
+    .map((c: Column) => `  ${c.name}${c.nullable || c.hasDefault ? '?' : ''}: ${fieldType(c)};`)
     .join('\n');
+  // A patch names only the columns it changes, so every key is optional.
   const updateFields = cols
     .filter((c: Column) => !pk.includes(c.name))
-    .map((c: Column) => `  ${c.name}?: ${tsTypeOf(c)};`)
+    .map((c: Column) => `  ${c.name}?: ${fieldType(c)};`)
     .join('\n');
-  const selectFields = cols
-    .map((c: Column) => `  ${c.name}${c.nullable ? '?' : ''}: ${tsTypeOf(c)};`)
-    .join('\n');
+  // A row read back carries every column. None is ever absent, whatever its default, so the
+  // only thing nullability changes here is whether the value may be null.
+  const selectFields = cols.map((c: Column) => `  ${c.name}: ${fieldType(c)};`).join('\n');
   const T = table.tsName;
   return `export interface Insert${T} {\n${insertFields}\n}\nexport interface Update${T} {\n${updateFields}\n}\nexport interface Select${T} {\n${selectFields}\n}`;
 }

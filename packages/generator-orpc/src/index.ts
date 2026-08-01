@@ -415,17 +415,7 @@ export class ORPCGenerator {
     for (const table of this.analysis.tables) {
       const filePath = template.filePath(table, { outDir: out, naming: opts.naming });
       await fs.mkdir(path.dirname(filePath), { recursive: true });
-      const content = this.renderRouter(
-        table,
-        template,
-        opts.naming,
-        out,
-        opts.templateOptions,
-        opts.validation,
-        opts.databaseInjection,
-        opts.servicesDir,
-        opts.includeRelations
-      );
+      const content = this.renderRouter(table, template, out, opts);
       const formatted = await this.formatCode(
         buildHeader(opts.outputHeader) + content,
         filePath,
@@ -478,17 +468,26 @@ export const exampleRouter = {
 `;
   }
 
+  /**
+   * Takes the options object rather than a positional list. It had grown to nine parameters,
+   * all optional and several of the same type, so adding one meant counting commas at the call
+   * site and a transposed pair would have typechecked.
+   */
   private renderRouter(
     table: Table,
     template: ORPCTemplateHooks,
-    naming?: NamingOptions,
-    outDir?: string,
-    templateOptions?: Record<string, unknown>,
-    validation?: GenerateOptions['validation'],
-    databaseInjection?: GenerateOptions['databaseInjection'],
-    servicesDir?: string,
-    includeRelations?: boolean
+    outDir: string,
+    opts: GenerateOptions
   ) {
+    const {
+      naming,
+      templateOptions,
+      validation,
+      databaseInjection,
+      servicesDir,
+      includeRelations,
+      importExtension,
+    } = opts;
     // Build shared schemas (library-aware)
     const lib: Lib = (validation?.library ?? 'zod') as Lib;
     const createSchemaName = `Insert${table.tsName}Schema`;
@@ -625,6 +624,10 @@ export const exampleRouter = {
       naming,
       servicesDir,
       databaseInjection,
+      // A template that imports generated modules has to spell extensions the same way the
+      // barrel does. Without this it could not see the setting at all, which is how the service
+      // import became the one relative specifier in the output with no `.js`.
+      importExtension,
       ...(templateOptions ?? {}),
     } as any;
     const libImport =

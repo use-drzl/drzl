@@ -78,7 +78,10 @@ export default {
     { kind: 'valibot', path: './src/generated/valibot' },
     { kind: 'arktype', path: './src/generated/arktype' },
     { kind: 'service', path: './src/generated/services' },
-    { kind: 'orpc', includeRelations: true },
+    // template-orpc-service on purpose, not the default. The default template imports nothing
+    // that DRZL generated, so running only that one exercised no cross-module specifier and
+    // missed the service import being emitted bare and extensionless.
+    { kind: 'orpc', template: '@drzl/template-orpc-service', includeRelations: true },
   ],
 };
 CONFIG

@@ -208,7 +208,11 @@ importers:
         specifier: ^5.9.2
         version: 5.9.2
 
-  packages/template-orpc-service: {}
+  packages/template-orpc-service:
+    dependencies:
+      '@drzl/validation-core':
+        specifier: workspace:^
+        version: link:../validation-core
 
   packages/template-standard:
     dependencies:

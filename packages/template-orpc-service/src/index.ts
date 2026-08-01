@@ -1,7 +1,35 @@
+import { importSpecifier, type ImportExtension } from '@drzl/validation-core';
+
 // Minimal local Table shape to avoid cross-package DTS complexity
 interface Table {
   name: string;
   tsName: string;
+}
+
+/**
+ * Spell the import of a generated service module.
+ *
+ * Two things this must not get wrong, both of which it did while the string was built by hand.
+ *
+ * `path.relative` returns a bare `services` whenever the services directory sits inside the
+ * router's output directory. A specifier without a leading `./` is a *bare* specifier: Node
+ * looks for a package of that name in node_modules and never considers the file next door. So
+ * the prefix is added explicitly rather than relying on what `path.relative` happens to return.
+ *
+ * The extension then goes through `importSpecifier`, the same helper the router barrel uses, so
+ * this specifier obeys `importExtension` exactly like every other one DRZL emits. Building it
+ * by hand is how it came to be the single relative import in the output with no `.js`, failing
+ * under `moduleResolution: node16` and `nodenext`.
+ */
+function serviceImportPath(
+  outDir: string,
+  servicesDir: string,
+  singular: string,
+  importExtension?: ImportExtension
+): string {
+  const rel = path.relative(outDir, servicesDir);
+  const dir = !rel ? '.' : rel.startsWith('.') ? rel : `./${rel}`;
+  return importSpecifier(`${dir}/${singular}Service.ts`, importExtension);
 }
 
 const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
@@ -40,6 +68,8 @@ export interface ORPCTemplateHooks {
     ctx?: {
       outDir: string;
       servicesDir?: string;
+      /** How to spell the extension of the service module this router imports. */
+      importExtension?: ImportExtension;
       databaseInjection?: {
         enabled?: boolean;
         databaseType?: string;
@@ -95,7 +125,12 @@ const template: ORPCTemplateHooks = {
     const Service = `${cap(singular)}Service`;
     const outDir = ctx?.outDir ?? 'src/api';
     const servicesDir = (ctx as any)?.servicesDir ?? servicesDirDefault;
-    const rel = path.relative(outDir, servicesDir) || '.';
+    const servicePath = serviceImportPath(
+      outDir,
+      servicesDir,
+      singular,
+      ctx?.importExtension
+    );
 
     const isInjectionMode = ctx?.databaseInjection?.enabled === true;
     const dbType = ctx?.databaseInjection?.databaseType ?? 'any';
@@ -106,7 +141,7 @@ const template: ORPCTemplateHooks = {
         : '';
       return `import { os, ORPCError } from '@orpc/server'
 import { z } from 'zod'
-import { ${Service} } from '${rel}/${singular}Service'
+import { ${Service} } from '${servicePath}'
 ${typeImport}
 
 export const dbMiddleware = os
@@ -123,7 +158,7 @@ export const dbMiddleware = os
     });
   });`;
     } else {
-      return `import { os } from '@orpc/server'\nimport { z } from 'zod'\nimport { ${Service} } from '${rel}/${singular}Service'`;
+      return `import { os } from '@orpc/server'\nimport { z } from 'zod'\nimport { ${Service} } from '${servicePath}'`;
     }
   },
   header: (table) => `// Router for table: ${table.name}`,
