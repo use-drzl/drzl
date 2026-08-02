@@ -36,6 +36,7 @@ export default {
         items: [
           { text: 'Getting Started', link: '/guide/getting-started' },
           { text: 'Configuration', link: '/guide/configuration' },
+          { text: 'Benchmarks', link: '/guide/benchmarks' },
         ],
       },
       {

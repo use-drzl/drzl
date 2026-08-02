@@ -43,9 +43,40 @@ const DEFAULT_FILE_SUFFIX = '.zod.ts';
  * number, so they are pasted through rather than parsed. `literal` decides how each is spelled,
  * which is the only difference between the number and bigint cases.
  */
-function numericBounds(c: Column, literal: (v: string) => string): string {
-  if (c.min === undefined || c.max === undefined) return '';
-  return `.gte(${literal(c.min)}).lte(${literal(c.max)})`;
+function numericBounds(
+  c: Column,
+  literal: (v: string) => string,
+  checks: ColumnCheck[] = []
+): string {
+  let lo = c.min !== undefined ? { op: 'gte', value: c.min } : undefined;
+  let hi = c.max !== undefined ? { op: 'lte', value: c.max } : undefined;
+
+  // A CHECK on this column replaces the end it narrows, rather than sitting beside it. It cannot
+  // widen: the declared range is the column's type, and no CHECK makes an int32 hold more.
+  //
+  // `.gte(-2147483648).lte(2147483647).refine((v) => v >= 18)` was a bound that can never fail
+  // plus a closure saying what the bound should have said. Folding costs a closure call per parse
+  // and some bundle, and gains zod's own message: "Too small, expected number to be >=18", with
+  // the bound machine-readable on the issue rather than inside a string this generator wrote.
+  for (const k of checks.filter((x) => x.column === c.name && x.kind === 'number')) {
+    if (k.operator === '>=') lo = { op: 'gte', value: k.value };
+    else if (k.operator === '>') lo = { op: 'gt', value: k.value };
+    else if (k.operator === '<=') hi = { op: 'lte', value: k.value };
+    else if (k.operator === '<') hi = { op: 'lt', value: k.value };
+  }
+
+  return [lo, hi].filter(Boolean).map((x) => `.${x!.op}(${literal(x!.value)})`).join('');
+}
+
+/** Which checks `numericBounds` has already stated, so they are not also emitted as predicates. */
+function foldedIntoBounds(c: Column, checks: ColumnCheck[]): Set<ColumnCheck> {
+  if (c.arrayDimensions || c.shape) return new Set();
+  if (c.tsType !== 'number' && c.tsType !== 'bigint') return new Set();
+  return new Set(
+    checks.filter(
+      (k) => k.column === c.name && k.kind === 'number' && k.operator !== '=' && k.operator !== '<>'
+    )
+  );
 }
 
 /**
@@ -121,7 +152,8 @@ function checkRefinements(c: Column, checks: ColumnCheck[]): string {
   // rejected every row.
   if (c.arrayDimensions || c.shape) return '';
 
-  const mine = checks.filter((k) => k.column === c.name);
+  const folded = foldedIntoBounds(c, checks);
+  const mine = checks.filter((k) => k.column === c.name && !folded.has(k));
   if (!mine.length) return '';
 
   const OPS: Record<ColumnCheck['operator'], string> = {
@@ -196,7 +228,8 @@ function zodExprForColumn(
   mode: Mode,
   coerceDates: NonNullable<ValidationGenerateOptions['coerceDates']>,
   typedJsonRef?: string,
-  sets: ColumnSet[] = []
+  sets: ColumnSet[] = [],
+  checks: ColumnCheck[] = []
 ): string {
   const shaped = shapeExpr(c, typedJsonRef);
   if (shaped) return shaped;
@@ -231,12 +264,12 @@ function zodExprForColumn(
         : 'z.string()';
     case 'number': {
       const base = isIntegerColumn(c) ? 'z.number().int()' : 'z.number()';
-      return base + numericBounds(c, (v) => v);
+      return base + numericBounds(c, (v) => v, checks);
     }
     case 'bigint':
       // Bounds have to be bigint literals. A 64 bit bound written as a plain number rounds, so
       // `.lte(9223372036854775807)` would silently become `.lte(9223372036854775808)`.
-      return 'z.bigint()' + numericBounds(c, (v) => `${v}n`);
+      return 'z.bigint()' + numericBounds(c, (v) => `${v}n`, checks);
     case 'boolean':
       return 'z.boolean()';
     case 'Date': {
@@ -284,7 +317,7 @@ function zodField(
    */
   narrowRef?: string
 ): string {
-  let expr = zodExprForColumn(c, mode, coerceDates, typedJsonRef, sets);
+  let expr = zodExprForColumn(c, mode, coerceDates, typedJsonRef, sets, checks);
   // `.array()` does not give the column its own class in Drizzle, so everything above describes
   // the *element*. Length limits and integer bounds belong there, which is why the wrapping
   // happens out here rather than inside.
