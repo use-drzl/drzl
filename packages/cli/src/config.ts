@@ -93,6 +93,8 @@ export const GeneratorSchema = z.object({
   typedJson: z.boolean().optional(),
   // The wider form: every column's static type comes from Drizzle, not just the untyped ones.
   typedColumns: z.boolean().optional(),
+  // Reproduce literal column defaults in the insert schema, so parsing fills them in.
+  applyDefaults: z.boolean().optional(),
   naming: NamingSchema.optional(),
   outputHeader: z
     .object({
