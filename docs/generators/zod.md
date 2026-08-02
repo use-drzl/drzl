@@ -71,8 +71,15 @@ Measured against Postgres for a `varchar(10)` column:
 `drizzle-orm/zod` emits `.max(n)`, so it turns away a bio, display name or message that the column
 would have stored. The same applies to a `CHECK (length(x) <= n)`.
 
-TypeBox and ArkType keep the UTF-16 form: both state a length declaratively with no predicate to
-hook, so their output is approximate for astral text. The zod and valibot generators are exact.
+All four generators count code points. TypeBox and ArkType cannot say it in their declarative
+forms, so neither uses `maxLength` or `string <= n`: TypeBox intersects a registered kind onto the
+field, ArkType puts a Type carrying a narrow there. See
+[TypeBox](/generators/typebox#character-limits-count-characters) and
+[ArkType](/generators/arktype#character-limits-count-characters) for what each costs.
+
+MySQL's TEXT family is a byte budget rather than a character count, which is a different
+measurement on the same kind of column. `tinytext` takes 255 plain characters and 63 emoji,
+verified against a real MySQL 8 on utf8mb4, and gets a check counting encoded bytes.
 
 ## Arrays
 
