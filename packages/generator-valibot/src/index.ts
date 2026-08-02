@@ -147,8 +147,13 @@ function vShapeExpr(c: Column): string | undefined {
       return s.length
         ? `v.pipe(v.array(v.number()), v.length(${s.length}))`
         : 'v.array(v.number())';
-    case 'bitstring':
-      return `v.pipe(v.string(), v.regex(/^[01]*$/)${s.length ? `, v.length(${s.length})` : ''})`;
+    case 'bitstring': {
+      // `v.length` for a Postgres `bit(n)`, `v.maxLength` for a MySQL `binary(n)`.
+      const len = s.length
+        ? `, ${s.exact ? `v.length(${s.length})` : `v.maxLength(${s.length})`}`
+        : '';
+      return `v.pipe(v.string(), v.regex(/^[01]*$/)${len})`;
+    }
   }
 }
 

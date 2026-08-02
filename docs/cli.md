@@ -204,3 +204,4 @@ See also:
   - [/generators/zod](/generators/zod)
   - [/generators/valibot](/generators/valibot)
   - [/generators/arktype](/generators/arktype)
+  - [/generators/typebox](/generators/typebox)

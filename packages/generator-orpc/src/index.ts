@@ -71,16 +71,18 @@ export interface ProcedureSpec {
  * lookup worth exposing.
  */
 function scalarExpr(tsType: string, lib: Lib): string {
-  switch (tsType) {
-    case 'number':
-      return lib === 'arktype' ? "'number'" : lib === 'zod' ? 'z.number()' : 'v.number()';
-    case 'string':
-      return lib === 'arktype' ? "'string'" : lib === 'zod' ? 'z.string()' : 'v.string()';
-    case 'boolean':
-      return lib === 'arktype' ? "'boolean'" : lib === 'zod' ? 'z.boolean()' : 'v.boolean()';
-    default:
-      return lib === 'arktype' ? "'unknown'" : lib === 'zod' ? 'z.unknown()' : 'v.unknown()';
-  }
+  const d = LIBS[lib];
+  const bare =
+    tsType === 'number'
+      ? d.number
+      : tsType === 'string'
+        ? d.string
+        : tsType === 'boolean'
+          ? d.boolean
+          : d.unknown;
+  // ArkType types are strings and this expression is emitted inline rather than through
+  // `renderSchema`, so it carries its own quotes.
+  return d.fieldIsString ? `'${bare}'` : bare;
 }
 
 export interface ORPCTemplateHooks {
@@ -186,75 +188,140 @@ function defaultTemplate(): ORPCTemplateHooks {
   };
 }
 
+/**
+ * Libraries a router can actually be built from.
+ *
+ * TypeBox is absent deliberately, and it is the one validator DRZL generates that cannot appear
+ * here: oRPC types `.input()`/`.output()` as a Standard Schema, and neither `@sinclair/typebox`
+ * nor `typebox` implements that spec, while zod, valibot and arktype all do. A router wired to a
+ * TypeBox schema would typecheck against `any` and fail at runtime, so `validation.library` in
+ * the config schema rejects it outright instead. The standalone typebox generator is unaffected.
+ */
 type Lib = 'zod' | 'valibot' | 'arktype';
 
+/**
+ * How each validation library spells the handful of constructs a router needs.
+ *
+ * A table rather than a chain of ternaries. The chain read `lib === 'arktype' ? a : lib === 'zod'
+ * ? b : c`, so its final branch was "valibot, or anything else", and adding a fourth library
+ * would have silently emitted valibot code for it rather than failing. Everything a library has
+ * to answer is now a required field, so a new one cannot be half-added.
+ *
+ * Enum values go through `JSON.stringify` rather than being interpolated raw: a value containing
+ * an apostrophe used to emit unparseable code, which crashed prettier and took the run down.
+ */
+interface LibDialect {
+  number: string;
+  string: string;
+  boolean: string;
+  date: string;
+  unknown: string;
+  enum: (vals: string[]) => string;
+  array: (element: string) => string;
+  nullable: (base: string) => string;
+  optional: (base: string) => string;
+  object: (body: string) => string;
+  /** Same, on one line. A single-key lookup input reads better without the wrapping. */
+  objectInline: (body: string) => string;
+  /** ArkType types are strings, so the field value is JSON-encoded rather than emitted bare. */
+  fieldIsString?: boolean;
+  /** Applied to the whole update schema, where the library has a shorthand for it. */
+  partialUpdate?: (schema: string) => string;
+}
+
+const q = (v: string) => JSON.stringify(v);
+
+/** The import each library's emitted expressions need, keyed the same way as `LIBS`. */
+const LIB_IMPORTS: Record<Lib, string> = {
+  zod: "import { z } from 'zod'",
+  valibot: "import * as v from 'valibot'",
+  arktype: "import { type } from 'arktype'",
+};
+
+const LIBS: Record<Lib, LibDialect> = {
+  zod: {
+    number: 'z.number()',
+    string: 'z.string()',
+    boolean: 'z.boolean()',
+    date: 'z.date()',
+    unknown: 'z.unknown()',
+    enum: (vals) => `z.enum([${vals.map(q).join(', ')}] as const)`,
+    array: (e) => `z.array(${e})`,
+    nullable: (b) => `${b}.nullable()`,
+    optional: (b) => `${b}.optional()`,
+    object: (body) => `z.object({\n${body}\n})`,
+    objectInline: (body) => `z.object({ ${body} })`,
+    partialUpdate: (s) => `${s}.partial()`,
+  },
+  valibot: {
+    number: 'v.number()',
+    string: 'v.string()',
+    boolean: 'v.boolean()',
+    date: 'v.date()',
+    unknown: 'v.unknown()',
+    enum: (vals) => `v.picklist([${vals.map(q).join(', ')}] as const)`,
+    array: (e) => `v.array(${e})`,
+    nullable: (b) => `v.nullable(${b})`,
+    optional: (b) => `v.optional(${b})`,
+    object: (body) => `v.object({\n${body}\n})`,
+    objectInline: (body) => `v.object({ ${body} })`,
+  },
+  arktype: {
+    number: 'number',
+    string: 'string',
+    boolean: 'boolean',
+    date: 'Date',
+    unknown: 'unknown',
+    // The surrounding encode adds the quotes, so the union is built with the inner quoting
+    // ArkType expects. Emitting `'${...}'` here produced `''admin' | 'user''`, which does not parse.
+    enum: (vals) => vals.map((x) => `'${x.replace(/'/g, "\\'")}'`).join(' | '),
+    array: (e) => `${e}.array()`,
+    nullable: (b) => `(${b} | null)`,
+    optional: (b) => `${b}?`,
+    object: (body) => `type({\n${body}\n})`,
+    objectInline: (body) => `type({ ${body} })`,
+    fieldIsString: true,
+  },
+};
+
 function mapExpr(column: Column, lib: Lib, mode: 'insert' | 'update' | 'select'): string {
-  // Values are quoted with JSON.stringify rather than by hand. Interpolating them raw meant an
-  // enum value containing an apostrophe emitted unparseable code, which crashed prettier and took
-  // the whole generate run down with it. The three standalone validation generators already escape
-  // here; this path was the one that did not.
-  const q = (v: string) => JSON.stringify(v);
-  const enumExpr = (vals: string[]) =>
-    lib === 'zod'
-      ? `z.enum([${vals.map(q).join(', ')}] as const)`
-      : lib === 'valibot'
-        ? `v.picklist([${vals.map(q).join(', ')}] as const)`
-        : // arktype types are strings, and renderSchema wraps this one in quotes of its own, so the
-          // union is built with the inner quoting arktype expects and left for that wrap to encode.
-          vals.map((v) => `'${v.replace(/'/g, "\\'")}'`).join(' | ');
+  const d = LIBS[lib];
   let base = (() => {
-    if (column.enumValues && column.enumValues.length) return enumExpr(column.enumValues);
+    if (column.enumValues && column.enumValues.length) return d.enum(column.enumValues);
     switch (column.tsType) {
       case 'number':
-        return lib === 'arktype' ? 'number' : lib === 'zod' ? 'z.number()' : 'v.number()';
+        return d.number;
       case 'string':
-        return lib === 'arktype' ? 'string' : lib === 'zod' ? 'z.string()' : 'v.string()';
+        return d.string;
       case 'boolean':
-        return lib === 'arktype' ? 'boolean' : lib === 'zod' ? 'z.boolean()' : 'v.boolean()';
+        return d.boolean;
       case 'Date':
-        return lib === 'arktype' ? 'Date' : lib === 'zod' ? 'z.date()' : 'v.date()';
+        return d.date;
       default:
-        return lib === 'arktype' ? 'unknown' : lib === 'zod' ? 'z.unknown()' : 'v.unknown()';
+        return d.unknown;
     }
   })();
-  if (column.nullable) {
-    base =
-      lib === 'arktype'
-        ? `(${base} | null)`
-        : lib === 'zod'
-          ? `${base}.nullable()`
-          : `v.nullable(${base})`;
-  }
+  if (column.nullable) base = d.nullable(base);
   if (mode !== 'select') {
     const optional = mode === 'update' || column.nullable || column.hasDefault;
-    if (optional)
-      base =
-        lib === 'arktype'
-          ? `${base}?`
-          : lib === 'zod'
-            ? `${base}.optional()`
-            : `v.optional(${base})`;
+    if (optional) base = d.optional(base);
   }
   return base;
 }
 
 function renderSchema(table: Table, lib: Lib, mode: 'insert' | 'update' | 'select'): string {
+  const d = LIBS[lib];
   const cols = table.columns.filter((c) => (mode === 'select' ? true : !c.isGenerated));
   // Keys go through JSON.stringify, matching the standalone generators. A column named with
   // anything that is not a bare identifier produced invalid object syntax here.
-  const body = cols.map((c) => `  ${JSON.stringify(c.name)}: ${mapExpr(c, lib, mode)},`).join('\n');
-  if (lib === 'arktype') {
-    // The value is a string in arktype, so it is encoded rather than wrapped in bare single quotes.
-    // The old `'${...}'` produced `''admin' | 'user''` for an enum column, which does not parse.
-    const bodyAT = cols
-      .map((c) => `  ${JSON.stringify(c.name)}: ${JSON.stringify(mapExpr(c, lib, mode))},`)
-      .join('\n');
-    return `type({\n${bodyAT}\n})`;
-  }
-  const obj = lib === 'zod' ? 'z.object' : 'v.object';
-  const schema = `${obj}({\n${body}\n})`;
-  if (lib === 'zod' && mode === 'update') return `${schema}.partial()`;
-  return schema;
+  const body = cols
+    .map((c) => {
+      const expr = mapExpr(c, lib, mode);
+      return `  ${JSON.stringify(c.name)}: ${d.fieldIsString ? JSON.stringify(expr) : expr},`;
+    })
+    .join('\n');
+  const schema = d.object(body);
+  return mode === 'update' && d.partialUpdate ? d.partialUpdate(schema) : schema;
 }
 
 export class ORPCGenerator {
@@ -300,18 +367,8 @@ export class ORPCGenerator {
 
       const varName = `${name}${T}`;
       const key = JSON.stringify(colName);
-      const input =
-        lib === 'arktype'
-          ? `type({ ${colName}: ${scalarExpr(column.tsType, lib)} })`
-          : lib === 'zod'
-            ? `z.object({ ${colName}: ${scalarExpr(column.tsType, lib)} })`
-            : `v.object({ ${colName}: ${scalarExpr(column.tsType, lib)} })`;
-      const output =
-        lib === 'arktype'
-          ? `${selectSchemaName}.array()`
-          : lib === 'zod'
-            ? `z.array(${selectSchemaName})`
-            : `v.array(${selectSchemaName})`;
+      const input = LIBS[lib].objectInline(`${colName}: ${scalarExpr(column.tsType, lib)}`);
+      const output = LIBS[lib].array(selectSchemaName);
 
       specs.push({
         name,
@@ -674,10 +731,9 @@ export const exampleRouter = {
       if (lib !== 'arktype') {
         let outExpr = '';
         if (p.name === 'list') {
-          outExpr = lib === 'zod' ? `z.array(${selectSchemaName})` : `v.array(${selectSchemaName})`;
+          outExpr = LIBS[lib].array(selectSchemaName);
         } else if (p.name === 'get') {
-          outExpr =
-            lib === 'zod' ? `${selectSchemaName}.nullable()` : `v.nullable(${selectSchemaName})`;
+          outExpr = LIBS[lib].nullable(selectSchemaName);
         } else if (p.name === 'create' || p.name === 'update') {
           outExpr = selectSchemaName;
         } else if (p.name === 'delete') {
@@ -713,12 +769,7 @@ export const exampleRouter = {
       importExtension,
       ...(templateOptions ?? {}),
     } as any;
-    const libImport =
-      lib === 'zod'
-        ? `import { z } from 'zod'`
-        : lib === 'valibot'
-          ? `import * as v from 'valibot'`
-          : `import { type } from 'arktype'`;
+    const libImport = LIB_IMPORTS[lib];
     let importsBase = template.imports
       ? template.imports([table], ctx)
       : `import { os } from '@orpc/server'`;
@@ -747,12 +798,7 @@ export const exampleRouter = {
     // `src/validators/zod`, which is what the guide showed and how the rest of the config names
     // directories, is a bare specifier to Node and tsc, so the import resolved to nothing.
     const sharedImportSpecifier = useShared
-      ? resolveConfiguredImport(
-          validation!.importPath!,
-          outDir,
-          process.cwd(),
-          importExtension
-        )
+      ? resolveConfiguredImport(validation!.importPath!, outDir, process.cwd(), importExtension)
       : '';
     const importSchemas = useShared
       ? `\nimport { ${sharedName('insert')} as ${createSchemaName}, ${sharedName('update')} as ${updateSchemaName}, ${sharedName('select')} as ${selectSchemaName} } from '${sharedImportSpecifier}';`

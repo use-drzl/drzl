@@ -29,7 +29,7 @@ Shared interfaces and helpers used by validation generators.
 
 ## Exports (essentials)
 
-- ValidationLibrary: `'zod' | 'valibot' | 'arktype'`
+- ValidationLibrary: `'zod' | 'valibot' | 'arktype' | 'typebox'`
 - ValidationRenderer<TOptions>
   - `library`
   - `renderTable(table, opts)`

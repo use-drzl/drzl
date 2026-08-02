@@ -87,6 +87,61 @@ defined, and makes a Postgres `bytea` and a SQLite `blob` validate the same way.
 A CHECK constraint naming an array or a structured column is skipped rather than folded in, since
 the comparison is against a scalar literal and describes neither.
 
+## Dialects other than Postgres
+
+The same rules apply, with each dialect's own widths:
+
+| Column                                  | Emitted                                                    |
+| --------------------------------------- | ---------------------------------------------------------- |
+| MySQL `tinyint()`                       | `z.number().int().gte(-128).lte(127)`                      |
+| MySQL `mediumint()`                     | `z.number().int().gte(-8388608).lte(8388607)`              |
+| MySQL `year()`                          | `z.number().int().gte(1901).lte(2155)`                     |
+| MySQL `serial()`                        | `z.number().int().gte(0)`, since it is unsigned            |
+| MySQL `text()`                          | `z.string().max(65535)`, the width the type itself implies |
+| MySQL `binary(4)`                       | `z.string().regex(/^[01]*$/).max(4)`                       |
+| SQLite `blob({ mode: 'json' })`         | `z.json()`                                                 |
+| SQLite `blob({ mode: 'bigint' })`       | `z.bigint()` with the 64 bit range                         |
+| SQLite `integer({ mode: 'timestamp' })` | a date                                                     |
+
+MySQL's text and blob caps are byte counts and this is a character count, which is the same
+approximation `drizzle-orm/zod` makes: without knowing the column's charset it is the only one
+available. Postgres `text` has no cap and does not get one.
+
+## Which columns appear on insert
+
+A column is omitted from the insert schema only when the database would **refuse** a value for
+it, which is narrower than "the database can fill it in":
+
+| Column                              | On insert |
+| ----------------------------------- | --------- |
+| `serial()`, MySQL `autoincrement()` | optional  |
+| `generatedByDefaultAsIdentity()`    | optional  |
+| `generatedAlwaysAsIdentity()`       | omitted   |
+| `generatedAlwaysAs(...)`            | omitted   |
+| `.default(...)`                     | optional  |
+
+An `AUTO_INCREMENT` or `serial` column supplies a value when you omit one; it does not forbid you
+from supplying your own, which is how backfills and sentinel rows get written. Only
+`GENERATED ALWAYS` really rejects an explicit value.
+
+## Date columns
+
+`coerceDates` decides what a date column accepts, and defaults to `'input'`: strict on select,
+coercing on insert and update, so a client may send an ISO string or an epoch number.
+
+```ts
+{ kind: 'zod', path: 'src/validators/zod', coerceDates: 'none' }
+```
+
+- `'input'` (default) coerces on write only. A `Date`, a date string and an epoch number are
+  accepted; `null`, booleans, arrays and unparseable strings are not.
+- `'all'` coerces on select as well.
+- `'none'` accepts only a real `Date` anywhere, which is what `drizzle-orm/zod` does.
+
+Coercion is deliberately limited to strings and numbers. `z.coerce.date()` would accept anything
+`new Date()` does not choke on, and `new Date(null)` is the epoch while `new Date(true)` is one
+millisecond past it, so a NOT NULL column would accept both.
+
 ## CHECK constraints
 
 A `check()` in your schema becomes a refinement. **No official Drizzle validator module does

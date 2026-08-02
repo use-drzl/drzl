@@ -149,7 +149,11 @@ function tbShapeExpr(c: Column, typedJsonRef?: string): string | undefined {
     case 'bitstring':
       // `pattern` rather than `format`, which TypeBox ignores unless the consuming project has
       // registered it on `FormatRegistry` first.
-      return `Type.String({ pattern: '^[01]*$'${s.length ? `, minLength: ${s.length}, maxLength: ${s.length}` : ''} })`;
+      // Both bounds for a Postgres `bit(n)`, only the ceiling for a MySQL `binary(n)`.
+      if (!s.length) return `Type.String({ pattern: '^[01]*$' })`;
+      return s.exact
+        ? `Type.String({ pattern: '^[01]*$', minLength: ${s.length}, maxLength: ${s.length} })`
+        : `Type.String({ pattern: '^[01]*$', maxLength: ${s.length} })`;
   }
 }
 

@@ -92,7 +92,9 @@ function atShapeType(c: Column): string | undefined {
     case 'numberVector':
       return s.length ? `number[] == ${s.length}` : 'number[]';
     case 'bitstring':
-      return s.length ? `/^[01]*$/ & string == ${s.length}` : '/^[01]*$/';
+      // `== n` for a Postgres `bit(n)`, `<= n` for a MySQL `binary(n)`.
+      if (!s.length) return '/^[01]*$/';
+      return `/^[01]*$/ & string ${s.exact ? '==' : '<='} ${s.length}`;
   }
 }
 

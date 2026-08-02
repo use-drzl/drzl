@@ -107,6 +107,18 @@ prefs: Type.Unsafe<(typeof settings.$inferSelect)["prefs"]>(Type.Unknown()),
 See [Zod → typedJson](/generators/zod#typedjson) for why referencing Drizzle's inference works
 where rebuilding the type does not.
 
+## Why it cannot back an oRPC router
+
+`validation.library` on an `orpc` generator takes `zod`, `valibot` or `arktype`, and not `typebox`.
+oRPC types `.input()` and `.output()` as a [Standard Schema](https://standardschema.dev), and
+neither `@sinclair/typebox` nor the newer `typebox` package implements that spec, while the other
+three all do. A router handed a TypeBox schema would compile and then fail at runtime, so the
+config rejects it rather than emitting one.
+
+The generator itself is unaffected: TypeBox schemas are the right choice wherever you consume them
+yourself, or hand them to something that speaks JSON Schema. Pair it with a `zod` generator if you
+also want oRPC routers in the same project.
+
 ## Peer dependency
 
 `@sinclair/typebox` >= 0.32, which your project provides.

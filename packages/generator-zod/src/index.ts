@@ -113,7 +113,12 @@ function shapeExpr(c: Column, typedJsonRef?: string): string | undefined {
     case 'numberVector':
       return `z.array(z.number())${s.length ? `.length(${s.length})` : ''}`;
     case 'bitstring':
-      return `z.string().regex(/^[01]*$/)${s.length ? `.length(${s.length})` : ''}`;
+      // `.length` for a Postgres `bit(n)`, `.max` for a MySQL `binary(n)`: the first is a fixed
+      // width, the second a ceiling, and `''` is valid only under the second.
+      return (
+        'z.string().regex(/^[01]*$/)' +
+        (s.length ? (s.exact ? `.length(${s.length})` : `.max(${s.length})`) : '')
+      );
   }
 }
 
@@ -145,11 +150,19 @@ function zodExprForColumn(
       return 'z.bigint()' + numericBounds(c, (v) => `${v}n`);
     case 'boolean':
       return 'z.boolean()';
-    case 'Date':
-      if (coerceDates === 'all') return 'z.coerce.date()';
+    case 'Date': {
+      // Not `z.coerce.date()`. That is `new Date(v)` on anything at all, and `new Date(null)` is
+      // the epoch, `new Date(true)` is one millisecond past it, and `new Date([1, 2])` parses as
+      // a string, so a NOT NULL timestamp column accepted `null`, `true` and an array on insert.
+      // Coercing only from the two types that carry a date, and validating the result, keeps the
+      // intent while rejecting all three.
+      const coerced =
+        "z.preprocess((v) => (typeof v === 'string' || typeof v === 'number' ? new Date(v) : v), z.date())";
+      if (coerceDates === 'all') return coerced;
       if (coerceDates === 'none') return 'z.date()';
       // 'input'
-      return mode === 'select' ? 'z.date()' : 'z.coerce.date()';
+      return mode === 'select' ? 'z.date()' : coerced;
+    }
     case 'Uint8Array':
       return 'z.instanceof(Uint8Array)';
     case 'any':

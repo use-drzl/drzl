@@ -2,7 +2,7 @@
  * One place that decides what a generated identifier is called.
  *
  * Every generator used to build these names by hand with template literals, which is why
- * the oRPC router and the zod/valibot/arktype generators could silently disagree about the
+ * the oRPC router and the zod/valibot/arktype/typebox generators could silently disagree about the
  * same name. They all call through here now, so a single resolved value describes both
  * sides of the import.
  *
