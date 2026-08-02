@@ -81,8 +81,18 @@ describe('what it refuses, and why that matters', () => {
     expect(rejected('age >= ?')).toMatch(/unresolved/);
   });
 
-  it('refuses a compound predicate rather than guessing its scope', () => {
-    expect(rejected('age >= 18 AND age <= 65')).toBeTruthy();
+  it('refuses a disjunction, whose scope cannot be split', () => {
+    // A conjunction is safe to break apart because every part has to hold on its own. A
+    // disjunction is not, and telling the two apart inside a mixed expression needs a real
+    // parser, so anything containing OR or NOT is refused outright.
+    expect(rejected('age >= 18 OR age <= 65')).toMatch(/OR/);
+    expect(rejected('NOT (age >= 18)')).toMatch(/NOT/);
+  });
+
+  it('refuses a whole conjunction when any one part is not understood', () => {
+    // Enforcing half of a constraint is enforcing a different constraint.
+    expect(rejected('age >= 18 AND length(name) > 3')).toMatch(/part of an AND/);
+    expect(rejected('age >= 18 AND start_date < end_date')).toMatch(/part of an AND/);
   });
 
   it('refuses a function call', () => {
@@ -103,5 +113,79 @@ describe('the constraint name', () => {
   it('is carried through so a failure can say which check failed', () => {
     const r = parseCheck('age >= 18', 'age_adult');
     expect(r.ok && r.checks[0].name).toBe('age_adult');
+  });
+});
+
+describe('conjunctions', () => {
+  // Every part of an AND has to hold independently, which is exactly what a list of checks means,
+  // so a conjunction can be split where a disjunction cannot. Verified against Postgres: a column
+  // with `CHECK (age >= 18 AND age <= 65)` accepts 18, 40 and 65, rejects 17 and 66, and accepts
+  // NULL, which is what the checks sitting inside `.nullable()` reproduces.
+  it('splits into one check per part', () => {
+    const r = parseCheck('age >= 18 AND age <= 65', 'age_range');
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.checks).toHaveLength(2);
+    expect(r.checks.map((c) => `${c.operator}${c.value}`)).toEqual(['>=18', '<=65']);
+  });
+
+  it('handles more than two parts', () => {
+    const r = parseCheck('n > 0 AND n < 10 AND n <> 5');
+    expect(r.ok && r.checks).toHaveLength(3);
+  });
+
+  it('sees through parentheses wrapping the whole expression', () => {
+    const r = parseCheck('(age >= 18 AND age <= 65)');
+    expect(r.ok && r.checks).toHaveLength(2);
+  });
+
+  it('does not split the AND inside a BETWEEN', () => {
+    // That AND belongs to the operator. Splitting on it first turned every BETWEEN into an
+    // unparseable pair and silently dropped a constraint that had been enforced.
+    const r = parseCheck('x BETWEEN 1 AND 10');
+    expect(r.ok && r.checks.map((c) => `${c.operator}${c.value}`)).toEqual(['>=1', '<=10']);
+  });
+
+  it('does not split an AND inside a string literal', () => {
+    const r = parseCheck("label = 'A AND B'");
+    expect(r.ok && r.checks).toHaveLength(1);
+    expect(r.ok && r.checks[0].value).toBe('A AND B');
+  });
+});
+
+describe('IN lists', () => {
+  // The constraint most often written as a CHECK, and one no official validator module enforces.
+  it('reads a string set', () => {
+    const r = parseCheck("status IN ('active', 'archived')", 'status_valid');
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.sets).toHaveLength(1);
+    expect(r.sets![0]).toMatchObject({
+      column: 'status',
+      values: ['active', 'archived'],
+      kind: 'string',
+    });
+  });
+
+  it('reads a numeric set', () => {
+    const r = parseCheck('level IN (1, 2, 3)');
+    expect(r.ok && r.sets![0]).toMatchObject({ values: ['1', '2', '3'], kind: 'number' });
+  });
+
+  it('combines with a comparison on another column', () => {
+    const r = parseCheck("status IN ('a', 'b') AND age > 0");
+    expect(r.ok && r.checks).toHaveLength(1);
+    expect(r.ok && r.sets).toHaveLength(1);
+  });
+
+  it('refuses a list that mixes types or holds a non-literal', () => {
+    expect(rejected("s IN ('a', 1)")).toMatch(/mixes types/);
+    expect(rejected('s IN (a, b)')).toBeTruthy();
+    expect(rejected('s IN (other_column)')).toBeTruthy();
+  });
+
+  it('keeps a quoted comma inside one value', () => {
+    const r = parseCheck("s IN ('a,b', 'c')");
+    expect(r.ok && r.sets![0].values).toEqual(['a,b', 'c']);
   });
 });
