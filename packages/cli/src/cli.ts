@@ -230,6 +230,7 @@ program
               // JSON Schema is data, so nothing here references a type from the schema module.
               ...(validationOptions(g, cfg, target, { schemaTypes: false }) as object),
               target: g.target,
+              components: g.components,
             } as never);
             progress.stop();
             ora().succeed(chalk.green(`Generated (json-schema): ${files.length} files`));

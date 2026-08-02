@@ -317,11 +317,18 @@ function tableSchema(
       parsed.cardinalities,
       applyDefaults
     );
-    // An update makes everything optional; elsewhere a column is required unless the database
-    // will supply it. A nullable column is still required: null is a value, and omitting the key
-    // is not the same as sending null.
-    const supplied = c.hasDefault || (mode === 'insert' && applyDefaults && c.defaultValue !== undefined);
-    if (mode !== 'update' && !supplied) required.push(c.name);
+    // An update makes everything optional. On insert a column the database will fill in may be
+    // omitted. On select nothing may be: the row came out of the database, so every column has a
+    // value, and a defaulted column has one more reliably than most. Treating `hasDefault` as
+    // "optional" in every mode made `id` optional on a select schema, which describes a row that
+    // cannot exist.
+    //
+    // A nullable column is still required: null is a value, and omitting the key is not the same
+    // as sending null.
+    const suppliedOnInsert =
+      c.hasDefault || (applyDefaults && c.defaultValue !== undefined) || c.isGenerated;
+    const optional = mode === 'update' || (mode === 'insert' && suppliedOnInsert);
+    if (!optional) required.push(c.name);
   }
   const desc = rowDescription(parsed.rows, cols);
   return {
@@ -363,6 +370,38 @@ export function tableSchemas(
   };
 }
 
+/**
+ * Every table's schemas as one `components.schemas` object, ready to drop into an OpenAPI
+ * document.
+ *
+ * The per-table modules are the useful unit for a TypeScript program; a document wants one object
+ * keyed by name. Assembling it is the step everyone repeats, and two details are easy to get
+ * quietly wrong:
+ *
+ * - `$schema` has to go. Nested under `components.schemas` a schema inherits the document's
+ *   dialect, and in OpenAPI 3.1 a per-schema `$schema` is read as a dialect switch.
+ * - `$id` has to go too, and not become `#/components/schemas/<name>` as the obvious first
+ *   attempt did. A draft 2020-12 `$id` may not contain a fragment, and ajv rejects the schema
+ *   outright: `data/$id must match pattern "^[^#]*#?$"`. In OpenAPI the **map key** is the
+ *   identity, and `$ref: '#/components/schemas/<name>'` is written by whatever points at it, not
+ *   by the schema itself.
+ */
+export function componentsDocument(
+  tables: Table[],
+  opts: { target?: JsonSchemaTarget; applyDefaults?: boolean } = {}
+): { schemas: Record<string, Schema> } {
+  const schemas: Record<string, Schema> = {};
+  for (const table of tables) {
+    const built = tableSchemas(table, opts);
+    for (const mode of ['insert', 'update', 'select'] as const) {
+      const name = `${table.tsName}${mode[0].toUpperCase()}${mode.slice(1)}`;
+      const { $schema: _dialect, $id: _id, ...rest } = built[mode];
+      schemas[name] = rest;
+    }
+  }
+  return { schemas };
+}
+
 function renderTableModule(
   table: Table,
   affix: ResolvedAffix,
@@ -381,6 +420,13 @@ export type ${typeName(mode, T, affix)} = typeof ${schemaName(mode, T, affix)};`
 export interface JsonSchemaGenerateOptions extends ValidationGenerateOptions {
   outputHeader?: { enabled?: boolean; text?: string };
   target?: JsonSchemaTarget;
+  /**
+   * Also emit `components.ts`, one object keyed by name and ready to spread into an OpenAPI
+   * document's `components.schemas`.
+   *
+   * Off by default, so nobody who wanted per-table modules gets a file they did not ask for.
+   */
+  components?: boolean;
 }
 
 export class JsonSchemaGenerator {
@@ -409,10 +455,30 @@ export class JsonSchemaGenerator {
       files.push(filePath);
     }
 
+    if (opts.components) {
+      const doc = componentsDocument(this.analysis.tables, {
+        target,
+        applyDefaults: !!opts.applyDefaults,
+      });
+      const componentsPath = path.join(out, 'components.ts');
+      const code = `export const components = ${JSON.stringify(doc, null, 2)} as const;\n`;
+      await fs.writeFile(
+        componentsPath,
+        await formatCode(buildHeader(opts.outputHeader) + code, componentsPath, opts.format),
+        'utf8'
+      );
+      files.push(componentsPath);
+    }
+
     const indexPath = path.join(out, 'index.ts');
     const index =
       this.analysis.tables
         .map((t) => `export * from '${moduleSpecifier(t.tsName, fileSuffix, opts.importExtension)}';`)
+        .concat(
+          opts.components
+            ? [`export * from './components${opts.importExtension === 'none' ? '' : '.js'}';`]
+            : []
+        )
         .join('\n') + '\n';
     const indexFormatted = await formatCode(
       buildHeader(opts.outputHeader) + index,
