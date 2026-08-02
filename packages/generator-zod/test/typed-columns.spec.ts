@@ -48,7 +48,9 @@ async function emit(columns: Column[], opts: Record<string, unknown>): Promise<s
 /** The select field for one column, collapsed to a single line. */
 const selectField = (src: string, name: string) => {
   const block = src.match(/SelecttSchema = z\.object\(\{([\s\S]*?)\n\}\)/)?.[1] ?? '';
-  const flat = block.replace(/\s+/g, ' ');
+  // Collapsed to one line, and the space prettier leaves before a wrapped `.` removed with
+  // it, so the expectation reads as the expression would be written by hand.
+  const flat = block.replace(/\s+/g, ' ').replace(/\s+\./g, '.').replace(/\(\s+/g, '(');
   const at = flat.indexOf(`${name}: `);
   if (at === -1) return '';
   let i = at + `${name}: `.length;
@@ -72,7 +74,11 @@ describe('off by default', () => {
 
   it('is not turned on by typedJson, which covers only the untyped columns', async () => {
     const src = await emit([col('role', { maxLength: 50 })], { typedJson: true });
-    expect(selectField(src, 'role')).toBe('z.string().max(50)');
+    // Quote style is prettier's to decide, and it resolves a different config depending on where
+    // the file is written, so the assertion accepts either.
+    expect(selectField(src, 'role')).toMatch(
+      /^z\.string\(\)\.refine\(\(v\) => \[\.\.\.v\]\.length <= 50, \{ message: ['"]at most 50 characters['"] \}\)$/
+    );
   });
 });
 
@@ -81,7 +87,7 @@ describe('with typedColumns', () => {
     const src = await emit([col('role', { maxLength: 50 })], { typedColumns: true });
     // The length check survives; only the static type changes.
     expect(selectField(src, 'role')).toMatch(
-      /^z\.string\(\)\.max\(50\)\.pipe\(z\.custom<\(typeof t\.\$inferSelect\)\[['"]role['"]\]>\(\)\)$/
+      /^z\.string\(\)\.refine\(.*\)\.pipe\(z\.custom<\(typeof t\.\$inferSelect\)\[['"]role['"]\]>\(\)\)$/
     );
   });
 

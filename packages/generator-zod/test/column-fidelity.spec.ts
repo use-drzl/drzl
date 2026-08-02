@@ -52,14 +52,34 @@ async function emit(columns: Column[]): Promise<string> {
 async function exprFor(over: Partial<Column>): Promise<string> {
   const src = await emit([col('x', over)]);
   const block = src.match(/SelecttSchema = z\.object\(\{([\s\S]*?)\n\}\)/)?.[1] ?? src;
-  const line = block.split('\n').find((l) => /^\s*x:/.test(l));
-  expect(line, `no field 'x' in:\n${src}`).toBeTruthy();
-  return line!.trim().replace(/^x:\s*/, '').replace(/,$/, '');
+  // Collapsed to one line first: prettier wraps a long expression across several, and a
+  // line-based match would silently return only its first fragment.
+  // Collapsed to one line, and the space prettier leaves before a wrapped `.` removed with
+  // it, so the expectation reads as the expression would be written by hand.
+  const flat = block.replace(/\s+/g, ' ').replace(/\s+\./g, '.').replace(/\(\s+/g, '(');
+  const at = flat.indexOf('x: ');
+  expect(at, `no field 'x' in:\n${src}`).toBeGreaterThanOrEqual(0);
+  let i = at + 3;
+  let depth = 0;
+  const from = i;
+  for (; i < flat.length; i++) {
+    const ch = flat[i];
+    if ('([{'.includes(ch)) depth++;
+    else if (')]}'.includes(ch)) depth--;
+    else if (ch === ',' && depth === 0) break;
+  }
+  // Whitespace is prettier's to decide, so it is normalised away entirely.
+  return flat.slice(from, i).trim();
 }
 
 describe('string length', () => {
-  it('enforces a varchar limit', async () => {
-    expect(await exprFor({ tsType: 'string', maxLength: 255 })).toBe('z.string().max(255)');
+  it('enforces a varchar limit, counting characters rather than UTF-16 units', async () => {
+    // Deliberately not `.max(255)`, which is what `drizzle-orm/zod` emits. A `varchar(n)` limit
+    // is n *characters*, and `.max` counts `.length`. Measured against Postgres for
+    // `varchar(10)`: the database accepts eight emoji and `.max(10)` refuses them.
+    expect(await exprFor({ tsType: 'string', maxLength: 255 })).toMatch(
+      /^z\.string\(\)\.refine\(\(v\) => \[\.\.\.v\]\.length <= 255, \{ message: ['"]at most 255 characters['"] \}\)$/
+    );
   });
 
   it('leaves an unbounded string alone', async () => {
@@ -81,9 +101,9 @@ describe('uuid', () => {
 
 describe('integer range', () => {
   it('bounds a smallint', async () => {
-    expect(await exprFor({ tsType: 'number', dbType: 'INTEGER', min: '-32768', max: '32767' })).toBe(
-      'z.number().int().gte(-32768).lte(32767)'
-    );
+    expect(
+      await exprFor({ tsType: 'number', dbType: 'INTEGER', min: '-32768', max: '32767' })
+    ).toBe('z.number().int().gte(-32768).lte(32767)');
   });
 
   it('bounds an integer', async () => {
@@ -123,7 +143,9 @@ describe('integer range', () => {
 describe('composition with the rest of the schema', () => {
   it('applies nullability after the constraint', async () => {
     const e = await exprFor({ tsType: 'string', maxLength: 10, nullable: true });
-    expect(e).toBe('z.string().max(10).nullable()');
+    expect(e).toMatch(
+      /^z\.string\(\)\.refine\(\(v\) => \[\.\.\.v\]\.length <= 10, \{ message: ['"]at most 10 characters['"] \}\)\.nullable\(\)$/
+    );
   });
 
   it('still parses as TypeScript', async () => {

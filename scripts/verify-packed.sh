@@ -549,6 +549,11 @@ import { matrix as sqTable } from './schema-sqlite.js';
 const POOL: [string, unknown][] = [
   ['null', null], ['undefined', undefined], ['""', ''], ["'hello'", 'hello'],
   ['300-char', 'x'.repeat(300)], ['70k-char', 'x'.repeat(70000)], ['5-char', 'xxxxx'],
+  // Astral-plane characters, where a code-point count and a UTF-16 `.length` disagree.
+  // Postgres counts characters for `varchar(n)`, so a 3-emoji string fits in a varchar(5)
+  // that every library's `.max(5)` refuses.
+  ['3 emoji', '\u{1F44D}\u{1F44D}\u{1F44D}'],
+  ['5 emoji', '\u{1F44D}\u{1F44D}\u{1F44D}\u{1F44D}\u{1F44D}'],
   ["'not-a-uuid'", 'not-a-uuid'], ['uuid', '3f2504e0-4f89-11d3-9a0c-0305e82c3301'],
   ["'zzz'", 'zzz'], ["'a'", 'a'], ["'happy'", 'happy'],
   ['0', 0], ['1', 1], ['1.5', 1.5], ['-1', -1], ['200', 200], ['40000', 40000],
@@ -626,6 +631,10 @@ const ALLOWED: Record<string, string> = {
   // for rather than ignoring it, so that schema rejects every valid uuid in any project that has
   // not populated `FormatRegistry` first. This generator emits a pattern, which needs no setup.
   'typebox/c_uuid': 'official uses an unregistered `format`, which rejects every uuid',
+  // A character limit counts *characters*; official counts `.length`, which is UTF-16 units, so
+  // it refuses three emoji in a `char(4)` the database accepts. Measured against Postgres.
+  c_char: 'character limit counts code points; official counts UTF-16 units',
+  m_char: 'as c_char',
   // Stricter than official, and verified against Postgres itself through PGlite: a `numeric`
   // column is a string, and a bare string schema accepts 'hello' where the database rejects it.
   // Official accepts all of these; the database does not.
@@ -647,7 +656,14 @@ const ALLOWED: Record<string, string> = {
 const allowed = (lib: string, col: string) => ALLOWED[`${lib}/${col}`] ?? ALLOWED[col];
 
 /** Cross-generator gaps that follow from what each library can express, not from a defect. */
-const CROSS_ALLOWED = (k: string) => k.startsWith('c_json') || k.startsWith('c_jsonb') || /bigint_b|blob_bigint/.test(k);
+const CROSS_ALLOWED = (k: string) =>
+  k.startsWith('c_json') ||
+  k.startsWith('c_jsonb') ||
+  /bigint_b|blob_bigint/.test(k) ||
+  // zod and valibot count code points for a character limit; TypeBox and ArkType state a length
+  // declaratively with no predicate to hook, so they keep the UTF-16 form and stay approximate for
+  // astral text. A capability difference between the libraries, not a defect in one generator.
+  k === 'c_char';
 
 const DIALECTS = [
   {
@@ -912,6 +928,11 @@ const POOL: [string, unknown][] = [
   ['1e9', 1e9], ['1e300', 1e300], ['9007199254740993', 9007199254740993],
   ['NaN', NaN], ['Infinity', Infinity],
   ["''", ''], ["'hello'", 'hello'], ['300-char', 'x'.repeat(300)],
+  // Astral-plane characters, where a code-point count and a UTF-16 `.length` disagree. Postgres
+  // counts *characters* for `varchar(n)`, so a 3-emoji string fits in a `varchar(5)` that every
+  // library's `.max(5)` refuses. Without these in the pool the gate cannot see that.
+  ['3 emoji', '\u{1F44D}\u{1F44D}\u{1F44D}'],
+  ['5 emoji', '\u{1F44D}\u{1F44D}\u{1F44D}\u{1F44D}\u{1F44D}'],
   ["'0101'", '0101'], ["'010'", '010'], ["'12.5'", '12.5'], ["'1_000'", '1_000'], ["'0x1f'", '0x1f'],
   ['uuid', '3f2504e0-4f89-11d3-9a0c-0305e82c3301'], ["'not-a-uuid'", 'not-a-uuid'],
   ["'happy'", 'happy'], ["'zzz'", 'zzz'],

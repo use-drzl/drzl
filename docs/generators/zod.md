@@ -50,6 +50,30 @@ to represent consecutive integers. That is narrower than the column, which holds
 values, but a number above it comes back out of the database as a _different_ number.
 `drizzle-orm/zod` draws the line in the same place.
 
+## Character limits count characters
+
+A `varchar(n)` limit is n **characters**. Every JavaScript validator counts `.length`, which is
+UTF-16 code units, and the two agree only until the text leaves the basic plane:
+
+```ts
+name: z.string().refine((v) => [...v].length <= 10, { message: 'at most 10 characters' }),
+```
+
+Measured against Postgres for a `varchar(10)` column:
+
+| value               | database    | `.max(10)`  | this    |
+| ------------------- | ----------- | ----------- | ------- |
+| 10 plain characters | accepts     | accepts     | accepts |
+| 8 emoji             | **accepts** | **refuses** | accepts |
+| 10 emoji            | **accepts** | **refuses** | accepts |
+| 11 emoji            | refuses     | refuses     | refuses |
+
+`drizzle-orm/zod` emits `.max(n)`, so it turns away a bio, display name or message that the column
+would have stored. The same applies to a `CHECK (length(x) <= n)`.
+
+TypeBox and ArkType keep the UTF-16 form: both state a length declaratively with no predicate to
+hook, so their output is approximate for astral text. The zod and valibot generators are exact.
+
 ## Arrays
 
 A column declared with `.array()` produces a schema for the array, with everything the element

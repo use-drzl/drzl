@@ -162,7 +162,12 @@ function zodExprForColumn(
       // not. Only formats verified against Postgres appear here, so nothing valid is turned away.
       const pattern = c.format ? COLUMN_FORMATS[c.format] : undefined;
       if (pattern) return `z.string().regex(new RegExp(${JSON.stringify(pattern)}))`;
-      return c.maxLength ? `z.string().max(${c.maxLength})` : 'z.string()';
+      // Not `.max(n)`. A `varchar(n)` limit is n *characters*, and `.max` counts UTF-16 units, so
+      // it refuses eight emoji in a `varchar(10)` the database is happy with. See
+      // `CODEPOINT_LENGTH` in validation-core for the measurements.
+      return c.maxLength
+        ? `z.string().refine((v) => [...v].length <= ${c.maxLength}, { message: 'at most ${c.maxLength} characters' })`
+        : 'z.string()';
     case 'number': {
       const base = isIntegerColumn(c) ? 'z.number().int()' : 'z.number()';
       return base + numericBounds(c, (v) => v);
