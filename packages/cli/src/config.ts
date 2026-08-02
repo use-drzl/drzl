@@ -79,6 +79,18 @@ export const GeneratorSchema = z.object({
   importExtension: ImportExtensionSchema.optional(),
   template: z.string().optional(),
   includeRelations: z.boolean().optional(),
+  /**
+   * Type `json` and `jsonb` columns from the schema rather than leaving them wide.
+   *
+   * `.$type<T>()` is a compile-time cast, so no runtime-derived validator can see it and
+   * `drizzle-orm/zod` types every json column as its generic `Json`. A generator can reference
+   * `typeof <table>.$inferSelect['<column>']` instead, which is the declared type resolved by
+   * TypeScript itself, so generics, unions and imported interfaces all work.
+   *
+   * Off by default because it makes the generated file import your schema module, as a
+   * type-only import that disappears at build time.
+   */
+  typedJson: z.boolean().optional(),
   naming: NamingSchema.optional(),
   outputHeader: z
     .object({

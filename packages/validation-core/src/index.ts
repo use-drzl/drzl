@@ -24,6 +24,31 @@ export interface FormatOptions {
 
 export interface ValidationGenerateOptions {
   outDir: string;
+  /**
+   * Path to the Drizzle schema module, as written in the config.
+   *
+   * Only needed by `typedJson`, which has to import the table back in order to reference the
+   * type Drizzle inferred for a column.
+   */
+  schemaPath?: string;
+  /**
+   * Type `json` and `jsonb` columns from the schema instead of leaving them wide.
+   *
+   * `.$type<T>()` is a compile-time cast: Drizzle's implementation is literally
+   * `$type() { return this }`, so the type exists only in TypeScript and nothing about it
+   * survives to runtime. Every runtime-derived validator is therefore blind to it, and
+   * `drizzle-orm/zod` types a json column as its generic `Json` no matter what you declared.
+   *
+   * A generator can do better without resolving any types itself, because Drizzle already did
+   * the work: `typeof users.$inferSelect['prefs']` *is* the declared type, resolved by
+   * TypeScript at the point of use. So the emitted schema references that rather than trying to
+   * reconstruct it, which is why this works for generics, unions and imported interfaces alike,
+   * the cases that defeat source-parsing approaches.
+   *
+   * Off by default: it makes the generated file import your schema module, and that coupling
+   * should be a choice rather than a surprise.
+   */
+  typedJson?: boolean;
   format?: FormatOptions;
   /**
    * What every generated file is called after the Drizzle export name, e.g. `.zod.ts`

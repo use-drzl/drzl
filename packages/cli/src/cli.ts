@@ -14,6 +14,7 @@ import {
   filterTables,
   loadConfig,
 } from './config.js';
+import { diffSnapshots, restoreSnapshot, snapshotAll } from './drift.js';
 import { maybeShowSponsorMessage } from './sponsor.js';
 
 const program = new Command();
@@ -70,6 +71,10 @@ program
   .command('generate')
   .description('Run configured generators (drzl.config.*)')
   .option('-c, --config <path>', 'path to drzl.config')
+  .option(
+    '--check',
+    'regenerate and fail if the result differs from what is on disk, without changing it'
+  )
   .action(async (opts: any) => {
     try {
       const cfg = await loadConfig(opts.config);
@@ -92,6 +97,10 @@ program
       // needing to know the option exists.
       analysis.tables = filterTables(analysis.tables, cfg);
       spinner.succeed(`Analysis complete in ${Date.now() - t0}ms`);
+      // Under --check the existing output is captured before anything overwrites it, so the
+      // regenerated result can be compared against it and the tree put back either way.
+      const driftDirs = computeGeneratorOutputDirs(cfg);
+      const driftBefore = opts.check ? await snapshotAll(driftDirs) : null;
       const progress = new cliProgress.SingleBar(
         { hideCursor: true },
         cliProgress.Presets.shades_classic
@@ -163,6 +172,10 @@ program
               fileSuffix: g.fileSuffix,
               importExtension: g.importExtension,
               affix: g.affix,
+              // Needed by typedJson, which imports the schema back to reference the type
+              // Drizzle inferred for a json column.
+              schemaPath: cfg.schema,
+              typedJson: g.typedJson,
             });
             progress.stop();
             ora().succeed(chalk.green(`Generated (zod): ${files.length} files`));
@@ -230,6 +243,29 @@ program
           }
         }
       }
+      if (driftBefore) {
+        const after = await snapshotAll(driftDirs);
+        const drift = diffSnapshots(driftBefore, after);
+        // Restored whether or not anything drifted, so `--check` never leaves the tree altered.
+        await restoreSnapshot(driftBefore, after);
+
+        if (drift.length) {
+          console.error(
+            chalk.red(`\nGenerated output is out of date (${drift.length} file(s)):`)
+          );
+          for (const d of drift) {
+            const mark = d.status === 'added' ? '+' : d.status === 'removed' ? '-' : '~';
+            console.error(`  ${mark} ${chalk.yellow(d.status.padEnd(8))} ${path.relative(process.cwd(), d.file)}`);
+          }
+          console.error(
+            chalk.dim('\nRun `drzl generate` and commit the result. Nothing was written by this check.')
+          );
+          process.exit(1);
+        }
+        console.log(chalk.green('Generated output is up to date.'));
+        return;
+      }
+
       if (cfg.generators.length) {
         maybeShowSponsorMessage({ reason: 'generate' });
       }
