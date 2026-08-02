@@ -834,6 +834,43 @@ CONFIG
   done
 done
 
+# ---------------------------------------------------------------------------------------------
+# What the output costs.
+#
+# Generated code lands in the consumer's bundle, and every constraint added this cycle made it
+# bigger. Nothing measured that, so a change that doubled the output would have shipped as
+# silently as one that halved it.
+#
+# The budget is per column, not per file, so adding a table to the fixture does not blow it. The
+# numbers are ceilings with room above today's figure, chosen to catch a step change rather than
+# to police a byte.
+# ---------------------------------------------------------------------------------------------
+report_size() {
+  local dir="$1" lib="$2" budget="$3"
+  local bytes cols per
+  bytes=$(cat "$dir"/*.ts | wc -c)
+  cols=$(grep -cE '^\s+c_[a-z0-9_]+:' src/schema.ts)
+  per=$(( bytes / cols ))
+  printf '    %-8s %6d bytes over %2d columns = %4d/column (budget %d)\n' "$lib" "$bytes" "$cols" "$per" "$budget"
+  if [ "$per" -gt "$budget" ]; then
+    echo "FAIL: the $lib generator emits $per bytes per column, over its $budget budget." >&2
+    echo "      Generated code ships in the consumer's bundle. Raise the budget deliberately," >&2
+    echo "      in a commit that says what the extra bytes buy." >&2
+    return 1
+  fi
+}
+
+echo "==> generated output size"
+size_fail=0
+# Roughly 1.4x today's figure: loose enough that adding a constraint to one column type does not
+# trip it, tight enough that doubling the output does. A budget with 4x headroom catches nothing,
+# which was the first draft of this.
+report_size src/gen/pg/zod      zod      300  || size_fail=1
+report_size src/gen/pg/valibot  valibot  400  || size_fail=1
+report_size src/gen/pg/arktype  arktype  220  || size_fail=1
+report_size src/gen/pg/typebox  typebox  350  || size_fail=1
+[ "$size_fail" = 0 ] || exit 1
+
 if ! npx tsx src/parity.ts; then
   echo "FAIL: DRZL's generated schemas diverge from the official drizzle-orm validators." >&2
   exit 1
