@@ -1,5 +1,99 @@
 # @drzl/generator-zod
 
+## 3.1.0
+
+### Minor Changes
+
+- c90fd42: **Generated Zod schemas now enforce CHECK constraints. No official Drizzle validator does.**
+
+  Verified against `drizzle-orm/zod` at 1.0.0-rc.4: a table declaring
+  `check('age_adult', sql`${t.age} >= 18`)` produces an insert schema that accepts `{ age: 5 }`.
+  The constraint is right there in the schema, the database will reject the row, and the validator
+  says nothing. Same for valibot, arktype and typebox.
+
+  DRZL emits:
+
+  ```ts
+  age: z.number().int().gte(-2147483648).lte(2147483647)
+    .refine((v) => v >= 18, { message: "age_adult: age >= 18" }),
+  ```
+
+  `BETWEEN 0 AND 100` becomes two refinements. The constraint name is in the message, so a failure
+  points at the thing in the schema that caused it.
+
+  ### It refuses more than it accepts, on purpose
+
+  Only a comparison naming one column against one literal is translated. A schema that quietly
+  enforces a _guess_ at your constraint is worse than one enforcing nothing, because it rejects
+  rows the database would have accepted. Skipped, not guessed: comparisons between two columns
+  (`start_date < end_date`, a statement about the row rather than a field), compound predicates,
+  function calls, and regex matches, whose `~` in Postgres is POSIX ERE and not JavaScript's
+  dialect.
+
+  ### Two pieces of SQL semantics that a naive version gets wrong
+
+  **A CHECK passes on TRUE or NULL.** So `CHECK (score >= 0)` on a nullable column accepts NULL.
+  The refinement is applied to the inner type and `.nullable()` wraps it, which reproduces that
+  exactly rather than being stricter than the database.
+
+  **The bound has to survive.** `sql`${t.age} >= ${MIN}`` used to render as `age >= ?`, because
+  `renderSql` mapped an interpolated value to `?`. Drizzle puts a primitive into the chunk list as
+  itself rather than wrapping it, so the value was there all along and was being discarded. Any
+  refinement built from that expression would have been built from a hole. Fixed in the analyzer,
+  which also makes `Table.checks[].expression` correct for anything else reading it.
+
+  Valibot and ArkType keep their current output; the parser lives in `@drzl/validation-core` as
+  `parseCheck`, so they can adopt it without reimplementing it.
+
+- 6d6857f: Generated schemas now enforce what the column actually declares. They did not, so a 300
+  character value in a `varchar(255)` and a `smallint` of 40000 both passed validation and failed
+  at the database.
+
+  Every target below was measured from `drizzle-orm/zod` at 1.0.0-rc.4 by building the schema and
+  reading its checks, not guessed:
+
+  | column                    | before             | now                                                     |
+  | ------------------------- | ------------------ | ------------------------------------------------------- |
+  | `varchar(255)`            | `z.string()`       | `z.string().max(255)`                                   |
+  | `uuid()`                  | `z.string()`       | `z.uuid()`                                              |
+  | `smallint()`              | `z.number().int()` | `.int().gte(-32768).lte(32767)`                         |
+  | `integer()`               | `z.number().int()` | `.int().gte(-2147483648).lte(2147483647)`               |
+  | `bigint({mode:'number'})` | `z.bigint()`       | `.int().gte(-9007199254740991).lte(9007199254740991)`   |
+  | `bigint({mode:'bigint'})` | `z.bigint()`       | `.gte(-9223372036854775808n).lte(9223372036854775807n)` |
+
+  The bigint row was not merely imprecise, it was wrong: `{ mode: 'number' }` yields a JS number, so
+  a schema demanding a bigint rejected every valid row.
+
+  Valibot and ArkType get the same constraints in their own idiom, `v.pipe(v.string(),
+v.maxLength(255))` and `string <= 255`. Every ArkType form was executed against arktype itself,
+  accepting a valid value and rejecting an invalid one, because an expression it cannot parse
+  throws on import.
+
+  ### Two dead switch cases in the analyzer
+
+  `case 'PgUuid'` and `case 'PgBigInt'` never matched anything. Drizzle spells them `PgUUID`,
+  `PgBigInt53` and `PgBigInt64`, so both fell through to a case-insensitive regex arm and came back
+  as plain `TEXT` and `bigint`. That is why uuid lost its format and why bigint ignored its mode.
+
+  ### New on `Column`
+
+  `maxLength`, `min`, `max` and `format`. `dbType` is unchanged, since consumers switch on it.
+  Bounds are decimal strings because a 64 bit bound is not representable as a JS number:
+  `9223372036854775807` rounds the moment it becomes one, so a numeric field would emit a bound
+  that is quietly wrong.
+
+  `@drzl/generator-orpc` also drops its `zod` dependency. It never imported it; the only occurrence
+  was a template literal emitted into generated code, so it was forcing zod on Valibot and ArkType
+  users for nothing.
+
+### Patch Changes
+
+- Updated dependencies [c90fd42]
+- Updated dependencies [6d6857f]
+- Updated dependencies [6d6857f]
+  - @drzl/validation-core@3.1.0
+  - @drzl/analyzer@1.6.0
+
 ## 3.0.0
 
 ### Major Changes
