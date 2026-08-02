@@ -207,6 +207,9 @@ program
               affix: g.affix,
               applyDefaults: g.applyDefaults,
               coerceDates: g.coerceDates,
+              // Needed by typedColumns, which imports the schema back to reference the type
+              schemaPath: cfg.schema,
+              typedColumns: g.typedColumns,
             });
             progress.stop();
             ora().succeed(chalk.green(`Generated (valibot): ${files.length} files`));

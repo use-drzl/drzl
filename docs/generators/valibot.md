@@ -101,6 +101,26 @@ name: v.pipe(v.string(), v.check((val) => [...val].length <= 10, 'at most 10 cha
 See [Zod, character limits](/generators/zod#character-limits-count-characters) for the
 measurements against Postgres.
 
+## `typedColumns`
+
+`.$type<T>()` is a compile-time cast on any column, so `text().$type<'admin' | 'member'>()` is an
+ordinary string to anything reading it at runtime and the narrowing is lost.
+
+```ts
+{ kind: 'valibot', path: 'src/validators/valibot', typedColumns: true }
+```
+
+```ts
+role: v.pipe(v.string(), v.transform((x) => x as (typeof users.$inferSelect)['role'])),
+```
+
+Valibot has no equivalent of TypeBox's `Type.Unsafe`, so the reference is appended as an identity
+transform: the value passes through unchanged and only `InferOutput` sees the narrower type. Every
+action the schema carried still runs, and the transform is appended after the nullable and
+optional wrappers so neither is disturbed.
+
+Off by default. See [Zod → `typedColumns`](/generators/zod#typedcolumns) for the rationale.
+
 ## `applyDefaults`
 
 Drizzle knows what a column defaults to, and `drizzle-orm` reproduces none of them.

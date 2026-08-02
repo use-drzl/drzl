@@ -10,6 +10,7 @@ import {
   insertColumns,
   isIntegerColumn,
   parseCheck,
+  resolveConfiguredImport,
   updateColumns,
   selectColumns,
   formatCode,
@@ -285,6 +286,17 @@ function vExprForColumn(
   }
 }
 
+/**
+ * Narrow a field's static type to what Drizzle inferred, leaving the runtime schema untouched.
+ *
+ * Valibot has no `Type.Unsafe` equivalent, so this is an identity transform: the value passes
+ * through unchanged and only `InferOutput` sees the narrower type. Appended last, after the
+ * nullable and optional wrappers, so neither is disturbed.
+ */
+function vNarrow(expr: string, ref?: string): string {
+  return ref ? `v.pipe(${expr}, v.transform((x) => x as ${ref}))` : expr;
+}
+
 function vField(
   c: Column,
   mode: Mode,
@@ -293,7 +305,8 @@ function vField(
   sets: ColumnSet[] = [],
   applyDefault = false,
   lengths: LengthCheck[] = [],
-  cardinalities: CardinalityCheck[] = []
+  cardinalities: CardinalityCheck[] = [],
+  narrowRef?: string
 ): string {
   let expr = vExprForColumn(c, mode, coerceDates, checks, sets, lengths);
   // Drizzle keeps an array on the element's own column class, so everything above describes the
@@ -314,7 +327,7 @@ function vField(
       expr = `v.optional(${expr})`;
     }
   }
-  return expr;
+  return vNarrow(expr, narrowRef);
 }
 
 function renderObjectShape(
@@ -325,12 +338,25 @@ function renderObjectShape(
   sets: ColumnSet[] = [],
   applyDefaults = false,
   lengths: LengthCheck[] = [],
-  cardinalities: CardinalityCheck[] = []
+  cardinalities: CardinalityCheck[] = [],
+  typedColumns?: { table: string; mode: 'insert' | 'select' }
 ) {
   return cols
     .map(
       (c) =>
-        `  ${JSON.stringify(c.name)}: ${vField(c, mode, coerceDates, checks, sets, applyDefaults, lengths, cardinalities)},`
+        `  ${JSON.stringify(c.name)}: ${vField(
+          c,
+          mode,
+          coerceDates,
+          checks,
+          sets,
+          applyDefaults,
+          lengths,
+          cardinalities,
+          typedColumns
+            ? `(typeof ${typedColumns.table}.$infer${typedColumns.mode === 'insert' ? 'Insert' : 'Select'})[${JSON.stringify(c.name)}]`
+            : undefined
+        )},`
     )
     .join('\n');
 }
@@ -339,7 +365,8 @@ function renderTableSchemas(
   table: Table,
   affix: ResolvedAffix,
   coerceDates: NonNullable<ValidationGenerateOptions['coerceDates']>,
-  applyDefaults = false
+  applyDefaults = false,
+  typedColumns?: { schemaSpecifier: string }
 ) {
   const T = table.tsName;
   const insertSchema = schemaName('insert', T, affix);
@@ -358,6 +385,14 @@ function renderTableSchemas(
   const sets = parsedChecks.flatMap((p) => (p.ok ? (p.sets ?? []) : []));
   const lengths = parsedChecks.flatMap((p) => (p.ok ? (p.lengths ?? []) : []));
   const cardinalities = parsedChecks.flatMap((p) => (p.ok ? (p.cardinalities ?? []) : []));
+  const tj = typedColumns ? { table: T, mode: 'select' as const } : undefined;
+  const tjInsert = typedColumns ? { table: T, mode: 'insert' as const } : undefined;
+  // A type-only import: erased at build time, so it adds no runtime dependency on the schema
+  // module and cannot create an import cycle.
+  const schemaImport = typedColumns
+    ? `import type { ${T} } from '${typedColumns.schemaSpecifier}';\n`
+    : '';
+
   const bodyInsert = renderObjectShape(
     insertCols,
     'insert',
@@ -366,7 +401,8 @@ function renderTableSchemas(
     sets,
     applyDefaults,
     lengths,
-    cardinalities
+    cardinalities,
+    tjInsert
   );
   const bodyUpdate = renderObjectShape(
     updateCols,
@@ -376,7 +412,8 @@ function renderTableSchemas(
     sets,
     applyDefaults,
     lengths,
-    cardinalities
+    cardinalities,
+    tjInsert
   );
   const bodySelect = renderObjectShape(
     selectCols,
@@ -386,7 +423,8 @@ function renderTableSchemas(
     sets,
     applyDefaults,
     lengths,
-    cardinalities
+    cardinalities,
+    tj
   );
   // Emitted only where a json column exists, so a file without one gains nothing unused.
   const needsJson = [...insertCols, ...updateCols, ...selectCols].some(
@@ -395,7 +433,7 @@ function renderTableSchemas(
 
   return `import * as v from 'valibot';
 import type { InferInput, InferOutput } from 'valibot';
-${needsJson ? `\n${JSON_PREAMBLE}` : ''}
+${schemaImport}${needsJson ? `\n${JSON_PREAMBLE}` : ''}
 export const ${insertSchema} = v.object({
 ${bodyInsert}
 });
@@ -431,11 +469,36 @@ export class ValibotGenerator implements ValidationRenderer<ValibotGenerateOptio
     const affix = resolveAffix(opts);
     const coerceDates = opts.coerceDates ?? 'input';
     const fileSuffix = opts.fileSuffix ?? DEFAULT_FILE_SUFFIX;
+    // `typedColumns` needs the schema imported back to reference what Drizzle inferred, so it
+    // is only possible when the schema path is known. Silently doing nothing would be worse
+    // than saying why.
+    const typedColumns =
+      opts.typedColumns && opts.schemaPath
+        ? {
+            schemaSpecifier: resolveConfiguredImport(
+              opts.schemaPath,
+              out,
+              process.cwd(),
+              opts.importExtension
+            ),
+          }
+        : undefined;
+    if (opts.typedColumns && !opts.schemaPath) {
+      console.warn(
+        '[drzl] typedColumns was requested but the schema path is unknown, so column types stay wide.'
+      );
+    }
     // File names deliberately stay on the raw Drizzle export name: affixes and tableCase
     // rename identifiers, never modules, so the barrel and importPath keep resolving.
     for (const table of this.analysis.tables) {
       const filePath = path.join(out, moduleFileName(table.tsName, fileSuffix));
-      const code = renderTableSchemas(table, affix, coerceDates, !!opts.applyDefaults);
+      const code = renderTableSchemas(
+        table,
+        affix,
+        coerceDates,
+        !!opts.applyDefaults,
+        typedColumns
+      );
       const formatted = await formatCode(
         buildHeader(opts.outputHeader) + code,
         filePath,
