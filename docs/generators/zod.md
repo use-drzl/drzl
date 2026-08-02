@@ -207,6 +207,31 @@ Off by default because it adds an `import type` of your schema module to the gen
 That import is erased at build time, so it adds no runtime dependency and cannot create a runtime
 cycle, but the coupling should be a choice.
 
+## `typedColumns`
+
+`.$type<T>()` is a compile-time cast on **any** column, not just json. Drizzle's implementation is
+literally `$type() { return this }`, so `text().$type<'admin' | 'member'>()` is an ordinary string
+to anything reading the column at runtime, and both `drizzle-orm/zod` and DRZL emit a plain
+`z.string()`. The narrowing is lost.
+
+```ts
+{ kind: 'zod', path: 'src/validators/zod', typedColumns: true }
+```
+
+```ts
+role: z.string().max(50).pipe(z.custom<(typeof users.$inferSelect)['role']>()),
+```
+
+The runtime schema is untouched: the length check is still there, and the reference is appended
+rather than substituted. Only the static type changes, from `string` to the union you declared, so
+a typo in `if (user.role === 'admni')` becomes a compile error instead of dead code.
+
+Nothing narrows it at _runtime_, because the cast leaves no trace there. If you want the value
+checked against the union as well, declare it as an enum column, which DRZL emits as `z.enum`.
+
+Implies `typedJson`, since both need the schema imported back. Off by default: it adds a `.pipe()`
+to every field, which is noise unless you use `.$type<T>()`.
+
 ## `customType` columns
 
 A `customType` column has nothing checkable at runtime, and DRZL does not pretend otherwise:

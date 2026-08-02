@@ -49,6 +49,23 @@ export interface ValidationGenerateOptions {
    * should be a choice rather than a surprise.
    */
   typedJson?: boolean;
+  /**
+   * Take every column's static type from Drizzle's inference, not just the untyped ones.
+   *
+   * `typedJson` covers the columns that have no runtime type worth checking. This covers the
+   * rest, and exists for `.$type<T>()`, which is a compile-time cast on any column at all:
+   * `text().$type<'admin' | 'member'>()` is a `string` to every runtime-derived validator, so
+   * `drizzle-orm/zod` and DRZL alike emitted a plain `z.string()` and the narrowing was lost.
+   *
+   * The runtime schema is untouched. The reference is appended with `.pipe()` rather than
+   * replacing anything, so a `varchar(50)` keeps its length check and only its *type* narrows
+   * from `string` to the union you declared. Nothing can narrow it at runtime, since the cast
+   * leaves no trace there.
+   *
+   * Implies `typedJson`, since both need the schema imported back. Off by default: it adds a
+   * `.pipe()` to every field, which is noise unless you use `.$type<T>()`.
+   */
+  typedColumns?: boolean;
   format?: FormatOptions;
   /**
    * What every generated file is called after the Drizzle export name, e.g. `.zod.ts`
