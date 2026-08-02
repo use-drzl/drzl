@@ -35,7 +35,11 @@ const col = (name: string, over: Partial<Column> = {}): Column =>
 
 let seq = 0;
 
-async function schemasFor(columns: Column[], applyDefaults: boolean): Promise<Record<string, any>> {
+async function schemasFor(
+  columns: Column[],
+  applyDefaults: boolean,
+  extra: Record<string, unknown> = {}
+): Promise<Record<string, any>> {
   const analysis: Analysis = {
     dialect: 'postgres',
     tables: [{ name: 't', tsName: 't', columns, unique: [], indexes: [], checks: [] }] as never,
@@ -45,7 +49,7 @@ async function schemasFor(columns: Column[], applyDefaults: boolean): Promise<Re
   };
   const dir = path.join(__dirname, '.tmp-defaults');
   await fs.mkdir(dir, { recursive: true });
-  await new GEN(analysis).generate({ outDir: dir, applyDefaults } as never);
+  await new GEN(analysis).generate({ outDir: dir, applyDefaults, ...extra } as never);
   // Unique per call: the module cache is process-global.
   const file = path.join(dir, `t-${process.pid}-${seq++}.ts`);
   await fs.rename(path.join(dir, `t${SUFFIX}`), file);
@@ -93,5 +97,23 @@ describe('with applyDefaults', () => {
     // A default applies when a row is created, not when it is updated.
     const m = await schemasFor(LITERAL, true);
     expect(RUN(m.UpdatetSchema, {})).toEqual({});
+  });
+});
+
+describe('together with typedColumns', () => {
+  // `Type.Unsafe<T>(schema)` wraps the schema, and the default has to go on the schema it wraps.
+  // Applied to the wrapper instead, it was silently dropped: the emitted field carried no default
+  // at all and nothing said so. Found by generating with both options and reading the output.
+  it('keeps the default when the type is also narrowed', async () => {
+    const m = await schemasFor(LITERAL, true, {
+      typedColumns: true,
+      schemaPath: 'src/db/schema.ts',
+    });
+    expect(RUN(m.InserttSchema, { name: 'x' })).toEqual({
+      name: 'x',
+      country: 'GB',
+      count: 0,
+      flag: true,
+    });
   });
 });
