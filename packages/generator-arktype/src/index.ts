@@ -4,7 +4,7 @@ import type {
   ValidationRenderer,
   ValidationGenerateOptions,
 } from '@drzl/validation-core';
-import type { ColumnCheck } from '@drzl/validation-core';
+import type { ColumnCheck, ColumnSet } from '@drzl/validation-core';
 import {
   COLUMN_FORMATS,
   insertColumns,
@@ -106,10 +106,18 @@ function atTypeForColumn(
   c: Column,
   mode: Mode,
   coerceDates: NonNullable<ValidationGenerateOptions['coerceDates']>,
-  checks: ColumnCheck[] = []
+  checks: ColumnCheck[] = [],
+  sets: ColumnSet[] = []
 ): string {
   const shaped = atShapeType(c);
   if (shaped) return shaped;
+  // `CHECK (status IN ('a', 'b'))` is a literal union, which is exactly how ArkType states a set.
+  const set = sets.find((x) => x.column === c.name);
+  if (set) {
+    return set.kind === 'string'
+      ? set.values.map((v) => `'${v.replace(/'/g, "\\'")}'`).join(' | ')
+      : set.values.join(' | ');
+  }
   // A parsed check compares the column to a scalar literal, which describes the array rather
   // than an element. Folded in anyway, `CHECK (tags = 'x')` became `('x')[]`, demanding that
   // every element equal 'x'.
@@ -169,9 +177,10 @@ function atField(
   c: Column,
   mode: Mode,
   coerceDates: NonNullable<ValidationGenerateOptions['coerceDates']>,
-  checks: ColumnCheck[] = []
+  checks: ColumnCheck[] = [],
+  sets: ColumnSet[] = []
 ): string {
-  let t = atTypeForColumn(c, mode, coerceDates, checks);
+  let t = atTypeForColumn(c, mode, coerceDates, checks, sets);
   // The element is parenthesised whenever it is anything but a bare keyword, because `[]` binds
   // tighter than every operator ArkType has: `'a' | 'b'[]` is the literal `'a'` or an array of
   // `'b'`, not an array of either. A plain keyword needs no parentheses and reads better without,
@@ -189,12 +198,13 @@ function renderObjectShape(
   cols: Column[],
   mode: Mode,
   coerceDates: NonNullable<ValidationGenerateOptions['coerceDates']>,
-  checks: ColumnCheck[] = []
+  checks: ColumnCheck[] = [],
+  sets: ColumnSet[] = []
 ) {
   return cols
     .map(
       (c) =>
-        `  ${JSON.stringify(c.name)}: ${JSON.stringify(atField(c, mode, coerceDates, checks))},`
+        `  ${JSON.stringify(c.name)}: ${JSON.stringify(atField(c, mode, coerceDates, checks, sets))},`
     )
     .join('\n');
 }
@@ -214,13 +224,12 @@ function renderTableSchemas(
   const insertCols = insertColumns(table);
   const updateCols = updateColumns(table);
   const selectCols = selectColumns(table);
-  const checks = (table.checks ?? []).flatMap((k) => {
-    const parsed = parseCheck(k.expression, k.name);
-    return parsed.ok ? parsed.checks : [];
-  });
-  const bodyInsert = renderObjectShape(insertCols, 'insert', coerceDates, checks);
-  const bodyUpdate = renderObjectShape(updateCols, 'update', coerceDates, checks);
-  const bodySelect = renderObjectShape(selectCols, 'select', coerceDates, checks);
+  const parsedChecks = (table.checks ?? []).map((k) => parseCheck(k.expression, k.name));
+  const checks = parsedChecks.flatMap((p) => (p.ok ? p.checks : []));
+  const sets = parsedChecks.flatMap((p) => (p.ok ? (p.sets ?? []) : []));
+  const bodyInsert = renderObjectShape(insertCols, 'insert', coerceDates, checks, sets);
+  const bodyUpdate = renderObjectShape(updateCols, 'update', coerceDates, checks, sets);
+  const bodySelect = renderObjectShape(selectCols, 'select', coerceDates, checks, sets);
   return `import { type } from 'arktype';
 
 export const ${insertSchema} = type({

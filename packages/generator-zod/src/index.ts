@@ -4,7 +4,7 @@ import type {
   ValidationGenerateOptions,
   ValidationRenderer,
 } from '@drzl/validation-core';
-import type { ColumnCheck } from '@drzl/validation-core';
+import type { ColumnCheck, ColumnSet } from '@drzl/validation-core';
 import {
   formatCode,
   parseCheck,
@@ -134,10 +134,20 @@ function zodExprForColumn(
   c: Column,
   mode: Mode,
   coerceDates: NonNullable<ValidationGenerateOptions['coerceDates']>,
-  typedJsonRef?: string
+  typedJsonRef?: string,
+  sets: ColumnSet[] = []
 ): string {
   const shaped = shapeExpr(c, typedJsonRef);
   if (shaped) return shaped;
+  // `CHECK (status IN ('a', 'b'))` constrains the column to a set, which is what an enum is. It
+  // takes the same shape here as a declared enum rather than becoming a predicate, so the static
+  // type narrows too. No official validator module enforces it at all.
+  const set = sets.find((x) => x.column === c.name);
+  if (set) {
+    return set.kind === 'string'
+      ? `z.enum([${set.values.map((v) => JSON.stringify(v)).join(', ')}] as const)`
+      : `z.union([${set.values.map((v) => `z.literal(${v})`).join(', ')}])`;
+  }
   if (c.enumValues && c.enumValues.length) {
     const vals = c.enumValues.map((v) => `'${v.replace(/'/g, "\\'")}'`).join(', ');
     return `z.enum([${vals}] as const)`;
@@ -195,6 +205,7 @@ function zodField(
   coerceDates: NonNullable<ValidationGenerateOptions['coerceDates']>,
   checks: ColumnCheck[] = [],
   typedJsonRef?: string,
+  sets: ColumnSet[] = [],
   /**
    * A reference to Drizzle's inferred type for a column that already has a runtime schema.
    *
@@ -204,7 +215,7 @@ function zodField(
    */
   narrowRef?: string
 ): string {
-  let expr = zodExprForColumn(c, mode, coerceDates, typedJsonRef);
+  let expr = zodExprForColumn(c, mode, coerceDates, typedJsonRef, sets);
   // `.array()` does not give the column its own class in Drizzle, so everything above describes
   // the *element*. Length limits and integer bounds belong there, which is why the wrapping
   // happens out here rather than inside.
@@ -237,7 +248,8 @@ function renderObjectShape(
   mode: Mode,
   coerceDates: NonNullable<ValidationGenerateOptions['coerceDates']>,
   checks: ColumnCheck[] = [],
-  typedJson?: { table: string; mode: 'insert' | 'select'; allColumns?: boolean }
+  typedJson?: { table: string; mode: 'insert' | 'select'; allColumns?: boolean },
+  sets: ColumnSet[] = []
 ) {
   return cols
     .map((c) => {
@@ -249,7 +261,7 @@ function renderObjectShape(
       const replaces = c.tsType === 'any' || c.shape?.kind === 'custom';
       const ref = typedJson && replaces ? refFor(typedJson) : undefined;
       const narrow = typedJson?.allColumns && !replaces ? refFor(typedJson) : undefined;
-      return `  ${JSON.stringify(c.name)}: ${zodField(c, mode, coerceDates, checks, ref, narrow)},`;
+      return `  ${JSON.stringify(c.name)}: ${zodField(c, mode, coerceDates, checks, ref, sets, narrow)},`;
     })
     .join('\n');
 }
@@ -272,10 +284,9 @@ function renderTableSchemas(
   const selectCols = selectColumns(table);
   // Only the checks this version can translate with certainty. The parser skips anything
   // ambiguous, since a schema that enforces a guess rejects rows the database would accept.
-  const checks = (table.checks ?? []).flatMap((k) => {
-    const parsed = parseCheck(k.expression, k.name);
-    return parsed.ok ? parsed.checks : [];
-  });
+  const parsedChecks = (table.checks ?? []).map((k) => parseCheck(k.expression, k.name));
+  const checks = parsedChecks.flatMap((p) => (p.ok ? p.checks : []));
+  const sets = parsedChecks.flatMap((p) => (p.ok ? (p.sets ?? []) : []));
   // Insert and select can disagree: a json column with a default is optional on insert, so its
   // inferred type differs. Each shape therefore references the matching inference.
   const tj = typedJson
@@ -284,9 +295,9 @@ function renderTableSchemas(
   const tjInsert = typedJson
     ? { table: table.tsName, mode: 'insert' as const, allColumns: typedJson.allColumns }
     : undefined;
-  const bodyInsert = renderObjectShape(insertCols, 'insert', coerceDates, checks, tjInsert);
-  const bodyUpdate = renderObjectShape(updateCols, 'update', coerceDates, checks, tjInsert);
-  const bodySelect = renderObjectShape(selectCols, 'select', coerceDates, checks, tj);
+  const bodyInsert = renderObjectShape(insertCols, 'insert', coerceDates, checks, tjInsert, sets);
+  const bodyUpdate = renderObjectShape(updateCols, 'update', coerceDates, checks, tjInsert, sets);
+  const bodySelect = renderObjectShape(selectCols, 'select', coerceDates, checks, tj, sets);
   // A type-only import: it disappears at build time, so this adds no runtime dependency on the
   // schema module and cannot create an import cycle at runtime.
   const schemaImport = typedJson

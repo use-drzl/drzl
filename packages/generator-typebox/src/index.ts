@@ -1,6 +1,7 @@
 import type { Analysis, Table, Column } from '@drzl/analyzer';
 import type {
   ColumnCheck,
+  ColumnSet,
   ResolvedAffix,
   ValidationRenderer,
   ValidationGenerateOptions,
@@ -167,10 +168,20 @@ function tbExprForColumn(
   mode: Mode,
   coerceDates: NonNullable<ValidationGenerateOptions['coerceDates']>,
   checks: ColumnCheck[] = [],
-  typedJsonRef?: string
+  typedJsonRef?: string,
+  sets: ColumnSet[] = []
 ): string {
   const shaped = tbShapeExpr(c, typedJsonRef);
   if (shaped) return shaped;
+  // `CHECK (status IN ('a', 'b'))` is a union of literals. `Type.Literal` is the only form
+  // TypeBox enforces: a `const` option parses and then accepts anything.
+  const set = sets.find((x) => x.column === c.name);
+  if (set) {
+    const lits = set.values.map((v) =>
+      set.kind === 'string' ? `Type.Literal(${JSON.stringify(v)})` : `Type.Literal(${v})`
+    );
+    return `Type.Union([${lits.join(', ')}])`;
+  }
   // A parsed check compares the column against a scalar literal, which describes an element
   // rather than the array. Applied anyway, `CHECK (tags = 'x')` collapsed the whole column to
   // `Type.Literal("x")`.
@@ -239,9 +250,10 @@ function tbField(
   mode: Mode,
   coerceDates: NonNullable<ValidationGenerateOptions['coerceDates']>,
   checks: ColumnCheck[] = [],
-  typedJsonRef?: string
+  typedJsonRef?: string,
+  sets: ColumnSet[] = []
 ): string {
-  let expr = tbExprForColumn(c, mode, coerceDates, checks, typedJsonRef);
+  let expr = tbExprForColumn(c, mode, coerceDates, checks, typedJsonRef, sets);
   // Drizzle keeps an array on the element's own column class, so everything above describes the
   // element and the wrapping belongs out here, after its bounds are attached.
   for (let i = 0; i < (c.arrayDimensions ?? 0); i++) expr = `Type.Array(${expr})`;
@@ -259,7 +271,8 @@ function renderObjectShape(
   mode: Mode,
   coerceDates: NonNullable<ValidationGenerateOptions['coerceDates']>,
   checks: ColumnCheck[] = [],
-  typedJson?: { table: string; mode: 'insert' | 'select' }
+  typedJson?: { table: string; mode: 'insert' | 'select' },
+  sets: ColumnSet[] = []
 ) {
   return cols
     .map((c) => {
@@ -267,7 +280,7 @@ function renderObjectShape(
         typedJson && (c.tsType === 'any' || c.shape?.kind === 'custom')
           ? `(typeof ${typedJson.table}.$infer${typedJson.mode === 'insert' ? 'Insert' : 'Select'})[${JSON.stringify(c.name)}]`
           : undefined;
-      return `  ${JSON.stringify(c.name)}: ${tbField(c, mode, coerceDates, checks, ref)},`;
+      return `  ${JSON.stringify(c.name)}: ${tbField(c, mode, coerceDates, checks, ref, sets)},`;
     })
     .join('\n');
 }
@@ -291,16 +304,15 @@ function renderTableSchemas(
 
   // Only checks the shared parser understands with certainty. Ambiguous ones are skipped rather
   // than guessed at, identically to the other validation generators.
-  const checks = (table.checks ?? []).flatMap((k) => {
-    const parsed = parseCheck(k.expression, k.name);
-    return parsed.ok ? parsed.checks : [];
-  });
+  const parsedChecks = (table.checks ?? []).map((k) => parseCheck(k.expression, k.name));
+  const checks = parsedChecks.flatMap((p) => (p.ok ? p.checks : []));
+  const sets = parsedChecks.flatMap((p) => (p.ok ? (p.sets ?? []) : []));
 
   const tj = typedJson ? { table: T, mode: 'select' as const } : undefined;
   const tjInsert = typedJson ? { table: T, mode: 'insert' as const } : undefined;
-  const bodyInsert = renderObjectShape(insertCols, 'insert', coerceDates, checks, tjInsert);
-  const bodyUpdate = renderObjectShape(updateCols, 'update', coerceDates, checks, tjInsert);
-  const bodySelect = renderObjectShape(selectCols, 'select', coerceDates, checks, tj);
+  const bodyInsert = renderObjectShape(insertCols, 'insert', coerceDates, checks, tjInsert, sets);
+  const bodyUpdate = renderObjectShape(updateCols, 'update', coerceDates, checks, tjInsert, sets);
+  const bodySelect = renderObjectShape(selectCols, 'select', coerceDates, checks, tj, sets);
 
   const schemaImport = typedJson
     ? `import type { ${T} } from '${typedJson.schemaSpecifier}';\n`

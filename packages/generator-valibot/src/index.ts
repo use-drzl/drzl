@@ -4,7 +4,7 @@ import type {
   ValidationRenderer,
   ValidationGenerateOptions,
 } from '@drzl/validation-core';
-import type { ColumnCheck } from '@drzl/validation-core';
+import type { ColumnCheck, ColumnSet } from '@drzl/validation-core';
 import {
   COLUMN_FORMATS,
   insertColumns,
@@ -166,10 +166,18 @@ function vExprForColumn(
   c: Column,
   mode: Mode,
   coerceDates: NonNullable<ValidationGenerateOptions['coerceDates']>,
-  checks: ColumnCheck[] = []
+  checks: ColumnCheck[] = [],
+  sets: ColumnSet[] = []
 ): string {
   const shaped = vShapeExpr(c);
   if (shaped) return shaped;
+  // `CHECK (status IN ('a', 'b'))` constrains the column to a set, which is what a picklist is.
+  const set = sets.find((x) => x.column === c.name);
+  if (set) {
+    return set.kind === 'string'
+      ? `v.picklist([${set.values.map((v) => JSON.stringify(v)).join(', ')}] as const)`
+      : `v.union([${set.values.map((v) => `v.literal(${v})`).join(', ')}])`;
+  }
   const extra = vChecks(c, checks);
   /** Fold the constraint actions into whatever base this column maps to. */
   const piped = (base: string, actions: string[]) => {
@@ -220,9 +228,10 @@ function vField(
   c: Column,
   mode: Mode,
   coerceDates: NonNullable<ValidationGenerateOptions['coerceDates']>,
-  checks: ColumnCheck[] = []
+  checks: ColumnCheck[] = [],
+  sets: ColumnSet[] = []
 ): string {
-  let expr = vExprForColumn(c, mode, coerceDates, checks);
+  let expr = vExprForColumn(c, mode, coerceDates, checks, sets);
   // Drizzle keeps an array on the element's own column class, so everything above describes the
   // element and the wrapping belongs out here, after the bounds and length limits are attached.
   for (let i = 0; i < (c.arrayDimensions ?? 0); i++) expr = `v.array(${expr})`;
@@ -238,10 +247,11 @@ function renderObjectShape(
   cols: Column[],
   mode: Mode,
   coerceDates: NonNullable<ValidationGenerateOptions['coerceDates']>,
-  checks: ColumnCheck[] = []
+  checks: ColumnCheck[] = [],
+  sets: ColumnSet[] = []
 ) {
   return cols
-    .map((c) => `  ${JSON.stringify(c.name)}: ${vField(c, mode, coerceDates, checks)},`)
+    .map((c) => `  ${JSON.stringify(c.name)}: ${vField(c, mode, coerceDates, checks, sets)},`)
     .join('\n');
 }
 
@@ -262,13 +272,12 @@ function renderTableSchemas(
   const selectCols = selectColumns(table);
   // Only checks the shared parser understands with certainty; the rest are skipped rather
   // than guessed at, exactly as in the Zod generator.
-  const checks = (table.checks ?? []).flatMap((k) => {
-    const parsed = parseCheck(k.expression, k.name);
-    return parsed.ok ? parsed.checks : [];
-  });
-  const bodyInsert = renderObjectShape(insertCols, 'insert', coerceDates, checks);
-  const bodyUpdate = renderObjectShape(updateCols, 'update', coerceDates, checks);
-  const bodySelect = renderObjectShape(selectCols, 'select', coerceDates, checks);
+  const parsedChecks = (table.checks ?? []).map((k) => parseCheck(k.expression, k.name));
+  const checks = parsedChecks.flatMap((p) => (p.ok ? p.checks : []));
+  const sets = parsedChecks.flatMap((p) => (p.ok ? (p.sets ?? []) : []));
+  const bodyInsert = renderObjectShape(insertCols, 'insert', coerceDates, checks, sets);
+  const bodyUpdate = renderObjectShape(updateCols, 'update', coerceDates, checks, sets);
+  const bodySelect = renderObjectShape(selectCols, 'select', coerceDates, checks, sets);
   // Emitted only where a json column exists, so a file without one gains nothing unused.
   const needsJson = [...insertCols, ...updateCols, ...selectCols].some(
     (c) => c.shape?.kind === 'json'

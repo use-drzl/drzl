@@ -164,14 +164,41 @@ Note the ordering on `score`: the refinement sits inside `.nullable()`, so `null
 is deliberate, because a SQL CHECK passes when it evaluates to TRUE **or NULL**. Enforcing it on
 a nullable column would make the schema stricter than the database.
 
+### `IN` lists become enums
+
+```ts
+// check('status_valid', sql`${t.status} IN ('active', 'archived')`)
+status: z.enum(["active", "archived"] as const),
+```
+
+A set constraint is what an enum is, so it takes the enum's shape rather than becoming a
+predicate, and the static type narrows with it.
+
+### Conjunctions split
+
+```ts
+// check('n_bounds', sql`${t.n} > 0 AND ${t.n} < 10 AND ${t.n} <> 5`)
+n: z.number().int()
+  .refine((v) => v > 0, { message: "n_bounds: n > 0" })
+  .refine((v) => v < 10, { message: "n_bounds: n < 10" })
+  .refine((v) => v !== 5, { message: "n_bounds: n <> 5" }),
+```
+
+Every part of an `AND` has to hold on its own, which is exactly what a list of refinements means.
+The split walks the expression rather than splitting on the text, so the `AND` inside a `BETWEEN`
+and the one inside `'A AND B'` are both left alone. If any single part is not understood, the
+whole constraint is skipped: enforcing half of a constraint is enforcing a different one.
+
 **Only unambiguous constraints are translated.** These are skipped rather than guessed at:
 
-| Skipped                   | Why                                                        |
-| ------------------------- | ---------------------------------------------------------- |
-| `start_date < end_date`   | A statement about the row, not about either field          |
-| `age >= 18 AND age <= 65` | Compound; getting its scope wrong changes what is enforced |
-| `length(name) > 3`        | Function call                                              |
-| `email ~ '^[a-z]+$'`      | Postgres `~` is POSIX ERE, not JavaScript's regex dialect  |
+| Skipped                       | Why                                                       |
+| ----------------------------- | --------------------------------------------------------- |
+| `start_date < end_date`       | A statement about the row, not about either field         |
+| `age >= 18 OR age <= 65`      | A disjunction cannot be split the way a conjunction can   |
+| `NOT (age >= 18)`             | Same: negation changes the scope of everything inside it  |
+| `age >= 18 AND length(n) > 3` | One part is not understood, so neither is enforced        |
+| `length(name) > 3`            | Function call                                             |
+| `email ~ '^[a-z]+$'`          | Postgres `~` is POSIX ERE, not JavaScript's regex dialect |
 
 A schema that quietly enforces a _guess_ at your constraint is worse than one enforcing nothing,
 because it rejects rows the database would have accepted.
