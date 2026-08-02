@@ -88,6 +88,17 @@ export interface Column {
   defaultValue?: unknown;
 
   /**
+   * A cap measured in bytes rather than characters.
+   *
+   * MySQL's TEXT and BLOB families carry their limit in the type itself, and that limit is a byte
+   * budget: `tinytext` is 255 bytes, which on utf8mb4 is 255 ascii characters or 63 emoji.
+   * `maxLength` cannot express that, and using it applied the number as a character count.
+   *
+   * Only MySQL sets this. Postgres `text` has no limit and its `varchar(n)` counts characters.
+   */
+  maxBytes?: number;
+
+  /**
    * Array depth for a column declared with `.array()`, absent when the column is a scalar.
    *
    * Drizzle does not give an array its own column class: `text().array()` is still a `PgText`,
@@ -459,7 +470,12 @@ export function describeV1Column(column: any): Partial<Column> | null {
         // rather than `constructor.name` because it survives minification.
         const kind = String(column?.constructor?.[Symbol.for('drizzle:entityKind')] ?? '');
         const cap = codec && kind.startsWith('MySql') ? MYSQL_TEXT_CAPS[codec] : undefined;
-        if (cap) out.maxLength = cap;
+        // A byte budget, not a character count. Measured against MySQL 8 on utf8mb4, its default:
+        // `tinytext` takes 255 ascii and 63 thumbs-up characters (252 bytes) and refuses 64 (256).
+        // Carried as `maxLength` it was applied as characters, so a tinytext holding 64 emoji
+        // validated clean and the database refused the row. `varchar(n)` really is characters and
+        // is unaffected.
+        if (cap) out.maxBytes = cap;
       } else {
         // Something this release added that is not modelled yet. Falling back to the class
         // name beats inventing a type: a wrong scalar rejects rows, `unknown` only fails to
@@ -1217,6 +1233,17 @@ export class SchemaAnalyzer {
       // `Infinity`, a bigint, a Date and a Buffer, none of which survive a round trip.
       //
       // SQLite spells it as a mode on a text column rather than as a type.
+      // 0.4x gives every member of the TEXT family the same class, `MySqlText`, so only the SQL
+      // type tells them apart. v1 states a codec and reaches the same table through
+      // `describeV1Column`; on 0.4x nothing set a cap at all and a longtext and a tinytext were
+      // equally unconstrained.
+      const sqlKind = String((outerCol as any)?.constructor?.[Symbol.for('drizzle:entityKind')] ?? '');
+      const sqlType =
+        sqlKind.startsWith('MySql') && typeof (col as any)?.getSQLType === 'function'
+          ? String((col as any).getSQLType()).toLowerCase()
+          : undefined;
+      const byteCap = sqlType ? MYSQL_TEXT_CAPS[sqlType] : undefined;
+
       const jsonShape =
         dbType === 'JSON' || dbType === 'JSONB' || (col as any)?.config?.mode === 'json'
           ? ({ kind: 'json' } as const)
@@ -1272,6 +1299,7 @@ export class SchemaAnalyzer {
         ...(arrayDims ? { arrayDimensions: arrayDims } : {}),
         // Only where v1 did not already describe the value, so a shaped column keeps its shape.
         ...(jsonShape && !v1?.shape ? { shape: jsonShape } : {}),
+        ...(byteCap && v1?.maxBytes === undefined ? { maxBytes: byteCap } : {}),
       });
     }
 

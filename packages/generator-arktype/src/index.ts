@@ -162,7 +162,11 @@ function atTypeForColumn(
       // See the zod generator. ArkType states a pattern as a bare regex literal in its DSL.
       const pattern = c.format ? COLUMN_FORMATS[c.format] : undefined;
       if (pattern) return `/${pattern}/`;
-      return c.maxLength ? `string <= ${c.maxLength}` : 'string';
+      // Not `string <= n`. That counts UTF-16 code units, and both Postgres and MySQL count a
+      // `varchar(n)` in characters, so ten thumbs-up characters are a valid row in a varchar(10)
+      // and this refused it. The cap moves to a narrow on the object, where an exact count can be
+      // written; a MySQL TEXT byte budget goes the same way.
+      return 'string';
     }
     case 'number': {
       const { lower, upper, equals } = atNarrowRange(c, checks);
@@ -256,10 +260,18 @@ function renderObjectShape(
   cardinalities: CardinalityCheck[] = []
 ) {
   return cols
-    .map(
-      (c) =>
-        `  ${JSON.stringify(c.name)}: ${JSON.stringify(atField(c, mode, coerceDates, checks, sets, applyDefaults, cardinalities))},`
-    )
+    .map((c) => {
+      const dsl = atField(c, mode, coerceDates, checks, sets, applyDefaults, cardinalities);
+      const caps = atCapNarrows(c);
+      if (!caps) return `  ${JSON.stringify(c.name)}: ${JSON.stringify(dsl)},`;
+      // A Type instance rather than a DSL string, because neither cap is expressible in the DSL:
+      // `string <= n` counts UTF-16 code units, which agrees with neither database. ArkType marks
+      // optionality on the key when the value is a Type, so the `?` moves there.
+      const optional = dsl.endsWith('?');
+      const inner = optional ? dsl.slice(0, -1) : dsl;
+      const key = JSON.stringify(optional ? `${c.name}?` : c.name);
+      return `  ${key}: type(${JSON.stringify(inner)})${caps},`;
+    })
     .join('\n');
 }
 
@@ -307,6 +319,29 @@ function atRowNarrows(rows: RowCheck[], cols: Column[]): string {
  *
  * Null and absent both pass, matching SQL, where a check involving NULL is satisfied.
  */
+/**
+ * Column caps as narrows: characters for `varchar(n)`, bytes for MySQL's TEXT family.
+ *
+ * Neither is expressible in the string DSL. `string <= n` counts UTF-16 code units, which is a
+ * third measurement, agreeing with neither. Both databases count `varchar(n)` in characters and
+ * MySQL counts `tinytext` in bytes, so both are written out here rather than approximated.
+ */
+function atCapNarrows(c: Column): string {
+  if (c.tsType !== 'string' || c.arrayDimensions || c.shape) return '';
+  const out: string[] = [];
+  if (c.maxLength) {
+    const msg = JSON.stringify(`at most ${c.maxLength} characters`);
+    out.push(`.narrow((v, ctx) => v == null || [...v].length <= ${c.maxLength} || ctx.mustBe(${msg}))`);
+  }
+  if (c.maxBytes) {
+    const msg = JSON.stringify(`at most ${c.maxBytes} bytes`);
+    out.push(
+      `.narrow((v, ctx) => v == null || new TextEncoder().encode(v).length <= ${c.maxBytes} || ctx.mustBe(${msg}))`
+    );
+  }
+  return out.join('');
+}
+
 function atLengthNarrows(lengths: LengthCheck[], cols: Column[]): string {
   const present = new Set(cols.map((c) => c.name));
   const OPS: Record<LengthCheck['operator'], string> = {
