@@ -4,8 +4,10 @@ import type {
   ValidationGenerateOptions,
   ValidationRenderer,
 } from '@drzl/validation-core';
+import type { ColumnCheck } from '@drzl/validation-core';
 import {
   formatCode,
+  parseCheck,
   insertColumns,
   moduleFileName,
   moduleSpecifier,
@@ -35,6 +37,40 @@ const DEFAULT_FILE_SUFFIX = '.zod.ts';
 function numericBounds(c: Column, literal: (v: string) => string): string {
   if (c.min === undefined || c.max === undefined) return '';
   return `.gte(${literal(c.min)}).lte(${literal(c.max)})`;
+}
+
+/**
+ * `.refine()` calls for the CHECK constraints that apply to this column.
+ *
+ * No official Drizzle validator emits these. Verified against `drizzle-orm/zod` at 1.0.0-rc.4:
+ * a table with `check('age_adult', sql`${t.age} >= 18`)` yields an insert schema that happily
+ * accepts `{ age: 5 }`.
+ *
+ * Only checks that name this column and compare it to a literal appear here; everything else is
+ * skipped by the parser rather than guessed at. The message names the constraint, so a failure
+ * points at the thing in the schema that caused it.
+ */
+function checkRefinements(c: Column, checks: ColumnCheck[]): string {
+  const mine = checks.filter((k) => k.column === c.name);
+  if (!mine.length) return '';
+
+  const OPS: Record<ColumnCheck['operator'], string> = {
+    '>=': '>=',
+    '>': '>',
+    '<=': '<=',
+    '<': '<',
+    '=': '===',
+    '<>': '!==',
+  };
+
+  return mine
+    .map((k) => {
+      const rhs = k.kind === 'string' ? JSON.stringify(k.value) : k.value;
+      const label = k.name ? `${k.name}: ` : '';
+      const msg = JSON.stringify(`${label}${c.name} ${k.operator} ${k.kind === 'string' ? `'${k.value}'` : k.value}`);
+      return `.refine((v) => v ${OPS[k.operator]} ${rhs}, { message: ${msg} })`;
+    })
+    .join('');
 }
 
 function zodExprForColumn(
@@ -83,9 +119,14 @@ function zodExprForColumn(
 function zodField(
   c: Column,
   mode: Mode,
-  coerceDates: NonNullable<ValidationGenerateOptions['coerceDates']>
+  coerceDates: NonNullable<ValidationGenerateOptions['coerceDates']>,
+  checks: ColumnCheck[] = []
 ): string {
   let expr = zodExprForColumn(c, mode, coerceDates);
+  // Before nullability on purpose. A SQL CHECK passes when it evaluates to TRUE *or NULL*, so
+  // wrapping the constrained type in `.nullable()` reproduces that exactly: null skips the
+  // check, as the database does.
+  expr += checkRefinements(c, checks);
   // For selects, nullable columns should allow null values
   if (c.nullable) {
     expr = `${expr}.nullable()`;
@@ -104,10 +145,11 @@ function zodField(
 function renderObjectShape(
   cols: Column[],
   mode: Mode,
-  coerceDates: NonNullable<ValidationGenerateOptions['coerceDates']>
+  coerceDates: NonNullable<ValidationGenerateOptions['coerceDates']>,
+  checks: ColumnCheck[] = []
 ) {
   return cols
-    .map((c) => `  ${JSON.stringify(c.name)}: ${zodField(c, mode, coerceDates)},`)
+    .map((c) => `  ${JSON.stringify(c.name)}: ${zodField(c, mode, coerceDates, checks)},`)
     .join('\n');
 }
 
@@ -126,9 +168,15 @@ function renderTableSchemas(
   const insertCols = insertColumns(table);
   const updateCols = updateColumns(table);
   const selectCols = selectColumns(table);
-  const bodyInsert = renderObjectShape(insertCols, 'insert', coerceDates);
-  const bodyUpdate = renderObjectShape(updateCols, 'update', coerceDates);
-  const bodySelect = renderObjectShape(selectCols, 'select', coerceDates);
+  // Only the checks this version can translate with certainty. The parser skips anything
+  // ambiguous, since a schema that enforces a guess rejects rows the database would accept.
+  const checks = (table.checks ?? []).flatMap((k) => {
+    const parsed = parseCheck(k.expression, k.name);
+    return parsed.ok ? parsed.checks : [];
+  });
+  const bodyInsert = renderObjectShape(insertCols, 'insert', coerceDates, checks);
+  const bodyUpdate = renderObjectShape(updateCols, 'update', coerceDates, checks);
+  const bodySelect = renderObjectShape(selectCols, 'select', coerceDates, checks);
   return `import { z } from 'zod';
 
 export const ${insertSchema} = z.object({

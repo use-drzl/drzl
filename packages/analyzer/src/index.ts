@@ -130,6 +130,22 @@ export interface AnalyzeOptions {
   includeHeuristicRelations?: boolean;
 }
 
+/**
+ * A JavaScript value as it would read inside a SQL expression.
+ *
+ * Only for rendering a constraint back as text, never for building a query, so it needs to be
+ * readable rather than escaped for execution. Strings are single quoted with the SQL doubling
+ * convention so an apostrophe cannot break the rendering.
+ */
+function renderSqlLiteral(v: unknown): string {
+  if (v === null || v === undefined) return 'NULL';
+  if (typeof v === 'number' || typeof v === 'bigint') return String(v);
+  if (typeof v === 'boolean') return v ? 'TRUE' : 'FALSE';
+  if (v instanceof Date) return `'${v.toISOString()}'`;
+  if (Array.isArray(v)) return `(${v.map(renderSqlLiteral).join(', ')})`;
+  return `'${String(v).replace(/'/g, "''")}'`;
+}
+
 export class SchemaAnalyzer {
   constructor(private readonly schemaPath: string) {}
 
@@ -270,9 +286,22 @@ export class SchemaAnalyzer {
     if (!Array.isArray(chunks)) return String(value ?? '');
     return chunks
       .map((c: any) => {
+        // A literal fragment of the template holds its text in a string array.
         if (Array.isArray(c?.value)) return c.value.join('');
         if (typeof c?.name === 'string') return toTs(c.name);
         if (c?.queryChunks) return this.renderSql(c, toTs);
+        // An interpolated value, e.g. sql`${t.age} >= ${MIN}`. Drizzle puts a primitive into the
+        // chunk list as itself rather than wrapping it, so this is a bare number or string, not
+        // an object with a `.value`. It used to fall through to `?` and the bound was simply
+        // gone: `age >= ?`. Anything built from that, a refinement or a migration hint, would
+        // have been built from a hole.
+        if (c === null || ['number', 'string', 'boolean', 'bigint'].includes(typeof c)) {
+          return renderSqlLiteral(c);
+        }
+        // A Param wrapper, which is what a non-primitive interpolation becomes.
+        if (typeof c === 'object' && 'value' in c) {
+          return renderSqlLiteral((c as { value: unknown }).value);
+        }
         return '?';
       })
       .join('')

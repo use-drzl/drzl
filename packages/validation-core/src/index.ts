@@ -2,6 +2,7 @@ import type { Analysis, Column } from '@drzl/analyzer';
 import type { ImportExtension } from './files.js';
 import type { AffixOptions } from './naming.js';
 
+export * from './checks.js';
 export * from './files.js';
 export * from './naming.js';
 
