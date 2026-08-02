@@ -1,5 +1,62 @@
 # @drzl/cli
 
+## 4.14.0
+
+### Minor Changes
+
+- fbc0881: Emit a batch duplicate finder, and stop reading a table-level `unique()` as the primary key
+
+  `{ duplicateFinder: true }` on any of the four validation generators also emits
+  `findDuplicate<Table>`: the rows in a batch that collide with an earlier row on a unique
+  constraint.
+
+  Uniqueness is the one constraint a per-row validator structurally cannot check, since it is a fact
+  about the table rather than the row. What needs no database is whether a batch collides with
+  itself, and that is the half a user can fix before sending anything. It matters for bulk inserts,
+  where a thousand rows fail whole on one collision and the error names a constraint rather than a
+  row.
+
+  The finder follows SQL on null: a constraint is skipped for any row where one of its columns is
+  null or absent, because NULL is not equal to NULL and a unique index permits repeats. Composite
+  keys compare by JSON, so `[1, '2']` never collides with `['1', 2]`. The emitted function is plain
+  TypeScript with no reference to any validation library, so all four generators emit the same one.
+
+  Building it surfaced an analyzer bug it depended on. A table-level `unique('name').on(a, b)` keeps
+  its columns directly on the builder and carries no `unique` flag, which is also true of a primary
+  key builder, and the rule was "no flag means primary key". So the constraint was not merely
+  lost: a table keyed on `id` reported a composite primary key on whatever the unique named, which
+  is what the service and router generators build their lookups from. Builders are now told apart by
+  `drizzle:entityKind`.
+
+- 9254a9c: Emit an OpenAPI `components.schemas` document
+
+  `{ kind: 'json-schema', components: true }` also writes `components.ts`, one object keyed by name
+  and ready to spread into an OpenAPI document. Assembling that from per-table modules is the step
+  everyone repeats.
+
+  Two details it handles. `$schema` is dropped, because a schema nested under `components.schemas`
+  inherits the document's dialect and OpenAPI 3.1 reads a per-schema `$schema` as a dialect switch.
+  `$id` is dropped rather than rewritten: setting it to `#/components/schemas/<name>` is the obvious
+  first attempt and is invalid, since a draft 2020-12 `$id` may not contain a fragment. The map key
+  is the identity.
+
+  Also fixes a bug in the select schema found while testing this: a column with a database default
+  was marked optional in every mode, so `id` was optional on a select schema, which describes a row
+  that cannot exist. Only insert treats a defaulted column as omissible.
+
+  Off by default.
+
+### Patch Changes
+
+- Updated dependencies [fbc0881]
+- Updated dependencies [5578e93]
+  - @drzl/analyzer@1.14.0
+  - @drzl/validation-core@3.14.0
+  - @drzl/generator-zod@3.15.0
+  - @drzl/generator-valibot@3.14.0
+  - @drzl/generator-arktype@3.10.0
+  - @drzl/generator-typebox@0.8.0
+
 ## 4.13.1
 
 ### Patch Changes
