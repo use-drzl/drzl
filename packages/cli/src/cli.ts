@@ -238,7 +238,11 @@ program
             progress.stop();
             console.error(
               chalk.red('JSON Schema generator missing.'),
-              chalk.yellow('\nInstall with: npm install @drzl/generator-json-schema')
+              chalk.yellow('\nInstall with: npm install @drzl/generator-json-schema'),
+              // An optional dependency, unlike the other generators, until its npm trusted
+              // publisher exists. A missing optional dependency is skipped rather than failing
+              // the install, which is what keeps `npm i @drzl/cli` working meanwhile.
+              ''
             );
             console.error(chalk.gray('Error details:'), e?.message ?? e);
             process.exit(1);

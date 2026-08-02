@@ -30,7 +30,6 @@
   "dependencies": {
     "@drzl/analyzer": "workspace:^",
     "@drzl/generator-arktype": "workspace:^",
-    "@drzl/generator-json-schema": "workspace:^",
     "@drzl/generator-orpc": "workspace:^",
     "@drzl/generator-service": "workspace:^",
     "@drzl/generator-typebox": "workspace:^",
@@ -67,5 +66,8 @@
   "funding": {
     "type": "github",
     "url": "https://github.com/sponsors/omar-dulaimi"
+  },
+  "optionalDependencies": {
+    "@drzl/generator-json-schema": "workspace:^"
   }
 }
