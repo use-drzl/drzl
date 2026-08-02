@@ -3,8 +3,12 @@
  *
  * ArkType states constraints inside its type expression rather than by chaining, so a check
  * folds into the range instead of becoming a separate assertion. That is not a workaround, it
- * is the better result: `18 <= number <= 32767` is one statement about the type rather than a
- * bound plus an opaque predicate.
+ * is the better result: `18 <= number.integer <= 32767` is one statement about the type rather
+ * than a bound plus an opaque predicate.
+ *
+ * The `.integer` is load bearing. These expectations previously read `18 <= number <= 32767`, on
+ * the theory that an integer range implied integrality; it does not, and every `integer()` column
+ * accepted `1.5` until ArkType was asked directly and turned out to parse both at once.
  *
  * Every emitted form is executed against arktype itself below. An expression it cannot parse
  * throws at import, which would take down whatever imported the schema, so "it looks right" is
@@ -51,7 +55,12 @@ async function typeOf(
   // Prettier drops the quotes around a key that is a valid identifier, so both forms occur.
   const line = block.split('\n').find((l) => new RegExp(`^\\s*"?${c.name}"?:`).test(l));
   expect(line, `no field ${c.name} in:\n${src}`).toBeTruthy();
-  return JSON.parse(line!.trim().replace(/^"?[A-Za-z0-9_]+"?:\s*/, '').replace(/,$/, ''));
+  return JSON.parse(
+    line!
+      .trim()
+      .replace(/^"?[A-Za-z0-9_]+"?:\s*/, '')
+      .replace(/,$/, '')
+  );
 }
 
 describe('folding a check into the range', () => {
@@ -59,26 +68,26 @@ describe('folding a check into the range', () => {
     const t = await typeOf(col('age', { min: '-32768', max: '32767' }), [
       { name: 'adult', expression: 'age >= 18' },
     ]);
-    expect(t).toBe('18 <= number <= 32767');
+    expect(t).toBe('18 <= number.integer <= 32767');
   });
 
   it('tightens the upper bound', async () => {
     const t = await typeOf(col('pct', { min: '-32768', max: '32767' }), [
       { expression: 'pct <= 100' },
     ]);
-    expect(t).toBe('-32768 <= number <= 100');
+    expect(t).toBe('-32768 <= number.integer <= 100');
   });
 
   it('turns BETWEEN into both bounds', async () => {
     const t = await typeOf(col('score', { min: '-32768', max: '32767' }), [
       { expression: 'score BETWEEN 0 AND 100' },
     ]);
-    expect(t).toBe('0 <= number <= 100');
+    expect(t).toBe('0 <= number.integer <= 100');
   });
 
   it('keeps an exclusive comparison exclusive', async () => {
     const t = await typeOf(col('n', { min: '-32768', max: '32767' }), [{ expression: 'n > 0' }]);
-    expect(t).toBe('0 < number <= 32767');
+    expect(t).toBe('0 < number.integer <= 32767');
   });
 
   it('pins an equality to a literal', async () => {
@@ -94,14 +103,14 @@ describe('what it leaves alone', () => {
     const t = await typeOf(col('age', { min: '-32768', max: '32767' }), [
       { expression: 'other >= 18' },
     ]);
-    expect(t).toBe('-32768 <= number <= 32767');
+    expect(t).toBe('-32768 <= number.integer <= 32767');
   });
 
   it('ignores a cross-column comparison, which is about the row', async () => {
     const t = await typeOf(col('age', { min: '-32768', max: '32767' }), [
       { expression: 'age > score' },
     ]);
-    expect(t).toBe('-32768 <= number <= 32767');
+    expect(t).toBe('-32768 <= number.integer <= 32767');
   });
 });
 
@@ -132,7 +141,8 @@ describe('the emitted expressions are ones arktype accepts', () => {
     expect(Object.keys(shape), `parsed nothing from:\n${body}`).toHaveLength(3);
     const { type } = await import('arktype');
     const T = type(shape as never);
-    const isErr = (r: unknown) => (r as { constructor?: { name?: string } })?.constructor?.name?.includes('Errors');
+    const isErr = (r: unknown) =>
+      (r as { constructor?: { name?: string } })?.constructor?.name?.includes('Errors');
 
     expect(isErr(T({ age: 30, score: 50, tier: 'gold' })), 'valid row').toBe(false);
     expect(isErr(T({ age: 5, score: 50, tier: 'gold' })), 'age below check').toBe(true);

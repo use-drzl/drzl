@@ -105,6 +105,19 @@ export function isGeneratedColumn(c: Column, _primaryKeyColumns: string[] = []):
   return c.isGenerated;
 }
 
+/**
+ * Whether a numeric column accepts whole numbers only.
+ *
+ * The analyzer states this outright from Drizzle v1's `dataType`. The fallback is what the
+ * generators each used to do on their own: read "declares both bounds" as "is an integer". That
+ * was true only while integers were the sole bounded type, so it is kept strictly for an
+ * analysis produced before `Column.integer` existed, and never consulted when the flag is set.
+ */
+export function isIntegerColumn(c: Column): boolean {
+  if (typeof c.integer === 'boolean') return c.integer;
+  return c.dbType === 'INTEGER' || (c.min !== undefined && c.max !== undefined);
+}
+
 export function insertColumns(table: Table): Column[] {
   return table.columns.filter((c) => !isGeneratedColumn(c));
 }

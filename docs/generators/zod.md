@@ -45,6 +45,48 @@ Integer ranges follow the column width, and `bigint({ mode: 'number' })` is type
 with the JavaScript safe-integer bound rather than as a bigint, because that is what the value
 actually is.
 
+`real` and `double precision` are bounded too, at the point past which a float stops being able
+to represent consecutive integers. That is narrower than the column, which holds far larger
+values, but a number above it comes back out of the database as a _different_ number.
+`drizzle-orm/zod` draws the line in the same place.
+
+## Arrays
+
+A column declared with `.array()` produces a schema for the array, with everything the element
+declares kept inside it:
+
+```ts
+tags:   z.array(z.string().max(50)),                          // varchar(50).array()
+scores: z.array(z.number().int().gte(-32768).lte(32767)),     // smallint().array()
+moods:  z.array(z.enum(['happy', 'sad'] as const)),           // moodEnum().array()
+```
+
+Note that `.array(3)` is **not** an array. It sets a size rather than a dimension, and Drizzle
+itself treats the result as a scalar, so DRZL does too.
+
+## Structured columns
+
+Some Postgres columns do not arrive as scalars at all, and a schema that says otherwise rejects
+every row the database returns:
+
+| Column                      | Runtime value              | Emitted                                 |
+| --------------------------- | -------------------------- | --------------------------------------- |
+| `point()`                   | `[number, number]`         | `z.tuple([z.number(), z.number()])`     |
+| `line()`                    | `[number, number, number]` | `z.tuple([...])`                        |
+| `geometry()`                | `[number, number]`         | `z.tuple([z.number(), z.number()])`     |
+| `vector({ dimensions: 3 })` | `number[]`                 | `z.array(z.number()).length(3)`         |
+| `bit({ dimensions: 3 })`    | `'010'`                    | `z.string().regex(/^[01]*$/).length(3)` |
+| `bytea()`                   | `Buffer`                   | `z.instanceof(Uint8Array)`              |
+| `json()`, `jsonb()`         | any JSON value             | `z.json()`                              |
+
+`bytea` is typed as `Uint8Array` rather than `Buffer`, which is the one place the output is
+deliberately wider than `drizzle-orm/zod`. A Buffer is a Uint8Array, so nothing official accepts
+is turned away; the wider check needs no `@types/node`, survives a runtime where `Buffer` is not
+defined, and makes a Postgres `bytea` and a SQLite `blob` validate the same way.
+
+A CHECK constraint naming an array or a structured column is skipped rather than folded in, since
+the comparison is against a scalar literal and describes neither.
+
 ## CHECK constraints
 
 A `check()` in your schema becomes a refinement. **No official Drizzle validator module does
@@ -69,14 +111,14 @@ a nullable column would make the schema stricter than the database.
 
 **Only unambiguous constraints are translated.** These are skipped rather than guessed at:
 
-| Skipped | Why |
-|---|---|
-| `start_date < end_date` | A statement about the row, not about either field |
+| Skipped                   | Why                                                        |
+| ------------------------- | ---------------------------------------------------------- |
+| `start_date < end_date`   | A statement about the row, not about either field          |
 | `age >= 18 AND age <= 65` | Compound; getting its scope wrong changes what is enforced |
-| `length(name) > 3` | Function call |
-| `email ~ '^[a-z]+$'` | Postgres `~` is POSIX ERE, not JavaScript's regex dialect |
+| `length(name) > 3`        | Function call                                              |
+| `email ~ '^[a-z]+$'`      | Postgres `~` is POSIX ERE, not JavaScript's regex dialect  |
 
-A schema that quietly enforces a *guess* at your constraint is worse than one enforcing nothing,
+A schema that quietly enforces a _guess_ at your constraint is worse than one enforcing nothing,
 because it rejects rows the database would have accepted.
 
 ## `typedJson`
@@ -99,7 +141,7 @@ runtime-derived validator is blind to it. `drizzle-orm/zod` types a json column 
 `Json` whatever you wrote.
 
 DRZL does not try to reconstruct the type either. It references
-`typeof settings.$inferSelect['prefs']`, which *is* the declared type, resolved by TypeScript at
+`typeof settings.$inferSelect['prefs']`, which _is_ the declared type, resolved by TypeScript at
 the point of use. That is why generics, unions and imported interfaces all work, where an
 approach that parses your source and rebuilds the type would fail on them.
 
@@ -128,9 +170,7 @@ export name so `users` becomes `Users` instead of being interpolated verbatim.
 ```
 
 ```ts
-export const InsertUsersSchema = z.object({
-  /* ... */
-});
+export const InsertUsersSchema = z.object({/* ... */});
 export type InsertUsersInput = z.input<typeof InsertUsersSchema>;
 // Select's prefix and suffix are both empty, so the type is just the table name:
 export type Users = z.output<typeof SelectUsersSchema>;

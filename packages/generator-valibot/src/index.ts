@@ -7,6 +7,7 @@ import type {
 import type { ColumnCheck } from '@drzl/validation-core';
 import {
   insertColumns,
+  isIntegerColumn,
   parseCheck,
   updateColumns,
   selectColumns,
@@ -58,6 +59,11 @@ function vBounds(c: Column, literal: (v: string) => string): string[] {
  * that a CHECK passes on TRUE or NULL.
  */
 function vChecks(c: Column, checks: ColumnCheck[]): string[] {
+  // A parsed check compares this column against a scalar literal, which says nothing usable
+  // about an array or a tuple: `CHECK (tags = '{}')` would become a check no `string[]` can
+  // satisfy, rejecting every row.
+  if (c.arrayDimensions || c.shape) return [];
+
   const OPS: Record<ColumnCheck['operator'], string> = {
     '>=': '>=',
     '>': '>',
@@ -76,12 +82,84 @@ function vChecks(c: Column, checks: ColumnCheck[]): string[] {
     });
 }
 
+/** Name of the recursive JSON schema emitted into a file that has any json column. */
+const JSON_CONST = 'DrzlJsonValue';
+
+/**
+ * A recursive definition of the JSON value space, emitted once per file.
+ *
+ * Valibot has no `json()` built-in, and `v.any()` accepted `undefined`, `NaN`, bigints and every
+ * class instance, none of which survive the round trip through a json column. The shape mirrors
+ * what `drizzle-orm/valibot` builds, with one addition: `v.finite()`, so `Infinity` is rejected
+ * rather than written out as `null`.
+ */
+const JSON_PREAMBLE = `type ${JSON_CONST}Type =
+  | string
+  | number
+  | boolean
+  | null
+  | ${JSON_CONST}Type[]
+  | { [key: string]: ${JSON_CONST}Type };
+
+const ${JSON_CONST}: v.GenericSchema<${JSON_CONST}Type> = v.lazy(() =>
+  v.union([
+    v.string(),
+    v.pipe(v.number(), v.finite()),
+    v.boolean(),
+    v.null(),
+    v.array(${JSON_CONST}),
+    v.pipe(
+      // The plain-object test comes before the record, not after it. A valibot pipe passes the
+      // *output* of each step onward, and \`v.record\` outputs a freshly built object, so a check
+      // placed after it inspects that new object and reports every input as plain. A Date sailed
+      // through: it has no own enumerable keys, so the record accepted it and rebuilt it as \`{}\`.
+      v.custom<Record<string, ${JSON_CONST}Type>>((o) => {
+        if (typeof o !== 'object' || o === null || Array.isArray(o)) return false;
+        const p = Object.getPrototypeOf(o);
+        return p === Object.prototype || p === null;
+      }, 'not a plain object'),
+      v.record(v.string(), ${JSON_CONST})
+    ),
+  ])
+);
+`;
+
+/**
+ * A column whose value is structured rather than scalar.
+ *
+ * These used to fall through to `v.any()`/`v.unknown()`, or for the tuple types to `v.string()`,
+ * which rejected every row since a `point` really arrives as `[number, number]`.
+ */
+function vShapeExpr(c: Column): string | undefined {
+  const s = c.shape;
+  if (!s) return undefined;
+  switch (s.kind) {
+    case 'json':
+      return JSON_CONST;
+    case 'buffer':
+      // Matches the SQLite blob mapping, so binary validates the same way in either dialect.
+      return 'v.instance(Uint8Array)';
+    case 'tuple':
+      // `strictTuple`, not `tuple`: valibot's plain `tuple` ignores extra items, so a `point`
+      // schema built from it accepted `[1, 2, 3]`.
+      return `v.strictTuple([${Array.from({ length: s.length }, () => 'v.number()').join(', ')}])`;
+    case 'numberVector':
+      return s.length
+        ? `v.pipe(v.array(v.number()), v.length(${s.length}))`
+        : 'v.array(v.number())';
+    case 'bitstring':
+      return `v.pipe(v.string(), v.regex(/^[01]*$/)${s.length ? `, v.length(${s.length})` : ''})`;
+  }
+}
+
 function vExprForColumn(
   c: Column,
   mode: Mode,
   coerceDates: NonNullable<ValidationGenerateOptions['coerceDates']>,
   checks: ColumnCheck[] = []
 ): string {
+  const shaped = vShapeExpr(c);
+  if (shaped) return shaped;
   const extra = vChecks(c, checks);
   /** Fold the constraint actions into whatever base this column maps to. */
   const piped = (base: string, actions: string[]) => {
@@ -100,14 +178,17 @@ function vExprForColumn(
       if (c.format === 'uuid') return piped('v.string()', ['v.uuid()']);
       return piped('v.string()', c.maxLength ? [`v.maxLength(${c.maxLength})`] : []);
     case 'number': {
-      // An integer range is what marks the column as an integer; dbType alone misses
-      // `bigint({ mode: 'number' })`, whose value is a JS number.
-      const isInt = c.dbType === 'INTEGER' || (c.min !== undefined && c.max !== undefined);
-      return piped('v.number()', [...(isInt ? ['v.integer()'] : []), ...vBounds(c, (v) => v)]);
+      return piped('v.number()', [
+        ...(isIntegerColumn(c) ? ['v.integer()'] : []),
+        ...vBounds(c, (v) => v),
+      ]);
     }
     case 'bigint': {
       // Bounds must be bigint literals: a 64 bit bound written as a number rounds.
-      return piped('v.bigint()', vBounds(c, (v) => `${v}n`));
+      return piped(
+        'v.bigint()',
+        vBounds(c, (v) => `${v}n`)
+      );
     }
     case 'boolean':
       return 'v.boolean()';
@@ -129,6 +210,9 @@ function vField(
   checks: ColumnCheck[] = []
 ): string {
   let expr = vExprForColumn(c, mode, coerceDates, checks);
+  // Drizzle keeps an array on the element's own column class, so everything above describes the
+  // element and the wrapping belongs out here, after the bounds and length limits are attached.
+  for (let i = 0; i < (c.arrayDimensions ?? 0); i++) expr = `v.array(${expr})`;
   if (c.nullable) expr = `v.nullable(${expr})`;
   if (mode !== 'select') {
     // optional for insert when nullable/hasDefault, and for all fields in update
@@ -172,9 +256,14 @@ function renderTableSchemas(
   const bodyInsert = renderObjectShape(insertCols, 'insert', coerceDates, checks);
   const bodyUpdate = renderObjectShape(updateCols, 'update', coerceDates, checks);
   const bodySelect = renderObjectShape(selectCols, 'select', coerceDates, checks);
+  // Emitted only where a json column exists, so a file without one gains nothing unused.
+  const needsJson = [...insertCols, ...updateCols, ...selectCols].some(
+    (c) => c.shape?.kind === 'json'
+  );
+
   return `import * as v from 'valibot';
 import type { InferInput, InferOutput } from 'valibot';
-
+${needsJson ? `\n${JSON_PREAMBLE}` : ''}
 export const ${insertSchema} = v.object({
 ${bodyInsert}
 });
