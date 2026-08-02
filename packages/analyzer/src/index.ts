@@ -3,14 +3,7 @@
  * stays here so an analysis of a 0.4x schema still names what it found.
  */
 export type Dialect =
-  | 'sqlite'
-  | 'postgres'
-  | 'mysql'
-  | 'singlestore'
-  | 'mssql'
-  | 'cockroach'
-  | 'gel'
-  | 'unknown';
+  'sqlite' | 'postgres' | 'mysql' | 'singlestore' | 'mssql' | 'cockroach' | 'gel' | 'unknown';
 
 export interface Issue {
   code: string;
@@ -63,9 +56,53 @@ export interface Column {
   min?: string;
   max?: string;
 
+  /**
+   * Whether a numeric column holds whole numbers only.
+   *
+   * Stated rather than inferred. Generators used to read "has both bounds" as "is an integer",
+   * which held only while integers were the sole bounded type; bounding `real` and `double
+   * precision` promptly made every float schema reject `1.5`. Absent on a pre-1.7 analysis, and
+   * generators fall back to the old inference there.
+   */
+  integer?: boolean;
+
   /** A string column with a known shape, currently only `uuid`. */
   format?: 'uuid';
+
+  /**
+   * Array depth for a column declared with `.array()`, absent when the column is a scalar.
+   *
+   * Drizzle does not give an array its own column class: `text().array()` is still a `PgText`,
+   * distinguished only by `dimensions`. Reading the class alone therefore produced a schema for
+   * the *element*, which rejected every row the database returned and accepted a bare string in
+   * its place.
+   *
+   * `.array(3)` sets a size rather than a dimension and Drizzle itself treats the result as a
+   * scalar, so it is deliberately not an array here either.
+   */
+  arrayDimensions?: number;
+
+  /**
+   * A structured value that cannot be expressed as a scalar plus constraints.
+   *
+   * These all used to fall through to `any`/`unknown` or, worse, to `string`. A `point` really
+   * arrives as `[number, number]`, so a string schema rejected every row; a `bytea` typed as
+   * `unknown` accepted `null` on a NOT NULL column.
+   */
+  shape?: ColumnShape;
 }
+
+export type ColumnShape =
+  /** `bytea`, `blob`: a binary payload, carried as a Buffer/Uint8Array. */
+  | { kind: 'buffer' }
+  /** `json`, `jsonb`: any value that survives a JSON round trip, checked recursively. */
+  | { kind: 'json' }
+  /** `point`, `line`, `geometry`: a fixed-length tuple of numbers. */
+  | { kind: 'tuple'; length: number }
+  /** `vector`, `halfvec`: a numeric vector, with a fixed length where one is declared. */
+  | { kind: 'numberVector'; length?: number }
+  /** `bit`: a string of `0`/`1`, with a fixed length where one is declared. */
+  | { kind: 'bitstring'; length?: number };
 
 export interface Key {
   name?: string;
@@ -144,6 +181,172 @@ function renderSqlLiteral(v: unknown): string {
   if (v instanceof Date) return `'${v.toISOString()}'`;
   if (Array.isArray(v)) return `(${v.map(renderSqlLiteral).join(', ')})`;
   return `'${String(v).replace(/'/g, "''")}'`;
+}
+
+/**
+ * Bounds `drizzle-orm/zod` puts on the inexact numeric types, matched deliberately.
+ *
+ * They are narrower than the column: Postgres `real` holds values up to ~3.4e38. The bound is
+ * the point past which a float can no longer represent consecutive integers, so a value above
+ * it round-trips through the database as a *different* number. Drizzle chose to reject that
+ * rather than lose it silently, and a generated schema that disagreed with the first-party one
+ * about the same column would be the more surprising outcome.
+ */
+const V1_FLOAT_BOUNDS: Record<string, [string, string]> = {
+  float: ['-8388608', '8388607'], // real / float4, 2^23
+  double: ['-140737488355328', '140737488355327'], // double precision / float8, 2^47
+};
+
+/**
+ * Everything Drizzle v1 states about a column outright, or `null` on an older Drizzle.
+ *
+ * v1 stamps each column with a `dataType` of the form `"<js type> <semantic>"` (`"number
+ * int32"`, `"object buffer"`, `"array point"`) alongside a `codec` naming the SQL side. That
+ * is a far better key than the constructor name the analyzer used to match on: the class list
+ * ran to dozens of names per dialect, drifted between releases, and a miss fell through to a
+ * regex that guessed from the name. `PgBinaryVector`, for one, is a bit string and not a
+ * vector at all.
+ *
+ * Gated on `codec`, which 0.4x columns do not carry, so an older schema keeps the class-name
+ * path below untouched.
+ */
+export function describeV1Column(column: any): Partial<Column> | null {
+  const codec = column?.codec;
+  const dataType = column?.dataType;
+  if (typeof codec !== 'string' || typeof dataType !== 'string') return null;
+
+  const [js, semantic = ''] = dataType.split(' ');
+  const out: Partial<Column> = {};
+
+  switch (semantic) {
+    case 'int16':
+    case 'int32':
+    case 'int53':
+    case 'int64': {
+      const range = {
+        int16: ['-32768', '32767'],
+        int32: ['-2147483648', '2147483647'],
+        int53: ['-9007199254740991', '9007199254740991'],
+        int64: ['-9223372036854775808', '9223372036854775807'],
+      }[semantic]!;
+      [out.min, out.max] = range;
+      out.integer = true;
+      out.tsType = js === 'bigint' ? 'bigint' : 'number';
+      out.dbType = semantic === 'int16' ? 'SMALLINT' : semantic === 'int32' ? 'INTEGER' : 'BIGINT';
+      break;
+    }
+    case 'float':
+    case 'double': {
+      [out.min, out.max] = V1_FLOAT_BOUNDS[semantic]!;
+      out.integer = false;
+      out.tsType = 'number';
+      out.dbType = semantic === 'float' ? 'REAL' : 'DOUBLE';
+      break;
+    }
+    case 'uuid':
+      out.tsType = 'string';
+      out.dbType = 'UUID';
+      out.format = 'uuid';
+      break;
+    case 'numeric':
+      // Returned as a string: a JS number cannot hold arbitrary precision.
+      out.tsType = 'string';
+      out.dbType = 'NUMERIC';
+      break;
+    case 'json':
+      out.tsType = 'any';
+      out.dbType = codec === 'jsonb' ? 'JSONB' : 'JSON';
+      out.shape = { kind: 'json' };
+      break;
+    case 'buffer':
+      out.tsType = 'Buffer';
+      out.dbType = 'BYTEA';
+      out.shape = { kind: 'buffer' };
+      break;
+    case 'date':
+      // `date`/`timestamp` in `{ mode: 'string' }` report a js type of string.
+      out.tsType = js === 'string' ? 'string' : 'Date';
+      out.dbType = codec.startsWith('timestamp') ? 'TIMESTAMP' : 'DATE';
+      break;
+    case 'timestamp':
+      out.tsType = js === 'string' ? 'string' : 'Date';
+      out.dbType = 'TIMESTAMP';
+      break;
+    case 'time':
+      out.tsType = 'string';
+      out.dbType = 'TIME';
+      break;
+    case 'interval':
+      out.tsType = 'string';
+      out.dbType = 'INTERVAL';
+      break;
+    case 'inet':
+    case 'cidr':
+    case 'macaddr':
+      out.tsType = 'string';
+      out.dbType = semantic.toUpperCase();
+      break;
+    case 'binary':
+      // `bit(n)`. Named "binary" by the dataType and `PgBinaryVector` by the class, but the
+      // value is a string of '0' and '1' rather than anything vector shaped.
+      out.tsType = 'string';
+      out.dbType = 'BIT';
+      out.shape = { kind: 'bitstring', length: declaredLength(column) };
+      break;
+    case 'point':
+    case 'geometry':
+      out.tsType = '[number, number]';
+      out.dbType = semantic.toUpperCase();
+      out.shape = { kind: 'tuple', length: 2 };
+      break;
+    case 'line':
+      out.tsType = '[number, number, number]';
+      out.dbType = 'LINE';
+      out.shape = { kind: 'tuple', length: 3 };
+      break;
+    case 'vector':
+      out.tsType = 'number[]';
+      out.dbType = 'VECTOR';
+      out.shape = { kind: 'numberVector', length: declaredLength(column) };
+      break;
+    case 'enum':
+      out.tsType = 'string';
+      out.dbType = 'TEXT';
+      break;
+    default:
+      // No semantic half: a plain string, boolean, or the number mode of `numeric`.
+      if (js === 'boolean') {
+        out.tsType = 'boolean';
+        out.dbType = 'BOOLEAN';
+      } else if (js === 'number') {
+        out.tsType = 'number';
+        out.dbType = 'NUMERIC';
+        out.integer = false;
+        [out.min, out.max] = ['-9007199254740991', '9007199254740991'];
+      } else if (js === 'string') {
+        out.tsType = 'string';
+        out.dbType = codec === 'varchar' ? 'VARCHAR' : codec === 'char' ? 'CHAR' : 'TEXT';
+      } else {
+        // Something this release added that is not modelled yet. Falling back to the class
+        // name beats inventing a type: a wrong scalar rejects rows, `unknown` only fails to
+        // catch them.
+        return null;
+      }
+  }
+
+  // `.array()` leaves the column class alone and only raises `dimensions`, so this is the one
+  // signal that a value arrives as a list. `.array(3)` sets a size instead and Drizzle itself
+  // treats that as a scalar, which is why only a positive dimension counts.
+  const dims = column?.dimensions;
+  if (typeof dims === 'number' && dims >= 1) out.arrayDimensions = dims;
+
+  return out;
+}
+
+/** A declared width, from `vector({ dimensions: 3 })` or `bit({ dimensions: 3 })`. */
+function declaredLength(column: any): number | undefined {
+  const n = column?.length ?? column?.config?.length ?? column?.config?.dimensions;
+  return typeof n === 'number' && Number.isFinite(n) && n > 0 ? n : undefined;
 }
 
 export class SchemaAnalyzer {
@@ -399,24 +602,28 @@ export class SchemaAnalyzer {
     SQLiteInteger: ['-9223372036854775808', '9223372036854775807'],
     // 16 bit
     PgSmallInt: ['-32768', '32767'],
-    PgSmallSerial: ['1', '32767'],
+    // A serial is an ordinary integer column that happens to default from a sequence. The
+    // sequence starts at 1, the column does not: `INSERT ... (id) VALUES (-5)` is accepted by
+    // Postgres and is how backfills and sentinel rows get written. Lower-bounding these at 1
+    // rejected valid rows, and `drizzle-orm/zod` bounds them by the integer width too.
+    PgSmallSerial: ['-32768', '32767'],
     MySqlSmallInt: ['-32768', '32767'],
     SingleStoreSmallInt: ['-32768', '32767'],
     // 24 bit
     MySqlMediumInt: ['-8388608', '8388607'],
     // 32 bit
     PgInteger: ['-2147483648', '2147483647'],
-    PgSerial: ['1', '2147483647'],
+    PgSerial: ['-2147483648', '2147483647'],
     MySqlInt: ['-2147483648', '2147483647'],
     SingleStoreInt: ['-2147483648', '2147483647'],
     // 53 bit, the JS safe-integer ceiling rather than the column's
     PgBigInt53: ['-9007199254740991', '9007199254740991'],
-    PgBigSerial53: ['1', '9007199254740991'],
+    PgBigSerial53: ['-9007199254740991', '9007199254740991'],
     MySqlBigInt53: ['-9007199254740991', '9007199254740991'],
     SingleStoreBigInt53: ['-9007199254740991', '9007199254740991'],
     // 64 bit, representable because the value is a bigint
     PgBigInt64: ['-9223372036854775808', '9223372036854775807'],
-    PgBigSerial64: ['1', '9223372036854775807'],
+    PgBigSerial64: ['-9223372036854775808', '9223372036854775807'],
     MySqlBigInt64: ['-9223372036854775808', '9223372036854775807'],
     SingleStoreBigInt64: ['-9223372036854775808', '9223372036854775807'],
   };
@@ -427,9 +634,11 @@ export class SchemaAnalyzer {
    * Everything here is read off Drizzle's own column instance, so it states what the schema
    * states. Nothing is inferred from a name or guessed from a type.
    */
-  private columnConstraints(column: any): Pick<Column, 'maxLength' | 'min' | 'max' | 'format'> {
+  private columnConstraints(
+    column: any
+  ): Pick<Column, 'maxLength' | 'min' | 'max' | 'format' | 'integer'> {
     const ctor = column?.constructor?.name ?? '';
-    const out: Pick<Column, 'maxLength' | 'min' | 'max' | 'format'> = {};
+    const out: Pick<Column, 'maxLength' | 'min' | 'max' | 'format' | 'integer'> = {};
 
     // `length` is set by varchar/char across every dialect, and by SQLite's `text({length})`.
     const length = column?.length ?? column?.config?.length;
@@ -440,6 +649,7 @@ export class SchemaAnalyzer {
     const range = SchemaAnalyzer.INT_RANGES[ctor];
     if (range) {
       [out.min, out.max] = range;
+      out.integer = true;
     }
 
     if (/^(Pg)?UUID$/i.test(ctor) || /Uuid$/i.test(ctor)) out.format = 'uuid';
@@ -527,7 +737,8 @@ export class SchemaAnalyzer {
           if (/Point|Line/i.test(ctor)) return { tsType: 'string', dbType: 'TEXT' };
 
           // Temporal
-          if (/TimestampString|DateString/i.test(ctor)) return { tsType: 'string', dbType: 'TIMESTAMP' };
+          if (/TimestampString|DateString/i.test(ctor))
+            return { tsType: 'string', dbType: 'TIMESTAMP' };
           if (/Timestamptz/i.test(ctor)) return { tsType: 'Date', dbType: 'TIMESTAMPTZ' };
           if (/Timestamp/i.test(ctor)) return { tsType: 'Date', dbType: 'TIMESTAMP' };
           if (/Date/i.test(ctor)) return { tsType: 'Date', dbType: 'TIMESTAMP' };
@@ -542,10 +753,12 @@ export class SchemaAnalyzer {
           if (/Bool/i.test(ctor)) return { tsType: 'boolean', dbType: 'BOOLEAN' };
 
           // JSON
-          if (/Jsonb?/i.test(ctor)) return { tsType: 'any', dbType: /Jsonb/i.test(ctor) ? 'JSONB' : 'JSON' };
+          if (/Jsonb?/i.test(ctor))
+            return { tsType: 'any', dbType: /Jsonb/i.test(ctor) ? 'JSONB' : 'JSON' };
 
           // Numbers
-          if (/Numeric|Float|Double|Real/i.test(ctor)) return { tsType: 'number', dbType: 'NUMERIC' };
+          if (/Numeric|Float|Double|Real/i.test(ctor))
+            return { tsType: 'number', dbType: 'NUMERIC' };
         }
         // coarse inference for MySQL types by name
         if (/^MySql/i.test(ctor)) {
@@ -644,7 +857,8 @@ export class SchemaAnalyzer {
           if (/TimestampTz/i.test(ctor)) return { tsType: 'Date', dbType: 'TIMESTAMPTZ' };
           if (/Timestamp/i.test(ctor)) return { tsType: 'string', dbType: 'TIMESTAMP' };
           if (/LocalDateString|LocalTime/i.test(ctor)) return { tsType: 'string', dbType: 'TEXT' };
-          if (/DateDuration|RelDuration|Duration/i.test(ctor)) return { tsType: 'string', dbType: 'TEXT' };
+          if (/DateDuration|RelDuration|Duration/i.test(ctor))
+            return { tsType: 'string', dbType: 'TEXT' };
         }
         return { tsType: 'unknown', dbType: 'UNKNOWN' };
     }
@@ -696,6 +910,16 @@ export class SchemaAnalyzer {
         uniqueGroups.set(uName, arr);
       }
 
+      // Drizzle v1 states the type outright; the class-name mapping is the fallback for 0.4x.
+      // v1 goes last so it wins, and only where it actually has an opinion: it leaves
+      // `maxLength` to `columnConstraints`, which reads the declared `length`.
+      const v1 = describeV1Column(col);
+      // ...except on a shaped column, where `length` is the vector width or the bit count
+      // rather than a character limit. Left in place it emitted a string length check on a
+      // `number[]`.
+      const constraints = this.columnConstraints(col);
+      if (v1?.shape) delete constraints.maxLength;
+
       columns.push({
         name: colName,
         tsType,
@@ -706,7 +930,8 @@ export class SchemaAnalyzer {
         defaultExpression: undefined,
         references,
         enumValues: Array.isArray(ev) ? ev : undefined,
-        ...this.columnConstraints(col),
+        ...constraints,
+        ...(v1 ?? {}),
       });
     }
 

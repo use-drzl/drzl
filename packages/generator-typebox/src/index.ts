@@ -8,6 +8,7 @@ import type {
 import {
   formatCode,
   insertColumns,
+  isIntegerColumn,
   moduleFileName,
   moduleSpecifier,
   parseCheck,
@@ -103,6 +104,55 @@ function tbCheckOptions(c: Column, checks: ColumnCheck[]): Array<[string, string
   return out;
 }
 
+/** Name of the recursive JSON schema emitted into a file that has any json column. */
+const JSON_CONST = 'DrzlJsonValue';
+
+/**
+ * A recursive definition of the JSON value space, emitted once per file.
+ *
+ * `Type.Unknown()` accepted `undefined`, `NaN`, `Infinity`, bigints, Dates and Buffers, none of
+ * which survive a round trip through a json column. `Type.Recursive` is what lets the nested
+ * cases refer back to the whole, so a `{ a: { b: [1, 'x'] } }` is checked all the way down.
+ */
+const JSON_PREAMBLE = `const ${JSON_CONST} = Type.Recursive((This) =>
+  Type.Union([
+    Type.String(),
+    Type.Number(),
+    Type.Boolean(),
+    Type.Null(),
+    Type.Array(This),
+    Type.Record(Type.String(), This),
+  ])
+);
+`;
+
+/**
+ * A column whose value is structured rather than scalar.
+ *
+ * These used to land on `Type.Unknown()`, or for the tuple types on `Type.String()`, which
+ * rejected every row: a `point` really arrives as `[number, number]`.
+ */
+function tbShapeExpr(c: Column, typedJsonRef?: string): string | undefined {
+  const s = c.shape;
+  if (!s) return undefined;
+  switch (s.kind) {
+    case 'json':
+      // `typedJson` still wins, since the inferred type is narrower than "any JSON".
+      if (typedJsonRef) return `Type.Unsafe<${typedJsonRef}>(Type.Unknown())`;
+      return JSON_CONST;
+    case 'buffer':
+      return 'Type.Uint8Array()';
+    case 'tuple':
+      return `Type.Tuple([${Array.from({ length: s.length }, () => 'Type.Number()').join(', ')}])`;
+    case 'numberVector':
+      return `Type.Array(Type.Number()${s.length ? `, { minItems: ${s.length}, maxItems: ${s.length} }` : ''})`;
+    case 'bitstring':
+      // `pattern` rather than `format`, which TypeBox ignores unless the consuming project has
+      // registered it on `FormatRegistry` first.
+      return `Type.String({ pattern: '^[01]*$'${s.length ? `, minLength: ${s.length}, maxLength: ${s.length}` : ''} })`;
+  }
+}
+
 function tbExprForColumn(
   c: Column,
   mode: Mode,
@@ -110,6 +160,12 @@ function tbExprForColumn(
   checks: ColumnCheck[] = [],
   typedJsonRef?: string
 ): string {
+  const shaped = tbShapeExpr(c, typedJsonRef);
+  if (shaped) return shaped;
+  // A parsed check compares the column against a scalar literal, which describes an element
+  // rather than the array. Applied anyway, `CHECK (tags = 'x')` collapsed the whole column to
+  // `Type.Literal("x")`.
+  if (c.arrayDimensions) checks = [];
   if (c.enumValues && c.enumValues.length) {
     const vals = c.enumValues.map((v) => `Type.Literal(${JSON.stringify(v)})`).join(', ');
     return `Type.Union([${vals}])`;
@@ -130,24 +186,26 @@ function tbExprForColumn(
 
   switch (c.tsType) {
     case 'string': {
-      const base: Array<[string, string]> = c.format === 'uuid'
-        ? [['pattern', JSON.stringify(UUID_PATTERN)]]
-        : c.maxLength
-          ? [['maxLength', String(c.maxLength)]]
-          : [];
+      const base: Array<[string, string]> =
+        c.format === 'uuid'
+          ? [['pattern', JSON.stringify(UUID_PATTERN)]]
+          : c.maxLength
+            ? [['maxLength', String(c.maxLength)]]
+            : [];
       return `Type.String(${renderOptions(merged(base))})`;
     }
     case 'number': {
-      // An integer range is what marks the column as an integer; dbType alone misses
-      // `bigint({ mode: 'number' })`, whose value really is a JS number.
-      const isInt = c.dbType === 'INTEGER' || (c.min !== undefined && c.max !== undefined);
       const o = renderOptions(merged(tbBounds(c)));
-      return isInt ? `Type.Integer(${o})` : `Type.Number(${o})`;
+      return isIntegerColumn(c) ? `Type.Integer(${o})` : `Type.Number(${o})`;
     }
     case 'bigint':
-      // TypeBox compares bigints against bigint values, and a 64 bit bound cannot be written as
-      // a JSON Schema number without rounding, so the range is left unstated rather than wrong.
-      return 'Type.BigInt()';
+      // `minimum`/`maximum` do take bigint values here, verified by running the emitted schema:
+      // `Type.BigInt({ maximum: 100n })` rejects `1000n`. Writing the bound as a plain number
+      // would be the broken form, since 9223372036854775807 rounds up the moment it becomes one,
+      // so the literals are emitted with the `n` suffix and the bound stays exact.
+      return c.min !== undefined && c.max !== undefined
+        ? `Type.BigInt({ minimum: ${c.min}n, maximum: ${c.max}n })`
+        : 'Type.BigInt()';
     case 'boolean':
       return 'Type.Boolean()';
     case 'Date':
@@ -172,6 +230,9 @@ function tbField(
   typedJsonRef?: string
 ): string {
   let expr = tbExprForColumn(c, mode, coerceDates, checks, typedJsonRef);
+  // Drizzle keeps an array on the element's own column class, so everything above describes the
+  // element and the wrapping belongs out here, after its bounds are attached.
+  for (let i = 0; i < (c.arrayDimensions ?? 0); i++) expr = `Type.Array(${expr})`;
   // Nullability wraps the constrained type, so null skips the constraint. That reproduces SQL,
   // where a CHECK passes when it evaluates to TRUE or NULL.
   if (c.nullable) expr = `Type.Union([${expr}, Type.Null()])`;
@@ -233,9 +294,15 @@ function renderTableSchemas(
     ? `import type { ${T} } from '${typedJson.schemaSpecifier}';\n`
     : '';
 
+  // Emitted only where a json column exists, and not when `typedJson` has replaced it with the
+  // inferred type, so a file never carries an unused declaration.
+  const needsJson =
+    !typedJson &&
+    [...insertCols, ...updateCols, ...selectCols].some((c) => c.shape?.kind === 'json');
+
   return `import { Type } from '@sinclair/typebox';
 import type { Static } from '@sinclair/typebox';
-${schemaImport}
+${schemaImport}${needsJson ? `\n${JSON_PREAMBLE}` : ''}
 export const ${insertSchema} = Type.Object({
 ${bodyInsert}
 });

@@ -7,6 +7,7 @@ import type {
 import type { ColumnCheck } from '@drzl/validation-core';
 import {
   insertColumns,
+  isIntegerColumn,
   parseCheck,
   updateColumns,
   selectColumns,
@@ -66,12 +67,47 @@ function atNarrowRange(
   return { lower, upper, equals };
 }
 
+/**
+ * A column whose value is structured rather than scalar, in ArkType's string DSL.
+ *
+ * Every form here was checked against ArkType itself, since an expression it cannot parse throws
+ * at import and takes the whole module with it. The tuple types are the reason for
+ * `number[] == n` rather than a literal `[number, number]`: ArkType does accept a real tuple, but
+ * only written as a nested array in the definition object, and this generator emits a string per
+ * field. Both reject a wrong-length array; the tuple form would additionally give a static type
+ * of `[number, number]` instead of `number[]`.
+ */
+function atShapeType(c: Column): string | undefined {
+  const s = c.shape;
+  if (!s) return undefined;
+  switch (s.kind) {
+    case 'json':
+      // Flat rather than recursive, matching what `drizzle-orm/arktype` builds. `object` covers
+      // both arrays and records, so nesting needs no separate arm.
+      return 'number | object | string | boolean | null';
+    case 'buffer':
+      return 'TypedArray.Uint8';
+    case 'tuple':
+      return `number[] == ${s.length}`;
+    case 'numberVector':
+      return s.length ? `number[] == ${s.length}` : 'number[]';
+    case 'bitstring':
+      return s.length ? `/^[01]*$/ & string == ${s.length}` : '/^[01]*$/';
+  }
+}
+
 function atTypeForColumn(
   c: Column,
   mode: Mode,
   coerceDates: NonNullable<ValidationGenerateOptions['coerceDates']>,
   checks: ColumnCheck[] = []
 ): string {
+  const shaped = atShapeType(c);
+  if (shaped) return shaped;
+  // A parsed check compares the column to a scalar literal, which describes the array rather
+  // than an element. Folded in anyway, `CHECK (tags = 'x')` became `('x')[]`, demanding that
+  // every element equal 'x'.
+  if (c.arrayDimensions) checks = [];
   if (c.enumValues && c.enumValues.length) {
     return c.enumValues.map((v) => `'${v.replace(/'/g, "\\'")}'`).join(' | ');
   }
@@ -81,7 +117,9 @@ function atTypeForColumn(
     // because an expression it cannot parse throws at import and takes the router with it.
     case 'string': {
       // An equality check pins the value, which ArkType states as a literal type.
-      const eq = checks.find((k) => k.column === c.name && k.operator === '=' && k.kind === 'string');
+      const eq = checks.find(
+        (k) => k.column === c.name && k.operator === '=' && k.kind === 'string'
+      );
       if (eq) return `'${eq.value.replace(/'/g, "\\'")}'`;
       if (c.format === 'uuid') return 'string.uuid';
       return c.maxLength ? `string <= ${c.maxLength}` : 'string';
@@ -89,13 +127,14 @@ function atTypeForColumn(
     case 'number': {
       const { lower, upper, equals } = atNarrowRange(c, checks);
       if (equals !== undefined) return equals;
-      // `min <= number <= max` already implies an integer range here, and ArkType has no way to
-      // write both that and `number.integer` in one expression, so the bound is the stronger
-      // statement and is preferred where present.
-      if (lower && upper) return `${lower} number ${upper}`;
-      if (lower) return `${lower} number`;
-      if (upper) return `number ${upper}`;
-      return c.dbType === 'INTEGER' ? 'number.integer' : 'number';
+      // ArkType does accept both at once: `-2147483648 <= number.integer <= 2147483647` parses
+      // and rejects 1.5. Preferring the bound alone, on the theory that a range implied
+      // integrality, meant every `integer()` column accepted a fraction.
+      const num = isIntegerColumn(c) ? 'number.integer' : 'number';
+      if (lower && upper) return `${lower} ${num} ${upper}`;
+      if (lower) return `${lower} ${num}`;
+      if (upper) return `${num} ${upper}`;
+      return num;
     }
     case 'bigint':
       // ArkType compares bigints against bigint literals, and a 64 bit bound cannot be written
@@ -106,7 +145,10 @@ function atTypeForColumn(
     case 'Date':
       return atDateType(mode, coerceDates);
     case 'Uint8Array':
-      return 'Uint8Array';
+      // `'Uint8Array'` is not an ArkType keyword. It parses as an unresolvable alias and throws
+      // at import, so every emitted module holding a binary column was unloadable rather than
+      // merely wrong. `TypedArray.Uint8` is the keyword, and it accepts a Node Buffer too.
+      return 'TypedArray.Uint8';
     case 'any':
       return 'unknown';
     default:
@@ -121,6 +163,12 @@ function atField(
   checks: ColumnCheck[] = []
 ): string {
   let t = atTypeForColumn(c, mode, coerceDates, checks);
+  // The element is parenthesised whenever it is anything but a bare keyword, because `[]` binds
+  // tighter than every operator ArkType has: `'a' | 'b'[]` is the literal `'a'` or an array of
+  // `'b'`, not an array of either. A plain keyword needs no parentheses and reads better without,
+  // so `string[]` stays `string[]` while `('a' | 'b')[]` and `(string <= 255)[]` get them.
+  const bare = /^[A-Za-z_][A-Za-z0-9_.]*$/.test(t);
+  for (let i = 0; i < (c.arrayDimensions ?? 0); i++) t = bare && i === 0 ? `${t}[]` : `(${t})[]`;
   if (c.nullable) t = `(${t} | null)`;
   if (mode !== 'select') {
     if (mode === 'update' || c.nullable || c.hasDefault) t = `${t}?`;
@@ -135,7 +183,10 @@ function renderObjectShape(
   checks: ColumnCheck[] = []
 ) {
   return cols
-    .map((c) => `  ${JSON.stringify(c.name)}: ${JSON.stringify(atField(c, mode, coerceDates, checks))},`)
+    .map(
+      (c) =>
+        `  ${JSON.stringify(c.name)}: ${JSON.stringify(atField(c, mode, coerceDates, checks))},`
+    )
     .join('\n');
 }
 

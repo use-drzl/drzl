@@ -10,6 +10,7 @@ import {
   parseCheck,
   resolveConfiguredImport,
   insertColumns,
+  isIntegerColumn,
   moduleFileName,
   moduleSpecifier,
   resolveAffix,
@@ -52,6 +53,12 @@ function numericBounds(c: Column, literal: (v: string) => string): string {
  * points at the thing in the schema that caused it.
  */
 function checkRefinements(c: Column, checks: ColumnCheck[]): string {
+  // A parsed check compares this column to a scalar literal, which says nothing usable about an
+  // array or a tuple. Emitting one anyway was actively harmful: `CHECK (tags = '{}')` became
+  // `.refine((v) => v === '{}')` against a `string[]`, which no value can satisfy, so the schema
+  // rejected every row.
+  if (c.arrayDimensions || c.shape) return '';
+
   const mine = checks.filter((k) => k.column === c.name);
   if (!mine.length) return '';
 
@@ -68,10 +75,46 @@ function checkRefinements(c: Column, checks: ColumnCheck[]): string {
     .map((k) => {
       const rhs = k.kind === 'string' ? JSON.stringify(k.value) : k.value;
       const label = k.name ? `${k.name}: ` : '';
-      const msg = JSON.stringify(`${label}${c.name} ${k.operator} ${k.kind === 'string' ? `'${k.value}'` : k.value}`);
+      const msg = JSON.stringify(
+        `${label}${c.name} ${k.operator} ${k.kind === 'string' ? `'${k.value}'` : k.value}`
+      );
       return `.refine((v) => v ${OPS[k.operator]} ${rhs}, { message: ${msg} })`;
     })
     .join('');
+}
+
+/**
+ * A column whose value is structured rather than scalar.
+ *
+ * Everything here used to land on `z.any()`, `z.unknown()` or, for the tuple types, `z.string()`.
+ * The string cases were the worst of the three: a `point` arrives as `[number, number]`, so the
+ * emitted select schema rejected every row the database returned.
+ */
+function shapeExpr(c: Column, typedJsonRef?: string): string | undefined {
+  const s = c.shape;
+  if (!s) return undefined;
+  switch (s.kind) {
+    case 'json':
+      // `typedJson` still wins: the type Drizzle inferred is narrower than "any JSON".
+      if (typedJsonRef) return `z.custom<${typedJsonRef}>()`;
+      // Zod's own JSON value space. `z.any()` accepted `undefined`, `NaN`, `Infinity`, bigints,
+      // Dates and Buffers, none of which survive the round trip through the column.
+      return 'z.json()';
+    case 'buffer':
+      // `Uint8Array` rather than `Buffer`, which is the one place the output is deliberately
+      // wider than `drizzle-orm/zod`. A Buffer is a Uint8Array, so everything official accepts
+      // is accepted here; the reverse is not true. Reasons for the wider check: it needs no
+      // `@types/node` and so survives an edge or browser build, `Buffer` is not defined in those
+      // runtimes at all and `v instanceof Buffer` would throw rather than fail, and it makes a
+      // Postgres `bytea` and a SQLite `blob` validate identically instead of by dialect.
+      return 'z.instanceof(Uint8Array)';
+    case 'tuple':
+      return `z.tuple([${Array.from({ length: s.length }, () => 'z.number()').join(', ')}])`;
+    case 'numberVector':
+      return `z.array(z.number())${s.length ? `.length(${s.length})` : ''}`;
+    case 'bitstring':
+      return `z.string().regex(/^[01]*$/)${s.length ? `.length(${s.length})` : ''}`;
+  }
 }
 
 function zodExprForColumn(
@@ -80,6 +123,8 @@ function zodExprForColumn(
   coerceDates: NonNullable<ValidationGenerateOptions['coerceDates']>,
   typedJsonRef?: string
 ): string {
+  const shaped = shapeExpr(c, typedJsonRef);
+  if (shaped) return shaped;
   if (c.enumValues && c.enumValues.length) {
     const vals = c.enumValues.map((v) => `'${v.replace(/'/g, "\\'")}'`).join(', ');
     return `z.enum([${vals}] as const)`;
@@ -91,11 +136,7 @@ function zodExprForColumn(
       if (c.format === 'uuid') return 'z.uuid()';
       return c.maxLength ? `z.string().max(${c.maxLength})` : 'z.string()';
     case 'number': {
-      // The presence of an integer range is what marks a column as an integer, not `dbType`.
-      // Gating on `dbType === 'INTEGER'` missed `bigint({ mode: 'number' })`, whose dbType is
-      // BIGINT while its value really is a JS number.
-      const isInt = c.dbType === 'INTEGER' || (c.min !== undefined && c.max !== undefined);
-      const base = isInt ? 'z.number().int()' : 'z.number()';
+      const base = isIntegerColumn(c) ? 'z.number().int()' : 'z.number()';
       return base + numericBounds(c, (v) => v);
     }
     case 'bigint':
@@ -130,6 +171,10 @@ function zodField(
   typedJsonRef?: string
 ): string {
   let expr = zodExprForColumn(c, mode, coerceDates, typedJsonRef);
+  // `.array()` does not give the column its own class in Drizzle, so everything above describes
+  // the *element*. Length limits and integer bounds belong there, which is why the wrapping
+  // happens out here rather than inside.
+  for (let i = 0; i < (c.arrayDimensions ?? 0); i++) expr = `z.array(${expr})`;
   // Before nullability on purpose. A SQL CHECK passes when it evaluates to TRUE *or NULL*, so
   // wrapping the constrained type in `.nullable()` reproduces that exactly: null skips the
   // check, as the database does.

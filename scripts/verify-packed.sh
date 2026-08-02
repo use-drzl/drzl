@@ -351,5 +351,276 @@ if [ "$doc_failed" -ne 0 ]; then
 fi
 echo "    all $doc_total documented configs generate and typecheck"
 
+echo "==> differential parity against the official drizzle-orm validators"
+# The claim DRZL makes is that its generated schemas are at least as strict as the first-party
+# `drizzle-orm/{zod,valibot,arktype}` modules. That is a claim about behaviour, so it is measured
+# by behaviour: generate for the same table, then push the same pool of values through both
+# schemas column by column and compare the verdicts. Reading the emitted source cannot do this,
+# because a schema that parses and a schema that validates look identical as text.
+#
+# It runs here, against the packed tarballs, rather than as a unit test, because it needs
+# drizzle-orm v1 and the workspace is still on 0.4x. Installing v1 into this throwaway tree keeps
+# it out of the repo's own dependency graph.
+PARITY="$WORK/parity"
+mkdir -p "$PARITY/src"
+cd "$PARITY"
+echo '{ "name": "parity", "private": true, "type": "module" }' > package.json
+
+cat > src/schema.ts <<'PARITY_SCHEMA'
+import {
+  pgTable, pgEnum, text, varchar, char, uuid, integer, smallint, bigint, serial,
+  boolean, real, doublePrecision, numeric, decimal, json, jsonb, date, timestamp,
+  time, interval, bytea, inet, cidr, macaddr, point, line, geometry, bit, vector,
+} from 'drizzle-orm/pg-core';
+
+export const moodEnum = pgEnum('mood', ['happy', 'sad', 'neutral']);
+
+export const matrix = pgTable('matrix', {
+  c_text: text().notNull(),
+  c_varchar: varchar({ length: 255 }).notNull(),
+  c_char: char({ length: 4 }).notNull(),
+  c_uuid: uuid().notNull(),
+  c_text_enum: text({ enum: ['a', 'b', 'c'] }).notNull(),
+  c_varchar_enum: varchar({ length: 10, enum: ['x', 'y'] }).notNull(),
+  c_int: integer().notNull(),
+  c_smallint: smallint().notNull(),
+  c_bigint_n: bigint({ mode: 'number' }).notNull(),
+  c_bigint_b: bigint({ mode: 'bigint' }).notNull(),
+  c_serial: serial().notNull(),
+  c_real: real().notNull(),
+  c_double: doublePrecision().notNull(),
+  c_numeric: numeric({ precision: 10, scale: 2 }).notNull(),
+  c_numeric_n: numeric({ precision: 10, scale: 2, mode: 'number' }).notNull(),
+  c_decimal: decimal().notNull(),
+  c_bool: boolean().notNull(),
+  c_enum: moodEnum().notNull(),
+  c_json: json().notNull(),
+  c_jsonb: jsonb().notNull(),
+  c_jsonb_typed: jsonb().$type<{ a: string }>().notNull(),
+  c_date_d: date({ mode: 'date' }).notNull(),
+  c_date_s: date({ mode: 'string' }).notNull(),
+  c_ts_d: timestamp({ mode: 'date' }).notNull(),
+  c_ts_s: timestamp({ mode: 'string' }).notNull(),
+  c_time: time().notNull(),
+  c_interval: interval().notNull(),
+  c_text_arr: text().array().notNull(),
+  c_int_arr: integer().array().notNull(),
+  c_enum_arr: moodEnum().array().notNull(),
+  c_bytea: bytea().notNull(),
+  c_inet: inet().notNull(),
+  c_cidr: cidr().notNull(),
+  c_macaddr: macaddr().notNull(),
+  c_point: point().notNull(),
+  c_line: line().notNull(),
+  c_geometry: geometry().notNull(),
+  c_bit: bit({ dimensions: 3 }).notNull(),
+  c_vector: vector({ dimensions: 3 }).notNull(),
+});
+PARITY_SCHEMA
+
+cat > drzl.config.ts <<'PARITY_CONFIG'
+import { defineConfig } from '@drzl/cli/config';
+
+export default defineConfig({
+  schema: 'src/schema.ts',
+  outDir: 'src/gen',
+  generators: [
+    { kind: 'zod', path: 'src/gen/zod' },
+    { kind: 'valibot', path: 'src/gen/valibot' },
+    { kind: 'arktype', path: 'src/gen/arktype' },
+    { kind: 'typebox', path: 'src/gen/typebox' },
+  ],
+});
+PARITY_CONFIG
+
+cat > src/parity.ts <<'PARITY_HARNESS'
+/**
+ * Two passes:
+ *   1. every column, DRZL against `drizzle-orm/{zod,valibot,arktype}`
+ *   2. every column, DRZL's four generators against each other
+ *
+ * `drizzle-orm/typebox` is absent from pass 1 deliberately. At 1.0.0-rc.4 it declares a peer on
+ * `@sinclair/typebox` while its code imports `typebox`, and against the released `typebox` it
+ * throws `Class extends value undefined` on import. Pass 2 is what holds the typebox output.
+ */
+import { matrix } from './schema.js';
+import { createSelectSchema as zSel } from 'drizzle-orm/zod';
+import { createSelectSchema as vSel } from 'drizzle-orm/valibot';
+import { createSelectSchema as aSel } from 'drizzle-orm/arktype';
+import * as v from 'valibot';
+import { type } from 'arktype';
+import { Value } from '@sinclair/typebox/value';
+
+import { SelectmatrixSchema as dZod } from './gen/zod/matrix.zod.js';
+import { SelectmatrixSchema as dVal } from './gen/valibot/matrix.valibot.js';
+import { SelectmatrixSchema as dArk } from './gen/arktype/matrix.arktype.js';
+import { SelectmatrixSchema as dTb } from './gen/typebox/matrix.typebox.js';
+
+const POOL: [string, unknown][] = [
+  ['null', null], ['undefined', undefined], ['""', ''], ["'hello'", 'hello'],
+  ['300-char string', 'x'.repeat(300)], ['5-char string', 'xxxxx'], ["'not-a-uuid'", 'not-a-uuid'],
+  ['a real uuid', '3f2504e0-4f89-11d3-9a0c-0305e82c3301'], ["'zzz'", 'zzz'], ["'happy'", 'happy'],
+  ['0', 0], ['1.5', 1.5], ['-1', -1], ['40000', 40000], ['2147483648', 2147483648],
+  ['9007199254740993', 9007199254740993], ['NaN', NaN], ['Infinity', Infinity],
+  ['1n', 1n], ['2n**70n', 2n ** 70n], ['true', true],
+  ['Date', new Date('2020-01-01T00:00:00Z')], ["'2020-01-01'", '2020-01-01'],
+  ["'2020-01-01T00:00:00Z'", '2020-01-01T00:00:00Z'], ["'25:99:99'", '25:99:99'],
+  ['{}', {}], ["{a:'s'}", { a: 's' }], ['[]', []], ["['a']", ['a']], ['[1,2]', [1, 2]],
+  ["['happy']", ['happy']], ["['zzz']", ['zzz']], ['[1,2,3]', [1, 2, 3]],
+  ['Buffer', Buffer.from('ab')], ['Uint8Array', new Uint8Array([1, 2])],
+  ["'999.999.999.999'", '999.999.999.999'], ["'10.0.0.1'", '10.0.0.1'],
+  ['{x:1,y:2}', { x: 1, y: 2 }], ["'12.5'", '12.5'], ["'0101'", '0101'], ["'010'", '010'],
+];
+
+type Lib = { field: (s: any, k: string) => any; ok: (f: any, x: unknown) => boolean };
+
+const LIBS: Record<string, Lib> = {
+  zod: { field: (s, k) => s.shape[k], ok: (f, x) => f.safeParse(x).success },
+  valibot: { field: (s, k) => s.entries[k], ok: (f, x) => v.safeParse(f, x).success },
+  arktype: { field: (s, k) => s.get(k), ok: (f, x) => !(f(x) instanceof type.errors) },
+  typebox: { field: (s, k) => s.properties[k], ok: (f, x) => Value.Check(f, x) },
+};
+
+const safeOk = (lib: Lib, f: any, x: unknown) => {
+  try {
+    return lib.ok(f, x);
+  } catch {
+    return false;
+  }
+};
+
+const DRZL: Record<string, any> = { zod: dZod, valibot: dVal, arktype: dArk, typebox: dTb };
+const OFFICIAL: Record<string, any> = {
+  zod: zSel(matrix),
+  valibot: vSel(matrix),
+  arktype: aSel(matrix),
+};
+
+/**
+ * Divergences that are deliberate and reasoned. Anything not named here is a finding, so a new
+ * disagreement fails this script rather than quietly widening the list.
+ */
+const ALLOWED: Record<string, string> = {
+  'zod/c_bytea': 'accepts any Uint8Array where official demands a Buffer: portable to runtimes with no Buffer, and matches how a SQLite blob is validated',
+  'valibot/c_bytea': 'as zod/c_bytea',
+  'arktype/c_bytea': 'as zod/c_bytea',
+  'valibot/c_json': 'DRZL is stricter: rejects Infinity and non-plain objects, official accepts both',
+  'valibot/c_jsonb': 'as valibot/c_json',
+  'valibot/c_jsonb_typed': 'as valibot/c_json',
+  'valibot/c_point': 'DRZL is stricter: v.strictTuple rejects a third element, official v.tuple ignores extras',
+  'valibot/c_geometry': 'as valibot/c_point',
+  'arktype/c_bigint_b': 'official bounds bigints with a narrow predicate, which ArkType states through its builder rather than its string DSL; this generator emits strings',
+};
+
+/** Cross-generator gaps that follow from what each library can express, not from a defect. */
+const CROSS_ALLOWED = (k: string) => k.startsWith('c_json') || k === 'c_bigint_b';
+
+const cols = Object.keys(OFFICIAL.zod.shape);
+let findings = 0;
+
+for (const libName of ['zod', 'valibot', 'arktype']) {
+  const lib = LIBS[libName];
+  const rows: string[] = [];
+  let diverged = 0;
+
+  for (const key of cols) {
+    let o: any, d: any;
+    try {
+      o = lib.field(OFFICIAL[libName], key);
+      d = lib.field(DRZL[libName], key);
+    } catch {
+      continue;
+    }
+    if (!d) {
+      rows.push(`      ${key}: missing from the DRZL output entirely`);
+      findings++;
+      continue;
+    }
+    const looser: string[] = [];
+    const tighter: string[] = [];
+    for (const [label, x] of POOL) {
+      const a = safeOk(lib, o, x);
+      const b = safeOk(lib, d, x);
+      if (a !== b) (b ? looser : tighter).push(label);
+    }
+    if (!looser.length && !tighter.length) continue;
+    if (ALLOWED[`${libName}/${key}`]) {
+      diverged++;
+      continue;
+    }
+    findings++;
+    rows.push(
+      `      ${key}:` +
+        (looser.length ? `\n        DRZL accepts, official rejects: ${looser.join(', ')}` : '') +
+        (tighter.length ? `\n        DRZL rejects, official accepts: ${tighter.join(', ')}` : '')
+    );
+  }
+  console.log(
+    `    ${libName.padEnd(8)} ${cols.length} columns, ${rows.length ? 'DIFFERS' : 'parity'}` +
+      `${diverged ? ` (${diverged} allowed divergence${diverged > 1 ? 's' : ''})` : ''}`
+  );
+  if (rows.length) console.log(rows.join('\n'));
+}
+
+const disagreements: string[] = [];
+for (const key of cols) {
+  if (CROSS_ALLOWED(key)) continue;
+  const fields: Record<string, any> = {};
+  for (const [n, s] of Object.entries(DRZL)) {
+    try {
+      fields[n] = LIBS[n].field(s, key);
+    } catch {
+      fields[n] = undefined;
+    }
+  }
+  const absent = Object.entries(fields).filter(([, f]) => !f).map(([n]) => n);
+  if (absent.length) {
+    disagreements.push(`      ${key}: missing from ${absent.join(', ')}`);
+    continue;
+  }
+  for (const [label, x] of POOL) {
+    const verdicts = Object.entries(fields).map(([n, f]) => [n, safeOk(LIBS[n], f, x)] as const);
+    const yes = verdicts.filter(([, r]) => r).map(([n]) => n);
+    const no = verdicts.filter(([, r]) => !r).map(([n]) => n);
+    if (yes.length && no.length) {
+      disagreements.push(`      ${key} on ${label}: ${yes.join('/')} accept, ${no.join('/')} reject`);
+    }
+  }
+}
+if (disagreements.length) {
+  console.log('    the four generators disagree with each other:');
+  console.log(disagreements.join('\n'));
+  findings += disagreements.length;
+} else {
+  console.log(`    all four generators agree with each other on every column and value`);
+}
+
+if (findings) {
+  console.error(`FAIL: ${findings} parity finding(s). A generated schema that is looser than the`);
+  console.error('      first-party module accepts rows the database will reject.');
+  process.exit(1);
+}
+PARITY_HARNESS
+
+# drizzle-orm is pinned: the parity target is a specific release, and a floating one would turn
+# an upstream change into a mysterious failure here rather than a deliberate re-measurement.
+npm install --no-audit --no-fund --loglevel=error \
+  "$TARS"/*.tgz drizzle-orm@1.0.0-rc.4 zod valibot arktype @sinclair/typebox tsx >/dev/null
+
+npx drzl generate >/dev/null
+for kind in zod valibot arktype typebox; do
+  if [ ! -e "src/gen/$kind/matrix.$kind.ts" ]; then
+    echo "FAIL: the $kind generator produced no file for the parity matrix." >&2
+    exit 1
+  fi
+done
+
+if ! npx tsx src/parity.ts; then
+  echo "FAIL: DRZL's generated schemas diverge from the official drizzle-orm validators." >&2
+  exit 1
+fi
+cd "$APP"
+
 echo "OK: $count packages packed, installed into an empty project, generated, and the output"
-echo "    typechecks under bundler, node16 and nodenext."
+echo "    typechecks under bundler, node16 and nodenext, and validates at least as strictly as"
+echo "    the first-party drizzle-orm validator modules."

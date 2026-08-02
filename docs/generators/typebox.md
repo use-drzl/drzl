@@ -21,7 +21,7 @@ export const SelectpeopleSchema = Type.Object({
   id: Type.Integer({ minimum: -2147483648, maximum: 2147483647 }),
   age: Type.Integer({ minimum: 18, maximum: 2147483647 }),
   score: Type.Union([Type.Integer({ minimum: 0, maximum: 100 }), Type.Null()]),
-  tier: Type.Literal("gold"),
+  tier: Type.Literal('gold'),
   bio: Type.Union([Type.String(), Type.Null()]),
 });
 
@@ -32,12 +32,13 @@ export type SelectpeopleOutput = Static<typeof SelectpeopleSchema>;
 
 ## Column constraints
 
-| Column | Emitted |
-|---|---|
-| `varchar(255)` | `Type.String({ maxLength: 255 })` |
-| `uuid()` | `Type.String({ pattern: '...' })` |
-| `smallint()` | `Type.Integer({ minimum: -32768, maximum: 32767 })` |
-| `doublePrecision()` | `Type.Number()` |
+| Column              | Emitted                                                                |
+| ------------------- | ---------------------------------------------------------------------- |
+| `varchar(255)`      | `Type.String({ maxLength: 255 })`                                      |
+| `uuid()`            | `Type.String({ pattern: '...' })`                                      |
+| `smallint()`        | `Type.Integer({ minimum: -32768, maximum: 32767 })`                    |
+| `real()`            | `Type.Number({ minimum: -8388608, maximum: 8388607 })`                 |
+| `doublePrecision()` | `Type.Number({ minimum: -140737488355328, maximum: 140737488355327 })` |
 
 ### Why uuid is a pattern and not a format
 
@@ -50,12 +51,12 @@ valid uuid. A pattern needs no setup and behaves the same everywhere, so that is
 **No official Drizzle validator module enforces these**, in any library. TypeBox states them
 declaratively:
 
-| Constraint | Emitted |
-|---|---|
-| `CHECK (age >= 18)` | `minimum: 18` |
-| `CHECK (n > 0)` | `exclusiveMinimum: 0` |
+| Constraint                        | Emitted                    |
+| --------------------------------- | -------------------------- |
+| `CHECK (age >= 18)`               | `minimum: 18`              |
+| `CHECK (n > 0)`                   | `exclusiveMinimum: 0`      |
 | `CHECK (score BETWEEN 0 AND 100)` | `minimum: 0, maximum: 100` |
-| `CHECK (tier = 'gold')` | `Type.Literal("gold")` |
+| `CHECK (tier = 'gold')`           | `Type.Literal("gold")`     |
 
 An equality becomes `Type.Literal`, not a `const` option. TypeBox accepts a `const` option on
 `Type.String` and `Type.Integer` and then ignores it: `Type.String({ const: 'gold' })` validates
@@ -66,6 +67,29 @@ lets `null` through. That matches SQL, where a CHECK passes when it evaluates to
 
 Only unambiguous comparisons are translated; see
 [Zod → CHECK constraints](/generators/zod#check-constraints) for what is skipped and why.
+
+## Arrays and structured columns
+
+A column declared with `.array()` becomes `Type.Array` of the element, with the element's own
+constraints intact:
+
+```ts
+tags:   Type.Array(Type.String({ maxLength: 50 })),
+scores: Type.Array(Type.Integer({ minimum: -32768, maximum: 32767 })),
+```
+
+| Column                      | Emitted                                                           |
+| --------------------------- | ----------------------------------------------------------------- |
+| `point()`, `geometry()`     | `Type.Tuple([Type.Number(), Type.Number()])`                      |
+| `line()`                    | `Type.Tuple([...three...])`                                       |
+| `vector({ dimensions: 3 })` | `Type.Array(Type.Number(), { minItems: 3, maxItems: 3 })`         |
+| `bit({ dimensions: 3 })`    | `Type.String({ pattern: '^[01]*$', minLength: 3, maxLength: 3 })` |
+| `bytea()`                   | `Type.Uint8Array()`                                               |
+| `json()`, `jsonb()`         | a `Type.Recursive` `DrzlJsonValue`, declared once per file        |
+
+A `bigint` column carries its range as bigint literals, `Type.BigInt({ minimum: -9223372036854775808n, maximum: 9223372036854775807n })`.
+Written as plain numbers the bound would be wrong, since `9223372036854775807` rounds up the
+moment it becomes a JS number.
 
 ## `typedJson`
 

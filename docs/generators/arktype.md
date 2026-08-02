@@ -55,6 +55,39 @@ reads `(0 <= number <= 100 | null)`, which lets `null` through exactly as SQL do
 Only unambiguous comparisons are translated; see
 [Zod → CHECK constraints](/generators/zod#check-constraints) for what is skipped and why.
 
+## Arrays and structured columns
+
+A column declared with `.array()` becomes an array of the element type. The element is
+parenthesised, because `'a' | 'b'[]` parses as the literal `'a'` or an array of `'b'`, which is
+not what an enum array means:
+
+```ts
+tags:  "string[]",                      // text().array()
+moods: "('happy' | 'sad')[]",           // moodEnum().array()
+names: "(string <= 50)[]",              // varchar(50).array()
+```
+
+| Column                      | Emitted                                           |
+| --------------------------- | ------------------------------------------------- |
+| `point()`, `geometry()`     | `"number[] == 2"`                                 |
+| `line()`                    | `"number[] == 3"`                                 |
+| `vector({ dimensions: 3 })` | `"number[] == 3"`                                 |
+| `bit({ dimensions: 3 })`    | `"/^[01]*$/ & string == 3"`                       |
+| `bytea()`, SQLite `blob()`  | `"TypedArray.Uint8"`                              |
+| `json()`, `jsonb()`         | `"number \| object \| string \| boolean \| null"` |
+
+The tuple types are written as a length-constrained array rather than as `[number, number]`.
+ArkType does accept a real tuple, but only as a nested array in the definition object, and this
+generator emits one string per field. Both reject an array of the wrong length; the tuple form
+would additionally give a static type of `[number, number]` rather than `number[]`.
+
+### One thing ArkType cannot state here
+
+A `bigint({ mode: 'bigint' })` column is emitted as plain `bigint`, with no range. ArkType's
+comparison operators take numeric literals, so a 64 bit bound cannot be written in the string
+DSL at all; `drizzle-orm/arktype` states it through a narrow predicate built with the builder
+API instead. Every other column type is bounded here exactly as the official module bounds it.
+
 ## Custom names
 
 `Insert<Table>Schema` is the default, not the only option. The `affix` block renames the
@@ -73,9 +106,7 @@ export name so `users` becomes `Users` instead of being interpolated verbatim.
 ```
 
 ```ts
-export const InsertUsersSchema = type({
-  /* ... */
-});
+export const InsertUsersSchema = type({/* ... */});
 export type InsertUsersInput = (typeof InsertUsersSchema)['infer'];
 // Select's prefix and suffix are both empty, so the type is just the table name:
 export type Users = (typeof SelectUsersSchema)['infer'];

@@ -57,6 +57,38 @@ Only unambiguous comparisons are translated. Cross-column comparisons such as
 than guessed at, since a schema enforcing a guess rejects rows the database would accept. See
 [Zod → CHECK constraints](/generators/zod#check-constraints) for the full table.
 
+## Arrays and structured columns
+
+A column declared with `.array()` produces a schema for the array, keeping everything the element
+declares inside it:
+
+```ts
+tags:   v.array(v.pipe(v.string(), v.maxLength(50))),          // varchar(50).array()
+scores: v.array(v.pipe(v.number(), v.integer(), v.minValue(-32768), v.maxValue(32767))),
+```
+
+The structured Postgres columns each get the shape their runtime value actually has:
+
+| Column                      | Emitted                                               |
+| --------------------------- | ----------------------------------------------------- |
+| `point()`, `geometry()`     | `v.strictTuple([v.number(), v.number()])`             |
+| `line()`                    | `v.strictTuple([...three...])`                        |
+| `vector({ dimensions: 3 })` | `v.pipe(v.array(v.number()), v.length(3))`            |
+| `bit({ dimensions: 3 })`    | `v.pipe(v.string(), v.regex(/^[01]*$/), v.length(3))` |
+| `bytea()`                   | `v.instance(Uint8Array)`                              |
+| `json()`, `jsonb()`         | a recursive `DrzlJsonValue`, declared once per file   |
+
+`strictTuple` rather than `tuple` is deliberate: valibot's plain `tuple` ignores extra items, so a
+schema built from it accepts `[1, 2, 3]` for a point. `drizzle-orm/valibot` uses the plain form.
+
+Valibot has no `json()` built-in, so a json column emits a recursive declaration at the top of the
+file. It is stricter than the official one in two ways, both of which reject values that cannot
+survive the round trip: `Infinity` is refused rather than written out as `null`, and a class
+instance such as a `Date` is refused rather than being rebuilt as an empty object.
+
+See [Zod → Structured columns](/generators/zod#structured-columns) for why `bytea` is typed as a
+`Uint8Array`.
+
 ## Custom names
 
 `Insert<Table>Schema` is the default, not the only option. The `affix` block renames the
@@ -75,9 +107,7 @@ export name so `users` becomes `Users` instead of being interpolated verbatim.
 ```
 
 ```ts
-export const InsertUsersSchema = v.object({
-  /* ... */
-});
+export const InsertUsersSchema = v.object({/* ... */});
 export type InsertUsersInput = InferInput<typeof InsertUsersSchema>;
 // Select's prefix and suffix are both empty, so the type is just the table name:
 export type Users = InferOutput<typeof SelectUsersSchema>;

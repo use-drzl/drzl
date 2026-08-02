@@ -21,7 +21,8 @@
   },
   "devDependencies": {
     "tsup": "^8.5.1",
-    "typescript": "^5.9.3"
+    "typescript": "^5.9.3",
+    "valibot": "^1.1.0"
   },
   "engines": {
     "node": ">=18.17.0"
