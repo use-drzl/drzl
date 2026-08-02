@@ -32,5 +32,6 @@ packages/*/test/.tmp-typedcols-*
 packages/*/test/.tmp-typedcols-run
 packages/*/test/.tmp-numfmt
 packages/*/test/.tmp-charlen
+packages/*/test/.tmp-cardinality
 packages/*/test/.tmp-rowchecks
 packages/*/test/.tmp-defaults

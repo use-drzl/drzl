@@ -260,3 +260,35 @@ describe('character-count constraints', () => {
     expect(rejected("length(a) > '3'")).toBeTruthy();
   });
 });
+
+describe('array cardinality', () => {
+  // `cardinality(tags) > 0` is the array analogue of `length(name) > 3`, and the mapping is just
+  // as exact: it is the element count, which JavaScript spells `.length` on an array with no
+  // encoding question attached. Verified against Postgres: the constraint rejects `[]` and
+  // accepts `['a']`.
+  it('reads cardinality() as an element count', () => {
+    const r = parseCheck('cardinality(tags) > 0', 'not_empty');
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.checks, 'not a value comparison').toHaveLength(0);
+    expect(r.cardinalities).toEqual([
+      { column: 'tags', operator: '>', value: '0', name: 'not_empty' },
+    ]);
+  });
+
+  it('reads array_length(col, 1) too, which is the older spelling', () => {
+    // `array_length(a, 1)` is the length of the first dimension, which for a one-dimensional
+    // array is the same number `cardinality` gives.
+    const r = parseCheck('array_length(tags, 1) <= 5');
+    expect(r.ok && r.cardinalities).toEqual([{ column: 'tags', operator: '<=', value: '5' }]);
+  });
+
+  it('refuses a dimension other than the first, which is not the element count', () => {
+    expect(rejected('array_length(grid, 2) > 0')).toBeTruthy();
+  });
+
+  it('carries both ends of a conjunction', () => {
+    const r = parseCheck('cardinality(a) > 0 AND cardinality(a) < 10');
+    expect(r.ok && r.cardinalities).toHaveLength(2);
+  });
+});
