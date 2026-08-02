@@ -103,7 +103,7 @@ node -e "
 # valibot, arktype and @orpc/server are peers of the generators, so the generated tree cannot
 # typecheck without them present, exactly as in a consumer's project.
 npm install --no-audit --no-fund --loglevel=error \
-  "$TARS"/*.tgz drizzle-orm zod valibot arktype @orpc/server typescript >/dev/null
+  "$TARS"/*.tgz drizzle-orm zod valibot arktype @orpc/server typescript tsx >/dev/null
 
 if [ ! -e node_modules/.bin/drzl ]; then
   echo "FAIL: the drzl bin did not resolve after a real install." >&2
@@ -131,6 +131,27 @@ grep -q 'listByAuthorId' src/generated/api/posts.ts || {
   echo "FAIL: includeRelations did not emit a lookup for the authorId foreign key." >&2
   exit 1
 }
+
+# The generated routers have to import each other without deadlocking on module initialisation.
+# Cross-table lookups reference another router's schema, which is circular the moment both
+# directions exist, and an eager reference throws "Cannot access X before initialization" at
+# import time while typechecking perfectly. Only loading the graph catches it.
+echo "==> loading the generated router graph"
+cat > load-probe.mjs <<'PROBE'
+const { router } = await import('./src/generated/api/index.ts');
+const names = Object.keys(router);
+if (!names.length) {
+  console.error('FAIL: the generated router barrel exports nothing.');
+  process.exit(1);
+}
+console.log('    loaded ' + names.length + ' routers: ' + names.sort().join(', '));
+PROBE
+if ! npx tsx load-probe.mjs; then
+  echo "FAIL: the generated routers could not be imported. A circular reference between them" >&2
+  echo "      is evaluated at module scope rather than deferred." >&2
+  exit 1
+fi
+rm -f load-probe.mjs
 
 # Exit code alone is not enough: a generator that writes an empty barrel still exits 0.
 grep -q 'export \* from "./users.zod.js";' "$BARREL" || {

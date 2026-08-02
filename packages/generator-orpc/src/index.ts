@@ -331,6 +331,75 @@ export class ORPCGenerator {
     return specs;
   }
 
+  /**
+   * Lookups that return rows of a *different* table: the inverse of a foreign key, and the far
+   * side of a many-to-many.
+   *
+   *   users.listPosts   every post whose authorId is this user
+   *   posts.listTags    every tag joined to this post through posts_to_tags
+   *
+   * These need the other table's select schema, which lives in the other table's router file.
+   * That import is genuinely circular whenever both directions are emitted, which many-to-many
+   * always does, and an eager cross-import fails at runtime with "Cannot access X before
+   * initialization" rather than at compile time. So the reference is deferred: `z.lazy` and
+   * `v.lazy` both evaluate on first use, by which point both modules are initialised.
+   *
+   * ArkType is skipped. Its deferred form differs enough that emitting an untested shape here
+   * would be guessing, and an endpoint that fails to load is worse than one that is absent.
+   */
+  private crossTableProcedures(
+    table: Table,
+    analysis: Analysis,
+    lib: Lib,
+    affix: ReturnType<typeof resolveAffix>,
+    taken: Set<string>,
+    imports: Map<string, string>
+  ): ProcedureSpec[] {
+    if (lib === 'arktype') return [];
+
+    const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
+    const T = cap(table.tsName);
+    const specs: ProcedureSpec[] = [];
+    const byDbName = new Map(analysis.tables.map((t) => [t.name, t]));
+
+    const wanted = (analysis.relations ?? []).filter(
+      (r) => r.from === table.name && (r.kind === 'many' || r.kind === 'manyToMany')
+    );
+
+    for (const rel of wanted) {
+      const target = byDbName.get(rel.to);
+      if (!target || target.name === table.name) continue;
+
+      const name = `list${cap(target.tsName)}`;
+      if (taken.has(name)) continue;
+      taken.add(name);
+
+      const targetSchema = schemaName('select', target.tsName, affix);
+      imports.set(target.tsName, targetSchema);
+
+      const lazyRef =
+        lib === 'zod' ? `z.lazy(() => ${targetSchema})` : `v.lazy(() => ${targetSchema})`;
+      const output = lib === 'zod' ? `z.array(${lazyRef})` : `v.array(${lazyRef})`;
+      const idExpr =
+        lib === 'zod' ? 'z.object({ id: z.number() })' : 'v.object({ id: v.number() })';
+
+      const via = rel.kind === 'manyToMany' ? ` through ${rel.via}` : '';
+      specs.push({
+        name,
+        varName: `${name}${T}`,
+        code:
+          `const ${name}${T} = os\n` +
+          `  .input(${idExpr})\n` +
+          `  .output(${output})\n` +
+          `  .handler(async ({ input: _input }) => {\n` +
+          `    // Rows of ${target.name} related to this ${table.name}${via}.\n` +
+          `    return [];\n` +
+          `  });`,
+      });
+    }
+    return specs;
+  }
+
   private async formatCode(
     code: string,
     filePath: string,
@@ -504,18 +573,25 @@ export const exampleRouter = {
 
     // Template procedures (fallback default uses inline zod; we replace to use shared)
     const templateProcs = template.procedures(table, { databaseInjection: databaseInjection });
+    // Select schemas of other tables that cross-table lookups refer to, keyed by tsName, so the
+    // import can be emitted once alongside the rest.
+    const crossTableImports = new Map<string, string>();
     // Relation lookups are appended, never substituted, so the CRUD surface is identical
     // whether or not the flag is set.
     const hooksProcs = includeRelations
-      ? [
-          ...templateProcs,
-          ...this.relationProcedures(
+      ? (() => {
+          const taken = new Set(templateProcs.map((p) => p.name));
+          const own = this.relationProcedures(table, lib, selectSchemaName, taken);
+          const cross = this.crossTableProcedures(
             table,
+            this.analysis,
             lib,
-            selectSchemaName,
-            new Set(templateProcs.map((p) => p.name))
-          ),
-        ]
+            resolveAffix({ affix: validation?.affix, schemaSuffix: validation?.schemaSuffix }),
+            taken,
+            crossTableImports
+          );
+          return [...templateProcs, ...own, ...cross];
+        })()
       : templateProcs;
     const replaceInputArg = (code: string, newArg: string) => {
       const sig = '.input(';
@@ -681,7 +757,21 @@ export const exampleRouter = {
     const importSchemas = useShared
       ? `\nimport { ${sharedName('insert')} as ${createSchemaName}, ${sharedName('update')} as ${updateSchemaName}, ${sharedName('select')} as ${selectSchemaName} } from '${sharedImportSpecifier}';`
       : '';
-    const imports = importsBase + importSchemas;
+    // Where the other tables' select schemas come from. With shared validation they all live in
+    // one barrel, so a single import covers them. Otherwise each router declares and exports its
+    // own, and they are pulled from the sibling router files; those imports are circular by
+    // nature, which is why the procedures reference them lazily.
+    const crossImports = [...crossTableImports.entries()]
+      .filter(([tsName]) => tsName !== table.tsName)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([tsName, schema]) =>
+        useShared
+          ? `\nimport { ${schema} } from '${sharedImportSpecifier}';`
+          : `\nimport { ${schema} } from '${importSpecifier(`./${template.filePath({ ...table, tsName } as Table, { outDir: '.', naming }).replace(/^\.\//, '')}`, importExtension)}';`
+      )
+      .join('');
+
+    const imports = importsBase + importSchemas + crossImports;
     const prelude = template.prelude ? template.prelude([table], ctx) : '';
     const header = template.header ? template.header(table) : `// Router for table: ${table.name}`;
     // Apply case to exported property names

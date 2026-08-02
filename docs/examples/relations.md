@@ -52,15 +52,41 @@ The input type follows the column, the output is always an array of that table's
 schema, and both respect your chosen validation library, so `valibot` emits `v.object`/`v.array`
 and `arktype` emits `type({ ... })`/`.array()`.
 
+## Lookups that return another table
+
+The inverse of a foreign key, and the far side of a many-to-many, are emitted too:
+
+```ts
+// on the users router, because posts.authorId points here
+listPosts: listPostsUsers,
+
+// on the posts router, because posts and tags are joined by posts_to_tags
+listTags: listTagsPosts,
+```
+
+These take `{ id }` and return an array of the other table's select schema, which is imported
+from that table's router.
+
+Those imports are circular by nature: with a many-to-many, `posts` imports `tags` and `tags`
+imports `posts`. So the schema is referenced through `z.lazy()` (or `v.lazy()`), which resolves
+on first use rather than at module load. Referencing it directly typechecks perfectly and then
+throws `Cannot access SelecttagsSchema before initialization` the moment you import the router,
+which is why the generated code looks like this:
+
+```ts
+.output(z.array(z.lazy(() => SelecttagsSchema)))
+```
+
+With `validation.useShared`, every router imports the one barrel instead, so there is no cycle,
+and the lazy wrapper is harmless either way.
+
 ## What it does not emit
 
 - **Composite foreign keys are skipped.** There is no single scalar to accept, and inventing a
   shape for one would be guessing at an API rather than deriving it.
-- **The inverse direction is not generated.** A `listPosts` on the `users` router would return
-  another table's rows, whose schema this file does not import.
-- **Many-to-many is not traversed.** `drzl analyze --relations` reports these, including
-  `kind: 'manyToMany'` with the join table in `via`, but the generator does not yet emit an
-  endpoint that joins through them.
+- **ArkType gets no cross-table lookups.** Its deferred form differs from Zod's and Valibot's,
+  and an endpoint that fails to load is worse than one that is absent. Its own foreign-key
+  lookups (`listByAuthorId`) are unaffected.
 
 Relation procedures are always additive. The CRUD surface is byte-identical whether or not the
 flag is set, and a template that already declares a procedure of the same name keeps its own.
