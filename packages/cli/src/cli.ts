@@ -307,12 +307,23 @@ program
       for (const d of computeGeneratorOutputDirs(cfgNow)) ignoredOutDirs.add(abs(d));
     };
 
-    const ignoredFn = (p: string) => {
+    // Watch targets are directories now, because chokidar v4 dropped glob support. The
+    // extensions the old `**/*.{ts,tsx,js}` glob selected therefore have to be filtered here
+    // instead, or every unrelated file in the schema's directory would trigger a rebuild.
+    const WATCHED_EXTENSIONS = new Set(['.ts', '.tsx', '.js', '.mjs', '.cjs']);
+
+    const ignoredFn = (p: string, stats?: { isDirectory(): boolean }) => {
       const full = abs(p);
       for (const dir of ignoredOutDirs) {
         if (full === dir || isInside(full, dir)) return true;
       }
-      return false;
+      // A directory is never ignored: chokidar has to descend into it to reach the files.
+      if (stats?.isDirectory()) return false;
+      const ext = path.extname(full);
+      // Without stats chokidar is asking about a path it has not resolved yet. An extensionless
+      // one is almost certainly a directory, so let it through and decide once it is known.
+      if (!ext) return false;
+      return !WATCHED_EXTENSIONS.has(ext);
     };
 
     const watcher = chokidar.watch(Array.from(currentTargets), {

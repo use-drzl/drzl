@@ -111,6 +111,11 @@ export default defineConfig({
   schema: 'src/db/schemas/index.ts',
   outDir: 'src/api',
   generators: [
+    // `useShared` below imports these, and `template-orpc-service` imports the services, so
+    // both have to be generated. A config naming them without producing them emits routers
+    // that import modules nothing ever writes.
+    { kind: 'zod', path: 'src/validators/zod', schemaSuffix: 'Schema' },
+    { kind: 'service', path: 'src/services' },
     {
       kind: 'orpc',
       template: '@drzl/template-orpc-service',

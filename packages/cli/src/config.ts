@@ -390,8 +390,13 @@ export function resolveTemplateDirsSync(cfg: DrzlConfig, cwd = process.cwd()): s
 export function computeWatchTargets(cfg: DrzlConfig, cwd = process.cwd()): string[] {
   const abs = (p: string) => path.resolve(cwd, p);
   const schemaAbs = abs(cfg.schema);
+  // The schema's directory, not a glob under it. Chokidar removed glob support in v4 and treats
+  // `<dir>/**/*.{ts,tsx,js}` as a literal path, so it watched a directory named `**` that does
+  // not exist: no event ever fired and `drzl watch` did its initial build and then sat inert.
+  // A directory is watched recursively by chokidar itself, and the extension filtering that the
+  // glob was doing now happens on the event instead.
   const targets = new Set<string>([
-    path.join(path.dirname(schemaAbs), '**/*.{ts,tsx,js}'),
+    path.dirname(schemaAbs),
     abs('drzl.config.ts'),
     abs('drzl.config.js'),
     abs('drzl.config.mjs'),

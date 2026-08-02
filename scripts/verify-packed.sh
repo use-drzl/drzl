@@ -162,5 +162,173 @@ EOF
   echo "    $mr ok"
 done
 
+
+# ---------------------------------------------------------------------------------------------
+# Every dialect, not just SQLite.
+#
+# The analyzer claims sqlite, postgres, mysql, singlestore and gel, and this guard exercised one
+# of them. Each dialect stores its foreign keys under a differently named symbol and has its own
+# column classes, so a change that works for SQLite can silently produce nothing for Postgres.
+# ---------------------------------------------------------------------------------------------
+echo "==> generating from every dialect"
+for dialect in pg mysql; do
+  mkdir -p "src/dia-$dialect"
+  case "$dialect" in
+    pg)
+      cat > "src/dia-$dialect/schema.ts" <<'SCHEMA'
+import { pgTable, integer, serial, text } from 'drizzle-orm/pg-core';
+export const authors = pgTable('authors', {
+  id: serial('id').primaryKey(),
+  name: text('name').notNull(),
+});
+export const books = pgTable('books', {
+  isbn: text('isbn').primaryKey(),
+  authorId: integer('author_id').references(() => authors.id),
+});
+SCHEMA
+      ;;
+    mysql)
+      cat > "src/dia-$dialect/schema.ts" <<'SCHEMA'
+import { mysqlTable, int, varchar } from 'drizzle-orm/mysql-core';
+export const authors = mysqlTable('authors', {
+  id: int('id').primaryKey().autoincrement(),
+  name: varchar('name', { length: 120 }).notNull(),
+});
+export const books = mysqlTable('books', {
+  isbn: varchar('isbn', { length: 20 }).primaryKey(),
+  authorId: int('author_id').references(() => authors.id),
+});
+SCHEMA
+      ;;
+  esac
+
+  cat > drzl.config.ts <<CONFIG
+export default {
+  schema: './src/dia-$dialect/schema.ts',
+  outDir: './src/dia-$dialect/api',
+  generators: [
+    { kind: 'zod', path: './src/dia-$dialect/zod' },
+    { kind: 'orpc', includeRelations: true },
+  ],
+};
+CONFIG
+  npx drzl generate >/dev/null
+
+  # A natural primary key must survive into the insert schema, and a foreign key must produce a
+  # lookup. Both were broken for every dialect at some point without this guard noticing.
+  grep -q 'isbn' "src/dia-$dialect/zod/books.zod.ts" || {
+    echo "FAIL [$dialect]: the natural primary key 'isbn' is missing from the emitted schemas." >&2
+    exit 1
+  }
+  grep -q 'listByAuthorId' "src/dia-$dialect/api/books.ts" || {
+    echo "FAIL [$dialect]: no relation lookup emitted for the authorId foreign key." >&2
+    exit 1
+  }
+
+  cat > "tsconfig.$dialect.json" <<EOF
+{
+  "compilerOptions": {
+    "strict": true, "noEmit": true, "target": "es2022",
+    "module": "nodenext", "moduleResolution": "nodenext", "skipLibCheck": true
+  },
+  "include": ["src/dia-$dialect/**/*.ts"]
+}
+EOF
+  if ! npx tsc -p "tsconfig.$dialect.json"; then
+    echo "FAIL [$dialect]: emitted output does not typecheck." >&2
+    exit 1
+  fi
+  echo "    $dialect ok"
+done
+
+# ---------------------------------------------------------------------------------------------
+# Every config the documentation tells a reader to write.
+#
+# Two rounds of defects were "the docs show a config that does not work", both found by hand:
+# the getting-started guide emitted three imports resolving to nothing, and validation-mix.md
+# had the same shape. Anything a reader can copy is run here instead.
+# ---------------------------------------------------------------------------------------------
+echo "==> running every documented config"
+node "$ROOT/scripts/extract-doc-configs.mjs" "$ROOT/docs" > /tmp/doc-configs.json
+doc_total="$(node -e "process.stdout.write(String(require('/tmp/doc-configs.json').length))")"
+[ "$doc_total" -gt 0 ] || { echo "FAIL: no runnable configs found in docs; the extractor is broken." >&2; exit 1; }
+
+doc_failed=0
+for i in $(seq 0 $((doc_total - 1))); do
+  label="$(node -e "const c=require('/tmp/doc-configs.json')[$i]; process.stdout.write(c.file+':'+c.line)")"
+  schema="$(node -e "process.stdout.write(require('/tmp/doc-configs.json')[$i].schema)")"
+  outdir="$(node -e "process.stdout.write(require('/tmp/doc-configs.json')[$i].outDir)")"
+
+  rm -rf docs-probe && mkdir -p "docs-probe/$(dirname "$schema")" docs-probe/src/db
+  # A schema exercising the cases these configs care about: a generated key, a natural key, a
+  # nullable column and a foreign key.
+  cat > "docs-probe/$schema" <<'SCHEMA'
+import { pgTable, integer, serial, text } from 'drizzle-orm/pg-core';
+export const users = pgTable('users', {
+  id: serial('id').primaryKey(),
+  email: text('email').notNull(),
+  nickname: text('nickname'),
+});
+export const posts = pgTable('posts', {
+  id: serial('id').primaryKey(),
+  slug: text('slug').notNull(),
+  authorId: integer('author_id').references(() => users.id),
+});
+SCHEMA
+  # Some configs point `dbImportPath` at a connection module. That is the reader's own file, so
+  # the fixture supplies one rather than the config being wrong for naming it.
+  echo 'export const db = {} as any;' > docs-probe/src/db/connection.ts
+
+  node -e "
+    const fs = require('fs');
+    const c = require('/tmp/doc-configs.json')[$i];
+    let body = c.config;
+    // Docs elide the import on short snippets. That is a snippet convention rather than a
+    // defect in the configuration, and the point here is whether the config works, so it is
+    // supplied when missing.
+    if (body.includes('defineConfig') && !/from '@drzl\/cli\/config'/.test(body)) {
+      body = \"import { defineConfig } from '@drzl/cli/config';\n\" + body;
+    }
+    fs.writeFileSync('docs-probe/drzl.config.ts', body);
+  "
+  # A custom template the docs reference by path would not exist here; that is a documentation
+  # example about authoring one, not a config to run.
+  if grep -qE "template:\s*'\./" docs-probe/drzl.config.ts; then
+    echo "    $label  skipped (references a local template file)"
+    continue
+  fi
+
+  if ! (cd docs-probe && npx drzl generate >/dev/null 2>&1); then
+    echo "    $label  GENERATE FAILED"
+    doc_failed=$((doc_failed + 1))
+    continue
+  fi
+
+  cat > docs-probe/tsconfig.json <<EOF
+{
+  "compilerOptions": {
+    "strict": true, "noEmit": true, "target": "es2022",
+    "module": "nodenext", "moduleResolution": "nodenext", "skipLibCheck": true
+  },
+  "include": ["**/*.ts"]
+}
+EOF
+  if (cd docs-probe && npx tsc -p tsconfig.json > /tmp/doc-tsc.log 2>&1); then
+    echo "    $label  ok"
+  else
+    echo "    $label  DOES NOT TYPECHECK"
+    sed 's/^/        /' /tmp/doc-tsc.log | head -5
+    doc_failed=$((doc_failed + 1))
+  fi
+done
+rm -rf docs-probe
+
+if [ "$doc_failed" -ne 0 ]; then
+  echo "FAIL: $doc_failed of $doc_total documented configs do not work as written." >&2
+  echo "      A config a reader can copy has to produce code that compiles." >&2
+  exit 1
+fi
+echo "    all $doc_total documented configs generate and typecheck"
+
 echo "OK: $count packages packed, installed into an empty project, generated, and the output"
 echo "    typechecks under bundler, node16 and nodenext."

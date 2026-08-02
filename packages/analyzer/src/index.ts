@@ -688,7 +688,15 @@ export class SchemaAnalyzer {
     let mod: any;
     try {
       const { default: jiti } = await import('jiti');
-      const jit = (jiti as any)(import.meta.url);
+      // `moduleCache: false` is what makes re-analysis see the file as it is now.
+      //
+      // jiti delegates to `require`, whose cache is global to the process, so a second load of
+      // the same path returned the first parse. Constructing a new jiti instance per call does
+      // not help; the cache is not the instance's. In a one-shot `generate` nothing noticed,
+      // but `drzl watch` analyzes repeatedly in one long-lived process: it regenerated on every
+      // save and always described the schema as it was at startup, so a table added after the
+      // watcher began never appeared however many times the file was written.
+      const jit = (jiti as any)(import.meta.url, { moduleCache: false });
       mod = jit(full);
     } catch (e) {
       issues.push({

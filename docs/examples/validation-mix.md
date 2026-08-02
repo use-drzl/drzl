@@ -21,6 +21,9 @@ export default defineConfig({
         schemaSuffix: 'Schema',
       },
     },
+    // Required by the template above, which emits routers that delegate to a service layer.
+    // Without it the routers import modules nothing ever writes.
+    { kind: 'service', path: 'src/services' },
   ],
 });
 ```
