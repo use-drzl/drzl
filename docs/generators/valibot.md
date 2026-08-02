@@ -29,6 +29,34 @@ export type UpdateusersInput = InferInput<typeof UpdateusersSchema>;
 export type SelectusersOutput = InferOutput<typeof SelectusersSchema>;
 ```
 
+## Column constraints and CHECK
+
+What the column declares is enforced, in Valibot's pipeline form:
+
+```ts
+id:    v.pipe(v.string(), v.uuid()),                      // uuid()
+name:  v.pipe(v.string(), v.maxLength(255)),              // varchar(255)
+small: v.pipe(v.number(), v.integer(),                    // smallint()
+              v.minValue(-32768), v.maxValue(32767)),
+```
+
+A `check()` in your schema becomes a `v.check` action. **No official Drizzle validator module
+enforces CHECK constraints**, in any library:
+
+```ts
+// check('age_adult', sql`${t.age} >= 18`)
+age: v.pipe(v.number(), v.integer(), v.minValue(-2147483648), v.maxValue(2147483647),
+            v.check((val) => val >= 18, "age_adult: age >= 18")),
+```
+
+The constraint sits on the inner schema, so `v.nullable()` wrapping it lets `null` through. That
+matches SQL, where a CHECK passes when it evaluates to TRUE **or NULL**.
+
+Only unambiguous comparisons are translated. Cross-column comparisons such as
+`start_date < end_date`, compound predicates, function calls and regex matches are skipped rather
+than guessed at, since a schema enforcing a guess rejects rows the database would accept. See
+[Zod → CHECK constraints](/generators/zod#check-constraints) for the full table.
+
 ## Custom names
 
 `Insert<Table>Schema` is the default, not the only option. The `affix` block renames the

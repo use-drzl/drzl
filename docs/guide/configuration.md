@@ -39,6 +39,39 @@ export default defineConfig({
 });
 ```
 
+## Choosing which tables to generate for
+
+By default every table in the schema file gets generated for. Top-level `include` and `exclude`
+narrow that:
+
+```ts
+export default defineConfig({
+  schema: 'src/db/schema.ts',
+  exclude: ['session', 'account', 'verification', '__drizzle_*'],
+  generators: [{ kind: 'orpc' }],
+});
+```
+
+Matching is on the **database table name**, anchored, with `*` as the only metacharacter.
+Anchored matters: `exclude: ['user']` does not also drop `users`. `exclude` is applied after
+`include`, so it wins when both name the same table.
+
+### Auth tables in particular
+
+If you use an auth library that writes into the same schema file, exclude its credential tables.
+Better Auth generates `user`, `session`, `account` and `verification`, and **`account` holds
+`accessToken`, `refreshToken`, `idToken` and `password`**. Without an exclusion DRZL will happily
+generate unauthenticated CRUD endpoints over all of it.
+
+```ts
+exclude: ['session', 'account', 'verification'],
+```
+
+DRZL deliberately does not detect auth libraries and skip their tables for you. Better Auth's
+model names are all overridable through `options.user.modelName`, so a built-in list would miss
+renamed tables, and worse, would silently skip an ordinary table called `user`, which in most
+applications is the primary entity you *do* want generated.
+
 ## Naming generated identifiers
 
 By default the validation generators name their exports `Insert<Table>Schema`,

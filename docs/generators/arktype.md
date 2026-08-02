@@ -28,6 +28,33 @@ export type UpdateusersInput = (typeof UpdateusersSchema)['infer'];
 export type SelectusersOutput = (typeof SelectusersSchema)['infer'];
 ```
 
+## Column constraints and CHECK
+
+ArkType states constraints inside the type expression rather than by chaining, so what the column
+declares becomes part of the type itself:
+
+```ts
+id:    "string.uuid",                    // uuid()
+name:  "string <= 255",                  // varchar(255)
+small: "-32768 <= number <= 32767",      // smallint()
+```
+
+A `check()` narrows that range rather than sitting beside it. **No official Drizzle validator
+module enforces CHECK constraints**, in any library:
+
+```ts
+age:   "18 <= number <= 2147483647",     // check(sql`${t.age} >= 18`) on an integer
+score: "(0 <= number <= 100 | null)",    // check(sql`${t.score} BETWEEN 0 AND 100`)
+tier:  "'gold'",                         // check(sql`${t.tier} = 'gold'`)
+```
+
+An exclusive comparison stays exclusive, so `CHECK (n > 0)` yields `0 < number`. An equality on a
+string becomes a literal type. Because the constraint is folded into the range, a nullable column
+reads `(0 <= number <= 100 | null)`, which lets `null` through exactly as SQL does.
+
+Only unambiguous comparisons are translated; see
+[Zod → CHECK constraints](/generators/zod#check-constraints) for what is skipped and why.
+
 ## Custom names
 
 `Insert<Table>Schema` is the default, not the only option. The `affix` block renames the

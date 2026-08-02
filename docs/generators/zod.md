@@ -28,6 +28,88 @@ export type UpdateusersInput = z.input<typeof UpdateusersSchema>;
 export type SelectusersOutput = z.output<typeof SelectusersSchema>;
 ```
 
+## What the column declares is what the schema enforces
+
+Constraints carried on the column become constraints in the schema, rather than being flattened
+to a bare type:
+
+```ts
+id:    z.uuid(),                                              // uuid()
+name:  z.string().max(255),                                   // varchar(255)
+small: z.number().int().gte(-32768).lte(32767),               // smallint()
+big:   z.bigint().gte(-9223372036854775808n)                  // bigint({ mode: 'bigint' })
+          .lte(9223372036854775807n),
+```
+
+Integer ranges follow the column width, and `bigint({ mode: 'number' })` is typed as a number
+with the JavaScript safe-integer bound rather than as a bigint, because that is what the value
+actually is.
+
+## CHECK constraints
+
+A `check()` in your schema becomes a refinement. **No official Drizzle validator module does
+this**, in any library: a table declaring `check('age_adult', sql\`${t.age} >= 18\`)` produces a
+`drizzle-orm/zod` schema that accepts `{ age: 5 }`.
+
+```ts
+// check('age_adult', sql`${t.age} >= 18`)
+age: z.number().int().gte(-2147483648).lte(2147483647)
+  .refine((v) => v >= 18, { message: "age_adult: age >= 18" }),
+
+// check('score_range', sql`${t.score} BETWEEN 0 AND 100`)
+score: z.number().int()
+  .refine((v) => v >= 0, { message: "score_range: score >= 0" })
+  .refine((v) => v <= 100, { message: "score_range: score <= 100" })
+  .nullable(),
+```
+
+Note the ordering on `score`: the refinement sits inside `.nullable()`, so `null` skips it. That
+is deliberate, because a SQL CHECK passes when it evaluates to TRUE **or NULL**. Enforcing it on
+a nullable column would make the schema stricter than the database.
+
+**Only unambiguous constraints are translated.** These are skipped rather than guessed at:
+
+| Skipped | Why |
+|---|---|
+| `start_date < end_date` | A statement about the row, not about either field |
+| `age >= 18 AND age <= 65` | Compound; getting its scope wrong changes what is enforced |
+| `length(name) > 3` | Function call |
+| `email ~ '^[a-z]+$'` | Postgres `~` is POSIX ERE, not JavaScript's regex dialect |
+
+A schema that quietly enforces a *guess* at your constraint is worse than one enforcing nothing,
+because it rejects rows the database would have accepted.
+
+## `typedJson`
+
+`json` and `jsonb` columns are typed `any` by default. Set `typedJson` and they take the type you
+declared with `.$type<T>()`:
+
+```ts
+{ kind: 'zod', path: 'src/validators/zod', typedJson: true }
+```
+
+```ts
+import type { settings } from '../db/schema.js';
+
+prefs: z.custom<(typeof settings.$inferSelect)["prefs"]>(),
+```
+
+`.$type<T>()` is a compile-time cast, so nothing about it survives to runtime and every
+runtime-derived validator is blind to it. `drizzle-orm/zod` types a json column as its generic
+`Json` whatever you wrote.
+
+DRZL does not try to reconstruct the type either. It references
+`typeof settings.$inferSelect['prefs']`, which *is* the declared type, resolved by TypeScript at
+the point of use. That is why generics, unions and imported interfaces all work, where an
+approach that parses your source and rebuilds the type would fail on them.
+
+Insert and select reference their own inference, since a defaulted json column is optional on
+insert and its type differs there.
+
+Off by default because it adds an `import type` of your schema module to the generated file.
+That import is erased at build time, so it adds no runtime dependency and cannot create a runtime
+cycle, but the coupling should be a choice.
+
 ## Custom names
 
 `Insert<Table>Schema` is the default, not the only option. The `affix` block renames the
