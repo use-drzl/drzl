@@ -1,5 +1,13 @@
 # @drzl/generator-service
 
+## 2.1.2
+
+### Patch Changes
+
+- Updated dependencies [b0543a4]
+  - @drzl/validation-core@3.0.0
+  - @drzl/analyzer@1.5.0
+
 ## 2.1.1
 
 ### Patch Changes

@@ -1,5 +1,14 @@
 # @drzl/generator-orpc
 
+## 2.3.2
+
+### Patch Changes
+
+- Updated dependencies [b0543a4]
+  - @drzl/validation-core@3.0.0
+  - @drzl/analyzer@1.5.0
+  - @drzl/template-orpc-service@2.3.2
+
 ## 2.3.1
 
 ### Patch Changes
