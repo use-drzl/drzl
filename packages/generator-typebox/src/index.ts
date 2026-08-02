@@ -3,6 +3,7 @@ import type {
   ColumnCheck,
   ColumnSet,
   CardinalityCheck,
+  LengthCheck,
   ResolvedAffix,
   RowCheck,
   ValidationRenderer,
@@ -390,6 +391,7 @@ function renderTableSchemas(
   const sets = parsedChecks.flatMap((p) => (p.ok ? (p.sets ?? []) : []));
   const rows = parsedChecks.flatMap((p) => (p.ok ? (p.rows ?? []) : []));
   const cardinalities = parsedChecks.flatMap((p) => (p.ok ? (p.cardinalities ?? []) : []));
+  const lengths = parsedChecks.flatMap((p) => (p.ok ? (p.lengths ?? []) : []));
 
   const tj = typedJson
     ? { table: T, mode: 'select' as const, allColumns: typedJson.allColumns }
@@ -441,17 +443,19 @@ function renderTableSchemas(
   const rowCols = [insertCols, updateCols, selectCols].map(
     (cols) => new Set(cols.map((c) => c.name))
   );
-  const needsRows = rows.some((r) => rowCols.some((s) => s.has(r.left) && s.has(r.right)));
+  const needsRows =
+    rows.some((r) => rowCols.some((s) => s.has(r.left) && s.has(r.right))) ||
+    lengths.some((k) => rowCols.some((s) => s.has(k.column)));
   const rowImport = needsRows ? `, Kind, TypeRegistry` : '';
 
   return `import { Type${rowImport} } from '@sinclair/typebox';
 import type { Static } from '@sinclair/typebox';
 ${schemaImport}${needsJson ? `\n${JSON_PREAMBLE}` : ''}${needsRows ? `\n${ROW_PREAMBLE}` : ''}
-export const ${insertSchema} = ${tbWrapRows(`Type.Object({\n${bodyInsert}\n})`, rows, insertCols)};
+export const ${insertSchema} = ${tbWrapRows(`Type.Object({\n${bodyInsert}\n})`, rows, insertCols, lengths)};
 
-export const ${updateSchema} = ${tbWrapRows(`Type.Object({\n${bodyUpdate}\n})`, rows, updateCols)};
+export const ${updateSchema} = ${tbWrapRows(`Type.Object({\n${bodyUpdate}\n})`, rows, updateCols, lengths)};
 
-export const ${selectSchema} = ${tbWrapRows(`Type.Object({\n${bodySelect}\n})`, rows, selectCols)};
+export const ${selectSchema} = ${tbWrapRows(`Type.Object({\n${bodySelect}\n})`, rows, selectCols, lengths)};
 
 export type ${insertType} = Static<typeof ${insertSchema}>;
 export type ${updateType} = Static<typeof ${updateSchema}>;
@@ -483,7 +487,48 @@ const ROW_PREAMBLE = `TypeRegistry.Set('DrzlRowCheck', (schema: any, value: any)
  * rather than something wrong. `description` survives for a reader, and a failing validation
  * reports it on `error.schema.description`.
  */
-function tbWrapRows(objectExpr: string, rows: RowCheck[], cols: Column[]): string {
+/**
+ * `CHECK (length(name) >= 3)` as branches of the same intersection the row checks use.
+ *
+ * Not `minLength`. That keyword counts UTF-16 code units and SQL's `length()` counts characters,
+ * so three thumbs-up characters are six units: for a minimum that under-enforces, and for a
+ * maximum it refuses rows the database accepts. The spread operator counts characters, and the
+ * registered kind is the only place an expression can live, so both ends go here.
+ *
+ * The cost is that this constraint does not survive serialisation to JSON Schema, where a bare
+ * `minLength` would. Emitting the wrong count in a form that serialises is not a better trade.
+ */
+function tbLengthBranches(lengths: LengthCheck[], cols: Column[]): string[] {
+  const present = new Set(cols.map((c) => c.name));
+  const OPS: Record<LengthCheck['operator'], string> = {
+    '>=': '>=',
+    '>': '>',
+    '<=': '<=',
+    '<': '<',
+    '=': '===',
+    '<>': '!==',
+  };
+  return lengths
+    .filter((k) => present.has(k.column))
+    .map((k) => {
+      const v = `o[${JSON.stringify(k.column)}]`;
+      const msg = JSON.stringify(
+        `${k.name ? `${k.name}: ` : ''}length(${k.column}) ${k.operator} ${k.value}`
+      );
+      return `Type.Unsafe<unknown>({
+    [Kind]: 'DrzlRowCheck',
+    description: ${msg},
+    assert: (o: any) => o == null || ${v} == null || [...${v}].length ${OPS[k.operator]} ${k.value},
+  })`;
+    });
+}
+
+function tbWrapRows(
+  objectExpr: string,
+  rows: RowCheck[],
+  cols: Column[],
+  lengths: LengthCheck[] = []
+): string {
   const present = new Set(cols.map((c) => c.name));
   const OPS: Record<RowCheck['operator'], string> = {
     '>=': '>=',
@@ -508,8 +553,9 @@ function tbWrapRows(objectExpr: string, rows: RowCheck[], cols: Column[]): strin
     assert: (o: any) => o == null || ${l} == null || ${rt} == null || ${l} ${OPS[r.operator]} ${rt},
   })`;
     });
-  return branches.length
-    ? `Type.Intersect([\n  ${objectExpr},\n  ${branches.join(',\n  ')},\n])`
+  const all = [...branches, ...tbLengthBranches(lengths, cols)];
+  return all.length
+    ? `Type.Intersect([\n  ${objectExpr},\n  ${all.join(',\n  ')},\n])`
     : objectExpr;
 }
 
