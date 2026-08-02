@@ -88,6 +88,25 @@ comparison operators take numeric literals, so a 64 bit bound cannot be written 
 DSL at all; `drizzle-orm/arktype` states it through a narrow predicate built with the builder
 API instead. Every other column type is bounded here exactly as the official module bounds it.
 
+## `applyDefaults`
+
+Drizzle knows what a column defaults to, and `drizzle-orm` reproduces none of them.
+
+```ts
+{ kind: 'arktype', path: 'src/validators/arktype', applyDefaults: true }
+```
+
+```ts
+country: "string = 'GB'",
+```
+
+Only **literal** defaults. `defaultNow()`, `defaultRandom()` and any `sql` default are evaluated
+by the database, and `$defaultFn` is called by Drizzle at insert time, so those stay optional: a
+schema guessing at them would produce a different value than the one actually stored.
+
+Insert only, and off by default, because it changes what parsing _returns_ rather than only what
+it accepts.
+
 ## Custom names
 
 `Insert<Table>Schema` is the default, not the only option. The `affix` block renames the

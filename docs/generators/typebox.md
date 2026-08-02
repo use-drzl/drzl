@@ -122,6 +122,45 @@ The generator itself is unaffected: TypeBox schemas are the right choice whereve
 yourself, or hand them to something that speaks JSON Schema. Pair it with a `zod` generator if you
 also want oRPC routers in the same project.
 
+## `applyDefaults`
+
+Drizzle knows what a column defaults to, and `drizzle-orm` reproduces none of them.
+
+```ts
+{ kind: 'typebox', path: 'src/validators/typebox', applyDefaults: true }
+```
+
+```ts
+country: Type.Optional(Type.String({ default: 'GB' })),
+```
+
+Only **literal** defaults. `defaultNow()`, `defaultRandom()` and any `sql` default are evaluated
+by the database, and `$defaultFn` is called by Drizzle at insert time, so those stay optional: a
+schema guessing at them would produce a different value than the one actually stored.
+
+Insert only, and off by default, because it changes what parsing _returns_ rather than only what
+it accepts.
+
+`Value.Check` deliberately does **not** materialise a default, only `Value.Parse` and
+`Value.Default` do: TypeBox separates validating from defaulting where zod and valibot fold the
+two together.
+
+## `typedColumns`
+
+`.$type<T>()` is a compile-time cast on any column, so `text().$type<'admin' | 'member'>()` is an
+ordinary string to anything reading it at runtime and the narrowing is lost.
+
+```ts
+{ kind: 'typebox', path: 'src/validators/typebox', typedColumns: true }
+```
+
+```ts
+role: Type.Unsafe<(typeof users.$inferSelect)['role']>(Type.String({ maxLength: 50 })),
+```
+
+`Type.Unsafe<T>` wraps the existing schema, so every check it carried still runs and only the
+inferred type is replaced. Implies `typedJson`. Off by default.
+
 ## Peer dependency
 
 `@sinclair/typebox` >= 0.32, which your project provides.
