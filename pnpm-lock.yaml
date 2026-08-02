@@ -69,9 +69,6 @@ importers:
       '@drzl/generator-arktype':
         specifier: workspace:^
         version: link:../generator-arktype
-      '@drzl/generator-json-schema':
-        specifier: workspace:^
-        version: link:../generator-json-schema
       '@drzl/generator-orpc':
         specifier: workspace:^
         version: link:../generator-orpc
@@ -124,6 +121,10 @@ importers:
       typescript:
         specifier: ^5.9.3
         version: 5.9.3
+    optionalDependencies:
+      '@drzl/generator-json-schema':
+        specifier: workspace:^
+        version: link:../generator-json-schema
 
   packages/generator-arktype:
     dependencies:
