@@ -40,5 +40,8 @@
   "funding": {
     "type": "github",
     "url": "https://github.com/sponsors/omar-dulaimi"
+  },
+  "peerDependencies": {
+    "zod": ">=4.0.0"
   }
 }

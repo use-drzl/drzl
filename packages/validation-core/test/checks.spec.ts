@@ -72,9 +72,11 @@ describe('BETWEEN', () => {
 
 describe('what it refuses, and why that matters', () => {
   it('refuses a comparison between two columns', () => {
-    // `start < end` is a statement about the row, not about either field. Attaching it to one
-    // would reject rows the database accepts.
-    expect(rejected('start_date < end_date')).toMatch(/not a literal/);
+    // `start < end` is a statement about the row, not about either field, so it is not returned
+    // as a field check. It is returned as a row check instead, and the object schema carries it.
+    const r = parseCheck('start_date < end_date');
+    expect(r.ok && r.checks).toHaveLength(0);
+    expect(r.ok && r.rows).toHaveLength(1);
   });
 
   it('refuses an expression whose value was lost', () => {
@@ -92,7 +94,7 @@ describe('what it refuses, and why that matters', () => {
   it('refuses a whole conjunction when any one part is not understood', () => {
     // Enforcing half of a constraint is enforcing a different constraint.
     expect(rejected('age >= 18 AND length(name) > 3')).toMatch(/part of an AND/);
-    expect(rejected('age >= 18 AND start_date < end_date')).toMatch(/part of an AND/);
+    expect(rejected("age >= 18 AND email ~ '^[a-z]+$'")).toMatch(/part of an AND/);
   });
 
   it('refuses a function call', () => {
@@ -187,5 +189,40 @@ describe('IN lists', () => {
   it('keeps a quoted comma inside one value', () => {
     const r = parseCheck("s IN ('a,b', 'c')");
     expect(r.ok && r.sets![0].values).toEqual(['a,b', 'c']);
+  });
+});
+
+describe('row-level comparisons', () => {
+  // `start_date < end_date` is a statement about the row: neither column alone can say whether it
+  // holds, so it cannot be a field refinement. It was refused outright for that reason. It is
+  // exactly expressible on the *object* schema, which is where it goes now.
+  it('reads a comparison between two columns', () => {
+    const r = parseCheck('start_date < end_date', 'date_order');
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.checks).toHaveLength(0);
+    expect(r.rows).toEqual([
+      { left: 'start_date', right: 'end_date', operator: '<', name: 'date_order' },
+    ]);
+  });
+
+  it('normalises != to <>', () => {
+    const r = parseCheck('a != b');
+    expect(r.ok && r.rows![0].operator).toBe('<>');
+  });
+
+  it('carries through a conjunction alongside field checks', () => {
+    const r = parseCheck('price > 0 AND price <= max_price');
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.checks).toHaveLength(1);
+    expect(r.rows).toHaveLength(1);
+  });
+
+  it('still refuses an expression on the right, which is not a column', () => {
+    // `a + b` is arithmetic this parser does not model, and guessing at it would enforce
+    // something the schema never said.
+    expect(rejected('a > b + 1')).toBeTruthy();
+    expect(rejected('a + b > 0')).toBeTruthy();
   });
 });

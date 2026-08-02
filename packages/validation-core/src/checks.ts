@@ -46,9 +46,23 @@ export interface ColumnSet {
   name?: string;
 }
 
+/**
+ * A comparison between two columns of the same row, from `CHECK (start_date < end_date)`.
+ *
+ * It cannot live on a field, because it is a statement about the row: neither column alone can
+ * say whether it holds. It can live on the *object* schema, which is where this ends up.
+ */
+export interface RowCheck {
+  left: string;
+  right: string;
+  operator: ColumnCheck['operator'];
+  name?: string;
+}
+
 /** A check that was understood, or the reason it was not. */
 export type ParsedCheck =
-  { ok: true; checks: ColumnCheck[]; sets?: ColumnSet[] } | { ok: false; reason: string };
+  | { ok: true; checks: ColumnCheck[]; sets?: ColumnSet[]; rows?: RowCheck[] }
+  | { ok: false; reason: string };
 
 const COMPARISON = /^\s*([A-Za-z_][A-Za-z0-9_]*)\s*(>=|<=|<>|!=|>|<|=)\s*(.+?)\s*$/;
 const IN_LIST = /^\s*([A-Za-z_][A-Za-z0-9_]*)\s+IN\s*\((.+)\)\s*$/i;
@@ -208,14 +222,21 @@ export function parseCheck(expression: string | undefined, name?: string): Parse
   if (parts.length > 1) {
     const checks: ColumnCheck[] = [];
     const sets: ColumnSet[] = [];
+    const rows: RowCheck[] = [];
     for (const part of parts) {
       const parsed = parseCheck(part, name);
       if (!parsed.ok)
         return { ok: false, reason: `part of an AND was not understood: ${parsed.reason}` };
       checks.push(...parsed.checks);
       if (parsed.sets) sets.push(...parsed.sets);
+      if (parsed.rows) rows.push(...parsed.rows);
     }
-    return sets.length ? { ok: true, checks, sets } : { ok: true, checks };
+    return {
+      ok: true,
+      checks,
+      ...(sets.length ? { sets } : {}),
+      ...(rows.length ? { rows } : {}),
+    };
   }
 
   // `col IN (a, b, c)`: a set of literals, which is the constraint most often written as a CHECK
@@ -247,8 +268,15 @@ export function parseCheck(expression: string | undefined, name?: string): Parse
 
   const value = literal(cmp[3]);
   if (!value) {
-    // The right side names something else, e.g. another column. That is a statement about the
-    // row rather than about this field, so it cannot be attached to one.
+    // The right side is not a literal. If it is a bare column name, the expression compares two
+    // columns of the same row: `start_date < end_date`. That cannot be attached to either field,
+    // since neither alone can say whether it holds, but it can be attached to the object.
+    const right = cmp[3].trim();
+    if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(right)) {
+      const op = cmp[2] === '!=' ? '<>' : (cmp[2] as ColumnCheck['operator']);
+      return { ok: true, checks: [], rows: [{ left: cmp[1], right, operator: op, name }] };
+    }
+    // Anything else is an expression this parser does not model, such as `a + b`.
     return { ok: false, reason: 'right side is not a literal' };
   }
 

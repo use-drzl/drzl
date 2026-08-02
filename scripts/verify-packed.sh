@@ -514,10 +514,13 @@ cat > src/parity.ts <<'PARITY_HARNESS'
  * through both and comparing verdicts. Reading the emitted source cannot do this: a schema that
  * validates and one that merely parses look identical as text.
  *
- * Pass 2 cross-checks DRZL's own four generators against each other, which is what covers the
- * typebox output. `drizzle-orm/typebox` is absent from pass 1 on purpose: at 1.0.0-rc.4 it
- * declares a peer on `@sinclair/typebox` while its code imports `typebox`, and against the
- * released `typebox` it throws `Class extends value undefined` on import.
+ * Pass 2 cross-checks DRZL's own four generators against each other, which catches a generator
+ * drifting from its siblings on something all four should agree about.
+ *
+ * All four are compared against official. `drizzle-orm/typebox` targets the newer `typebox`
+ * package and throws `Class extends value undefined` on import against the released one, but
+ * `drizzle-orm/typebox-legacy` is the same module built for `@sinclair/typebox`, which is what
+ * this generator emits for.
  */
 import { createSelectSchema, createInsertSchema, createUpdateSchema } from 'drizzle-orm/zod';
 import {
@@ -530,6 +533,11 @@ import {
   createInsertSchema as aInsert,
   createUpdateSchema as aUpdate,
 } from 'drizzle-orm/arktype';
+import {
+  createSelectSchema as tSelect,
+  createInsertSchema as tInsert,
+  createUpdateSchema as tUpdate,
+} from 'drizzle-orm/typebox-legacy';
 import * as v from 'valibot';
 import { type } from 'arktype';
 import { Value } from '@sinclair/typebox/value';
@@ -570,6 +578,11 @@ const OFFICIAL: Record<string, Record<string, (t: any) => any>> = {
   zod: { select: createSelectSchema, insert: createInsertSchema, update: createUpdateSchema },
   valibot: { select: vSelect, insert: vInsert, update: vUpdate },
   arktype: { select: aSelect, insert: aInsert, update: aUpdate },
+  // `drizzle-orm/typebox` targets the `typebox` package and throws on import against the released
+  // one, but `typebox-legacy` is the same module built for `@sinclair/typebox`, which is what
+  // this generator emits for. So typebox is compared against official like the other three
+  // rather than only cross-checked.
+  typebox: { select: tSelect, insert: tInsert, update: tUpdate },
 };
 
 const safeOk = (lib: Lib, f: any, x: unknown) => {
@@ -609,6 +622,10 @@ const ALLOWED: Record<string, string> = {
   m_ts: 'as c_date_d',
   s_int_ts: 'as c_date_d',
   s_int_ts_ms: 'as c_date_d',
+  // Official emits `Type.String({ format: 'uuid' })`, and TypeBox fails a format it has no entry
+  // for rather than ignoring it, so that schema rejects every valid uuid in any project that has
+  // not populated `FormatRegistry` first. This generator emits a pattern, which needs no setup.
+  'typebox/c_uuid': 'official uses an unregistered `format`, which rejects every uuid',
   // Stricter than official, and verified against Postgres itself through PGlite: a `numeric`
   // column is a string, and a bare string schema accepts 'hello' where the database rejects it.
   // Official accepts all of these; the database does not.
@@ -668,7 +685,7 @@ for (const d of DIALECTS) {
   for (const mode of ['select', 'insert', 'update'] as const) {
     for (const libName of d.libs) {
       const off = OFFICIAL[libName]?.[mode];
-      if (!off) continue; // typebox: no usable official module
+      if (!off) continue;
       const lib = LIBS[libName];
       const official = off(d.table as never);
       const mine = loaded[libName][`${PREFIX[mode]}matrixSchema`];

@@ -467,6 +467,77 @@ function declaredLength(column: any): number | undefined {
   return typeof n === 'number' && Number.isFinite(n) && n > 0 ? n : undefined;
 }
 
+/** `getSymbol` as a free function, for the readers that live outside the class. */
+function getSymbolOf(target: any, key: string): unknown {
+  if (!target) return undefined;
+  try {
+    for (const sym of Object.getOwnPropertySymbols(target)) {
+      if ((sym as any).description === key) return (target as any)[sym];
+    }
+  } catch {}
+  return (target as any)[Symbol.for(key)];
+}
+
+/**
+ * Whether an export is a Relations v2 definition, from `defineRelations(schema, (r) => ...)`.
+ *
+ * v2 returns a plain object keyed by table name, each entry `{ table, name, relations }`, with
+ * no marker class or symbol to match on. So the shape is what identifies it: every value has a
+ * `relations` record whose entries carry a `relationType`. That is specific enough not to
+ * collide with a table or an enum, both of which are checked before this.
+ */
+export function isRelationsV2(val: any): boolean {
+  if (!val || typeof val !== 'object' || Array.isArray(val)) return false;
+  const entries = Object.values(val as Record<string, any>);
+  if (!entries.length) return false;
+  return entries.every(
+    (e) =>
+      !!e &&
+      typeof e === 'object' &&
+      !!e.table &&
+      !!e.relations &&
+      typeof e.relations === 'object' &&
+      Object.values(e.relations as Record<string, any>).every(
+        (r: any) => r?.relationType === 'one' || r?.relationType === 'many'
+      )
+  );
+}
+
+/**
+ * Read the relations declared by `defineRelations`.
+ *
+ * Simpler than the v1 reader, which has to invoke a callback with a stand-in builder to find
+ * out what was declared. v2 has already resolved everything: each descriptor states its
+ * `relationType`, its `targetTableName`, and for a many-to-many its `through` table, so nothing
+ * has to be inferred and the join table is stated rather than guessed at by the heuristic that
+ * covers v1.
+ */
+export function readRelationsV2(val: any, issues: Issue[] = []): Relation[] {
+  const out: Relation[] = [];
+  for (const [tableKey, entry] of Object.entries<any>(val)) {
+    const from = (getSymbolOf(entry.table, 'drizzle:Name') as string) ?? entry.name ?? tableKey;
+    for (const [fieldName, r] of Object.entries<any>(entry.relations ?? {})) {
+      const to = r?.targetTableName;
+      if (typeof to !== 'string' || !to) {
+        issues.push({
+          code: 'DRZL_ANL_REL_V2',
+          level: 'warn',
+          message: `Relation "${fieldName}" on "${from}" names no target table and was skipped.`,
+        });
+        continue;
+      }
+      // `through` is the join table of a many-to-many, which v1 leaves to a heuristic.
+      const via =
+        (getSymbolOf(r.throughTable, 'drizzle:Name') as string) ??
+        (getSymbolOf(r.through?.sourceTable, 'drizzle:Name') as string) ??
+        undefined;
+      if (via) out.push({ kind: 'manyToMany', from, to, via });
+      else out.push({ kind: r.relationType === 'many' ? 'many' : 'one', from, to });
+    }
+  }
+  return out;
+}
+
 export class SchemaAnalyzer {
   constructor(private readonly schemaPath: string) {}
 
@@ -1248,6 +1319,10 @@ export class SchemaAnalyzer {
         } else if (this.isRelationsObject(val)) {
           if (opts.includeRelations) {
             relations.push(...this.readRelationsObject(val, name, issues));
+          }
+        } else if (isRelationsV2(val)) {
+          if (opts.includeRelations) {
+            relations.push(...readRelationsV2(val, issues));
           }
         } else {
           // Detect exported enums (e.g., pgEnum('name', [...]))
