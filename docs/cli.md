@@ -205,3 +205,4 @@ See also:
   - [/generators/valibot](/generators/valibot)
   - [/generators/arktype](/generators/arktype)
   - [/generators/typebox](/generators/typebox)
+  - [/generators/json-schema](/generators/json-schema)

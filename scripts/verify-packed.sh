@@ -1034,7 +1034,114 @@ if ! npx tsx src/ground-truth.ts; then
 fi
 cd "$APP"
 
+# ---------------------------------------------------------------------------------------------
+# The other drizzle major.
+#
+# Everything above pins drizzle-orm@1.0.0-rc.4, and every generator's own tests build fake column
+# objects. Between them, nothing in this repository ever ran against 0.4x, which is the version
+# the analyzer itself depends on and the one nearly every user has installed.
+#
+# What that hid: 0.4x models `.array()` by wrapping the column in a `PgArray` whose `baseColumn`
+# is the element, while v1 leaves the class alone and raises `dimensions`. The analyzer read only
+# the v1 signal, so on 0.4x every array column came back `unknown` in all five generators. The
+# fixture above contains three array columns and the gate was green the whole time.
+#
+# This stage is deliberately narrow: it does not repeat parity or ground truth, it asserts that
+# the analyzer still has an opinion about every column. A type it cannot name is the shape that
+# failure takes.
+# ---------------------------------------------------------------------------------------------
+echo "==> generating against drizzle-orm 0.4x"
+OLD="$WORK/old-major"
+rm -rf "$OLD"; mkdir -p "$OLD/src"
+cd "$OLD"
+npm init -y >/dev/null 2>&1
+npm install --no-audit --no-fund --loglevel=error \
+  "$TARS"/*.tgz drizzle-orm@0.45.2 zod tsx >/dev/null
+
+cat > src/schema.ts <<'OLD_SCHEMA'
+import { pgTable, pgEnum, text, integer, varchar, timestamp, boolean } from 'drizzle-orm/pg-core';
+
+export const mood = pgEnum('mood', ['sad', 'ok', 'happy']);
+
+export const rows = pgTable('rows', {
+  id: integer('id').primaryKey(),
+  name: varchar('name', { length: 40 }).notNull(),
+  bio: text('bio'),
+  at: timestamp('at').notNull(),
+  live: boolean('live').notNull(),
+  feeling: mood('feeling').notNull(),
+  tags: text('tags').array().notNull(),
+  scores: integer('scores').array().notNull(),
+  moods: mood('moods').array().notNull(),
+  grid: text('grid').array().array().notNull(),
+});
+OLD_SCHEMA
+
+cat > drzl.config.ts <<'OLD_CONFIG'
+import { defineConfig } from '@drzl/cli/config';
+
+export default defineConfig({
+  schema: 'src/schema.ts',
+  outDir: 'src/gen',
+  generators: [{ kind: 'zod', path: 'src/gen/zod' }],
+});
+OLD_CONFIG
+
+npx drzl generate --config drzl.config.ts >/dev/null
+
+cat > check-old.ts <<'OLD_CHECK'
+import { SchemaAnalyzer } from '@drzl/analyzer';
+
+// `npm init -y` leaves the project CommonJS, where tsx refuses a top-level await.
+main().catch((e) => {
+  console.error(e);
+  process.exit(1);
+});
+
+async function main() {
+const a = await new SchemaAnalyzer('src/schema.ts').analyze({});
+const cols = a.tables.find((t) => t.name === 'rows')?.columns ?? [];
+if (!cols.length) {
+  console.error('FAIL: no columns analyzed on drizzle-orm 0.4x at all.');
+  process.exit(1);
+}
+
+// A column the analyzer cannot name is the shape this failure takes: nothing throws, the
+// generators emit `z.unknown()`, and every row validates.
+const vague = cols.filter((c) => c.tsType === 'unknown' || c.dbType === 'UNKNOWN');
+const arrays = cols.filter((c) => c.name.match(/^(tags|scores|moods|grid)$/));
+const notArrays = arrays.filter((c) => !c.arrayDimensions);
+
+console.log(`    ${cols.length} columns analyzed on drizzle-orm 0.4x, ${vague.length} unnamed`);
+
+let bad = 0;
+if (vague.length) {
+  console.error('    FAIL: analyzed as unknown on 0.4x:');
+  for (const c of vague) console.error(`      ${c.name} (${c.dbType})`);
+  bad++;
+}
+if (notArrays.length) {
+  console.error('    FAIL: an .array() column carries no dimension:');
+  for (const c of notArrays) console.error(`      ${c.name}`);
+  bad++;
+}
+const grid = cols.find((c) => c.name === 'grid');
+if (grid && grid.arrayDimensions !== 2) {
+  console.error(`    FAIL: text().array().array() reported ${grid.arrayDimensions} dimensions, not 2`);
+  bad++;
+}
+if (bad) process.exit(1);
+}
+OLD_CHECK
+
+if ! npx tsx check-old.ts; then
+  echo "FAIL: the analyzer loses column types on drizzle-orm 0.4x." >&2
+  exit 1
+fi
+cd "$APP"
+
 echo "OK: $count packages packed, installed into an empty project, generated, and the output"
 echo "    typechecks under bundler, node16 and nodenext, and validates at least as strictly as"
 echo "    the first-party drizzle-orm validator modules across three dialects and three modes,"
-echo "    checked against a real Postgres."
+echo "    checked against a real Postgres, and analyzed with no column left unnamed on both"
+echo "    drizzle-orm majors."

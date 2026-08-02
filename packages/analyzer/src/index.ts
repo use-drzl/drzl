@@ -477,6 +477,28 @@ export function describeV1Column(column: any): Partial<Column> | null {
   return out;
 }
 
+/**
+ * The element of an array column, and how deeply it is nested.
+ *
+ * Drizzle changed how it models an array between majors. v1 leaves the column class alone and
+ * raises `dimensions` on it, which `describeV1Column` reads. 0.4x wraps the column in a `PgArray`
+ * whose `baseColumn` holds the element, and nothing read that at all: every `.array()` column on
+ * the version this package depends on came back `unknown`, in all five generators, because the
+ * class-name mapping had no arm for `PgArray` and no reason to look inside one.
+ *
+ * A no-op on v1, where there is no `baseColumn` to find.
+ */
+function unwrapArrayColumn(column: any): { element: any; dimensions: number } {
+  let element = column;
+  let dimensions = 0;
+  // `.array().array()` nests one PgArray inside another, so the depth is the walk length.
+  while (element?.baseColumn && String(element?.constructor?.name ?? '').endsWith('Array')) {
+    element = element.baseColumn;
+    dimensions++;
+  }
+  return { element, dimensions };
+}
+
 /** A declared width, from `vector({ dimensions: 3 })` or `bit({ dimensions: 3 })`. */
 function declaredLength(column: any): number | undefined {
   const n = column?.length ?? column?.config?.length ?? column?.config?.dimensions;
@@ -899,6 +921,11 @@ export class SchemaAnalyzer {
         return { tsType: 'string', dbType: 'NUMERIC' };
       case 'SQLiteBoolean':
         return { tsType: 'boolean', dbType: 'INTEGER' };
+      // 0.4x gives an enum its own class, which had no arm here at all, so an enum column came
+      // back `unknown` and every generator emitted a schema that accepted anything. The values
+      // were on the column the whole time, in `enumValues`, waiting for a type to attach to.
+      case 'PgEnumColumn':
+        return { tsType: 'string', dbType: 'TEXT' };
       case 'PgInteger':
       case 'PgSmallInt':
         return { tsType: 'number', dbType: 'INTEGER' };
@@ -1097,7 +1124,10 @@ export class SchemaAnalyzer {
     const pkCols: string[] = [];
     const uniqueGroups = new Map<string, string[]>();
 
-    for (const [colName, col] of Object.entries(columnsObj)) {
+    for (const [colName, outerCol] of Object.entries(columnsObj)) {
+      // Everything describing the *value* reads the element; everything describing the *column*
+      // (nullability, defaults, generated) stays on the outer one, which is where Drizzle keeps it.
+      const { element: col, dimensions: arrayDims } = unwrapArrayColumn(outerCol);
       let { tsType, dbType } = this.mapColumnType(col);
       if (tsType === 'unknown' && /At$/.test(colName)) {
         // Heuristic for timestamp fields
@@ -1105,7 +1135,7 @@ export class SchemaAnalyzer {
         dbType = 'INTEGER';
       }
       const ev = (col as any)?.enumValues as string[] | undefined;
-      const nullable = !(col as any)?.notNull && !(col as any)?.config?.notNull;
+      const nullable = !(outerCol as any)?.notNull && !(outerCol as any)?.config?.notNull;
       // What the database refuses to be given a value for, which is narrower than "the database
       // fills this in".
       //
@@ -1122,18 +1152,18 @@ export class SchemaAnalyzer {
       // A literal default, which a schema can reproduce. An SQL object carries `queryChunks` and
       // is evaluated by the database; a `$defaultFn` is called by Drizzle at insert time. Both
       // would change the value if a schema guessed at them, so neither is carried.
-      const rawDefault = (col as any)?.default;
+      const rawDefault = (outerCol as any)?.default;
       const defaultValue =
         rawDefault !== undefined &&
         !(rawDefault && typeof rawDefault === 'object' && 'queryChunks' in rawDefault)
           ? rawDefault
           : undefined;
 
-      const generatedIdentity = (col as any)?.generatedIdentity;
+      const generatedIdentity = (outerCol as any)?.generatedIdentity;
       const isGenerated = !!(
-        (col as any)?.generated ||
+        (outerCol as any)?.generated ||
         generatedIdentity?.type === 'always' ||
-        (col as any)?.isGenerated
+        (outerCol as any)?.isGenerated
       );
       // `col.hasDefault` is the property Drizzle actually sets, and it is the only thing that
       // separates a key the database fills in from one the caller must supply. Reading
@@ -1141,20 +1171,20 @@ export class SchemaAnalyzer {
       // reported false for every Postgres `serial`, every identity column and every SQLite
       // rowid alias, making them indistinguishable from a plain `integer('id').primaryKey()`.
       const hasDefault =
-        (col as any)?.hasDefault === true ||
-        (col as any)?.default !== undefined ||
-        (col as any)?.config?.default !== undefined ||
-        (col as any)?.defaultFn !== undefined ||
+        (outerCol as any)?.hasDefault === true ||
+        (outerCol as any)?.default !== undefined ||
+        (outerCol as any)?.config?.default !== undefined ||
+        (outerCol as any)?.defaultFn !== undefined ||
         isGenerated;
       // `col.references` does not exist on a Drizzle column; reading it always produced
       // undefined, so no foreign key was ever reported. The real data is collected from the
       // table's inline and table-level foreign keys below and attached afterwards.
       const references = undefined as Column['references'];
-      const isUnique = !!((col as any)?.isUnique || (col as any)?.config?.isUnique);
-      const isPk = !!((col as any)?.primary || (col as any)?.config?.primaryKey);
+      const isUnique = !!((outerCol as any)?.isUnique || (outerCol as any)?.config?.isUnique);
+      const isPk = !!((outerCol as any)?.primary || (outerCol as any)?.config?.primaryKey);
       if (isPk) pkCols.push(colName);
       if (isUnique) unique.push({ columns: [colName] });
-      const uName = (col as any)?.uniqueName || (col as any)?.config?.uniqueName;
+      const uName = (outerCol as any)?.uniqueName || (outerCol as any)?.config?.uniqueName;
       if (uName) {
         const arr = uniqueGroups.get(uName) ?? [];
         arr.push(colName);
@@ -1184,6 +1214,9 @@ export class SchemaAnalyzer {
         ...(defaultValue !== undefined ? { defaultValue } : {}),
         ...constraints,
         ...(v1 ?? {}),
+        // After the v1 spread, which sets its own `arrayDimensions` from `dimensions`. On 0.4x
+        // that spread has nothing to say and this is the only source.
+        ...(arrayDims ? { arrayDimensions: arrayDims } : {}),
       });
     }
 

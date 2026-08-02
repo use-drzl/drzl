@@ -30,7 +30,7 @@ Zero‑friction codegen for Drizzle ORM. Analyze your schema. Generate validatio
 ## What’s Inside
 
 - Analyzer: turns Drizzle schemas into a normalized analysis model
-- Generators: Zod, Valibot, ArkType, TypeBox validation; typed CRUD services; router templates (oRPC)
+- Generators: Zod, Valibot, ArkType, TypeBox validation; JSON Schema and OpenAPI; typed CRUD services; router templates (oRPC)
 - Batteries: formatting, naming, reusable/shared schemas, relation support
 - Monorepo: pnpm workspace, lockstep releases with Changesets
 
@@ -82,6 +82,7 @@ Runtime
 - `packages/generator-valibot`: Valibot generator
 - `packages/generator-arktype`: ArkType generator
 - `packages/generator-typebox`: TypeBox generator
+- `packages/generator-json-schema`: JSON Schema and OpenAPI generator
 - `packages/validation-core`: shared validation utilities
 - `packages/template-orpc-service`: oRPC router template (service‑backed)
 - `packages/template-standard`: minimal oRPC router template
