@@ -7,6 +7,7 @@ import cliProgress from 'cli-progress';
 import { Command } from 'commander';
 import * as path from 'node:path';
 import ora from 'ora';
+import { validationOptions } from './validation-options';
 import {
   computeGeneratorOutputDirs,
   computeWatchTargets,
@@ -164,22 +165,9 @@ program
             const { ZodGenerator } = await import('@drzl/generator-zod');
             const gen = new ZodGenerator(analysis);
             const target = g.path ?? 'src/validators/zod';
-            const files = await gen.generate({
-              outDir: target,
-              outputHeader: g.outputHeader,
-              format: g.format,
-              schemaSuffix: g.schemaSuffix,
-              fileSuffix: g.fileSuffix,
-              importExtension: g.importExtension,
-              affix: g.affix,
-              // Needed by typedJson, which imports the schema back to reference the type
-              // Drizzle inferred for a json column.
-              schemaPath: cfg.schema,
-              typedJson: g.typedJson,
-              typedColumns: g.typedColumns,
-              applyDefaults: g.applyDefaults,
-              coerceDates: g.coerceDates,
-            });
+            const files = await gen.generate(
+              validationOptions(g, cfg, target, { schemaTypes: true }) as never
+            );
             progress.stop();
             ora().succeed(chalk.green(`Generated (zod): ${files.length} files`));
             files.forEach((f: string) => console.log('  -', chalk.cyan(f)));
@@ -197,20 +185,9 @@ program
             const { ValibotGenerator } = await import('@drzl/generator-valibot');
             const gen = new ValibotGenerator(analysis);
             const target = g.path ?? 'src/validators/valibot';
-            const files = await gen.generate({
-              outDir: target,
-              outputHeader: g.outputHeader,
-              format: g.format,
-              schemaSuffix: g.schemaSuffix,
-              fileSuffix: g.fileSuffix,
-              importExtension: g.importExtension,
-              affix: g.affix,
-              applyDefaults: g.applyDefaults,
-              coerceDates: g.coerceDates,
-              // Needed by typedColumns, which imports the schema back to reference the type
-              schemaPath: cfg.schema,
-              typedColumns: g.typedColumns,
-            });
+            const files = await gen.generate(
+              validationOptions(g, cfg, target, { schemaTypes: true }) as never
+            );
             progress.stop();
             ora().succeed(chalk.green(`Generated (valibot): ${files.length} files`));
             files.forEach((f: string) => console.log('  -', chalk.cyan(f)));
@@ -228,17 +205,9 @@ program
             const { ArkTypeGenerator } = await import('@drzl/generator-arktype');
             const gen = new ArkTypeGenerator(analysis);
             const target = g.path ?? 'src/validators/arktype';
-            const files = await gen.generate({
-              outDir: target,
-              outputHeader: g.outputHeader,
-              format: g.format,
-              schemaSuffix: g.schemaSuffix,
-              fileSuffix: g.fileSuffix,
-              importExtension: g.importExtension,
-              affix: g.affix,
-              applyDefaults: g.applyDefaults,
-              coerceDates: g.coerceDates,
-            });
+            const files = await gen.generate(
+              validationOptions(g, cfg, target, { schemaTypes: false }) as never
+            );
             progress.stop();
             ora().succeed(chalk.green(`Generated (arktype): ${files.length} files`));
             files.forEach((f: string) => console.log('  -', chalk.cyan(f)));
@@ -256,21 +225,9 @@ program
             const { TypeBoxGenerator } = await import('@drzl/generator-typebox');
             const gen = new TypeBoxGenerator(analysis);
             const target = g.path ?? 'src/validators/typebox';
-            const files = await gen.generate({
-              outDir: target,
-              outputHeader: g.outputHeader,
-              format: g.format,
-              schemaSuffix: g.schemaSuffix,
-              fileSuffix: g.fileSuffix,
-              importExtension: g.importExtension,
-              affix: g.affix,
-              coerceDates: g.coerceDates,
-              // Needed by typedJson, which imports the schema back to reference the type
-              schemaPath: cfg.schema,
-              typedJson: g.typedJson,
-              typedColumns: g.typedColumns,
-              applyDefaults: g.applyDefaults,
-            });
+            const files = await gen.generate(
+              validationOptions(g, cfg, target, { schemaTypes: true }) as never
+            );
             progress.stop();
             ora().succeed(chalk.green(`Generated (typebox): ${files.length} files`));
             files.forEach((f: string) => console.log('  -', chalk.cyan(f)));

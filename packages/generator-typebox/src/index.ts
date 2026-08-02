@@ -284,17 +284,23 @@ function tbField(
   // Nullability wraps the constrained type, so null skips the constraint. That reproduces SQL,
   // where a CHECK passes when it evaluates to TRUE or NULL.
   if (c.nullable) expr = `Type.Union([${expr}, Type.Null()])`;
+  // The default goes on the schema itself, before anything wraps it. Applied after the
+  // `Type.Unsafe` wrapper instead, it landed on the wrapper, where `withDefault` declines to
+  // touch it and the default was silently dropped: the field carried none at all and nothing
+  // said so.
+  //
+  // `Value.Check` does not materialise a default, only `Value.Parse` and `Value.Default` do:
+  // TypeBox separates validating from defaulting where zod and valibot fold the two together.
+  const wantsDefault = mode === 'insert' && applyDefault && c.defaultValue !== undefined;
+  if (wantsDefault) expr = withDefault(expr, c.defaultValue);
+
   // `typedColumns` narrows the static type without touching the runtime schema. `Type.Unsafe<T>`
   // is TypeBox's own primitive for exactly that: it wraps an existing schema, so every check it
   // carries still runs, and only the inferred type is replaced.
   if (narrowRef) expr = `Type.Unsafe<${narrowRef}>(${expr})`;
+
   if (mode !== 'select') {
-    // A literal default becomes a JSON Schema `default` annotation. Note that `Value.Check` does
-    // not materialise it, only `Value.Parse` and `Value.Default` do: TypeBox separates validating
-    // from defaulting, where zod and valibot fold the two together.
-    if (mode === 'insert' && applyDefault && c.defaultValue !== undefined) {
-      expr = `Type.Optional(${withDefault(expr, c.defaultValue)})`;
-    } else if (mode === 'update' || c.nullable || c.hasDefault) {
+    if (wantsDefault || mode === 'update' || c.nullable || c.hasDefault) {
       expr = `Type.Optional(${expr})`;
     }
   }
