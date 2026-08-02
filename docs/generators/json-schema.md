@@ -63,6 +63,36 @@ as the boolean form with no bound at all, or ignored outright. Either way the do
 validates as OpenAPI, and the constraint that exists to reject `0` now accepts it. That is the
 reason this is an option rather than a note.
 
+## One document for OpenAPI
+
+```ts
+{ kind: 'json-schema', target: 'openapi-3.1', components: true }
+```
+
+Also emits `components.ts`, one object keyed by name and ready to spread into an OpenAPI
+document's `components.schemas`:
+
+```ts
+export const components = {
+  schemas: {
+    usersInsert: { title: 'insert users', type: 'object', properties: { ... } },
+    usersUpdate: { ... },
+    usersSelect: { ... },
+  },
+} as const;
+```
+
+Two details this handles that are easy to get quietly wrong:
+
+- **`$schema` is dropped.** Nested under `components.schemas` a schema inherits the document's
+  dialect, and OpenAPI 3.1 reads a per-schema `$schema` as a dialect switch.
+- **`$id` is dropped, not rewritten.** Setting it to `#/components/schemas/<name>` is the obvious
+  first attempt and it is invalid: a draft 2020-12 `$id` may not contain a fragment, and ajv
+  rejects the schema outright. The map key is the identity, and the `$ref` is written by whatever
+  points at the schema.
+
+Off by default, so nobody gets a file they did not ask for.
+
 ## What it cannot say
 
 JSON Schema cannot compare one property against another. `if`/`then` and `dependentSchemas` can

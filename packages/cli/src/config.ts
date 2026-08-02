@@ -123,6 +123,8 @@ export const GeneratorSchema = z.object({
    * validates and then accepts the values the constraints exist to reject.
    */
   target: z.enum(['draft-2020-12', 'openapi-3.1', 'openapi-3.0']).optional(),
+  /** Also emit `components.ts` for the `json-schema` generator, ready for an OpenAPI document. */
+  components: z.boolean().optional(),
   // service generator specific options
   path: z.string().optional(),
   dataAccess: z.enum(['stub', 'drizzle']).default('stub').optional(),
