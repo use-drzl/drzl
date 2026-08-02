@@ -1,5 +1,18 @@
 # @drzl/cli
 
+## 2.0.2
+
+### Patch Changes
+
+- Updated dependencies [b0543a4]
+  - @drzl/validation-core@3.0.0
+  - @drzl/generator-zod@3.0.0
+  - @drzl/generator-valibot@3.0.0
+  - @drzl/generator-arktype@3.0.0
+  - @drzl/analyzer@1.5.0
+  - @drzl/generator-orpc@2.3.2
+  - @drzl/generator-service@2.1.2
+
 ## 2.0.1
 
 ### Patch Changes

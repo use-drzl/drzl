@@ -1,5 +1,12 @@
 # @drzl/template-orpc-service
 
+## 2.3.2
+
+### Patch Changes
+
+- Updated dependencies [b0543a4]
+  - @drzl/validation-core@3.0.0
+
 ## 2.3.0
 
 ### Minor Changes
