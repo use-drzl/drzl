@@ -102,6 +102,15 @@ export type ColumnShape =
   /** `vector`, `halfvec`: a numeric vector, with a fixed length where one is declared. */
   | { kind: 'numberVector'; length?: number }
   /**
+   * A `customType` column, whose JavaScript type exists only at compile time.
+   *
+   * `getSQLType()` gives the declared SQL type, but that is the *database* side: `fromDriver` may
+   * map it to anything, so a `numeric(12,2)` custom column can perfectly well hand back a number
+   * where a plain numeric hands back a string. Guessing from the SQL type would reject the real
+   * value, so the type is taken from Drizzle's own inference or not at all.
+   */
+  | { kind: 'custom'; sqlType?: string }
+  /**
    * A string of `0`/`1`: Postgres `bit(n)`, MySQL `binary(n)`/`varbinary(n)`.
    *
    * `exact` separates the two. A Postgres `bit(3)` is always three digits, while a MySQL
@@ -237,6 +246,17 @@ export function describeV1Column(column: any): Partial<Column> | null {
   const codec = column?.codec;
   const dataType = column?.dataType;
   if (typeof dataType !== 'string') return null;
+
+  // `customType` reports `dataType: 'custom'` and no codec at all, so it has to be recognised
+  // before the gate below, which would otherwise send it to the class-name path and `unknown`.
+  if (dataType === 'custom') {
+    const sqlType = typeof column?.getSQLType === 'function' ? column.getSQLType() : undefined;
+    return {
+      tsType: 'unknown',
+      dbType: typeof sqlType === 'string' && sqlType ? sqlType.toUpperCase() : 'UNKNOWN',
+      shape: { kind: 'custom', sqlType: typeof sqlType === 'string' ? sqlType : undefined },
+    };
+  }
 
   const [js, semantic = ''] = dataType.split(' ');
   // SQLite columns carry a `dataType` but no `codec` at all, so gating on the codec alone left

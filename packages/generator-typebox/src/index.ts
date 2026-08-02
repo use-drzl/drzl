@@ -140,6 +140,10 @@ function tbShapeExpr(c: Column, typedJsonRef?: string): string | undefined {
       // `typedJson` still wins, since the inferred type is narrower than "any JSON".
       if (typedJsonRef) return `Type.Unsafe<${typedJsonRef}>(Type.Unknown())`;
       return JSON_CONST;
+    case 'custom':
+      // Nothing to check at runtime: see the zod generator for why guessing from `getSQLType()`
+      // would be wrong. `Type.Unsafe<T>` is TypeBox's escape hatch for exactly this.
+      return typedJsonRef ? `Type.Unsafe<${typedJsonRef}>(Type.Unknown())` : 'Type.Unknown()';
     case 'buffer':
       return 'Type.Uint8Array()';
     case 'tuple':
@@ -256,7 +260,7 @@ function renderObjectShape(
   return cols
     .map((c) => {
       const ref =
-        typedJson && c.tsType === 'any'
+        typedJson && (c.tsType === 'any' || c.shape?.kind === 'custom')
           ? `(typeof ${typedJson.table}.$infer${typedJson.mode === 'insert' ? 'Insert' : 'Select'})[${JSON.stringify(c.name)}]`
           : undefined;
       return `  ${JSON.stringify(c.name)}: ${tbField(c, mode, coerceDates, checks, ref)},`;

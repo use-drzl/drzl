@@ -207,6 +207,38 @@ Off by default because it adds an `import type` of your schema module to the gen
 That import is erased at build time, so it adds no runtime dependency and cannot create a runtime
 cycle, but the coupling should be a choice.
 
+## `customType` columns
+
+A `customType` column has nothing checkable at runtime, and DRZL does not pretend otherwise:
+
+```ts
+balance: z.unknown(),
+```
+
+`getSQLType()` does report the declared SQL type, but that is the database side. `fromDriver` can
+map it to anything, so a `numeric(12,2)` custom column may well hand back a `number` where a plain
+`numeric` hands back a string. A schema built from the SQL type would reject the real value.
+
+What can be recovered is the type, and `typedJson` does it the same way it does for json, by
+referencing Drizzle's own inference rather than guessing:
+
+```ts
+{ kind: 'zod', path: 'src/validators/zod', typedJson: true }
+```
+
+```ts
+balance: z.custom<(typeof accounts.$inferSelect)['balance']>(),
+```
+
+`drizzle-orm/zod` emits `z.any()` here, which loses the declared type and also loses the narrowing
+that `unknown` forces at the call site.
+
+## Views
+
+Views get schemas too, including materialized views and views declared with an explicit column
+list. There is nothing special to configure: a view in your schema file produces
+`Select<View>Schema` alongside the tables.
+
 ## Custom names
 
 `Insert<Table>Schema` is the default, not the only option. The `affix` block renames the

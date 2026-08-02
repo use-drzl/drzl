@@ -86,6 +86,22 @@ While confirming that, the oRPC generator's library handling moved from chains o
 per-library table. The chains ended in `... : valibot`, so any library they did not recognise
 would have silently emitted valibot code rather than failing.
 
+### `customType` columns keep their type
+
+A `customType` column has nothing checkable at runtime, and guessing from `getSQLType()` would be
+wrong: that reports the *database* type, and `fromDriver` may map it to anything, so a
+`numeric(12,2)` custom column can hand back a number where a plain numeric hands back a string.
+
+It stays `z.unknown()`, and `typedJson` now recovers the declared type the same way it does for
+json, by referencing Drizzle's own inference:
+
+```ts
+balance: z.custom<(typeof accounts.$inferSelect)['balance']>(),
+```
+
+`drizzle-orm/zod` emits `z.any()` for these, losing both the type and the narrowing that `unknown`
+forces at the call site.
+
 ### The gate
 
 `verify:packed` now measures three dialects times three modes times each library, 15 combinations

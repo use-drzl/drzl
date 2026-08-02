@@ -136,6 +136,10 @@ function vShapeExpr(c: Column): string | undefined {
   switch (s.kind) {
     case 'json':
       return JSON_CONST;
+    case 'custom':
+      // A `customType` column carries no runtime information: `fromDriver` may map its SQL type
+      // to anything, so guessing from `getSQLType()` would reject the real value.
+      return 'v.unknown()';
     case 'buffer':
       // Matches the SQLite blob mapping, so binary validates the same way in either dialect.
       return 'v.instance(Uint8Array)';

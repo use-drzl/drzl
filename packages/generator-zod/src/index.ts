@@ -100,6 +100,13 @@ function shapeExpr(c: Column, typedJsonRef?: string): string | undefined {
       // Zod's own JSON value space. `z.any()` accepted `undefined`, `NaN`, `Infinity`, bigints,
       // Dates and Buffers, none of which survive the round trip through the column.
       return 'z.json()';
+    case 'custom':
+      // A `customType` column's JavaScript type exists only at compile time, and `fromDriver` can
+      // map the SQL type to anything, so there is nothing to check at runtime and guessing from
+      // `getSQLType()` would reject the real value. `typedJson` still recovers the *type*, from
+      // Drizzle's own inference rather than from a guess, which `drizzle-orm/zod` does not do at
+      // all: it emits `z.any()`, losing both the type and the narrowing `unknown` would force.
+      return typedJsonRef ? `z.custom<${typedJsonRef}>()` : 'z.unknown()';
     case 'buffer':
       // `Uint8Array` rather than `Buffer`, which is the one place the output is deliberately
       // wider than `drizzle-orm/zod`. A Buffer is a Uint8Array, so everything official accepts
@@ -218,7 +225,7 @@ function renderObjectShape(
     .map((c) => {
       // Only json-ish columns get a reference; everything else already has a real type.
       const ref =
-        typedJson && c.tsType === 'any'
+        typedJson && (c.tsType === 'any' || c.shape?.kind === 'custom')
           ? `typeof ${typedJson.table}.$infer${typedJson.mode === 'insert' ? 'Insert' : 'Select'}[${JSON.stringify(c.name)}]`
           : undefined;
       return `  ${JSON.stringify(c.name)}: ${zodField(c, mode, coerceDates, checks, ref)},`;

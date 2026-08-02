@@ -85,6 +85,9 @@ function atShapeType(c: Column): string | undefined {
       // Flat rather than recursive, matching what `drizzle-orm/arktype` builds. `object` covers
       // both arrays and records, so nesting needs no separate arm.
       return 'number | object | string | boolean | null';
+    case 'custom':
+      // See the valibot generator: a custom column carries nothing checkable at runtime.
+      return 'unknown';
     case 'buffer':
       return 'TypedArray.Uint8';
     case 'tuple':
