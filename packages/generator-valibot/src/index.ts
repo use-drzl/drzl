@@ -49,9 +49,39 @@ function vDateExpr(
  * so they are pasted rather than parsed. `literal` spells each one, which is the only difference
  * between the number and bigint cases.
  */
-function vBounds(c: Column, literal: (v: string) => string): string[] {
-  if (c.min === undefined || c.max === undefined) return [];
-  return [`v.minValue(${literal(c.min)})`, `v.maxValue(${literal(c.max)})`];
+function vBounds(
+  c: Column,
+  literal: (v: string) => string,
+  checks: ColumnCheck[] = []
+): string[] {
+  let lo = c.min !== undefined ? { action: 'minValue', value: c.min } : undefined;
+  let hi = c.max !== undefined ? { action: 'maxValue', value: c.max } : undefined;
+
+  // A CHECK replaces the end it narrows rather than sitting beside it. It cannot widen: the
+  // declared range is the column's type, and no CHECK makes an int32 hold more.
+  //
+  // valibot has the exclusive forms natively, so `> 0` is `v.gtValue(0)` rather than a closure,
+  // and the issue it raises carries `requirement: 0` as data instead of as a sentence this
+  // generator wrote.
+  for (const k of checks.filter((x) => x.column === c.name && x.kind === 'number')) {
+    if (k.operator === '>=') lo = { action: 'minValue', value: k.value };
+    else if (k.operator === '>') lo = { action: 'gtValue', value: k.value };
+    else if (k.operator === '<=') hi = { action: 'maxValue', value: k.value };
+    else if (k.operator === '<') hi = { action: 'ltValue', value: k.value };
+  }
+
+  return [lo, hi].filter(Boolean).map((x) => `v.${x!.action}(${literal(x!.value)})`);
+}
+
+/** Which checks `vBounds` has already stated, so they are not also emitted as actions. */
+function foldedIntoBounds(c: Column, checks: ColumnCheck[]): Set<ColumnCheck> {
+  if (c.arrayDimensions || c.shape) return new Set();
+  if (c.tsType !== 'number' && c.tsType !== 'bigint') return new Set();
+  return new Set(
+    checks.filter(
+      (k) => k.column === c.name && k.kind === 'number' && k.operator !== '=' && k.operator !== '<>'
+    )
+  );
 }
 
 /**
@@ -75,8 +105,9 @@ function vChecks(c: Column, checks: ColumnCheck[]): string[] {
     '=': '===',
     '<>': '!==',
   };
+  const folded = foldedIntoBounds(c, checks);
   return checks
-    .filter((k) => k.column === c.name)
+    .filter((k) => k.column === c.name && !folded.has(k))
     .map((k) => {
       const rhs = k.kind === 'string' ? JSON.stringify(k.value) : k.value;
       const shown = k.kind === 'string' ? `'${k.value}'` : k.value;
@@ -264,14 +295,14 @@ function vExprForColumn(
     case 'number': {
       return piped('v.number()', [
         ...(isIntegerColumn(c) ? ['v.integer()'] : []),
-        ...vBounds(c, (v) => v),
+        ...vBounds(c, (v) => v, checks),
       ]);
     }
     case 'bigint': {
       // Bounds must be bigint literals: a 64 bit bound written as a number rounds.
       return piped(
         'v.bigint()',
-        vBounds(c, (v) => `${v}n`)
+        vBounds(c, (v) => `${v}n`, checks)
       );
     }
     case 'boolean':
