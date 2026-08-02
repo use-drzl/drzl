@@ -4,8 +4,10 @@ import type {
   ValidationRenderer,
   ValidationGenerateOptions,
 } from '@drzl/validation-core';
+import type { ColumnCheck } from '@drzl/validation-core';
 import {
   insertColumns,
+  parseCheck,
   updateColumns,
   selectColumns,
   formatCode,
@@ -48,11 +50,44 @@ function vBounds(c: Column, literal: (v: string) => string): string[] {
   return [`v.minValue(${literal(c.min)})`, `v.maxValue(${literal(c.max)})`];
 }
 
+/**
+ * `v.check(...)` actions for the CHECK constraints naming this column.
+ *
+ * Same contract as the Zod generator: only comparisons the shared parser understands with
+ * certainty, and placed on the inner schema so `v.nullable()` wrapping it reproduces SQL's rule
+ * that a CHECK passes on TRUE or NULL.
+ */
+function vChecks(c: Column, checks: ColumnCheck[]): string[] {
+  const OPS: Record<ColumnCheck['operator'], string> = {
+    '>=': '>=',
+    '>': '>',
+    '<=': '<=',
+    '<': '<',
+    '=': '===',
+    '<>': '!==',
+  };
+  return checks
+    .filter((k) => k.column === c.name)
+    .map((k) => {
+      const rhs = k.kind === 'string' ? JSON.stringify(k.value) : k.value;
+      const shown = k.kind === 'string' ? `'${k.value}'` : k.value;
+      const msg = JSON.stringify(`${k.name ? `${k.name}: ` : ''}${c.name} ${k.operator} ${shown}`);
+      return `v.check((val) => val ${OPS[k.operator]} ${rhs}, ${msg})`;
+    });
+}
+
 function vExprForColumn(
   c: Column,
   mode: Mode,
-  coerceDates: NonNullable<ValidationGenerateOptions['coerceDates']>
+  coerceDates: NonNullable<ValidationGenerateOptions['coerceDates']>,
+  checks: ColumnCheck[] = []
 ): string {
+  const extra = vChecks(c, checks);
+  /** Fold the constraint actions into whatever base this column maps to. */
+  const piped = (base: string, actions: string[]) => {
+    const all = [...actions, ...extra];
+    return all.length ? `v.pipe(${base}, ${all.join(', ')})` : base;
+  };
   if (c.enumValues && c.enumValues.length) {
     const vals = c.enumValues.map((v) => `'${v.replace(/'/g, "\\'")}'`).join(', ');
     // picklist is a common valibot helper for string enums
@@ -62,22 +97,17 @@ function vExprForColumn(
     // Valibot composes constraints as pipeline actions rather than chained methods, so each of
     // these becomes `v.pipe(base, ...actions)` and stays a single expression.
     case 'string':
-      if (c.format === 'uuid') return 'v.pipe(v.string(), v.uuid())';
-      return c.maxLength ? `v.pipe(v.string(), v.maxLength(${c.maxLength}))` : 'v.string()';
+      if (c.format === 'uuid') return piped('v.string()', ['v.uuid()']);
+      return piped('v.string()', c.maxLength ? [`v.maxLength(${c.maxLength})`] : []);
     case 'number': {
       // An integer range is what marks the column as an integer; dbType alone misses
       // `bigint({ mode: 'number' })`, whose value is a JS number.
       const isInt = c.dbType === 'INTEGER' || (c.min !== undefined && c.max !== undefined);
-      const actions = [
-        ...(isInt ? ['v.integer()'] : []),
-        ...vBounds(c, (val) => val),
-      ];
-      return actions.length ? `v.pipe(v.number(), ${actions.join(', ')})` : 'v.number()';
+      return piped('v.number()', [...(isInt ? ['v.integer()'] : []), ...vBounds(c, (v) => v)]);
     }
     case 'bigint': {
       // Bounds must be bigint literals: a 64 bit bound written as a number rounds.
-      const actions = vBounds(c, (val) => `${val}n`);
-      return actions.length ? `v.pipe(v.bigint(), ${actions.join(', ')})` : 'v.bigint()';
+      return piped('v.bigint()', vBounds(c, (v) => `${v}n`));
     }
     case 'boolean':
       return 'v.boolean()';
@@ -95,9 +125,10 @@ function vExprForColumn(
 function vField(
   c: Column,
   mode: Mode,
-  coerceDates: NonNullable<ValidationGenerateOptions['coerceDates']>
+  coerceDates: NonNullable<ValidationGenerateOptions['coerceDates']>,
+  checks: ColumnCheck[] = []
 ): string {
-  let expr = vExprForColumn(c, mode, coerceDates);
+  let expr = vExprForColumn(c, mode, coerceDates, checks);
   if (c.nullable) expr = `v.nullable(${expr})`;
   if (mode !== 'select') {
     // optional for insert when nullable/hasDefault, and for all fields in update
@@ -109,10 +140,11 @@ function vField(
 function renderObjectShape(
   cols: Column[],
   mode: Mode,
-  coerceDates: NonNullable<ValidationGenerateOptions['coerceDates']>
+  coerceDates: NonNullable<ValidationGenerateOptions['coerceDates']>,
+  checks: ColumnCheck[] = []
 ) {
   return cols
-    .map((c) => `  ${JSON.stringify(c.name)}: ${vField(c, mode, coerceDates)},`)
+    .map((c) => `  ${JSON.stringify(c.name)}: ${vField(c, mode, coerceDates, checks)},`)
     .join('\n');
 }
 
@@ -131,9 +163,15 @@ function renderTableSchemas(
   const insertCols = insertColumns(table);
   const updateCols = updateColumns(table);
   const selectCols = selectColumns(table);
-  const bodyInsert = renderObjectShape(insertCols, 'insert', coerceDates);
-  const bodyUpdate = renderObjectShape(updateCols, 'update', coerceDates);
-  const bodySelect = renderObjectShape(selectCols, 'select', coerceDates);
+  // Only checks the shared parser understands with certainty; the rest are skipped rather
+  // than guessed at, exactly as in the Zod generator.
+  const checks = (table.checks ?? []).flatMap((k) => {
+    const parsed = parseCheck(k.expression, k.name);
+    return parsed.ok ? parsed.checks : [];
+  });
+  const bodyInsert = renderObjectShape(insertCols, 'insert', coerceDates, checks);
+  const bodyUpdate = renderObjectShape(updateCols, 'update', coerceDates, checks);
+  const bodySelect = renderObjectShape(selectCols, 'select', coerceDates, checks);
   return `import * as v from 'valibot';
 import type { InferInput, InferOutput } from 'valibot';
 

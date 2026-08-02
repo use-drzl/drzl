@@ -20,6 +20,7 @@
     "@drzl/validation-core": "workspace:^"
   },
   "devDependencies": {
+    "arktype": "^2.1.0",
     "tsup": "^8.5.1",
     "typescript": "^5.9.3"
   },
