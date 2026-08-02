@@ -3,6 +3,7 @@ import type {
   ResolvedAffix,
   ValidationRenderer,
   ValidationGenerateOptions,
+  RowCheck,
 } from '@drzl/validation-core';
 import type { CardinalityCheck, ColumnCheck, ColumnSet, LengthCheck } from '@drzl/validation-core';
 import {
@@ -361,6 +362,41 @@ function renderObjectShape(
     .join('\n');
 }
 
+/**
+ * `v.check(...)` actions that belong on the object rather than on a field.
+ *
+ * `CHECK (start_date < end_date)` is a statement about the row: neither column alone can say
+ * whether it holds. Both sides are guarded for null first, reproducing SQL, where a comparison
+ * involving NULL yields NULL and the CHECK passes.
+ */
+/** Wrap an object schema in its row-level checks, or leave it alone when there are none. */
+function wrapRows(objectExpr: string, rows: RowCheck[], cols: Column[]): string {
+  const checks = vRowChecks(rows, cols);
+  return checks.length ? `v.pipe(${objectExpr}, ${checks.join(', ')})` : objectExpr;
+}
+
+function vRowChecks(rows: RowCheck[], cols: Column[]): string[] {
+  const present = new Set(cols.map((c) => c.name));
+  const OPS: Record<RowCheck['operator'], string> = {
+    '>=': '>=',
+    '>': '>',
+    '<=': '<=',
+    '<': '<',
+    '=': '===',
+    '<>': '!==',
+  };
+  return rows
+    // A check naming a column this mode does not carry cannot be evaluated: an insert schema
+    // omits generated columns, so the comparison would read undefined and always pass or fail.
+    .filter((r) => present.has(r.left) && present.has(r.right))
+    .map((r) => {
+      const l = `o[${JSON.stringify(r.left)}]`;
+      const rt = `o[${JSON.stringify(r.right)}]`;
+      const msg = JSON.stringify(`${r.name ? `${r.name}: ` : ''}${r.left} ${r.operator} ${r.right}`);
+      return `v.check((o) => ${l} == null || ${rt} == null || ${l} ${OPS[r.operator]} ${rt}, ${msg})`;
+    });
+}
+
 function renderTableSchemas(
   table: Table,
   affix: ResolvedAffix,
@@ -383,6 +419,7 @@ function renderTableSchemas(
   const parsedChecks = (table.checks ?? []).map((k) => parseCheck(k.expression, k.name));
   const checks = parsedChecks.flatMap((p) => (p.ok ? p.checks : []));
   const sets = parsedChecks.flatMap((p) => (p.ok ? (p.sets ?? []) : []));
+  const rows = parsedChecks.flatMap((p) => (p.ok ? (p.rows ?? []) : []));
   const lengths = parsedChecks.flatMap((p) => (p.ok ? (p.lengths ?? []) : []));
   const cardinalities = parsedChecks.flatMap((p) => (p.ok ? (p.cardinalities ?? []) : []));
   const tj = typedColumns ? { table: T, mode: 'select' as const } : undefined;
@@ -434,17 +471,11 @@ function renderTableSchemas(
   return `import * as v from 'valibot';
 import type { InferInput, InferOutput } from 'valibot';
 ${schemaImport}${needsJson ? `\n${JSON_PREAMBLE}` : ''}
-export const ${insertSchema} = v.object({
-${bodyInsert}
-});
+export const ${insertSchema} = ${wrapRows(`v.object({\n${bodyInsert}\n})`, rows, insertCols)};
 
-export const ${updateSchema} = v.object({
-${bodyUpdate}
-});
+export const ${updateSchema} = ${wrapRows(`v.object({\n${bodyUpdate}\n})`, rows, updateCols)};
 
-export const ${selectSchema} = v.object({
-${bodySelect}
-});
+export const ${selectSchema} = ${wrapRows(`v.object({\n${bodySelect}\n})`, rows, selectCols)};
 
 export type ${insertType} = InferInput<typeof ${insertSchema}>;
 export type ${updateType} = InferInput<typeof ${updateSchema}>;

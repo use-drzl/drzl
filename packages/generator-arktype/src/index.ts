@@ -2,8 +2,7 @@ import type { Analysis, Table, Column } from '@drzl/analyzer';
 import type {
   ResolvedAffix,
   ValidationRenderer,
-  ValidationGenerateOptions,
-} from '@drzl/validation-core';
+  ValidationGenerateOptions, RowCheck } from '@drzl/validation-core';
 import type { ColumnCheck, ColumnSet } from '@drzl/validation-core';
 import {
   COLUMN_FORMATS,
@@ -53,19 +52,38 @@ function atDateType(
 function atNarrowRange(
   c: Column,
   checks: ColumnCheck[]
-): { lower?: string; upper?: string; equals?: string } {
-  let lower = c.min !== undefined ? `${c.min} <=` : undefined;
-  let upper = c.max !== undefined ? `<= ${c.max}` : undefined;
+): { lower?: Bound; upper?: Bound; equals?: string } {
+  let lower: Bound | undefined = c.min !== undefined ? { op: '>=', value: c.min } : undefined;
+  let upper: Bound | undefined = c.max !== undefined ? { op: '<=', value: c.max } : undefined;
   let equals: string | undefined;
 
   for (const k of checks.filter((x) => x.column === c.name && x.kind === 'number')) {
-    if (k.operator === '>=') lower = `${k.value} <=`;
-    else if (k.operator === '>') lower = `${k.value} <`;
-    else if (k.operator === '<=') upper = `<= ${k.value}`;
-    else if (k.operator === '<') upper = `< ${k.value}`;
+    if (k.operator === '>=' || k.operator === '>') lower = { op: k.operator, value: k.value };
+    else if (k.operator === '<=' || k.operator === '<') upper = { op: k.operator, value: k.value };
     else if (k.operator === '=') equals = k.value;
   }
   return { lower, upper, equals };
+}
+
+/** One end of a range, kept as operator and value because the two ends render differently. */
+type Bound = { op: '>=' | '>' | '<=' | '<'; value: string };
+
+/** The flip of each comparison, for moving a bound from the left of the type to its right. */
+const MIRROR = { '>=': '<=', '>': '<', '<=': '>=', '<': '>' } as const;
+
+/**
+ * A range around a type, in the only forms ArkType parses.
+ *
+ * A bound may sit on the left only when the other end is on the right: `0 < number` is a parse
+ * error, "Left bounds are only valid when paired with right bounds". A lone bound therefore has
+ * to be mirrored onto the right, as `number > 0`. Every numeric column but the integers has no
+ * declared width, so this is the shape a CHECK on a `numeric` or `double precision` column takes,
+ * and it used to emit a module that threw the moment anything imported it.
+ */
+function atRange(num: string, lower?: Bound, upper?: Bound): string {
+  if (lower && upper) return `${lower.value} ${MIRROR[lower.op]} ${num} ${upper.op} ${upper.value}`;
+  const only = lower ?? upper;
+  return only ? `${num} ${only.op} ${only.value}` : num;
 }
 
 /**
@@ -147,11 +165,7 @@ function atTypeForColumn(
       // ArkType does accept both at once: `-2147483648 <= number.integer <= 2147483647` parses
       // and rejects 1.5. Preferring the bound alone, on the theory that a range implied
       // integrality, meant every `integer()` column accepted a fraction.
-      const num = isIntegerColumn(c) ? 'number.integer' : 'number';
-      if (lower && upper) return `${lower} ${num} ${upper}`;
-      if (lower) return `${lower} ${num}`;
-      if (upper) return `${num} ${upper}`;
-      return num;
+      return atRange(isIntegerColumn(c) ? 'number.integer' : 'number', lower, upper);
     }
     case 'bigint':
       // ArkType compares bigints against bigint literals, and a 64 bit bound cannot be written
@@ -217,6 +231,39 @@ function renderObjectShape(
     .join('\n');
 }
 
+/**
+ * `.narrow(...)` calls that belong on the object rather than on a field.
+ *
+ * `CHECK (start_date < end_date)` is a statement about the row. ArkType states one through
+ * `.narrow`, which is its builder rather than its string DSL, so unlike every other constraint
+ * this generator emits it appends to the `type({...})` call rather than living inside a field
+ * string.
+ *
+ * Both sides are guarded for null first, reproducing SQL, where a comparison involving NULL
+ * yields NULL and the CHECK passes.
+ */
+function atRowNarrows(rows: RowCheck[], cols: Column[]): string {
+  const present = new Set(cols.map((c) => c.name));
+  const OPS: Record<RowCheck['operator'], string> = {
+    '>=': '>=',
+    '>': '>',
+    '<=': '<=',
+    '<': '<',
+    '=': '===',
+    '<>': '!==',
+  };
+  return rows
+    // A check naming a column this mode does not carry cannot be evaluated.
+    .filter((r) => present.has(r.left) && present.has(r.right))
+    .map((r) => {
+      const l = `o[${JSON.stringify(r.left)}]`;
+      const rt = `o[${JSON.stringify(r.right)}]`;
+      const msg = JSON.stringify(`${r.name ? `${r.name}: ` : ''}${r.left} ${r.operator} ${r.right}`);
+      return `.narrow((o, ctx) => ${l} == null || ${rt} == null || ${l} ${OPS[r.operator]} ${rt} || ctx.mustBe(${msg}))`;
+    })
+    .join('');
+}
+
 function renderTableSchemas(
   table: Table,
   affix: ResolvedAffix,
@@ -236,6 +283,7 @@ function renderTableSchemas(
   const parsedChecks = (table.checks ?? []).map((k) => parseCheck(k.expression, k.name));
   const checks = parsedChecks.flatMap((p) => (p.ok ? p.checks : []));
   const sets = parsedChecks.flatMap((p) => (p.ok ? (p.sets ?? []) : []));
+  const rows = parsedChecks.flatMap((p) => (p.ok ? (p.rows ?? []) : []));
   const bodyInsert = renderObjectShape(
     insertCols,
     'insert',
@@ -264,15 +312,15 @@ function renderTableSchemas(
 
 export const ${insertSchema} = type({
 ${bodyInsert}
-});
+})${atRowNarrows(rows, insertCols)};
 
 export const ${updateSchema} = type({
 ${bodyUpdate}
-});
+})${atRowNarrows(rows, updateCols)};
 
 export const ${selectSchema} = type({
 ${bodySelect}
-});
+})${atRowNarrows(rows, selectCols)};
 
 export type ${insertType} = typeof ${insertSchema}["infer"];
 export type ${updateType} = typeof ${updateSchema}["infer"];
