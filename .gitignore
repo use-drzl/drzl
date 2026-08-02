@@ -24,15 +24,7 @@ docs/.vitepress/cache
 # writes can resolve drizzle-orm by the normal node_modules walk.
 packages/*/test/.e2e-tmp
 packages/*/test/.cmd-tmp
-packages/*/test/.tmp-run
-packages/*/test/.tmp-structured
-packages/*/test/.tmp-dates
-packages/*/test/.tmp-custom-*
-packages/*/test/.tmp-typedcols-*
-packages/*/test/.tmp-typedcols-run
-packages/*/test/.tmp-numfmt
-packages/*/test/.tmp-charlen
-packages/*/test/.tmp-cardinality
-packages/*/test/.tmp-readonly-*
-packages/*/test/.tmp-rowchecks
-packages/*/test/.tmp-defaults
+# One pattern rather than a name per test file. This was an enumerated list, and it worked right
+# up until a new spec picked a directory nobody had added to it: 22 generated modules landed in a
+# merged commit, carrying a pid in the filename so they could never even be overwritten.
+packages/*/test/.tmp-*
