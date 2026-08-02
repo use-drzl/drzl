@@ -176,6 +176,7 @@ program
               // Drizzle inferred for a json column.
               schemaPath: cfg.schema,
               typedJson: g.typedJson,
+              typedColumns: g.typedColumns,
             });
             progress.stop();
             ora().succeed(chalk.green(`Generated (zod): ${files.length} files`));
@@ -276,15 +277,17 @@ program
         await restoreSnapshot(driftBefore, after);
 
         if (drift.length) {
-          console.error(
-            chalk.red(`\nGenerated output is out of date (${drift.length} file(s)):`)
-          );
+          console.error(chalk.red(`\nGenerated output is out of date (${drift.length} file(s)):`));
           for (const d of drift) {
             const mark = d.status === 'added' ? '+' : d.status === 'removed' ? '-' : '~';
-            console.error(`  ${mark} ${chalk.yellow(d.status.padEnd(8))} ${path.relative(process.cwd(), d.file)}`);
+            console.error(
+              `  ${mark} ${chalk.yellow(d.status.padEnd(8))} ${path.relative(process.cwd(), d.file)}`
+            );
           }
           console.error(
-            chalk.dim('\nRun `drzl generate` and commit the result. Nothing was written by this check.')
+            chalk.dim(
+              '\nRun `drzl generate` and commit the result. Nothing was written by this check.'
+            )
           );
           process.exit(1);
         }

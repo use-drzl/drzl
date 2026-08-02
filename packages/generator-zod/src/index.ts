@@ -188,7 +188,15 @@ function zodField(
   mode: Mode,
   coerceDates: NonNullable<ValidationGenerateOptions['coerceDates']>,
   checks: ColumnCheck[] = [],
-  typedJsonRef?: string
+  typedJsonRef?: string,
+  /**
+   * A reference to Drizzle's inferred type for a column that already has a runtime schema.
+   *
+   * Distinct from `typedJsonRef`, which *replaces* the schema for a column that has no runtime
+   * type worth checking. This one is appended, so the checks stay and only the static type
+   * narrows.
+   */
+  narrowRef?: string
 ): string {
   let expr = zodExprForColumn(c, mode, coerceDates, typedJsonRef);
   // `.array()` does not give the column its own class in Drizzle, so everything above describes
@@ -211,6 +219,10 @@ function zodField(
     // All update fields are optional; preserve nullability
     expr = `${expr}.optional()`;
   }
+  // Last, and after the optional wrapper on purpose. `.pipe()` keeps a key optional in both the
+  // parsed result and the inferred type, checked against zod rather than assumed, so the runtime
+  // schema is untouched and only the static type narrows.
+  if (narrowRef) expr = `${expr}.pipe(z.custom<${narrowRef}>())`;
   return expr;
 }
 
@@ -219,16 +231,19 @@ function renderObjectShape(
   mode: Mode,
   coerceDates: NonNullable<ValidationGenerateOptions['coerceDates']>,
   checks: ColumnCheck[] = [],
-  typedJson?: { table: string; mode: 'insert' | 'select' }
+  typedJson?: { table: string; mode: 'insert' | 'select'; allColumns?: boolean }
 ) {
   return cols
     .map((c) => {
-      // Only json-ish columns get a reference; everything else already has a real type.
-      const ref =
-        typedJson && (c.tsType === 'any' || c.shape?.kind === 'custom')
-          ? `typeof ${typedJson.table}.$infer${typedJson.mode === 'insert' ? 'Insert' : 'Select'}[${JSON.stringify(c.name)}]`
-          : undefined;
-      return `  ${JSON.stringify(c.name)}: ${zodField(c, mode, coerceDates, checks, ref)},`;
+      const refFor = (t: { table: string; mode: 'insert' | 'select' }) =>
+        `typeof ${t.table}.$infer${t.mode === 'insert' ? 'Insert' : 'Select'}[${JSON.stringify(c.name)}]`;
+      // A json or custom column has no runtime type worth checking, so the reference replaces the
+      // schema outright. Every other column already has one, so the reference is appended instead
+      // and narrows only the static type.
+      const replaces = c.tsType === 'any' || c.shape?.kind === 'custom';
+      const ref = typedJson && replaces ? refFor(typedJson) : undefined;
+      const narrow = typedJson?.allColumns && !replaces ? refFor(typedJson) : undefined;
+      return `  ${JSON.stringify(c.name)}: ${zodField(c, mode, coerceDates, checks, ref, narrow)},`;
     })
     .join('\n');
 }
@@ -237,7 +252,7 @@ function renderTableSchemas(
   table: Table,
   affix: ResolvedAffix,
   coerceDates: NonNullable<ValidationGenerateOptions['coerceDates']>,
-  typedJson?: { schemaSpecifier: string }
+  typedJson?: { schemaSpecifier: string; allColumns?: boolean }
 ) {
   const T = table.tsName;
   const insertSchema = schemaName('insert', T, affix);
@@ -257,8 +272,12 @@ function renderTableSchemas(
   });
   // Insert and select can disagree: a json column with a default is optional on insert, so its
   // inferred type differs. Each shape therefore references the matching inference.
-  const tj = typedJson ? { table: table.tsName, mode: 'select' as const } : undefined;
-  const tjInsert = typedJson ? { table: table.tsName, mode: 'insert' as const } : undefined;
+  const tj = typedJson
+    ? { table: table.tsName, mode: 'select' as const, allColumns: typedJson.allColumns }
+    : undefined;
+  const tjInsert = typedJson
+    ? { table: table.tsName, mode: 'insert' as const, allColumns: typedJson.allColumns }
+    : undefined;
   const bodyInsert = renderObjectShape(insertCols, 'insert', coerceDates, checks, tjInsert);
   const bodyUpdate = renderObjectShape(updateCols, 'update', coerceDates, checks, tjInsert);
   const bodySelect = renderObjectShape(selectCols, 'select', coerceDates, checks, tj);
@@ -306,8 +325,11 @@ export class ZodGenerator implements ValidationRenderer<ZodGenerateOptions> {
     const fileSuffix = opts.fileSuffix ?? DEFAULT_FILE_SUFFIX;
     // `typedJson` needs to import the schema back, so it is only possible when the schema path
     // is known. Silently doing nothing would be worse than saying why.
+    // `typedColumns` is the wider form of the same idea and implies it: both need the schema
+    // imported back in order to reference what Drizzle inferred.
+    const wantsTypes = opts.typedJson || opts.typedColumns;
     const typedJson =
-      opts.typedJson && opts.schemaPath
+      wantsTypes && opts.schemaPath
         ? {
             schemaSpecifier: resolveConfiguredImport(
               opts.schemaPath,
@@ -315,9 +337,10 @@ export class ZodGenerator implements ValidationRenderer<ZodGenerateOptions> {
               process.cwd(),
               opts.importExtension
             ),
+            allColumns: !!opts.typedColumns,
           }
         : undefined;
-    if (opts.typedJson && !opts.schemaPath) {
+    if (wantsTypes && !opts.schemaPath) {
       console.warn(
         '[drzl] typedJson was requested but the schema path is unknown, so json columns keep their wide type.'
       );
