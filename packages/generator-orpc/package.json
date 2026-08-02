@@ -19,8 +19,7 @@
     "@drzl/analyzer": "workspace:^",
     "@drzl/template-orpc-service": "workspace:^",
     "@drzl/template-standard": "workspace:^",
-    "@drzl/validation-core": "workspace:^",
-    "zod": "^4.4.3"
+    "@drzl/validation-core": "workspace:^"
   },
   "devDependencies": {
     "tsup": "^8.5.1",

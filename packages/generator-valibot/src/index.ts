@@ -36,6 +36,18 @@ function vDateExpr(
   return mode === 'select' ? 'v.date()' : `v.union([v.date(), ${coercer}])`;
 }
 
+/**
+ * `v.minValue(min), v.maxValue(max)` for a column declaring an integer range, else nothing.
+ *
+ * Bounds arrive as decimal strings, since a 64 bit bound cannot round-trip through a JS number,
+ * so they are pasted rather than parsed. `literal` spells each one, which is the only difference
+ * between the number and bigint cases.
+ */
+function vBounds(c: Column, literal: (v: string) => string): string[] {
+  if (c.min === undefined || c.max === undefined) return [];
+  return [`v.minValue(${literal(c.min)})`, `v.maxValue(${literal(c.max)})`];
+}
+
 function vExprForColumn(
   c: Column,
   mode: Mode,
@@ -47,12 +59,26 @@ function vExprForColumn(
     return `v.picklist([${vals}] as const)`;
   }
   switch (c.tsType) {
+    // Valibot composes constraints as pipeline actions rather than chained methods, so each of
+    // these becomes `v.pipe(base, ...actions)` and stays a single expression.
     case 'string':
-      return 'v.string()';
-    case 'number':
-      return 'v.number()';
-    case 'bigint':
-      return 'v.bigint()';
+      if (c.format === 'uuid') return 'v.pipe(v.string(), v.uuid())';
+      return c.maxLength ? `v.pipe(v.string(), v.maxLength(${c.maxLength}))` : 'v.string()';
+    case 'number': {
+      // An integer range is what marks the column as an integer; dbType alone misses
+      // `bigint({ mode: 'number' })`, whose value is a JS number.
+      const isInt = c.dbType === 'INTEGER' || (c.min !== undefined && c.max !== undefined);
+      const actions = [
+        ...(isInt ? ['v.integer()'] : []),
+        ...vBounds(c, (val) => val),
+      ];
+      return actions.length ? `v.pipe(v.number(), ${actions.join(', ')})` : 'v.number()';
+    }
+    case 'bigint': {
+      // Bounds must be bigint literals: a 64 bit bound written as a number rounds.
+      const actions = vBounds(c, (val) => `${val}n`);
+      return actions.length ? `v.pipe(v.bigint(), ${actions.join(', ')})` : 'v.bigint()';
+    }
     case 'boolean':
       return 'v.boolean()';
     case 'Date':

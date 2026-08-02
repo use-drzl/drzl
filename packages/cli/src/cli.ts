@@ -11,6 +11,7 @@ import {
   computeGeneratorOutputDirs,
   computeWatchTargets,
   DrzlConfig,
+  filterTables,
   loadConfig,
 } from './config.js';
 import { maybeShowSponsorMessage } from './sponsor.js';
@@ -87,6 +88,9 @@ program
         validateConstraints: cfg.analyzer.validateConstraints,
         includeHeuristicRelations: cfg.analyzer.includeHeuristicRelations,
       });
+      // Applied before any generator sees the analysis, so every one of them honours it without
+      // needing to know the option exists.
+      analysis.tables = filterTables(analysis.tables, cfg);
       spinner.succeed(`Analysis complete in ${Date.now() - t0}ms`);
       const progress = new cliProgress.SingleBar(
         { hideCursor: true },
@@ -381,6 +385,7 @@ program
           validateConstraints: cfg.analyzer.validateConstraints,
           includeHeuristicRelations: cfg.analyzer.includeHeuristicRelations,
         });
+        analysis.tables = filterTables(analysis.tables, cfg);
 
         if (opts.pipeline === 'analyze') {
           if (opts.json) {

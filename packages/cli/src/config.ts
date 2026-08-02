@@ -135,6 +135,24 @@ export const ConfigSchema = z
     schema: z.string(),
     outDir: z.string().default('src/api'),
     /**
+     * Which tables to generate for, matched against the database table name.
+     *
+     * There was no way to say this, and every generator loops over every table it finds, so
+     * DRZL emitted unauthenticated CRUD over whatever shared the schema file. That is noise for
+     * a migrations table and a genuine leak for an auth one: Better Auth puts `user`, `session`,
+     * `account` and `verification` alongside your own tables, and `account` holds
+     * `accessToken`, `refreshToken`, `idToken` and `password`.
+     *
+     * Deliberately name-based and explicit rather than detecting any particular library. Auth
+     * table names are all renameable, so a built-in list would miss renamed tables and, worse,
+     * silently skip an ordinary table that happened to be called `user`, which is usually the
+     * application's main entity.
+     *
+     * `exclude` wins over `include`. Patterns support `*`, matching within a name.
+     */
+    include: z.array(z.string()).optional(),
+    exclude: z.array(z.string()).optional(),
+    /**
      * How every relative specifier drzl invents spells its extension, for every generator.
      * A generator may override it. Defaults to `js`, which is the only form that resolves
      * under every `moduleResolution` without a compiler flag.
@@ -387,6 +405,36 @@ export function resolveTemplateDirsSync(cfg: DrzlConfig, cwd = process.cwd()): s
 }
 
 /** Build watch targets (exclude output dirs; watcher will ignore those). */
+/**
+ * Narrow an analysis's tables to the ones the config asked for.
+ *
+ * Matching is on the database table name, anchored, with `*` as the only metacharacter. Anchored
+ * matters: `user` must not also drop `users`, and a substring match would. `exclude` is applied
+ * after `include`, so the safer direction wins when both name the same table.
+ */
+export function filterTables<T extends { name: string }>(
+  tables: T[],
+  opts: { include?: string[]; exclude?: string[] }
+): T[] {
+  const toRegExp = (pattern: string) =>
+    new RegExp(
+      '^' +
+        pattern
+          .split('*')
+          .map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+          .join('.*') +
+        '$'
+    );
+
+  const matches = (patterns: string[], name: string) =>
+    patterns.some((p) => toRegExp(p).test(name));
+
+  let out = tables;
+  if (opts.include?.length) out = out.filter((t) => matches(opts.include!, t.name));
+  if (opts.exclude?.length) out = out.filter((t) => !matches(opts.exclude!, t.name));
+  return out;
+}
+
 export function computeWatchTargets(cfg: DrzlConfig, cwd = process.cwd()): string[] {
   const abs = (p: string) => path.resolve(cwd, p);
   const schemaAbs = abs(cfg.schema);

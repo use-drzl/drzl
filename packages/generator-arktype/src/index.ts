@@ -44,11 +44,21 @@ function atTypeForColumn(
     return c.enumValues.map((v) => `'${v.replace(/'/g, "\\'")}'`).join(' | ');
   }
   switch (c.tsType) {
+    // ArkType constrains inside its string DSL rather than by chaining. Each form below was
+    // checked against arktype itself, accepting a valid value and rejecting an invalid one,
+    // because an expression it cannot parse throws at import and takes the router with it.
     case 'string':
-      return 'string';
+      if (c.format === 'uuid') return 'string.uuid';
+      return c.maxLength ? `string <= ${c.maxLength}` : 'string';
     case 'number':
-      return 'number';
+      // `min <= number <= max` already implies an integer range here, and ArkType has no way to
+      // write both that and `number.integer` in one expression, so the bound is the stronger
+      // statement and is preferred where present.
+      if (c.min !== undefined && c.max !== undefined) return `${c.min} <= number <= ${c.max}`;
+      return c.dbType === 'INTEGER' ? 'number.integer' : 'number';
     case 'bigint':
+      // ArkType compares bigints against bigint literals, and a 64 bit bound cannot be written
+      // as a number without rounding, so the range is left unstated rather than stated wrongly.
       return 'bigint';
     case 'boolean':
       return 'boolean';

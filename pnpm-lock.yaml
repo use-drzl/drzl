@@ -149,9 +149,6 @@ importers:
       '@drzl/validation-core':
         specifier: workspace:^
         version: link:../validation-core
-      zod:
-        specifier: ^4.4.3
-        version: 4.4.3
     devDependencies:
       tsup:
         specifier: ^8.5.1

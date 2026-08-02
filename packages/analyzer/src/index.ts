@@ -1,4 +1,16 @@
-export type Dialect = 'sqlite' | 'postgres' | 'mysql' | 'singlestore' | 'gel' | 'unknown';
+/**
+ * `mssql` and `cockroach` arrived with Drizzle v1. `gel` was removed in the same release, but
+ * stays here so an analysis of a 0.4x schema still names what it found.
+ */
+export type Dialect =
+  | 'sqlite'
+  | 'postgres'
+  | 'mysql'
+  | 'singlestore'
+  | 'mssql'
+  | 'cockroach'
+  | 'gel'
+  | 'unknown';
 
 export interface Issue {
   code: string;
@@ -30,6 +42,29 @@ export interface Column {
   defaultExpression?: string;
   references?: { table: string; column: string; onDelete?: string; onUpdate?: string };
   enumValues?: string[];
+
+  /**
+   * Declared character limit, from `varchar('x', { length: 255 })` and friends.
+   *
+   * The column has always known this and the analysis discarded it, so generated schemas
+   * accepted a 300 character value that the database then rejected. Absent where the type has
+   * no limit, since claiming one would invent a constraint the schema never stated.
+   */
+  maxLength?: number;
+
+  /**
+   * Inclusive bounds for an integer column, as decimal strings.
+   *
+   * Strings rather than numbers because a 64 bit bound is not representable as a JS number:
+   * `9223372036854775807` rounds to `9223372036854775808` the moment it becomes one, so a
+   * numeric field here would silently emit a wrong bound. Absent for floats and for `numeric`,
+   * which have no integer range.
+   */
+  min?: string;
+  max?: string;
+
+  /** A string column with a known shape, currently only `uuid`. */
+  format?: 'uuid';
 }
 
 export interface Key {
@@ -321,6 +356,68 @@ export class SchemaAnalyzer {
     return out;
   }
 
+  /**
+   * The range an integer column can actually hold, keyed off the Drizzle column class.
+   *
+   * Matches what `drizzle-orm/zod` emits, measured at 1.0.0-rc.4. The two bigint modes differ on
+   * purpose: in `{ mode: 'number' }` the value arrives as a JS number, so the real ceiling is
+   * `Number.MAX_SAFE_INTEGER` rather than the column's, and bounding at the column's would
+   * promise a precision that cannot survive the round trip.
+   */
+  private static readonly INT_RANGES: Record<string, [string, string]> = {
+    // 8 bit
+    MySqlTinyInt: ['-128', '127'],
+    SQLiteInteger: ['-9223372036854775808', '9223372036854775807'],
+    // 16 bit
+    PgSmallInt: ['-32768', '32767'],
+    PgSmallSerial: ['1', '32767'],
+    MySqlSmallInt: ['-32768', '32767'],
+    SingleStoreSmallInt: ['-32768', '32767'],
+    // 24 bit
+    MySqlMediumInt: ['-8388608', '8388607'],
+    // 32 bit
+    PgInteger: ['-2147483648', '2147483647'],
+    PgSerial: ['1', '2147483647'],
+    MySqlInt: ['-2147483648', '2147483647'],
+    SingleStoreInt: ['-2147483648', '2147483647'],
+    // 53 bit, the JS safe-integer ceiling rather than the column's
+    PgBigInt53: ['-9007199254740991', '9007199254740991'],
+    PgBigSerial53: ['1', '9007199254740991'],
+    MySqlBigInt53: ['-9007199254740991', '9007199254740991'],
+    SingleStoreBigInt53: ['-9007199254740991', '9007199254740991'],
+    // 64 bit, representable because the value is a bigint
+    PgBigInt64: ['-9223372036854775808', '9223372036854775807'],
+    PgBigSerial64: ['1', '9223372036854775807'],
+    MySqlBigInt64: ['-9223372036854775808', '9223372036854775807'],
+    SingleStoreBigInt64: ['-9223372036854775808', '9223372036854775807'],
+  };
+
+  /**
+   * Constraints the column definition already carries, which the analysis used to throw away.
+   *
+   * Everything here is read off Drizzle's own column instance, so it states what the schema
+   * states. Nothing is inferred from a name or guessed from a type.
+   */
+  private columnConstraints(column: any): Pick<Column, 'maxLength' | 'min' | 'max' | 'format'> {
+    const ctor = column?.constructor?.name ?? '';
+    const out: Pick<Column, 'maxLength' | 'min' | 'max' | 'format'> = {};
+
+    // `length` is set by varchar/char across every dialect, and by SQLite's `text({length})`.
+    const length = column?.length ?? column?.config?.length;
+    if (typeof length === 'number' && Number.isFinite(length) && length > 0) {
+      out.maxLength = length;
+    }
+
+    const range = SchemaAnalyzer.INT_RANGES[ctor];
+    if (range) {
+      [out.min, out.max] = range;
+    }
+
+    if (/^(Pg)?UUID$/i.test(ctor) || /Uuid$/i.test(ctor)) out.format = 'uuid';
+
+    return out;
+  }
+
   private mapColumnType(column: any): { tsType: string; dbType: string } {
     const ctor = column?.constructor?.name ?? '';
     switch (ctor) {
@@ -343,6 +440,14 @@ export class SchemaAnalyzer {
       case 'PgInteger':
       case 'PgSmallInt':
         return { tsType: 'number', dbType: 'INTEGER' };
+      // Drizzle names these by their mode: `PgBigInt53` for `{ mode: 'number' }` and
+      // `PgBigInt64` for `{ mode: 'bigint' }`. `PgBigInt` matched neither, so both fell through
+      // to the regex arm and came back as `bigint`, which is wrong for the number mode: the
+      // value really is a JS number there, and a schema demanding a bigint rejects every row.
+      case 'PgBigInt53':
+        return { tsType: 'number', dbType: 'BIGINT' };
+      case 'PgBigInt64':
+        return { tsType: 'bigint', dbType: 'BIGINT' };
       case 'PgBigInt':
         // `bigint({ mode: 'number' })` returns a JS number, not a bigint.
         return {
@@ -357,6 +462,9 @@ export class SchemaAnalyzer {
       case 'PgVarchar':
       case 'PgChar':
         return { tsType: 'string', dbType: 'TEXT' };
+      // Drizzle spells it `PgUUID`. `PgUuid` matched nothing, so every uuid column fell through
+      // to the regex arm below and came back as plain TEXT, losing the format.
+      case 'PgUUID':
       case 'PgUuid':
         return { tsType: 'string', dbType: 'UUID' };
       case 'PgBoolean':
@@ -569,6 +677,7 @@ export class SchemaAnalyzer {
         defaultExpression: undefined,
         references,
         enumValues: Array.isArray(ev) ? ev : undefined,
+        ...this.columnConstraints(col),
       });
     }
 
@@ -786,30 +895,49 @@ export class SchemaAnalyzer {
       enums.push(candidate);
     }
 
-    // Dialect detection heuristic
+    // Which dialect the schema is written against.
+    //
+    // Keyed off `Symbol.for('drizzle:entityKind')`, a static Drizzle stamps on every column
+    // class and uses internally for exactly this. `constructor.name` is kept only as a fallback
+    // because it does not survive minification: a bundled schema presents its columns as `a`,
+    // `b`, `c`, and every name-based test then fails.
     let dialect: Dialect = 'unknown';
-    const ctorNames = new Set<string>();
+    const marks = new Set<string>();
     for (const [_, val] of Object.entries(exportsObj)) {
       const cols = (val as any)?.[Symbol.for('drizzle:Columns')];
-      if (cols) {
-        for (const c of Object.values(cols) as any[]) {
-          const n = c?.constructor?.name as string | undefined;
-          if (n) ctorNames.add(n);
-        }
+      if (!cols) continue;
+      for (const c of Object.values(cols) as any[]) {
+        const kind = c?.constructor?.[Symbol.for('drizzle:entityKind')] as string | undefined;
+        if (typeof kind === 'string') marks.add(kind);
+        const n = c?.constructor?.name as string | undefined;
+        if (n) marks.add(n);
       }
     }
-    const names = Array.from(ctorNames).join(',');
+    const names = Array.from(marks).join(',');
+    // SingleStore before MySql, and Cockroach before Pg: the narrower prefix has to win, since
+    // a SingleStore column also matches nothing of MySql's but a Cockroach one is Postgres-like.
     if (/SQLite/i.test(names)) dialect = 'sqlite';
-    else if (/Pg|Postgres/i.test(names)) dialect = 'postgres';
-    else if (/MySql|Mysql/i.test(names)) dialect = 'mysql';
     else if (/SingleStore/i.test(names)) dialect = 'singlestore';
+    else if (/Cockroach/i.test(names)) dialect = 'cockroach';
+    else if (/MsSql/i.test(names)) dialect = 'mssql';
+    else if (/MySql|Mysql/i.test(names)) dialect = 'mysql';
+    else if (/Pg|Postgres/i.test(names)) dialect = 'postgres';
     else if (/Gel/i.test(names)) dialect = 'gel';
-    // Fallback by dbType heuristics
-    if (dialect === 'unknown') {
-      const looksSqlite = tables.some((t) =>
-        t.columns.some((c) => ['INTEGER', 'TEXT', 'REAL', 'BLOB', 'NUMERIC'].includes(c.dbType))
-      );
-      if (looksSqlite) dialect = 'sqlite';
+
+    // No guessing from column storage classes. That fallback asked "does any column look like a
+    // SQLite type", and every unrecognised column returns dbType UNKNOWN while the `/At$/`
+    // heuristic rewrites `createdAt` to INTEGER, so an entirely foreign schema satisfied it and
+    // was reported as SQLite with no diagnostic at all. Saying "unknown" loudly is the only
+    // honest answer, and it is the one a caller can act on.
+    if (dialect === 'unknown' && tables.length) {
+      issues.push({
+        code: 'DRZL_ANL_DIALECT',
+        level: 'warn',
+        message: `Could not identify the Drizzle dialect for this schema${
+          names ? `; saw column kinds: ${Array.from(marks).slice(0, 6).join(', ')}` : ''
+        }.`,
+        hint: 'Column types will fall back to their coarse defaults. If this is a dialect DRZL does not know yet, please open an issue.',
+      });
     }
 
     if (opts.includeRelations) {

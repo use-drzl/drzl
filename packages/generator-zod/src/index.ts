@@ -25,6 +25,18 @@ type Mode = 'insert' | 'update' | 'select';
  */
 const DEFAULT_FILE_SUFFIX = '.zod.ts';
 
+/**
+ * `.gte(min).lte(max)` for a column that declares an integer range, or nothing.
+ *
+ * The bounds arrive as decimal strings because a 64 bit bound is not representable as a JS
+ * number, so they are pasted through rather than parsed. `literal` decides how each is spelled,
+ * which is the only difference between the number and bigint cases.
+ */
+function numericBounds(c: Column, literal: (v: string) => string): string {
+  if (c.min === undefined || c.max === undefined) return '';
+  return `.gte(${literal(c.min)}).lte(${literal(c.max)})`;
+}
+
 function zodExprForColumn(
   c: Column,
   mode: Mode,
@@ -36,11 +48,22 @@ function zodExprForColumn(
   }
   switch (c.tsType) {
     case 'string':
-      return 'z.string()';
-    case 'number':
-      return c.dbType === 'INTEGER' ? 'z.number().int()' : 'z.number()';
+      // A uuid is a string with a fixed shape, so the format supersedes any length: stacking
+      // `.max(36)` on top would restate what the format already guarantees.
+      if (c.format === 'uuid') return 'z.uuid()';
+      return c.maxLength ? `z.string().max(${c.maxLength})` : 'z.string()';
+    case 'number': {
+      // The presence of an integer range is what marks a column as an integer, not `dbType`.
+      // Gating on `dbType === 'INTEGER'` missed `bigint({ mode: 'number' })`, whose dbType is
+      // BIGINT while its value really is a JS number.
+      const isInt = c.dbType === 'INTEGER' || (c.min !== undefined && c.max !== undefined);
+      const base = isInt ? 'z.number().int()' : 'z.number()';
+      return base + numericBounds(c, (v) => v);
+    }
     case 'bigint':
-      return 'z.bigint()';
+      // Bounds have to be bigint literals. A 64 bit bound written as a plain number rounds, so
+      // `.lte(9223372036854775807)` would silently become `.lte(9223372036854775808)`.
+      return 'z.bigint()' + numericBounds(c, (v) => `${v}n`);
     case 'boolean':
       return 'z.boolean()';
     case 'Date':
