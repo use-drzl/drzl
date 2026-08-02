@@ -284,12 +284,23 @@ function vExprForColumn(
       if (pattern) return piped('v.string()', [`v.regex(new RegExp(${JSON.stringify(pattern)}))`]);
       // Not `v.maxLength(n)`, which counts UTF-16 units where the column counts characters. See
       // the zod generator and `CODEPOINT_LENGTH` in validation-core.
+      // Two different measurements. `varchar(n)` counts characters in both databases; MySQL's
+      // TEXT family counts bytes, so a tinytext takes 255 ascii characters and only 63 emoji.
+      const caps: string[] = [];
+      if (c.maxLength) {
+        caps.push(
+          `v.check((val) => [...val].length <= ${c.maxLength}, 'at most ${c.maxLength} characters')`
+        );
+      }
+      if (c.maxBytes) {
+        caps.push(
+          `v.check((val) => new TextEncoder().encode(val).length <= ${c.maxBytes}, 'at most ${c.maxBytes} bytes')`
+        );
+      }
       return piped(
         'v.string()',
-        c.maxLength
-          ? [
-              `v.check((val) => [...val].length <= ${c.maxLength}, 'at most ${c.maxLength} characters')`,
-            ]
+        caps.length
+          ? caps
           : []
       );
     case 'number': {

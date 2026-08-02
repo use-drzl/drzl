@@ -35,6 +35,22 @@ jobs:
   # can never be mistaken for a shippable artefact.
   verify-packed:
     runs-on: ubuntu-latest
+    # Postgres and SQLite both run in-process, via PGlite and node:sqlite. MySQL has no such
+    # engine, so it is the one dialect that needs a server. Without MYSQL_URL the stage skips and
+    # says so, which keeps a local run honest about covering less.
+    services:
+      mysql:
+        image: mysql:8
+        env:
+          MYSQL_ROOT_PASSWORD: root
+          MYSQL_DATABASE: drzl
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -uroot -proot"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=20
     steps:
       - uses: actions/checkout@v7
       - uses: pnpm/action-setup@v6
@@ -44,6 +60,8 @@ jobs:
           cache: 'pnpm'
       - run: pnpm install --frozen-lockfile
       - run: pnpm verify:packed
+        env:
+          MYSQL_URL: mysql://root:root@127.0.0.1:3306/drzl
 
   changeset-check:
     runs-on: ubuntu-latest

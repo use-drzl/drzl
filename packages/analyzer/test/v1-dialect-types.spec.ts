@@ -92,9 +92,13 @@ describe('MySQL text and blob caps', () => {
   it('states the width the type itself implies', () => {
     // There is no `length` on a `text` column to read: the type is the limit, so it has to come
     // from a table. Unstated, the schema accepted a megabyte for a column that tops out at 64 KB.
-    expect(describeV1Column(my('string', 'text'))?.maxLength).toBe(65535);
-    expect(describeV1Column(my('string', 'tinytext'))?.maxLength).toBe(255);
-    expect(describeV1Column(my('string', 'longtext'))?.maxLength).toBe(4294967295);
+    // In bytes, not characters. MySQL 8 on utf8mb4 takes 255 ascii in a tinytext and refuses 64
+    // thumbs-up characters, which are 64 characters and 256 bytes. Carried as `maxLength` the
+    // number was applied as a character count and the row validated clean.
+    expect(describeV1Column(my('string', 'text'))?.maxBytes).toBe(65535);
+    expect(describeV1Column(my('string', 'tinytext'))?.maxBytes).toBe(255);
+    expect(describeV1Column(my('string', 'longtext'))?.maxBytes).toBe(4294967295);
+    expect(describeV1Column(my('string', 'tinytext'))?.maxLength).toBeUndefined();
   });
 
   it('does not apply them to Postgres, whose text has no limit', () => {

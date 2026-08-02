@@ -64,8 +64,14 @@ async function exprFor(c: Column, checks: { name?: string; expression?: string }
 }
 
 describe('column constraints', () => {
-  it('carries a varchar limit', async () => {
-    expect(await exprFor(col('name', { maxLength: 255 }))).toBe('Type.String({ maxLength: 255 })');
+  it('carries a varchar limit as a predicate, not as maxLength', async () => {
+    // `maxLength` counts UTF-16 code units and both databases count `varchar(n)` in characters,
+    // so the keyword refused ten thumbs-up characters in a varchar(10) that Postgres accepts.
+    // Intersected onto the field, so it stays visible to a per-field comparison.
+    const e = await exprFor(col('name', { maxLength: 255 }));
+    expect(e.replace(/\s+/g, ' ')).toContain('Type.Intersect([ Type.String(),');
+    expect(e).toContain('[...v].length <= 255');
+    expect(e, 'the keyword that means something else is gone').not.toContain('maxLength: 255');
   });
 
   it('bounds an integer by its width', async () => {

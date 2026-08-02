@@ -67,35 +67,39 @@ async function schemasFor(columns: Column[], opts: Record<string, unknown>) {
 
 describe('off by default', () => {
   it('adds nothing when neither option is set', async () => {
-    const src = await emit([col('role', { maxLength: 50 })], {});
+    // A uuid format, not a length cap: a cap is intersected onto the object now, which would put
+    // `Type.Unsafe` in the file for reasons that have nothing to do with this option.
+    const src = await emit([col('role', { format: 'uuid' })], {});
     expect(src).not.toContain('Type.Unsafe');
     expect(src).not.toContain('import type { t }');
   });
 
   it('is not turned on by typedJson, which covers only the untyped columns', async () => {
-    const src = await emit([col('role', { maxLength: 50 })], { typedJson: true });
+    const src = await emit([col('role', { format: 'uuid' })], { typedJson: true });
     expect(src).not.toContain('Type.Unsafe');
   });
 });
 
 describe('with typedColumns', () => {
   it('wraps the schema rather than replacing it', async () => {
-    const src = await emit([col('role', { maxLength: 50 })], { typedColumns: true });
-    expect(src).toMatch(
-      /Type\.Unsafe<\(typeof t\.\$inferSelect\)\[['"]role['"]\]>\(Type\.String\(\{ maxLength: 50 \}\)\)/
+    const src = await emit([col('role', { format: 'uuid' })], { typedColumns: true });
+    // Prettier wraps this across lines, so the source is flattened before matching.
+    const flat = src.replace(/\s+/g, ' ');
+    expect(flat).toMatch(
+      /Type\.Unsafe<\(typeof t\.\$inferSelect\)\[['"]role['"]\]>\( ?Type\.String\(\{ pattern: /
     );
   });
 
   it('keeps every runtime check the wrapped schema carried', async () => {
     // This is the whole point of `Type.Unsafe` over substitution: the checks still run.
-    const m = await schemasFor([col('role', { maxLength: 5 })], {
+    const m = await schemasFor([col('role', { format: 'uuid' })], {
       typedColumns: true,
       schemaPath: path.join(__dirname, '..', 'db', 'schema.ts'),
     });
-    const f = m.SelecttSchema.properties.role;
-    expect(Value.Check(f, 'admin'), 'within the limit').toBe(true);
-    expect(Value.Check(f, 'toolong'), 'past the limit').toBe(false);
-    expect(Value.Check(f, 5), 'wrong type').toBe(false);
+    const s = m.SelecttSchema;
+    expect(Value.Check(s, { role: '00000000-0000-0000-0000-000000000000' }), 'a uuid').toBe(true);
+    expect(Value.Check(s, { role: 'nope' }), 'not a uuid').toBe(false);
+    expect(Value.Check(s, { role: 5 }), 'wrong type').toBe(false);
   });
 
   it('still substitutes for a column with no runtime type', async () => {

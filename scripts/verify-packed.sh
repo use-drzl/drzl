@@ -487,13 +487,14 @@ export const checked = pgTable('checked', {
   check('k_pair_c', sql`${t.k_pair_a} < ${t.k_pair_b}`),
 ]);
 PARITY_PG
-
 cat > src/schema-mysql.ts <<'PARITY_MYSQL'
 import {
   mysqlTable, mysqlEnum, text, varchar, char, int, tinyint, smallint, mediumint,
   bigint, serial, boolean, real, double, float, decimal, json, date, datetime,
   timestamp, time, year, binary, varbinary, blob, tinytext, mediumtext, longtext,
+  check,
 } from 'drizzle-orm/mysql-core';
+import { sql } from 'drizzle-orm';
 
 export const matrix = mysqlTable('matrix', {
   m_text: text().notNull(),
@@ -529,6 +530,38 @@ export const matrix = mysqlTable('matrix', {
   m_binary: binary({ length: 4 }).notNull(),
   m_varbinary: varbinary({ length: 16 }).notNull(),
   m_blob: blob().notNull(),
+});
+
+// Every CHECK form the parser reads, in MySQL's spelling. No cardinality(): MySQL has no arrays.
+export const checked = mysqlTable('checked', {
+  k_min: int(),
+  k_max: int(),
+  k_lo: int(),
+  k_between: int(),
+  k_eq: int(),
+  k_in_s: varchar({ length: 20 }),
+  k_in_n: int(),
+  k_len: varchar({ length: 50 }),
+  k_pair_a: int(),
+  k_pair_b: int(),
+}, (t) => [
+  check('k_min_c', sql`${t.k_min} >= 18`),
+  check('k_max_c', sql`${t.k_max} <= 100`),
+  check('k_lo_c', sql`${t.k_lo} > 0`),
+  check('k_between_c', sql`${t.k_between} BETWEEN 5 AND 15`),
+  check('k_eq_c', sql`${t.k_eq} = 7`),
+  check('k_in_s_c', sql`${t.k_in_s} IN ('a', 'b', 'c')`),
+  check('k_in_n_c', sql`${t.k_in_n} IN (1, 2, 3)`),
+  check('k_len_c', sql`char_length(${t.k_len}) >= 3`),
+  check('k_pair_c', sql`${t.k_pair_a} < ${t.k_pair_b}`),
+]);
+
+// The one question only a real MySQL settles: varchar(n) is n characters, and the TEXT family is
+// a byte budget. Nothing in the schema says which, so it is measured rather than reasoned about.
+export const limits = mysqlTable('limits', {
+  l_varchar: varchar({ length: 10 }),
+  l_tinytext: tinytext(),
+  l_text: text(),
 });
 PARITY_MYSQL
 
@@ -1467,6 +1500,160 @@ DEFAULTS_TRUTH
 if ! npx tsx src/defaults-truth.ts; then
   echo "FAIL: applyDefaults does not reproduce the database's defaults." >&2
   exit 1
+fi
+
+# MySQL is the one dialect with no in-process engine, so this stage runs only where a server is
+# reachable: CI provides one as a service container, and a local run without `MYSQL_URL` skips it
+# and says so rather than silently covering less than the output claims.
+if [ -n "${MYSQL_URL:-}" ]; then
+npm install --no-audit --no-fund --loglevel=error mysql2 >/dev/null
+
+cat > src/mysql-truth.ts <<'MYSQL_TRUTH'
+/**
+ * CHECK constraints and text limits against a real MySQL.
+ *
+ * MySQL is the only dialect with no in-process engine, so this is the one stage that needs a
+ * server. It earns that by answering a question nothing else can: MySQL's text limits are
+ * measured in **bytes**, not characters, and its `varchar(n)` is measured in characters, and no
+ * amount of reading the manual settles which applies to a given column as reliably as inserting
+ * into one.
+ *
+ * Measured here on utf8mb4, which is MySQL 8's default:
+ *
+ *   varchar(10)  accepts 10 emoji, rejects 11        -> characters
+ *   tinytext     accepts 63 emoji (252 bytes)
+ *                rejects 64 emoji (256 bytes)
+ *                accepts 255 ascii, rejects 256      -> bytes
+ */
+import mysql from 'mysql2/promise';
+import { UpdatecheckedSchema as drzlChecked } from './gen/mysql/zod/checked.zod';
+import { UpdatelimitsSchema as drzlLimits } from './gen/mysql/zod/limits.zod';
+
+const db = await mysql.createConnection(process.env.MYSQL_URL!);
+await db.query('DROP TABLE IF EXISTS checked');
+await db.query('DROP TABLE IF EXISTS limits');
+await db.query(`
+CREATE TABLE checked (
+  k_min int CHECK (k_min >= 18),
+  k_max int CHECK (k_max <= 100),
+  k_lo int CHECK (k_lo > 0),
+  k_between int CHECK (k_between BETWEEN 5 AND 15),
+  k_eq int CHECK (k_eq = 7),
+  k_in_s varchar(20) CHECK (k_in_s IN ('a', 'b', 'c')),
+  k_in_n int CHECK (k_in_n IN (1, 2, 3)),
+  k_len varchar(50) CHECK (char_length(k_len) >= 3),
+  k_pair_a int,
+  k_pair_b int,
+  CONSTRAINT k_pair_c CHECK (k_pair_a < k_pair_b)
+) CHARACTER SET utf8mb4`);
+await db.query(`
+CREATE TABLE limits (
+  l_varchar varchar(10),
+  l_tinytext tinytext,
+  l_text text
+) CHARACTER SET utf8mb4`);
+
+const EMOJI = '\u{1F44D}';
+
+const CHECK_PROBES: Record<string, unknown[]> = {
+  k_min: [17, 18, 19],
+  k_max: [99, 100, 101],
+  k_lo: [0, 1],
+  k_between: [4, 5, 15, 16],
+  k_eq: [6, 7],
+  k_in_s: ['a', 'c', 'd'],
+  k_in_n: [1, 3, 4],
+  k_len: ['ab', 'abc', EMOJI.repeat(3)],
+  k_pair_a: [1, 100],
+  k_pair_b: [1, 100],
+};
+
+const LIMIT_PROBES: Record<string, unknown[]> = {
+  l_varchar: ['a'.repeat(10), 'a'.repeat(11), EMOJI.repeat(10), EMOJI.repeat(11)],
+  l_tinytext: ['a'.repeat(255), 'a'.repeat(256), EMOJI.repeat(63), EMOJI.repeat(64)],
+  l_text: ['a'.repeat(65535), 'a'.repeat(65536)],
+};
+
+async function accepts(table: string, col: string, value: unknown): Promise<boolean> {
+  try {
+    await db.beginTransaction();
+    await db.query(`INSERT INTO \`${table}\` (\`${col}\`) VALUES (?)`, [value]);
+    await db.rollback();
+    return true;
+  } catch {
+    try {
+      await db.rollback();
+    } catch {
+      /* already rolled back */
+    }
+    return false;
+  }
+}
+
+// The update schemas, whose fields are all optional, so a one-column probe is a valid input and
+// nothing needs unwrapping. Calling `.partial()` here instead made every probe read as a
+// rejection, which looked exactly like a catastrophic generator bug. Same trap as the Postgres
+// harness, and the same fix.
+const parses = (schema: any, col: string, v: unknown) => {
+  try {
+    return schema.safeParse({ [col]: v }).success;
+  } catch {
+    return false;
+  }
+};
+
+type Row = { table: string; col: string; value: unknown; db: boolean; drzl: boolean };
+const rows: Row[] = [];
+for (const [col, values] of Object.entries(CHECK_PROBES)) {
+  for (const value of values) {
+    rows.push({
+      table: 'checked',
+      col,
+      value,
+      db: await accepts('checked', col, value),
+      drzl: parses(drzlChecked, col, value),
+    });
+  }
+}
+for (const [col, values] of Object.entries(LIMIT_PROBES)) {
+  for (const value of values) {
+    rows.push({
+      table: 'limits',
+      col,
+      value,
+      db: await accepts('limits', col, value),
+      drzl: parses(drzlLimits, col, value),
+    });
+  }
+}
+
+const strict = rows.filter((r) => r.db && !r.drzl);
+const loose = rows.filter((r) => !r.db && r.drzl);
+const show = (v: unknown) => (typeof v === 'string' ? `${v.length} units` : JSON.stringify(v));
+
+console.log(`    ${rows.length} probes against a real MySQL`);
+console.log(`    rows MySQL rejects and DRZL accepts: ${loose.length}`);
+
+if (strict.length) {
+  console.error('\n    FAIL: DRZL rejects rows MySQL accepts:');
+  for (const r of strict.slice(0, 20)) console.error(`      ${r.table}.${r.col} = ${show(r.value)}`);
+  await db.end();
+  process.exit(1);
+}
+if (loose.length) {
+  console.log('    accepted by DRZL but not by MySQL:');
+  for (const r of loose.slice(0, 10)) console.log(`      ${r.table}.${r.col} = ${show(r.value)}`);
+}
+
+await db.end();
+MYSQL_TRUTH
+
+if ! npx tsx src/mysql-truth.ts; then
+  echo "FAIL: a generated schema disagrees with MySQL." >&2
+  exit 1
+fi
+else
+  echo "==> MySQL ground truth skipped: no MYSQL_URL"
 fi
 
 cat > src/sqlite-truth.ts <<'SQLITE_TRUTH'

@@ -238,12 +238,14 @@ function tbExprForColumn(
       // a bare string accepted values Postgres rejects, and `format` is not an option here
       // because TypeBox ignores it unless the consuming project registered it first.
       const formatPattern = c.format === 'uuid' ? UUID_PATTERN : COLUMN_FORMATS[c.format ?? ''];
+      // Not `maxLength`. That keyword counts UTF-16 code units, and both Postgres and MySQL count
+      // a `varchar(n)` in characters, so ten thumbs-up characters are a valid row in a varchar(10)
+      // and this refused it. The cap moves to the registered kind, where an exact count can be
+      // written; a MySQL TEXT byte budget goes the same way.
       const base: Array<[string, string]> = formatPattern
         ? [['pattern', JSON.stringify(formatPattern)]]
-        : c.maxLength
-          ? [['maxLength', String(c.maxLength)]]
-          : [];
-      return `Type.String(${renderOptions(merged(base))})`;
+        : [];
+      return tbCapExpr(c, `Type.String(${renderOptions(merged(base))})`);
     }
     case 'number': {
       const o = renderOptions(merged(tbBounds(c)));
@@ -445,7 +447,10 @@ function renderTableSchemas(
   );
   const needsRows =
     rows.some((r) => rowCols.some((s) => s.has(r.left) && s.has(r.right))) ||
-    lengths.some((k) => rowCols.some((s) => s.has(k.column)));
+    lengths.some((k) => rowCols.some((s) => s.has(k.column))) ||
+    [insertCols, updateCols, selectCols].some((cs) =>
+      cs.some((c) => c.tsType === 'string' && !c.arrayDimensions && !c.shape && (c.maxLength || c.maxBytes))
+    );
   const rowImport = needsRows ? `, Kind, TypeRegistry` : '';
 
   return `import { Type${rowImport} } from '@sinclair/typebox';
@@ -498,6 +503,35 @@ const ROW_PREAMBLE = `TypeRegistry.Set('DrzlRowCheck', (schema: any, value: any)
  * The cost is that this constraint does not survive serialisation to JSON Schema, where a bare
  * `minLength` would. Emitting the wrong count in a form that serialises is not a better trade.
  */
+/**
+ * Column caps as intersection branches: characters for `varchar(n)`, bytes for MySQL's TEXT
+ * family.
+ *
+ * `maxLength` and `minLength` count UTF-16 code units, which agrees with neither database. Both
+ * count `varchar(n)` in characters and MySQL counts `tinytext` in bytes, so both are written out
+ * as predicates rather than approximated by a keyword that means a third thing.
+ *
+ * The cost is that a cap no longer serialises into the JSON Schema. Emitting a number that means
+ * something else in a form that serialises is not a better trade.
+ */
+function tbCapExpr(c: Column, base: string): string {
+  if (c.tsType !== 'string' || c.arrayDimensions || c.shape) return base;
+  const branch = (desc: string, expr: string) => `Type.Unsafe<unknown>({
+    [Kind]: 'DrzlRowCheck',
+    description: ${JSON.stringify(desc)},
+    assert: (v: any) => v == null || ${expr},
+  })`;
+  const out: string[] = [];
+  if (c.maxLength) out.push(branch(`at most ${c.maxLength} characters`, `[...v].length <= ${c.maxLength}`));
+  if (c.maxBytes) {
+    out.push(branch(`at most ${c.maxBytes} bytes`, `new TextEncoder().encode(v).length <= ${c.maxBytes}`));
+  }
+  // Intersected onto the field rather than onto the object, so a per-field comparison can still
+  // see the constraint. On the object it was invisible to the parity harness, which reads
+  // `schema.properties[col]`, and 133 columns looked unconstrained that were not.
+  return out.length ? `Type.Intersect([${base}, ${out.join(', ')}])` : base;
+}
+
 function tbLengthBranches(lengths: LengthCheck[], cols: Column[]): string[] {
   const present = new Set(cols.map((c) => c.name));
   const OPS: Record<LengthCheck['operator'], string> = {
