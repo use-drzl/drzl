@@ -375,7 +375,9 @@ import {
   pgTable, pgEnum, text, varchar, char, uuid, integer, smallint, bigint, serial,
   boolean, real, doublePrecision, numeric, decimal, json, jsonb, date, timestamp,
   time, interval, bytea, inet, cidr, macaddr, point, line, geometry, bit, vector,
+  check,
 } from 'drizzle-orm/pg-core';
+import { sql } from 'drizzle-orm';
 
 export const moodEnum = pgEnum('mood', ['happy', 'sad', 'neutral']);
 
@@ -435,6 +437,39 @@ export const matrix = pgTable('matrix', {
   c_bit: bit({ dimensions: 3 }).notNull(),
   c_vector: vector({ dimensions: 3 }).notNull(),
 });
+
+// Every CHECK form the shared parser claims to understand, so Postgres can be asked whether the
+// emitted constraint means the same thing. CHECK support is DRZL's main advantage over the
+// first-party validators and until now it was verified only against its own emitted strings.
+// Nullable on purpose, like the matrix table: each probe inserts one column.
+export const checked = pgTable('checked', {
+  k_min: integer(),
+  k_max: integer(),
+  k_lo: integer(),
+  k_hi: integer(),
+  k_between: integer(),
+  k_eq: integer(),
+  k_in_s: text(),
+  k_in_n: integer(),
+  k_len: text(),
+  k_len_max: text(),
+  k_card: text().array(),
+  k_pair_a: integer(),
+  k_pair_b: integer(),
+}, (t) => [
+  check('k_min_c', sql`${t.k_min} >= 18`),
+  check('k_max_c', sql`${t.k_max} <= 100`),
+  check('k_lo_c', sql`${t.k_lo} > 0`),
+  check('k_hi_c', sql`${t.k_hi} < 10`),
+  check('k_between_c', sql`${t.k_between} BETWEEN 5 AND 15`),
+  check('k_eq_c', sql`${t.k_eq} = 7`),
+  check('k_in_s_c', sql`${t.k_in_s} IN ('a', 'b', 'c')`),
+  check('k_in_n_c', sql`${t.k_in_n} IN (1, 2, 3)`),
+  check('k_len_c', sql`length(${t.k_len}) >= 3`),
+  check('k_len_max_c', sql`char_length(${t.k_len_max}) <= 5`),
+  check('k_card_c', sql`cardinality(${t.k_card}) >= 2`),
+  check('k_pair_c', sql`${t.k_pair_a} < ${t.k_pair_b}`),
+]);
 PARITY_PG
 
 cat > src/schema-mysql.ts <<'PARITY_MYSQL'
@@ -849,7 +884,10 @@ report_size() {
   local dir="$1" lib="$2" budget="$3"
   local bytes cols per
   bytes=$(cat "$dir"/*.ts | wc -c)
-  cols=$(grep -cE '^\s+c_[a-z0-9_]+:' src/schema.ts)
+  # Every column declaration in the fixture, not just one table's. Counting only the `c_` prefix
+  # meant adding a second table grew the numerator and left the denominator alone, so the budget
+  # fired on a change that made the output smaller per column, not bigger.
+  cols=$(grep -cE '^\s+[a-z][a-z0-9_]*: ' src/schema.ts)
   per=$(( bytes / cols ))
   printf '    %-8s %6d bytes over %2d columns = %4d/column (budget %d)\n' "$lib" "$bytes" "$cols" "$per" "$budget"
   if [ "$per" -gt "$budget" ]; then
@@ -862,13 +900,17 @@ report_size() {
 
 echo "==> generated output size"
 size_fail=0
-# Roughly 1.4x today's figure: loose enough that adding a constraint to one column type does not
+# Roughly 1.35x today's figure: loose enough that adding a constraint to one column type does not
 # trip it, tight enough that doubling the output does. A budget with 4x headroom catches nothing,
 # which was the first draft of this.
-report_size src/gen/pg/zod      zod      300  || size_fail=1
-report_size src/gen/pg/valibot  valibot  400  || size_fail=1
-report_size src/gen/pg/arktype  arktype  220  || size_fail=1
-report_size src/gen/pg/typebox  typebox  350  || size_fail=1
+#
+# Raised once, when the fixture gained thirteen columns that each carry a CHECK. That is the
+# densest output the generators produce, so the per-column average rose without any generator
+# emitting more for the same input.
+report_size src/gen/pg/zod      zod      420  || size_fail=1
+report_size src/gen/pg/valibot  valibot  540  || size_fail=1
+report_size src/gen/pg/arktype  arktype  240  || size_fail=1
+report_size src/gen/pg/typebox  typebox  430  || size_fail=1
 [ "$size_fail" = 0 ] || exit 1
 
 if ! npx tsx src/parity.ts; then
@@ -938,6 +980,23 @@ CREATE TABLE matrix (
   c_geometry point,
   c_bit bit(3),
   c_vector real[]
+);
+
+CREATE TABLE checked (
+  k_min integer CHECK (k_min >= 18),
+  k_max integer CHECK (k_max <= 100),
+  k_lo integer CHECK (k_lo > 0),
+  k_hi integer CHECK (k_hi < 10),
+  k_between integer CHECK (k_between BETWEEN 5 AND 15),
+  k_eq integer CHECK (k_eq = 7),
+  k_in_s text CHECK (k_in_s IN ('a', 'b', 'c')),
+  k_in_n integer CHECK (k_in_n IN (1, 2, 3)),
+  k_len text CHECK (length(k_len) >= 3),
+  k_len_max text CHECK (char_length(k_len_max) <= 5),
+  k_card text[] CHECK (cardinality(k_card) >= 2),
+  k_pair_a integer,
+  k_pair_b integer,
+  CONSTRAINT k_pair_c CHECK (k_pair_a < k_pair_b)
 );
 `;
 GROUND_DDL
@@ -1069,6 +1128,146 @@ if ! npx tsx src/ground-truth.ts; then
   echo "FAIL: a generated schema disagrees with Postgres itself." >&2
   exit 1
 fi
+
+cat > src/checks-truth.ts <<'CHECKS_TRUTH'
+/**
+ * CHECK constraints against Postgres itself.
+ *
+ * This is DRZL's main advantage over the first-party validators, and until now it was verified
+ * only against its own emitted strings: unit tests asserted the schema said `.min(18)` and the
+ * emitted module was executed to confirm it rejected 17. Neither asks whether `.min(18)` means
+ * what `CHECK (k_min >= 18)` means. Postgres is the only thing that can answer that.
+ *
+ * The gate here runs the other way round from the matrix one, because the official validators
+ * have no CHECK support at all and are therefore looser than the database on every one of these
+ * columns by construction. So:
+ *
+ *   FAIL   DRZL rejects what Postgres accepts. Over-strict breaks working code, and there is no
+ *          reading of a CHECK under which that is correct.
+ *   REPORT DRZL accepts what Postgres rejects. Sometimes deliberate, since the parser refuses
+ *          expressions it cannot read with certainty, so it is counted rather than gated.
+ */
+import { PGlite } from '@electric-sql/pglite';
+import { DDL } from './ddl';
+// The *update* schema, whose fields are all optional, so a one-column probe is a valid input.
+// The select schema is not usable here: a row-level check wraps the object in a ZodEffects, which
+// has no `.partial()` and no `.shape`, so every probe threw and read as a rejection. That looked
+// exactly like a catastrophic generator bug for one very confusing minute.
+//
+// It is also the right semantic. Inserting one column is a partial row, and that is what the
+// database is being asked about.
+import { UpdatecheckedSchema as drzlUpdate } from './gen/pg/zod/checked.zod';
+import { createUpdateSchema } from 'drizzle-orm/zod';
+import { checked } from './schema';
+
+const db = new PGlite();
+await db.exec(DDL);
+
+const official: any = createUpdateSchema(checked);
+const drzl: any = drzlUpdate;
+
+/**
+ * Values chosen to sit on both sides of every bound, since a probe pool that never lands on a
+ * boundary cannot tell `>` from `>=`. That distinction is most of what a CHECK says.
+ */
+const PROBES: Record<string, unknown[]> = {
+  k_min: [17, 18, 19, 0, -1],
+  k_max: [99, 100, 101, 0],
+  k_lo: [0, 1, 2, -1],
+  k_hi: [8, 9, 10, 11],
+  k_between: [4, 5, 10, 15, 16],
+  k_eq: [6, 7, 8],
+  k_in_s: ['a', 'c', 'd', '', 'A'],
+  k_in_n: [1, 3, 4, 0],
+  k_len: ['ab', 'abc', 'abcd', '', '\u{1F44D}\u{1F44D}\u{1F44D}'],
+  k_len_max: ['abcde', 'abcdef', '', '\u{1F44D}\u{1F44D}\u{1F44D}\u{1F44D}\u{1F44D}'],
+  k_card: [[], ['a'], ['a', 'b'], ['a', 'b', 'c']],
+  // One side of a row-level comparison, with the other NULL. SQL leaves the CHECK satisfied, so
+  // an emitted schema that rejects here would turn away rows the database takes.
+  k_pair_a: [1, 100, -1],
+  k_pair_b: [1, 100, -1],
+};
+
+async function dbAccepts(col: string, value: unknown): Promise<boolean> {
+  try {
+    await db.exec('BEGIN');
+    await db.query(`INSERT INTO checked (${col}) VALUES ($1)`, [value as never]);
+    await db.exec('ROLLBACK');
+    return true;
+  } catch {
+    try {
+      await db.exec('ROLLBACK');
+    } catch {
+      /* already rolled back */
+    }
+    return false;
+  }
+}
+
+const ok = (schema: any, v: unknown) => {
+  try {
+    return schema.safeParse(v).success;
+  } catch {
+    return false;
+  }
+};
+
+// The whole object is parsed, not the field alone: a row-level check lives on the object, so a
+// per-field parse could never see it. Every other key is left out, which is what the database
+// does too when one column is inserted.
+const parses = (schema: any, col: string, v: unknown) => {
+  try {
+    return schema.safeParse({ [col]: v }).success;
+  } catch {
+    return false;
+  }
+};
+
+type Row = { col: string; value: unknown; db: boolean; drzl: boolean; off: boolean };
+const rows: Row[] = [];
+for (const [col, values] of Object.entries(PROBES)) {
+  for (const value of values) {
+    rows.push({
+      col,
+      value,
+      db: await dbAccepts(col, value),
+      drzl: parses(drzl, col, value),
+      off: parses(official, col, value),
+    });
+  }
+}
+
+const strict = rows.filter((r) => r.db && !r.drzl);
+const loose = rows.filter((r) => !r.db && r.drzl);
+const offLoose = rows.filter((r) => !r.db && r.off);
+const show = (v: unknown) => JSON.stringify(v);
+
+console.log(`    ${rows.length} CHECK probes against a real Postgres (${Object.keys(PROBES).length} constrained columns)`);
+console.log(`    rows Postgres rejects and the validator accepts: DRZL ${loose.length}, drizzle-orm ${offLoose.length}`);
+
+if (strict.length) {
+  console.error('\n    FAIL: DRZL rejects rows Postgres accepts:');
+  for (const r of strict.slice(0, 20)) {
+    console.error(`      ${r.col} = ${show(r.value)}`);
+  }
+  console.error('\n    A CHECK read more strictly than the database wrote it turns away valid rows.');
+  await db.close();
+  process.exit(1);
+}
+
+if (loose.length) {
+  console.log('    accepted by DRZL but not by Postgres (parser declined to read the check):');
+  for (const r of loose.slice(0, 10)) console.log(`      ${r.col} = ${show(r.value)}`);
+}
+
+await db.close();
+CHECKS_TRUTH
+
+if ! npx tsx src/checks-truth.ts; then
+  echo "FAIL: a generated CHECK disagrees with Postgres." >&2
+  exit 1
+fi
+
 cd "$APP"
 
 # ---------------------------------------------------------------------------------------------
