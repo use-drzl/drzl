@@ -213,16 +213,32 @@ The split walks the expression rather than splitting on the text, so the `AND` i
 and the one inside `'A AND B'` are both left alone. If any single part is not understood, the
 whole constraint is skipped: enforcing half of a constraint is enforcing a different one.
 
+### `length()` becomes a character count
+
+```ts
+// check('name_len', sql`length(${t.name}) >= 3 AND length(${t.name}) <= 8`)
+name: z.string()
+  .refine((v) => [...v].length >= 3, { message: 'name_len: length(name) >= 3' })
+  .refine((v) => [...v].length <= 8, { message: 'name_len: length(name) <= 8' }),
+```
+
+The one function call the parser reads, because the mapping is exact. `char_length` is the same
+function and is read too. Counted in code points, so it agrees with the database on emoji.
+
+`octet_length` is **not** read: it counts bytes, which depends on the encoding and cannot be
+derived from a JavaScript string without choosing one. Neither is `lower`, which would need a
+locale to be faithful.
+
 **Only unambiguous constraints are translated.** These are skipped rather than guessed at:
 
-| Skipped                       | Why                                                       |
-| ----------------------------- | --------------------------------------------------------- |
-| `start_date < end_date`       | A statement about the row, not about either field         |
-| `age >= 18 OR age <= 65`      | A disjunction cannot be split the way a conjunction can   |
-| `NOT (age >= 18)`             | Same: negation changes the scope of everything inside it  |
-| `age >= 18 AND length(n) > 3` | One part is not understood, so neither is enforced        |
-| `length(name) > 3`            | Function call                                             |
-| `email ~ '^[a-z]+$'`          | Postgres `~` is POSIX ERE, not JavaScript's regex dialect |
+| Skipped                       | Why                                                      |
+| ----------------------------- | -------------------------------------------------------- |
+| `start_date < end_date`       | A statement about the row, not about either field        |
+| `age >= 18 OR age <= 65`      | A disjunction cannot be split the way a conjunction can  |
+| `NOT (age >= 18)`             | Same: negation changes the scope of everything inside it |
+| `age >= 18 AND length(n) > 3` | One part is not understood, so neither is enforced       |
+
+| `email ~ '^[a-z]+$'` | Postgres `~` is POSIX ERE, not JavaScript's regex dialect |
 
 A schema that quietly enforces a _guess_ at your constraint is worse than one enforcing nothing,
 because it rejects rows the database would have accepted.

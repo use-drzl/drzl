@@ -84,3 +84,58 @@ describe('a varchar(10) column', () => {
     expect(m.SelecttSchema.shape.bio.safeParse(THUMB.repeat(500)).success).toBe(true);
   });
 });
+
+describe('a CHECK on length()', () => {
+  // The one function call the check parser reads, because a character count maps exactly. Counted
+  // in code points for the same reason `varchar(n)` is. Verified against Postgres for
+  // `CHECK (length(name) >= 3 AND length(name) <= 8)`: agrees on all eight probes, emoji included.
+  const withCheck = async (expression: string) => {
+    const analysis: Analysis = {
+      dialect: 'postgres',
+      tables: [
+        {
+          name: 't',
+          tsName: 't',
+          columns: [col('name')],
+          unique: [],
+          indexes: [],
+          checks: [{ name: 'name_len', expression }],
+        },
+      ] as never,
+      enums: [],
+      relations: [],
+      issues: [],
+    };
+    const dir = path.join(__dirname, '.tmp-charlen');
+    await fs.mkdir(dir, { recursive: true });
+    await new ZodGenerator(analysis).generate({ outDir: dir } as never);
+    const file = path.join(dir, `t-${process.pid}-${seq++}.ts`);
+    await fs.rename(path.join(dir, 't.zod.ts'), file);
+    return await import(file);
+  };
+
+  it('enforces the bound in characters', async () => {
+    const m = await withCheck('length(name) >= 3 AND length(name) <= 8');
+    const f = m.SelecttSchema.shape.name;
+    expect(f.safeParse('ab').success, 'two characters').toBe(false);
+    expect(f.safeParse('abc').success, 'three').toBe(true);
+    expect(f.safeParse('abcdefgh').success, 'eight').toBe(true);
+    expect(f.safeParse('abcdefghi').success, 'nine').toBe(false);
+  });
+
+  it('counts emoji as one character each, as the database does', async () => {
+    const m = await withCheck('length(name) >= 3 AND length(name) <= 8');
+    const f = m.SelecttSchema.shape.name;
+    expect(f.safeParse(THUMB.repeat(2)).success, 'two emoji').toBe(false);
+    expect(f.safeParse(THUMB.repeat(3)).success, 'three emoji').toBe(true);
+    // Sixteen UTF-16 units, which a `.max(8)` would have refused.
+    expect(f.safeParse(THUMB.repeat(8)).success, 'eight emoji').toBe(true);
+    expect(f.safeParse(THUMB.repeat(9)).success, 'nine emoji').toBe(false);
+  });
+
+  it('names the constraint in the message, so a failure points at the schema', async () => {
+    const m = await withCheck('length(name) >= 3');
+    const r = m.SelecttSchema.safeParse({ name: 'ab' });
+    expect(r.error.issues[0].message).toBe('name_len: length(name) >= 3');
+  });
+});

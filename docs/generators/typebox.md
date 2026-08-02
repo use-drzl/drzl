@@ -122,6 +122,19 @@ The generator itself is unaffected: TypeBox schemas are the right choice whereve
 yourself, or hand them to something that speaks JSON Schema. Pair it with a `zod` generator if you
 also want oRPC routers in the same project.
 
+## Character limits are approximate
+
+A `varchar(n)` limit is n **characters**, and TypeBox's `maxLength` counts `.length`, which is
+UTF-16 code units. The two agree until the text leaves the basic plane: a `varchar(10)` column
+accepts ten emoji, and `maxLength: 10` refuses eight of them.
+
+JSON Schema defines `maxLength` in code points, so this is TypeBox's implementation rather than
+the spec, and there is no predicate to hook in a declarative schema. The zod and valibot
+generators are exact here.
+
+See [Zod, character limits](/generators/zod#character-limits-count-characters) for the
+measurements against Postgres.
+
 ## `applyDefaults`
 
 Drizzle knows what a column defaults to, and `drizzle-orm` reproduces none of them.

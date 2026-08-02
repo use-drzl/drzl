@@ -88,6 +88,19 @@ comparison operators take numeric literals, so a 64 bit bound cannot be written 
 DSL at all; `drizzle-orm/arktype` states it through a narrow predicate built with the builder
 API instead. Every other column type is bounded here exactly as the official module bounds it.
 
+## Character limits are approximate
+
+A `varchar(n)` limit is n **characters**, and ArkType's `string <= n` counts `.length`, which is
+UTF-16 code units. The two agree until the text leaves the basic plane: a `varchar(10)` column
+accepts ten emoji, and `string <= 10` refuses eight of them.
+
+ArkType states a length declaratively and this generator emits one string per field, so there is
+nowhere to put a code-point count. The zod and valibot generators are exact here; pair one of them
+with this generator if your columns hold emoji or other astral-plane text near their limit.
+
+See [Zod, character limits](/generators/zod#character-limits-count-characters) for the
+measurements against Postgres.
+
 ## `applyDefaults`
 
 Drizzle knows what a column defaults to, and `drizzle-orm` reproduces none of them.

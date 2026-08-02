@@ -93,12 +93,17 @@ describe('what it refuses, and why that matters', () => {
 
   it('refuses a whole conjunction when any one part is not understood', () => {
     // Enforcing half of a constraint is enforcing a different constraint.
-    expect(rejected('age >= 18 AND length(name) > 3')).toMatch(/part of an AND/);
+    expect(rejected("age >= 18 AND lower(name) = 'x'")).toMatch(/part of an AND/);
     expect(rejected("age >= 18 AND email ~ '^[a-z]+$'")).toMatch(/part of an AND/);
   });
 
-  it('refuses a function call', () => {
-    expect(rejected('length(name) > 3')).toBeTruthy();
+  it('refuses a function call it cannot map exactly', () => {
+    // `length` is read, because a character count maps exactly. These do not: `lower` would need
+    // a locale to be faithful, and `octet_length` counts bytes, which depends on the encoding and
+    // cannot be derived from a JavaScript string without picking one.
+    expect(rejected("lower(name) = 'x'")).toBeTruthy();
+    expect(rejected('octet_length(name) > 3')).toBeTruthy();
+    expect(rejected('abs(n) > 3')).toBeTruthy();
   });
 
   it('refuses a regex match, whose dialect is not JavaScript', () => {
@@ -224,5 +229,34 @@ describe('row-level comparisons', () => {
     // something the schema never said.
     expect(rejected('a > b + 1')).toBeTruthy();
     expect(rejected('a + b > 0')).toBeTruthy();
+  });
+});
+
+describe('character-count constraints', () => {
+  // The one function call this parser reads, because the mapping is exact. Counted in code
+  // points by the generators, since Postgres counts characters and `.length` counts UTF-16 units.
+  it('reads length() and char_length() alike', () => {
+    for (const e of ['length(name) > 3', 'char_length(name) > 3', 'LENGTH(name) > 3']) {
+      const r = parseCheck(e, 'min_name');
+      expect(r.ok, e).toBe(true);
+      if (!r.ok) continue;
+      expect(r.checks, 'not a value comparison').toHaveLength(0);
+      expect(r.lengths).toEqual([{ column: 'name', operator: '>', value: '3', name: 'min_name' }]);
+    }
+  });
+
+  it('carries both ends of a conjunction', () => {
+    const r = parseCheck('length(a) > 3 AND length(a) < 10');
+    expect(r.ok && r.lengths).toHaveLength(2);
+  });
+
+  it('normalises != to <>', () => {
+    const r = parseCheck('length(a) != 5');
+    expect(r.ok && r.lengths![0].operator).toBe('<>');
+  });
+
+  it('refuses a comparison against anything but a number', () => {
+    expect(rejected('length(a) > b')).toBeTruthy();
+    expect(rejected("length(a) > '3'")).toBeTruthy();
   });
 });
