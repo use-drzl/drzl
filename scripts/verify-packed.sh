@@ -1058,17 +1058,32 @@ npm init -y >/dev/null 2>&1
 npm install --no-audit --no-fund --loglevel=error \
   "$TARS"/*.tgz drizzle-orm@0.45.2 zod tsx >/dev/null
 
+# Written once and analyzed under both majors, so the comparison below is about the analyzer
+# rather than about two schemas that happen to differ. Every type here exists in both.
 cat > src/schema.ts <<'OLD_SCHEMA'
-import { pgTable, pgEnum, text, integer, varchar, timestamp, boolean } from 'drizzle-orm/pg-core';
+import {
+  pgTable, pgEnum, text, integer, smallint, bigint, varchar, char, timestamp, date,
+  boolean, numeric, doublePrecision, uuid, json, jsonb,
+} from 'drizzle-orm/pg-core';
 
 export const mood = pgEnum('mood', ['sad', 'ok', 'happy']);
 
 export const rows = pgTable('rows', {
   id: integer('id').primaryKey(),
+  small: smallint('small').notNull(),
+  big53: bigint('big53', { mode: 'number' }).notNull(),
+  big64: bigint('big64', { mode: 'bigint' }).notNull(),
   name: varchar('name', { length: 40 }).notNull(),
+  code: char('code', { length: 3 }).notNull(),
   bio: text('bio'),
   at: timestamp('at').notNull(),
+  day: date('day').notNull(),
   live: boolean('live').notNull(),
+  amount: numeric('amount').notNull(),
+  ratio: doublePrecision('ratio').notNull(),
+  ref: uuid('ref').notNull(),
+  blob: json('blob').notNull(),
+  blob2: jsonb('blob2').notNull(),
   feeling: mood('feeling').notNull(),
   tags: text('tags').array().notNull(),
   scores: integer('scores').array().notNull(),
@@ -1076,6 +1091,9 @@ export const rows = pgTable('rows', {
   grid: text('grid').array().array().notNull(),
 });
 OLD_SCHEMA
+
+# The same file, analyzed by the v1 project, so the two runs can be compared directly.
+cp src/schema.ts "$APP/src/cross-major.ts"
 
 cat > drzl.config.ts <<'OLD_CONFIG'
 import { defineConfig } from '@drzl/cli/config';
@@ -1088,6 +1106,101 @@ export default defineConfig({
 OLD_CONFIG
 
 npx drzl generate --config drzl.config.ts >/dev/null
+
+cat > describe-columns.ts <<'DESCRIBE'
+import { SchemaAnalyzer } from '@drzl/analyzer';
+
+// What the analyzer claims about each column, reduced to the facts every generator reads.
+main().catch((e) => {
+  console.error(e);
+  process.exit(1);
+});
+
+async function main() {
+  const file = process.argv[2];
+  const a = await new SchemaAnalyzer(file).analyze({});
+  const cols = a.tables.find((t) => t.name === 'rows')?.columns ?? [];
+  const out = cols.map((c) => ({
+    name: c.name,
+    tsType: c.tsType,
+    dbType: c.dbType,
+    nullable: c.nullable,
+    arrayDimensions: c.arrayDimensions ?? 0,
+    enumValues: c.enumValues ?? null,
+    maxLength: c.maxLength ?? null,
+    min: c.min ?? null,
+    max: c.max ?? null,
+    format: c.format ?? null,
+    shape: c.shape?.kind ?? null,
+  }));
+  console.log(JSON.stringify(out, null, 1));
+}
+DESCRIBE
+
+cp describe-columns.ts "$APP/describe-columns.ts"
+npx tsx describe-columns.ts src/schema.ts > "$WORK/cols-0.4x.json"
+( cd "$APP" && npx tsx describe-columns.ts src/cross-major.ts ) > "$WORK/cols-v1.json"
+
+cat > cross-major.ts <<'CROSS'
+import { readFileSync } from 'node:fs';
+
+/**
+ * The same schema, analyzed under both drizzle majors, has to describe the same columns.
+ *
+ * This is the systematic form of the bug that prompted the stage: the analyzer read v1's array
+ * signal and not 0.4x's, so `.array()` columns were `unknown` on the version most people have.
+ * A per-column diff catches every instance of that shape at once, including the ones nobody has
+ * thought to write a test for.
+ *
+ * Anything genuinely different between the majors belongs here, named, with a reason. An empty
+ * list is the claim that the analyzer is version independent.
+ *
+ * This catches divergence. It cannot catch both majors being wrong the same way, which is why the
+ * unnamed-column check below is separate rather than folded in: removing the analyzer's
+ * `PgEnumColumn` arm makes both majors report `unknown`, so this comparison stays silent and that
+ * one fires. Measured, not assumed.
+ */
+const ALLOWED: Record<string, string> = {};
+
+const a = JSON.parse(readFileSync(process.env.OLD_JSON!, 'utf8'));
+const b = JSON.parse(readFileSync(process.env.NEW_JSON!, 'utf8'));
+const key = (c: any) => c.name;
+const byName = (rows: any[]) => new Map(rows.map((c) => [key(c), c]));
+const old = byName(a);
+const now = byName(b);
+
+const names = [...new Set([...old.keys(), ...now.keys()])];
+const diffs: string[] = [];
+for (const n of names) {
+  const l = old.get(n);
+  const r = now.get(n);
+  if (!l || !r) {
+    diffs.push(`${n}: present on ${l ? '0.4x' : 'v1'} only`);
+    continue;
+  }
+  for (const f of Object.keys(l)) {
+    const lv = JSON.stringify(l[f]);
+    const rv = JSON.stringify(r[f]);
+    if (lv === rv) continue;
+    const waiver = ALLOWED[`${n}.${f}`];
+    if (waiver) continue;
+    diffs.push(`${n}.${f}: 0.4x ${lv}, v1 ${rv}`);
+  }
+}
+
+console.log(`    ${names.length} columns compared across both drizzle majors`);
+if (diffs.length) {
+  console.error('    FAIL: the analyzer describes the same schema differently per major:');
+  for (const d of diffs) console.error(`      ${d}`);
+  console.error('\n    A generator reads these fields, so a difference here is a different schema.');
+  process.exit(1);
+}
+CROSS
+
+OLD_JSON="$WORK/cols-0.4x.json" NEW_JSON="$WORK/cols-v1.json" npx tsx cross-major.ts || {
+  echo "FAIL: the analyzer is not consistent across drizzle-orm majors." >&2
+  exit 1
+}
 
 cat > check-old.ts <<'OLD_CHECK'
 import { SchemaAnalyzer } from '@drzl/analyzer';

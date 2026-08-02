@@ -24,10 +24,12 @@ generator on drizzle-orm 0.4x, the version the analyzer depends on:
 - **`.array()` columns came back `unknown`.** 0.4x wraps the column in a `PgArray` whose
   `baseColumn` is the element; v1 leaves the class alone and raises `dimensions`. Only the v1
   signal was read.
-- **`pgEnum` columns came back `unknown`.** The class map had no arm for `PgEnumColumn`, so the
-  values sat in `enumValues` with no type to attach to.
+- **`pgEnum` columns came back `unknown`, on both majors.** The class map had no arm for
+  `PgEnumColumn` and `describeV1Column` does not read `dataType: 'string enum'` either. The
+  emitted schemas were still correct, because every generator reads `enumValues` ahead of
+  `tsType`, so this one was a gap in the analysis model rather than a validation hole.
 
-Both produced schemas that accepted anything, in all five generators, with nothing reporting a
-problem. `verify-packed.sh` pins `drizzle-orm@1.0.0-rc.4`, so the whole verification ladder only
-ever ran on one major; it now runs a stage against 0.4x that fails on any column the analyzer
-cannot name. That stage found the enum bug the first time it ran.
+The array bug did produce schemas that accepted anything, in all five generators, with nothing
+reporting a problem. `verify-packed.sh` pins `drizzle-orm@1.0.0-rc.4`, so the whole verification
+ladder only ever ran on one major; it now runs a stage against 0.4x that fails on any column the
+analyzer cannot name. That stage found the enum gap the first time it ran.
