@@ -29,28 +29,28 @@
   },
   "dependencies": {
     "@drzl/analyzer": "workspace:^",
+    "@drzl/generator-arktype": "workspace:^",
     "@drzl/generator-orpc": "workspace:^",
-    "@drzl/generator-zod": "workspace:^",
     "@drzl/generator-service": "workspace:^",
     "@drzl/generator-valibot": "workspace:^",
-    "@drzl/generator-arktype": "workspace:^",
+    "@drzl/generator-zod": "workspace:^",
     "@drzl/validation-core": "workspace:^",
-    "commander": "^14.0.0",
-    "chalk": "^5.6.0",
-    "chokidar": "^4.0.3",
-    "ora": "^8.2.0",
+    "chalk": "^6.0.0",
+    "chokidar": "^5.0.0",
     "cli-progress": "^3.12.0",
-    "zod": "^4.1.5",
-    "jiti": "^2.5.1"
+    "commander": "^15.0.0",
+    "jiti": "^2.7.0",
+    "ora": "^9.4.1",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "drizzle-orm": "^0.45.2",
     "ts-node": "^10.9.2",
-    "tsup": "^8.5.0",
-    "typescript": "^5.9.2"
+    "tsup": "^8.5.1",
+    "typescript": "^5.9.3"
   },
   "engines": {
-    "node": ">=18.17.0"
+    "node": ">=22"
   },
   "publishConfig": {
     "access": "public",

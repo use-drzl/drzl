@@ -34,5 +34,8 @@
   },
   "dependencies": {
     "@drzl/validation-core": "workspace:^"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3"
   }
 }

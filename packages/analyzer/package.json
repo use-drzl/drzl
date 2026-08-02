@@ -23,12 +23,12 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "jiti": "^2.5.1"
+    "jiti": "^2.7.0"
   },
   "devDependencies": {
     "drizzle-orm": "^0.45.2",
-    "tsup": "^8.5.0",
-    "typescript": "^5.9.2"
+    "tsup": "^8.5.1",
+    "typescript": "^5.9.3"
   },
   "engines": {
     "node": ">=18.17.0"

@@ -14,7 +14,7 @@
     "build:publish": "pnpm build:packages && pnpm exec changeset publish",
     "dev": "pnpm --filter @drzl/cli run dev",
     "test": "pnpm -r test",
-    "lint": "eslint . --ext .ts",
+    "lint": "eslint .",
     "format": "prettier -w .",
     "typecheck": "pnpm -r --filter='{packages/*}' exec tsc -p tsconfig.json --noEmit",
     "verify:packed": "bash scripts/verify-packed.sh",
@@ -30,16 +30,16 @@
     "brand:gen:lockup": "node scripts/brand-gen.mjs assets/brand/source.jpeg --mode=lockup"
   },
   "devDependencies": {
-    "@changesets/cli": "^2.27.9",
-    "@types/node": "^24.3.1",
-    "@typescript-eslint/eslint-plugin": "^8.42.0",
-    "@typescript-eslint/parser": "^8.42.0",
-    "eslint": "^9.35.0",
-    "prettier": "^3.6.2",
-    "sharp": "^0.33.5",
-    "tsup": "^8.5.0",
-    "typescript": "^5.9.2",
-    "vitest": "^3.2.4"
+    "@changesets/cli": "^2.31.1",
+    "@types/node": "^26.1.2",
+    "@typescript-eslint/eslint-plugin": "^8.65.0",
+    "@typescript-eslint/parser": "^8.65.0",
+    "eslint": "^10.8.0",
+    "prettier": "^3.9.6",
+    "sharp": "^0.35.3",
+    "tsup": "^8.5.1",
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.10"
   },
   "funding": {
     "type": "github",
