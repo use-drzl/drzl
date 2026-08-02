@@ -197,7 +197,16 @@ function vExprForColumn(
       // See the zod generator: a bare string accepted values Postgres rejects.
       const pattern = c.format ? COLUMN_FORMATS[c.format] : undefined;
       if (pattern) return piped('v.string()', [`v.regex(new RegExp(${JSON.stringify(pattern)}))`]);
-      return piped('v.string()', c.maxLength ? [`v.maxLength(${c.maxLength})`] : []);
+      // Not `v.maxLength(n)`, which counts UTF-16 units where the column counts characters. See
+      // the zod generator and `CODEPOINT_LENGTH` in validation-core.
+      return piped(
+        'v.string()',
+        c.maxLength
+          ? [
+              `v.check((val) => [...val].length <= ${c.maxLength}, 'at most ${c.maxLength} characters')`,
+            ]
+          : []
+      );
     case 'number': {
       return piped('v.number()', [
         ...(isIntegerColumn(c) ? ['v.integer()'] : []),

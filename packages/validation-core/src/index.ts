@@ -173,6 +173,29 @@ export const COLUMN_FORMATS: Record<string, string> = {
     '|[+-]?(NaN|Infinity))\\s*$',
 };
 
+/**
+ * Why a character limit is not `.max(n)`.
+ *
+ * Postgres and MySQL count `varchar(n)` in **characters**; every JavaScript validator counts
+ * `.length`, which is UTF-16 code units. They agree until the text leaves the basic plane, and
+ * then they do not: `varchar(10)` accepts ten emoji, and `.max(10)` refuses eight of them.
+ *
+ * Verified against Postgres through PGlite, for `varchar(10)`:
+ *
+ *   3 emoji   db accepts   .max(10) accepts
+ *   8 emoji   db accepts   .max(10) REFUSES
+ *  10 emoji   db accepts   .max(10) REFUSES
+ *  11 emoji   db refuses   .max(10) refuses
+ *
+ * `[...v].length` counts code points, which is what the database counts, and matches on all four.
+ * Refusing a user's emoji is the failure mode this avoids, and it is the same rule applied
+ * everywhere else here: never reject what the database accepts.
+ *
+ * `@sinclair/typebox` and ArkType cannot express it. Both state a length declaratively with no
+ * predicate to hook, so they keep the UTF-16 form and are documented as approximate.
+ */
+export const CODEPOINT_LENGTH = '[...v].length';
+
 export function isIntegerColumn(c: Column): boolean {
   if (typeof c.integer === 'boolean') return c.integer;
   return c.dbType === 'INTEGER' || (c.min !== undefined && c.max !== undefined);
