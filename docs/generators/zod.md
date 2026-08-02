@@ -232,6 +232,40 @@ checked against the union as well, declare it as an enum column, which DRZL emit
 Implies `typedJson`, since both need the schema imported back. Off by default: it adds a `.pipe()`
 to every field, which is noise unless you use `.$type<T>()`.
 
+## `numeric` and `decimal` columns
+
+A `numeric` column is returned as a string, because a JS number cannot hold arbitrary precision.
+That used to leave the schema a bare `z.string()`, which accepts `'hello'` for a numeric column.
+`drizzle-orm/zod` still does. Postgres does not:
+
+```ts
+amount: z.string().regex(/* the numeric grammar */),
+```
+
+The pattern accepts everything Postgres accepts, which is more than it first appears: a sign,
+a leading `.`, exponents, `NaN` and `Infinity`, surrounding whitespace, and since Postgres 16 the
+underscore digit separators and `0x`/`0o`/`0b` literals, so `1_000` and `0xDEAD_beef` are valid.
+
+It is not applied on SQLite, whose NUMERIC affinity stores whatever text it is given.
+
+### Why numeric is the only format checked
+
+`date`, `timestamp`, `time`, `interval`, `inet`, `cidr` and `macaddr` were all attempted and all
+dropped. Each candidate pattern was run against a real Postgres, and each turned away input the
+database accepts:
+
+| Type      | What Postgres takes and the pattern refused                      |
+| --------- | ---------------------------------------------------------------- |
+| `date`    | `today`, `January 8, 1999`, `20200101`, `01/02/2020`, `infinity` |
+| `time`    | `allballs`, `12:00:00+02`                                        |
+| `macaddr` | `2020-01-01`, which Postgres pads into `20:20:00:01:00:01`       |
+| `inet`    | `10.1/16`, `::ffff:1.2.3.4`                                      |
+| `cidr`    | parses as `inet`, then additionally demands zero host bits       |
+
+A check that refuses valid data is worse than no check, so those columns keep a plain string. The
+same harness runs in CI and fails the build if a check ever disagrees with Postgres where
+`drizzle-orm` does not.
+
 ## `customType` columns
 
 A `customType` column has nothing checkable at runtime, and DRZL does not pretend otherwise:

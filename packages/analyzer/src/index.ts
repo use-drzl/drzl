@@ -66,8 +66,16 @@ export interface Column {
    */
   integer?: boolean;
 
-  /** A string column with a known shape, currently only `uuid`. */
-  format?: 'uuid';
+  /**
+   * A string column whose contents have a shape the database enforces.
+   *
+   * Only formats checked against Postgres itself appear here, and the list is short because most
+   * candidates failed: Postgres reads `'today'` and `'January 8, 1999'` as dates, pads
+   * `'2020-01-01'` into a macaddr, and accepts `'10.1/16'` as an inet. A check for any of those
+   * would reject input the database accepts, and turning away valid data is worse than not
+   * checking at all. See `COLUMN_FORMATS` in `@drzl/validation-core`.
+   */
+  format?: 'uuid' | 'numeric';
 
   /**
    * Array depth for a column declared with `.array()`, absent when the column is a scalar.
@@ -326,9 +334,18 @@ export function describeV1Column(column: any): Partial<Column> | null {
       out.format = 'uuid';
       break;
     case 'numeric':
-      // Returned as a string: a JS number cannot hold arbitrary precision.
+      // Returned as a string: a JS number cannot hold arbitrary precision. Which meant the schema
+      // was a bare `z.string()` and accepted `'hello'` for a numeric column, as does
+      // `drizzle-orm/zod`; Postgres rejects it.
       out.tsType = 'string';
       out.dbType = 'NUMERIC';
+      // Not on SQLite: its NUMERIC affinity stores whatever text it is given, so a pattern there
+      // would refuse values that engine accepts. The check was verified against Postgres.
+      if (
+        !String(column?.constructor?.[Symbol.for('drizzle:entityKind')] ?? '').startsWith('SQLite')
+      ) {
+        out.format = 'numeric';
+      }
       break;
     case 'json':
       out.tsType = 'any';
@@ -362,6 +379,9 @@ export function describeV1Column(column: any): Partial<Column> | null {
     case 'macaddr':
       out.tsType = 'string';
       out.dbType = semantic.toUpperCase();
+      // No format for any of these. Postgres accepts `10.1/16` and `::ffff:1.2.3.4` as inet, pads
+      // `2020-01-01` into a macaddr, and requires cidr host bits to be zero on top of parsing.
+      // Each candidate pattern turned away something the database takes.
       break;
     case 'binary':
       // Two unrelated families share this semantic and only the codec separates them. Postgres

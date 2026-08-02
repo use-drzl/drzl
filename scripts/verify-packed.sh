@@ -609,6 +609,12 @@ const ALLOWED: Record<string, string> = {
   m_ts: 'as c_date_d',
   s_int_ts: 'as c_date_d',
   s_int_ts_ms: 'as c_date_d',
+  // Stricter than official, and verified against Postgres itself through PGlite: a `numeric`
+  // column is a string, and a bare string schema accepts 'hello' where the database rejects it.
+  // Official accepts all of these; the database does not.
+  c_numeric: 'numeric format enforced; official accepts any string, Postgres does not',
+  c_decimal: 'as c_numeric',
+  m_decimal: 'as c_numeric',
   // Stricter than official, in DRZL's favour.
   'valibot/c_json': 'DRZL rejects Infinity and non-plain objects; official accepts both',
   'valibot/c_jsonb': 'as valibot/c_json',
@@ -795,8 +801,198 @@ if ! npx tsx src/parity.ts; then
   echo "FAIL: DRZL's generated schemas diverge from the official drizzle-orm validators." >&2
   exit 1
 fi
+
+echo "==> ground truth: the emitted schemas against a real Postgres"
+# Everything above compares DRZL to another library's opinion. Both can be wrong about the same
+# column and neither is the authority. PGlite is a real Postgres compiled to wasm, so each probe
+# value goes through an actual INSERT and the database answers directly.
+#
+# What is gated is narrow on purpose: DRZL must never disagree with Postgres where the official
+# module agrees. A validator is deliberately stricter than a coercing driver, so most
+# disagreements are correct and gating on them would be noise. Disagreeing where official does
+# not means DRZL alone is wrong, which is what an over-strict check looks like. Candidate format
+# patterns for date, time, macaddr and inet were all discarded because this caught them turning
+# away values Postgres accepts.
+cat > src/ddl.ts <<'GROUND_DDL'
+/**
+ * DDL matching src/schema.ts, column for column, asserted against the analysis so it cannot drift.
+ *
+ * Every column is nullable on purpose. Each probe inserts exactly one column, so a NOT NULL
+ * sibling would fail the statement before the value under test was ever considered, and the whole
+ * table would look like it rejected everything. Nullability is not what this measures: the
+ * question is whether the column's *type* accepts the value.
+ */
+export const DDL = `
+CREATE TYPE mood AS ENUM ('happy','sad','neutral');
+CREATE TABLE matrix (
+  c_text text,
+  c_varchar varchar(255),
+  c_char char(4),
+  c_uuid uuid,
+  c_text_enum text,
+  c_varchar_enum varchar(10),
+  c_int integer,
+  c_smallint smallint,
+  c_bigint_n bigint,
+  c_bigint_b bigint,
+  c_serial integer,
+  c_real real,
+  c_double double precision,
+  c_numeric numeric(10,2),
+  c_numeric_n numeric(10,2),
+  c_decimal numeric,
+  c_bool boolean,
+  c_enum mood,
+  c_json json,
+  c_jsonb jsonb,
+  c_jsonb_typed jsonb,
+  c_date_d date,
+  c_date_s date,
+  c_ts_d timestamp,
+  c_ts_s timestamp,
+  c_time time,
+  c_interval interval,
+  c_text_arr text[],
+  c_int_arr integer[],
+  c_enum_arr mood[],
+  c_bytea bytea,
+  c_inet inet,
+  c_cidr cidr,
+  c_macaddr macaddr,
+  c_point point,
+  c_line line,
+  c_geometry point,
+  c_bit bit(3),
+  c_vector real[]
+);
+`;
+GROUND_DDL
+
+cat > src/ground-truth.ts <<'GROUND_TRUTH'
+/**
+ * Ground truth: DRZL's schemas against Postgres itself, not against another library's opinion.
+ *
+ * Everything else here compares DRZL to `drizzle-orm`'s validators. Both can be wrong about the
+ * same column and neither is the authority; Postgres is. PGlite runs a real Postgres in-process,
+ * so every probe value can be sent through an actual INSERT and the answer compared with what the
+ * two schemas predicted.
+ *
+ * **What is gated**: DRZL must never disagree with Postgres where the official module agrees. A
+ * validator is deliberately stricter than a coercing driver, so most disagreements are correct
+ * and gating on them would be noise, but disagreeing where official does not means DRZL alone is
+ * wrong. That is the assertion, and it is the one that catches an over-strict check: candidate
+ * patterns for `date`, `time`, `macaddr` and `inet` were all discarded because this caught them
+ * turning away values Postgres accepts.
+ */
+import { PGlite } from '@electric-sql/pglite';
+import { createSelectSchema } from 'drizzle-orm/zod';
+import { matrix } from './schema.js';
+import { SelectmatrixSchema as drzl } from './gen/pg/zod/matrix.zod.js';
+import { DDL } from './ddl.js';
+
+const POOL: [string, unknown][] = [
+  ['0', 0], ['1.5', 1.5], ['-1', -1], ['40000', 40000], ['2147483648', 2147483648],
+  ['1e9', 1e9], ['1e300', 1e300], ['9007199254740993', 9007199254740993],
+  ['NaN', NaN], ['Infinity', Infinity],
+  ["''", ''], ["'hello'", 'hello'], ['300-char', 'x'.repeat(300)],
+  ["'0101'", '0101'], ["'010'", '010'], ["'12.5'", '12.5'], ["'1_000'", '1_000'], ["'0x1f'", '0x1f'],
+  ['uuid', '3f2504e0-4f89-11d3-9a0c-0305e82c3301'], ["'not-a-uuid'", 'not-a-uuid'],
+  ["'happy'", 'happy'], ["'zzz'", 'zzz'],
+  ['true', true], ['Date', new Date('2020-01-01T00:00:00Z')],
+  ["'2020-01-01'", '2020-01-01'], ["'12:00:00'", '12:00:00'],
+  ["['a']", ['a']], ['[1,2]', [1, 2]], ['[1,2,3]', [1, 2, 3]],
+  ['{a:1}', { a: 1 }], ['Uint8Array', new Uint8Array([1, 2])],
+  ["'10.0.0.1'", '10.0.0.1'], ["'999.999.999.999'", '999.999.999.999'],
+];
+
+const db = new PGlite();
+await db.exec(DDL);
+
+const official: any = createSelectSchema(matrix);
+const cols = Object.keys(official.shape);
+
+// The DDL is hand-written, so it is checked against the analysed schema rather than trusted.
+const dbCols: any = await db.query(
+  `select column_name from information_schema.columns where table_name = 'matrix'`
+);
+const dbNames = new Set(dbCols.rows.map((r: any) => r.column_name));
+const missing = cols.filter((c) => !dbNames.has(c));
+if (missing.length) {
+  console.error(`    FAIL: the ground-truth DDL is missing ${missing.join(', ')}`);
+  process.exit(1);
+}
+
+/** Does Postgres accept this value for this column? Each probe rolls back, so nothing persists. */
+async function dbAccepts(col: string, value: unknown): Promise<boolean> {
+  try {
+    await db.exec('BEGIN');
+    await db.query(`INSERT INTO matrix (${col}) VALUES ($1)`, [value as never]);
+    await db.exec('ROLLBACK');
+    return true;
+  } catch {
+    try {
+      await db.exec('ROLLBACK');
+    } catch {
+      /* already rolled back */
+    }
+    return false;
+  }
+}
+
+const ok = (schema: any, v: unknown) => {
+  try {
+    return schema.safeParse(v).success;
+  } catch {
+    return false;
+  }
+};
+
+type Row = { col: string; label: string; db: boolean; drzl: boolean; off: boolean };
+const rows: Row[] = [];
+for (const col of cols) {
+  for (const [label, value] of POOL) {
+    rows.push({
+      col,
+      label,
+      db: await dbAccepts(col, value),
+      drzl: ok(drzl.shape[col], value),
+      off: ok(official.shape[col], value),
+    });
+  }
+}
+
+const drzlOnly = rows.filter((r) => r.drzl !== r.db && r.off === r.db);
+const offOnly = rows.filter((r) => r.off !== r.db && r.drzl === r.db);
+const drzlAgrees = rows.filter((r) => r.drzl === r.db).length;
+const offAgrees = rows.filter((r) => r.off === r.db).length;
+
+console.log(`    ${rows.length} probes against a real Postgres (${cols.length} columns)`);
+console.log(`    agree with the database: DRZL ${drzlAgrees}, drizzle-orm ${offAgrees}`);
+console.log(`    DRZL closer than drizzle-orm on ${offOnly.length}, further on ${drzlOnly.length}`);
+
+if (drzlOnly.length) {
+  console.error('\n    FAIL: DRZL disagrees with Postgres where drizzle-orm agrees:');
+  for (const r of drzlOnly.slice(0, 20)) {
+    console.error(
+      `      ${r.col} on ${r.label}: Postgres ${r.db ? 'accepts' : 'rejects'}, DRZL ${r.drzl ? 'accepts' : 'rejects'}`
+    );
+  }
+  console.error('\n    A check that turns away what the database takes breaks working code.');
+  await db.close();
+  process.exit(1);
+}
+
+await db.close();
+GROUND_TRUTH
+
+npm install --no-audit --no-fund --loglevel=error @electric-sql/pglite >/dev/null
+if ! npx tsx src/ground-truth.ts; then
+  echo "FAIL: a generated schema disagrees with Postgres itself." >&2
+  exit 1
+fi
 cd "$APP"
 
 echo "OK: $count packages packed, installed into an empty project, generated, and the output"
 echo "    typechecks under bundler, node16 and nodenext, and validates at least as strictly as"
-echo "    the first-party drizzle-orm validator modules across three dialects and three modes."
+echo "    the first-party drizzle-orm validator modules across three dialects and three modes,"
+echo "    checked against a real Postgres."

@@ -6,6 +6,7 @@ import type {
 } from '@drzl/validation-core';
 import type { ColumnCheck } from '@drzl/validation-core';
 import {
+  COLUMN_FORMATS,
   insertColumns,
   isIntegerColumn,
   parseCheck,
@@ -185,6 +186,9 @@ function vExprForColumn(
     // these becomes `v.pipe(base, ...actions)` and stays a single expression.
     case 'string':
       if (c.format === 'uuid') return piped('v.string()', ['v.uuid()']);
+      // See the zod generator: a bare string accepted values Postgres rejects.
+      const pattern = c.format ? COLUMN_FORMATS[c.format] : undefined;
+      if (pattern) return piped('v.string()', [`v.regex(new RegExp(${JSON.stringify(pattern)}))`]);
       return piped('v.string()', c.maxLength ? [`v.maxLength(${c.maxLength})`] : []);
     case 'number': {
       return piped('v.number()', [

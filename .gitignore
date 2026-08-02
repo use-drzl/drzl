@@ -29,3 +29,4 @@ packages/*/test/.tmp-structured
 packages/*/test/.tmp-dates
 packages/*/test/.tmp-custom-*
 packages/*/test/.tmp-typedcols-*
+packages/*/test/.tmp-numfmt

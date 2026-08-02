@@ -9,6 +9,7 @@ import {
   formatCode,
   parseCheck,
   resolveConfiguredImport,
+  COLUMN_FORMATS,
   insertColumns,
   isIntegerColumn,
   moduleFileName,
@@ -146,6 +147,11 @@ function zodExprForColumn(
       // A uuid is a string with a fixed shape, so the format supersedes any length: stacking
       // `.max(36)` on top would restate what the format already guarantees.
       if (c.format === 'uuid') return 'z.uuid()';
+      // A format the database enforces. These replaced a bare `z.string()`, which accepted
+      // `'hello'` for a numeric or inet column: `drizzle-orm/zod` still does, and Postgres does
+      // not. Only formats verified against Postgres appear here, so nothing valid is turned away.
+      const pattern = c.format ? COLUMN_FORMATS[c.format] : undefined;
+      if (pattern) return `z.string().regex(new RegExp(${JSON.stringify(pattern)}))`;
       return c.maxLength ? `z.string().max(${c.maxLength})` : 'z.string()';
     case 'number': {
       const base = isIntegerColumn(c) ? 'z.number().int()' : 'z.number()';

@@ -7,6 +7,7 @@ import type {
 } from '@drzl/validation-core';
 import {
   formatCode,
+  COLUMN_FORMATS,
   insertColumns,
   isIntegerColumn,
   moduleFileName,
@@ -194,12 +195,15 @@ function tbExprForColumn(
 
   switch (c.tsType) {
     case 'string': {
-      const base: Array<[string, string]> =
-        c.format === 'uuid'
-          ? [['pattern', JSON.stringify(UUID_PATTERN)]]
-          : c.maxLength
-            ? [['maxLength', String(c.maxLength)]]
-            : [];
+      // A pattern for any format the database enforces, `uuid` included. See the zod generator:
+      // a bare string accepted values Postgres rejects, and `format` is not an option here
+      // because TypeBox ignores it unless the consuming project registered it first.
+      const formatPattern = c.format === 'uuid' ? UUID_PATTERN : COLUMN_FORMATS[c.format ?? ''];
+      const base: Array<[string, string]> = formatPattern
+        ? [['pattern', JSON.stringify(formatPattern)]]
+        : c.maxLength
+          ? [['maxLength', String(c.maxLength)]]
+          : [];
       return `Type.String(${renderOptions(merged(base))})`;
     }
     case 'number': {
