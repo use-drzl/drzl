@@ -442,6 +442,22 @@ export const matrix = pgTable('matrix', {
 // emitted constraint means the same thing. CHECK support is DRZL's main advantage over the
 // first-party validators and until now it was verified only against its own emitted strings.
 // Nullable on purpose, like the matrix table: each probe inserts one column.
+// Literal column defaults, which `applyDefaults` claims to reproduce in the insert schema. The
+// falsy ones are the point: 0, false and '' are what a truthiness test drops, and a dropped
+// default is invisible until a row arrives with a different value than the database would have
+// written.
+export const defaulted = pgTable('defaulted', {
+  d_int: integer().default(42),
+  d_zero: integer().default(0),
+  d_neg: integer().default(-1),
+  d_text: text().default('hello'),
+  d_empty: text().default(''),
+  d_bool_true: boolean().default(true),
+  d_bool_false: boolean().default(false),
+  d_real: doublePrecision().default(1.5),
+  d_enum: moodEnum().default('sad'),
+});
+
 export const checked = pgTable('checked', {
   k_min: integer(),
   k_max: integer(),
@@ -889,6 +905,20 @@ $gens  ],
 });
 CONFIG
   npx drzl generate --config "drzl.$dialect.config.ts" >/dev/null
+  # A second pass with `applyDefaults` on. The option had no coverage here at all, so a change
+  # that stopped it working would have shipped with a green gate.
+  if [ "$dialect" = pg ]; then
+    cat > "drzl.$dialect.defaults.config.ts" <<CONFIG
+import { defineConfig } from '@drzl/cli/config';
+
+export default defineConfig({
+  schema: '$schema',
+  outDir: 'src/gen/${dialect}-defaults',
+  generators: [{ kind: 'zod', path: 'src/gen/${dialect}-defaults/zod', applyDefaults: true }],
+});
+CONFIG
+    npx drzl generate --config "drzl.$dialect.defaults.config.ts" >/dev/null
+  fi
   for lib in $libs; do
     if [ ! -e "src/gen/$dialect/$lib/matrix.$lib.ts" ]; then
       echo "FAIL: the $lib generator produced no file for the $dialect parity matrix." >&2
@@ -1008,6 +1038,18 @@ CREATE TABLE matrix (
   c_geometry point,
   c_bit bit(3),
   c_vector real[]
+);
+
+CREATE TABLE defaulted (
+  d_int integer default 42,
+  d_zero integer default 0,
+  d_neg integer default -1,
+  d_text text default 'hello',
+  d_empty text default '',
+  d_bool_true boolean default true,
+  d_bool_false boolean default false,
+  d_real double precision default 1.5,
+  d_enum mood default 'sad'
 );
 
 CREATE TABLE checked (
@@ -1351,6 +1393,81 @@ if ! npx tsx src/checks-truth.ts; then
   exit 1
 fi
 
+
+
+cat > src/defaults-truth.ts <<'DEFAULTS_TRUTH'
+/**
+ * `applyDefaults` against what the database actually writes.
+ *
+ * The option reproduces a column's literal default in the insert schema, so parsing a row that
+ * omits the key fills it in. Until now it was covered only by unit tests asserting the emitted
+ * source said `.default(42)`. Nothing asked whether 42 is what Postgres would have written, and
+ * nothing here exercised the option at all: the fixture had no defaults in it.
+ *
+ * The falsy ones are the reason to bother. `0`, `false` and `''` are what a truthiness test drops,
+ * and a dropped default is invisible: the key is simply absent, the insert succeeds, and the
+ * database writes its own value. That is only a bug when the two disagree, which is exactly what
+ * this compares.
+ */
+import { PGlite } from '@electric-sql/pglite';
+import { DDL } from './ddl';
+import { InsertdefaultedSchema } from './gen/pg-defaults/zod/defaulted.zod';
+
+const db = new PGlite();
+await db.exec(DDL);
+
+// What the database writes when every column is omitted.
+await db.query('INSERT INTO defaulted DEFAULT VALUES');
+const stored: any = await db.query('SELECT * FROM defaulted');
+const row = stored.rows[0];
+
+// What the schema fills in for the same input.
+const parsed = (InsertdefaultedSchema as any).safeParse({});
+if (!parsed.success) {
+  console.error('    FAIL: the insert schema rejects a row with every defaulted column omitted.');
+  console.error(`      ${JSON.stringify(parsed.error.issues?.slice(0, 5))}`);
+  await db.close();
+  process.exit(1);
+}
+
+const cols = Object.keys(row);
+const diffs: string[] = [];
+let filled = 0;
+for (const col of cols) {
+  const db_ = row[col];
+  const ours = parsed.data[col];
+  if (ours === undefined) {
+    diffs.push(`      ${col}: Postgres writes ${JSON.stringify(db_)}, the schema fills in nothing`);
+    continue;
+  }
+  filled++;
+  // Postgres hands back a real number for double precision and a boolean for boolean, so a
+  // loose comparison would hide a string/number mix-up. Compared by value and by type.
+  if (db_ !== ours || typeof db_ !== typeof ours) {
+    diffs.push(
+      `      ${col}: Postgres writes ${JSON.stringify(db_)} (${typeof db_}), ` +
+        `the schema fills in ${JSON.stringify(ours)} (${typeof ours})`
+    );
+  }
+}
+
+console.log(`    ${cols.length} defaulted columns, ${filled} reproduced by applyDefaults`);
+
+if (diffs.length) {
+  console.error('\n    FAIL: applyDefaults disagrees with what the database writes:');
+  console.error(diffs.join('\n'));
+  console.error('\n    A default that differs writes a different row than omitting the key would.');
+  await db.close();
+  process.exit(1);
+}
+
+await db.close();
+DEFAULTS_TRUTH
+
+if ! npx tsx src/defaults-truth.ts; then
+  echo "FAIL: applyDefaults does not reproduce the database's defaults." >&2
+  exit 1
+fi
 
 cat > src/sqlite-truth.ts <<'SQLITE_TRUTH'
 /**
