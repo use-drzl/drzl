@@ -16,7 +16,7 @@ Zero‑friction codegen for Drizzle ORM. Analyze your schema. Generate validatio
   <a href="https://www.npmjs.com/package/@drzl/cli"><img alt="npm" src="https://img.shields.io/npm/v/%40drzl%2Fcli" /></a>
   <a href="https://pnpm.io"><img alt="pnpm" src="https://img.shields.io/badge/pnpm-workspace-4B37A5?logo=pnpm&logoColor=white" /></a>
   <img alt="typescript" src="https://img.shields.io/badge/TypeScript-5.x-3178C6?logo=typescript&logoColor=white" />
-  <img alt="node" src="https://img.shields.io/badge/Node-18.17%2B-339933?logo=node.js&logoColor=white" />
+  <img alt="node" src="https://img.shields.io/badge/Node-22%2B-339933?logo=node.js&logoColor=white" />
 </p>
 
 </div>
@@ -69,7 +69,8 @@ export default defineConfig({
 Runtime
 
 - ESM / ES2021 output
-- Node ≥ 18.17 (tested on Node 20+)
+- Node ≥ 22 for the `drzl` CLI, which is what its own dependencies require
+- Node ≥ 18.17 for the generator and template libraries, if you call them directly
 
 ## Packages
 

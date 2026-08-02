@@ -20,10 +20,11 @@
 
 ## Coding Style & Naming
 
-- Language: TypeScript (ESM). Published packages support Node >= 18.17; developing this repo
-  needs Node >= 22.13, because `packageManager` pins pnpm 11.
+- Language: TypeScript (ESM). `@drzl/cli` needs Node >= 22, since chalk 6 and chokidar 5 do; the
+  generator and template libraries still support Node >= 18.17. Developing this repo needs
+  Node >= 22.13, because `packageManager` pins pnpm 11.
 - Formatting: Prettier; run `pnpm format` before committing.
-- Linting: ESLint (`eslint.config.js`, `@typescript-eslint/*`). Fix warnings where feasible.
+- Linting: ESLint (`eslint.config.mjs`, `@typescript-eslint/*`). Fix warnings where feasible.
 - Indentation: 2 spaces; limit line length to ~100 to 120 chars.
 - Names: kebab-case for packages (`generator-zod`), PascalCase for types, camelCase for functions/vars, UPPER_SNAKE for constants.
 

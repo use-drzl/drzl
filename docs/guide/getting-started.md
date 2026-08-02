@@ -4,7 +4,7 @@ Get up and running in seconds, with no global installs required.
 
 Prereqs
 
-- Node.js ≥ 18.17 (LTS or newer)
+- Node.js ≥ 22
 - A Drizzle schema (TypeScript)
 
 1. Install the CLI
