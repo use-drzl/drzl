@@ -98,6 +98,7 @@ program
       // needing to know the option exists.
       analysis.tables = filterTables(analysis.tables, cfg);
       spinner.succeed(`Analysis complete in ${Date.now() - t0}ms`);
+      reportWideColumns(analysis.issues);
       // Under --check the existing output is captured before anything overwrites it, so the
       // regenerated result can be compared against it and the tree put back either way.
       const driftDirs = computeGeneratorOutputDirs(cfg);
@@ -445,6 +446,7 @@ program
           includeHeuristicRelations: cfg.analyzer.includeHeuristicRelations,
         });
         analysis.tables = filterTables(analysis.tables, cfg);
+        if (!opts.json) reportWideColumns(analysis.issues);
 
         if (opts.pipeline === 'analyze') {
           if (opts.json) {
@@ -696,5 +698,30 @@ program
       process.exit(1);
     }
   });
+
+/**
+ * Tell the user which columns got a validator that accepts anything.
+ *
+ * This is the user-facing half of a check `verify-packed.sh` runs on this repository. Two real
+ * bugs took exactly this shape, `.array()` and `pgEnum` columns coming back untyped on
+ * drizzle-orm 0.4x, and the only way anyone noticed was reading the generated file. A user whose
+ * schema uses a type nobody here has modelled gets the same silence, and no gate of ours helps
+ * them.
+ *
+ * Printed once with a count rather than a line per column, so a schema with fifty custom types
+ * stays readable.
+ */
+function reportWideColumns(issues: Array<{ code?: string; message?: string; hint?: string }>) {
+  const wide = issues.filter((i) => i.code === 'DRZL_ANL_UNKNOWN_COLUMN');
+  if (!wide.length) return;
+  console.warn(
+    chalk.yellow(`\n${wide.length} column${wide.length === 1 ? '' : 's'} could not be typed:`)
+  );
+  for (const i of wide.slice(0, 10)) console.warn(chalk.gray(`  - ${i.message}`));
+  if (wide.length > 10) console.warn(chalk.gray(`  ... and ${wide.length - 10} more`));
+  // One hint for the set, since they are almost always the same two.
+  const hints = [...new Set(wide.map((i) => i.hint).filter(Boolean))];
+  for (const h of hints) console.warn(chalk.gray(`  ${h}`));
+}
 
 program.parseAsync(process.argv);

@@ -1201,6 +1201,38 @@ export class SchemaAnalyzer {
       const constraints = this.columnConstraints(col);
       if (v1?.shape) delete constraints.maxLength;
 
+      // A column with no type is how two real bugs looked from the outside: `.array()` and
+      // `pgEnum` columns on drizzle-orm 0.4x came back `unknown`, every generator emitted a
+      // schema that accepted anything, and nothing said so. `verify-packed.sh` fails on it now,
+      // which protects this repository and does nothing for a user whose schema uses a type
+      // nobody here has modelled. That is the case where it matters most.
+      //
+      // A warning rather than an error: the rest of the schema still generates, and the
+      // generated code is still useful. A `customType` legitimately has no knowable runtime
+      // shape, so this is a report rather than a defect.
+      //
+      // The condition is "the emitted validator will be wide", not "tsType is unknown". A json
+      // column is also `unknown` and is not wide: the generators emit the JSON value space for
+      // it. A `custom` shape is wide, and is the one case where the user has a documented fix.
+      const shape = (v1?.shape ?? (constraints as any)?.shape)?.kind;
+      const finalTs = (v1?.tsType ?? tsType) as string;
+      const wide = (finalTs === 'unknown' || finalTs === 'any') && (!shape || shape === 'custom');
+      if (wide) {
+        const sqlType =
+          typeof (col as any)?.getSQLType === 'function' ? (col as any).getSQLType() : undefined;
+        issues.push({
+          code: 'DRZL_ANL_UNKNOWN_COLUMN',
+          level: 'warn',
+          message: `Column "${colName}" on table "${tsName}" has no known type${
+            sqlType ? ` (SQL type ${sqlType})` : ''
+          }, so its validator will accept any value.`,
+          hint:
+            shape === 'custom'
+              ? 'A customType has no runtime shape to read. Declare it with .$type<T>() and turn on typedColumns to give the validator the type.'
+              : 'Open an issue naming the column type so it can be modelled, or declare it with .$type<T>() and turn on typedColumns.',
+        });
+      }
+
       columns.push({
         name: colName,
         tsType,
