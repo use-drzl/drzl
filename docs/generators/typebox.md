@@ -115,6 +115,9 @@ neither `@sinclair/typebox` nor the newer `typebox` package implements that spec
 three all do. A router handed a TypeBox schema would compile and then fail at runtime, so the
 config rejects it rather than emitting one.
 
+This is a limit of TypeBox, not of `drizzle-orm`: its own `drizzle-orm/typebox-legacy` module
+works fine with `@sinclair/typebox`, and DRZL's output is measured against it on every CI run.
+
 The generator itself is unaffected: TypeBox schemas are the right choice wherever you consume them
 yourself, or hand them to something that speaks JSON Schema. Pair it with a `zod` generator if you
 also want oRPC routers in the same project.

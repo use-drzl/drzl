@@ -4,7 +4,7 @@ import type {
   ValidationGenerateOptions,
   ValidationRenderer,
 } from '@drzl/validation-core';
-import type { ColumnCheck, ColumnSet } from '@drzl/validation-core';
+import type { ColumnCheck, ColumnSet, RowCheck } from '@drzl/validation-core';
 import {
   formatCode,
   parseCheck,
@@ -266,6 +266,47 @@ function renderObjectShape(
     .join('\n');
 }
 
+/**
+ * `.refine()` calls that belong on the object rather than on a field.
+ *
+ * `CHECK (start_date < end_date)` is a statement about the row: neither column alone can say
+ * whether it holds, which is why it cannot be a field refinement. On the object it is exactly
+ * expressible. No official Drizzle validator module emits it, and DRZL used to skip it too.
+ *
+ * Both sides are guarded for null and undefined first, reproducing SQL, where a comparison
+ * involving NULL yields NULL and a CHECK passes on NULL. Without the guard a row omitting an
+ * optional column would be rejected by a comparison the database never applied.
+ */
+function rowRefinements(rows: RowCheck[], cols: Column[]): string {
+  const present = new Set(cols.map((c) => c.name));
+  const OPS: Record<RowCheck['operator'], string> = {
+    '>=': '>=',
+    '>': '>',
+    '<=': '<=',
+    '<': '<',
+    '=': '===',
+    '<>': '!==',
+  };
+  return (
+    rows
+      // A check naming a column this mode does not include cannot be evaluated: an insert schema
+      // omits generated columns, so the comparison would read undefined and always pass or fail.
+      .filter((r) => present.has(r.left) && present.has(r.right))
+      .map((r) => {
+        const l = `v[${JSON.stringify(r.left)}]`;
+        const rt = `v[${JSON.stringify(r.right)}]`;
+        const msg = JSON.stringify(
+          `${r.name ? `${r.name}: ` : ''}${r.left} ${r.operator} ${r.right}`
+        );
+        return (
+          `.refine((v) => ${l} == null || ${rt} == null || ${l} ${OPS[r.operator]} ${rt}, ` +
+          `{ message: ${msg}, path: [${JSON.stringify(r.left)}] })`
+        );
+      })
+      .join('')
+  );
+}
+
 function renderTableSchemas(
   table: Table,
   affix: ResolvedAffix,
@@ -287,6 +328,7 @@ function renderTableSchemas(
   const parsedChecks = (table.checks ?? []).map((k) => parseCheck(k.expression, k.name));
   const checks = parsedChecks.flatMap((p) => (p.ok ? p.checks : []));
   const sets = parsedChecks.flatMap((p) => (p.ok ? (p.sets ?? []) : []));
+  const rows = parsedChecks.flatMap((p) => (p.ok ? (p.rows ?? []) : []));
   // Insert and select can disagree: a json column with a default is optional on insert, so its
   // inferred type differs. Each shape therefore references the matching inference.
   const tj = typedJson
@@ -307,15 +349,15 @@ function renderTableSchemas(
 ${schemaImport}
 export const ${insertSchema} = z.object({
 ${bodyInsert}
-});
+})${rowRefinements(rows, insertCols)};
 
 export const ${updateSchema} = z.object({
 ${bodyUpdate}
-});
+})${rowRefinements(rows, updateCols)};
 
 export const ${selectSchema} = z.object({
 ${bodySelect}
-});
+})${rowRefinements(rows, selectCols)};
 
 export type ${insertType} = z.input<typeof ${insertSchema}>;
 export type ${updateType} = z.input<typeof ${updateSchema}>;

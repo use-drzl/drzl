@@ -234,6 +234,28 @@ Off by default because it adds an `import type` of your schema module to the gen
 That import is erased at build time, so it adds no runtime dependency and cannot create a runtime
 cycle, but the coupling should be a choice.
 
+## Row-level CHECK constraints
+
+`CHECK (start_date < end_date)` is a statement about the row: neither column alone can say whether
+it holds, so it cannot be a field refinement. It goes on the object instead:
+
+```ts
+export const SelectbookingsSchema = z
+  .object({/* ... */})
+  .refine((v) => v['startDate'] == null || v['endDate'] == null || v['startDate'] < v['endDate'], {
+    message: 'date_order: startDate < endDate',
+    path: ['startDate'],
+  });
+```
+
+Both sides are guarded for null first, reproducing SQL, where a comparison involving NULL yields
+NULL and a CHECK passes on NULL. Without that guard an update omitting one column would be
+rejected by a comparison the database never applied.
+
+The error is reported against the left column, so it has somewhere to land in a form. A constraint
+naming a column the mode does not carry (a generated column on insert, say) is left out rather
+than emitted against `undefined`.
+
 ## `typedColumns`
 
 `.$type<T>()` is a compile-time cast on **any** column, not just json. Drizzle's implementation is
