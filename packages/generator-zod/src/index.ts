@@ -206,6 +206,7 @@ function zodField(
   checks: ColumnCheck[] = [],
   typedJsonRef?: string,
   sets: ColumnSet[] = [],
+  applyDefault = false,
   /**
    * A reference to Drizzle's inferred type for a column that already has a runtime schema.
    *
@@ -229,9 +230,16 @@ function zodField(
     expr = `${expr}.nullable()`;
   }
   if (mode === 'insert') {
-    // Omit generated columns at callsite; for remaining fields,
-    // allow optional when nullable or has default.
-    if (c.nullable || c.hasDefault) expr = `${expr}.optional()`;
+    // A literal default can be reproduced, which makes the field optional on input and present
+    // on output rather than merely absent. `.default()` supersedes `.optional()`: it already
+    // makes the key optional, and stacking both would leave the default unreachable.
+    if (applyDefault && c.defaultValue !== undefined) {
+      expr = `${expr}.default(${JSON.stringify(c.defaultValue)})`;
+    } else if (c.nullable || c.hasDefault) {
+      // Omit generated columns at callsite; for remaining fields,
+      // allow optional when nullable or has default.
+      expr = `${expr}.optional()`;
+    }
   } else if (mode === 'update') {
     // All update fields are optional; preserve nullability
     expr = `${expr}.optional()`;
@@ -249,7 +257,8 @@ function renderObjectShape(
   coerceDates: NonNullable<ValidationGenerateOptions['coerceDates']>,
   checks: ColumnCheck[] = [],
   typedJson?: { table: string; mode: 'insert' | 'select'; allColumns?: boolean },
-  sets: ColumnSet[] = []
+  sets: ColumnSet[] = [],
+  applyDefaults = false
 ) {
   return cols
     .map((c) => {
@@ -261,7 +270,7 @@ function renderObjectShape(
       const replaces = c.tsType === 'any' || c.shape?.kind === 'custom';
       const ref = typedJson && replaces ? refFor(typedJson) : undefined;
       const narrow = typedJson?.allColumns && !replaces ? refFor(typedJson) : undefined;
-      return `  ${JSON.stringify(c.name)}: ${zodField(c, mode, coerceDates, checks, ref, sets, narrow)},`;
+      return `  ${JSON.stringify(c.name)}: ${zodField(c, mode, coerceDates, checks, ref, sets, applyDefaults, narrow)},`;
     })
     .join('\n');
 }
@@ -311,7 +320,8 @@ function renderTableSchemas(
   table: Table,
   affix: ResolvedAffix,
   coerceDates: NonNullable<ValidationGenerateOptions['coerceDates']>,
-  typedJson?: { schemaSpecifier: string; allColumns?: boolean }
+  typedJson?: { schemaSpecifier: string; allColumns?: boolean },
+  applyDefaults = false
 ) {
   const T = table.tsName;
   const insertSchema = schemaName('insert', T, affix);
@@ -337,9 +347,33 @@ function renderTableSchemas(
   const tjInsert = typedJson
     ? { table: table.tsName, mode: 'insert' as const, allColumns: typedJson.allColumns }
     : undefined;
-  const bodyInsert = renderObjectShape(insertCols, 'insert', coerceDates, checks, tjInsert, sets);
-  const bodyUpdate = renderObjectShape(updateCols, 'update', coerceDates, checks, tjInsert, sets);
-  const bodySelect = renderObjectShape(selectCols, 'select', coerceDates, checks, tj, sets);
+  const bodyInsert = renderObjectShape(
+    insertCols,
+    'insert',
+    coerceDates,
+    checks,
+    tjInsert,
+    sets,
+    applyDefaults
+  );
+  const bodyUpdate = renderObjectShape(
+    updateCols,
+    'update',
+    coerceDates,
+    checks,
+    tjInsert,
+    sets,
+    applyDefaults
+  );
+  const bodySelect = renderObjectShape(
+    selectCols,
+    'select',
+    coerceDates,
+    checks,
+    tj,
+    sets,
+    applyDefaults
+  );
   // A type-only import: it disappears at build time, so this adds no runtime dependency on the
   // schema module and cannot create an import cycle at runtime.
   const schemaImport = typedJson
@@ -408,7 +442,7 @@ export class ZodGenerator implements ValidationRenderer<ZodGenerateOptions> {
     // rename identifiers, never modules, so the barrel and importPath keep resolving.
     for (const table of this.analysis.tables) {
       const filePath = path.join(out, moduleFileName(table.tsName, fileSuffix));
-      const code = renderTableSchemas(table, affix, coerceDates, typedJson);
+      const code = renderTableSchemas(table, affix, coerceDates, typedJson, !!opts.applyDefaults);
       const formatted = await formatCode(
         buildHeader(opts.outputHeader) + code,
         filePath,

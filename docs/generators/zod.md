@@ -256,6 +256,33 @@ The error is reported against the left column, so it has somewhere to land in a 
 naming a column the mode does not carry (a generated column on insert, say) is left out rather
 than emitted against `undefined`.
 
+## `applyDefaults`
+
+Drizzle knows what a column defaults to. `drizzle-orm/zod` reproduces none of them, so a parsed
+insert is missing the values the database would have written.
+
+```ts
+{ kind: 'zod', path: 'src/validators/zod', applyDefaults: true }
+```
+
+```ts
+country: z.string().default("GB"),
+count: z.number().int().default(0),
+```
+
+`InserttSchema.parse({ name: 'x' })` now returns `{ name: 'x', country: 'GB', count: 0 }`, which is
+the row Postgres would have written for the same insert.
+
+Only **literal** defaults are reproduced. `defaultNow()`, `defaultRandom()` and any `sql` default
+are evaluated by the database, and `$defaultFn` is called by Drizzle at insert time; those columns
+stay `.optional()`, because a schema guessing at them would produce a different value than the one
+actually stored.
+
+Insert only. A default applies when a row is created, not when it is updated, and on select the
+value is already there.
+
+Off by default, because it changes what parsing _returns_ rather than only what it accepts.
+
 ## `typedColumns`
 
 `.$type<T>()` is a compile-time cast on **any** column, not just json. Drizzle's implementation is

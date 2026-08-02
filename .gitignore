@@ -31,3 +31,4 @@ packages/*/test/.tmp-custom-*
 packages/*/test/.tmp-typedcols-*
 packages/*/test/.tmp-numfmt
 packages/*/test/.tmp-rowchecks
+packages/*/test/.tmp-defaults

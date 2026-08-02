@@ -177,6 +177,7 @@ program
               schemaPath: cfg.schema,
               typedJson: g.typedJson,
               typedColumns: g.typedColumns,
+              applyDefaults: g.applyDefaults,
             });
             progress.stop();
             ora().succeed(chalk.green(`Generated (zod): ${files.length} files`));

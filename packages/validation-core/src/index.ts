@@ -66,6 +66,21 @@ export interface ValidationGenerateOptions {
    * `.pipe()` to every field, which is noise unless you use `.$type<T>()`.
    */
   typedColumns?: boolean;
+  /**
+   * Reproduce literal column defaults in the insert schema, so parsing fills them in.
+   *
+   * Off by default because it changes what parsing *returns*: `parse({})` on a table with
+   * `country: text().default('GB')` yields `{ country: 'GB' }` rather than `{}`. That is usually
+   * what you want from a schema that models the row, but it is a change in behaviour rather than
+   * only in strictness, so it is asked for rather than assumed.
+   *
+   * Only literal defaults are reproduced. `defaultNow()`, `defaultRandom()` and any `sql` default
+   * are evaluated by the database, and `$defaultFn` is called by Drizzle at insert time; a schema
+   * that guessed at any of them would produce a different value than the one actually stored.
+   *
+   * `drizzle-orm/zod` reproduces none of them, literal or otherwise.
+   */
+  applyDefaults?: boolean;
   format?: FormatOptions;
   /**
    * What every generated file is called after the Drizzle export name, e.g. `.zod.ts`
