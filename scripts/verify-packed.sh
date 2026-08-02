@@ -1157,6 +1157,12 @@ import { DDL } from './ddl';
 // It is also the right semantic. Inserting one column is a partial row, and that is what the
 // database is being asked about.
 import { UpdatecheckedSchema as drzlUpdate } from './gen/pg/zod/checked.zod';
+import { UpdatecheckedSchema as vUpdate } from './gen/pg/valibot/checked.valibot';
+import { UpdatecheckedSchema as aUpdate } from './gen/pg/arktype/checked.arktype';
+import { UpdatecheckedSchema as tUpdate } from './gen/pg/typebox/checked.typebox';
+import * as v from 'valibot';
+import { type } from 'arktype';
+import { Value } from '@sinclair/typebox/value';
 import { createUpdateSchema } from 'drizzle-orm/zod';
 import { checked } from './schema';
 
@@ -1223,6 +1229,32 @@ const parses = (schema: any, col: string, v: unknown) => {
   }
 };
 
+/**
+ * The same probes through all four generators.
+ *
+ * A CHECK form is read once by the shared parser and then emitted four times, so a generator can
+ * drop one without any test noticing: `length()` was applied by zod and valibot and emitted as
+ * nothing at all by arktype and typebox, for as long as both have existed. The matrix table
+ * already cross-checks the four, and it carries no CHECK constraints, so it could never see this.
+ *
+ * Whole-object parsing, because a row-level check lives on the object and a per-field comparison
+ * cannot reach it.
+ */
+const RUNNERS: Record<string, (o: unknown) => boolean> = {
+  zod: (o) => drzlUpdate.safeParse(o).success,
+  valibot: (o) => v.safeParse(vUpdate as never, o).success,
+  arktype: (o) => !((aUpdate as any)(o) instanceof type.errors),
+  typebox: (o) => Value.Check(tUpdate as never, o),
+};
+
+const safely = (f: (o: unknown) => boolean, o: unknown) => {
+  try {
+    return f(o);
+  } catch {
+    return false;
+  }
+};
+
 type Row = { col: string; value: unknown; db: boolean; drzl: boolean; off: boolean };
 const rows: Row[] = [];
 for (const [col, values] of Object.entries(PROBES)) {
@@ -1259,6 +1291,29 @@ if (loose.length) {
   console.log('    accepted by DRZL but not by Postgres (parser declined to read the check):');
   for (const r of loose.slice(0, 10)) console.log(`      ${r.col} = ${show(r.value)}`);
 }
+
+const split: string[] = [];
+for (const [col, values] of Object.entries(PROBES)) {
+  for (const value of values) {
+    const verdicts = Object.entries(RUNNERS).map(
+      ([name, run]) => [name, safely(run, { [col]: value })] as const
+    );
+    const yes = verdicts.filter(([, r]) => r).map(([n]) => n);
+    const no = verdicts.filter(([, r]) => !r).map(([n]) => n);
+    if (yes.length && no.length) {
+      split.push(`      ${col} = ${show(value)}: ${yes.join('/')} accept, ${no.join('/')} reject`);
+    }
+  }
+}
+
+if (split.length) {
+  console.error('\n    FAIL: the four generators disagree about a CHECK:');
+  for (const line of split.slice(0, 20)) console.error(line);
+  console.error('\n    One of them is dropping a constraint the parser read.');
+  await db.close();
+  process.exit(1);
+}
+console.log('    all four generators agree on every CHECK probe');
 
 await db.close();
 CHECKS_TRUTH
