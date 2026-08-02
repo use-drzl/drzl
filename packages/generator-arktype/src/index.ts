@@ -4,6 +4,7 @@ import type {
   ColumnCheck,
   ColumnSet,
   ResolvedAffix,
+  LengthCheck,
   RowCheck,
   ValidationRenderer,
   ValidationGenerateOptions,
@@ -295,6 +296,39 @@ function atRowNarrows(rows: RowCheck[], cols: Column[]): string {
     .join('');
 }
 
+/**
+ * `CHECK (length(name) >= 3)` as a narrow on the object.
+ *
+ * It cannot be `string >= 3`. ArkType's string bound counts UTF-16 code units and SQL's
+ * `length()` counts characters, so three thumbs-up characters are six units to ArkType. For a
+ * minimum that only under-enforces; for a maximum it refuses rows the database accepts. The
+ * spread operator counts characters, and a narrow is where an expression can be written at all,
+ * so both ends go here rather than one being right and the other quietly wrong.
+ *
+ * Null and absent both pass, matching SQL, where a check involving NULL is satisfied.
+ */
+function atLengthNarrows(lengths: LengthCheck[], cols: Column[]): string {
+  const present = new Set(cols.map((c) => c.name));
+  const OPS: Record<LengthCheck['operator'], string> = {
+    '>=': '>=',
+    '>': '>',
+    '<=': '<=',
+    '<': '<',
+    '=': '===',
+    '<>': '!==',
+  };
+  return lengths
+    .filter((k) => present.has(k.column))
+    .map((k) => {
+      const v = `o[${JSON.stringify(k.column)}]`;
+      const msg = JSON.stringify(
+        `${k.name ? `${k.name}: ` : ''}length(${k.column}) ${k.operator} ${k.value}`
+      );
+      return `.narrow((o, ctx) => ${v} == null || [...${v}].length ${OPS[k.operator]} ${k.value} || ctx.mustBe(${msg}))`;
+    })
+    .join('');
+}
+
 function renderTableSchemas(
   table: Table,
   affix: ResolvedAffix,
@@ -316,6 +350,7 @@ function renderTableSchemas(
   const sets = parsedChecks.flatMap((p) => (p.ok ? (p.sets ?? []) : []));
   const rows = parsedChecks.flatMap((p) => (p.ok ? (p.rows ?? []) : []));
   const cardinalities = parsedChecks.flatMap((p) => (p.ok ? (p.cardinalities ?? []) : []));
+  const lengths = parsedChecks.flatMap((p) => (p.ok ? (p.lengths ?? []) : []));
   const bodyInsert = renderObjectShape(
     insertCols,
     'insert',
@@ -347,15 +382,15 @@ function renderTableSchemas(
 
 export const ${insertSchema} = type({
 ${bodyInsert}
-})${atRowNarrows(rows, insertCols)};
+})${atRowNarrows(rows, insertCols)}${atLengthNarrows(lengths, insertCols)};
 
 export const ${updateSchema} = type({
 ${bodyUpdate}
-})${atRowNarrows(rows, updateCols)};
+})${atRowNarrows(rows, updateCols)}${atLengthNarrows(lengths, updateCols)};
 
 export const ${selectSchema} = type({
 ${bodySelect}
-})${atRowNarrows(rows, selectCols)};
+})${atRowNarrows(rows, selectCols)}${atLengthNarrows(lengths, selectCols)};
 
 export type ${insertType} = typeof ${insertSchema}["infer"];
 export type ${updateType} = typeof ${updateSchema}["infer"];
