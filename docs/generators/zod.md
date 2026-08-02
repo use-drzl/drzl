@@ -425,9 +425,16 @@ that `unknown` forces at the call site.
 
 ## Views
 
-Views get schemas too, including materialized views and views declared with an explicit column
-list. There is nothing special to configure: a view in your schema file produces
-`Select<View>Schema` alongside the tables.
+Views get schemas too, including views declared with an explicit column list. There is nothing
+special to configure: a view in your schema file produces schemas alongside the tables.
+
+A **materialized view** gets a select schema and nothing else. `INSERT INTO mv ...` fails with
+`cannot change materialized view`, so an insert or update schema for one describes an operation
+the database will always refuse.
+
+An ordinary view keeps all three. Postgres accepts an `INSERT` into a simple auto-updatable view,
+and whether a given view qualifies depends on its query rather than on anything the schema file
+states, so refusing them all would take away something that works.
 
 ## Custom names
 
