@@ -1,5 +1,107 @@
 # @drzl/cli
 
+## 4.13.0
+
+### Minor Changes
+
+- dc13c47: Add a JSON Schema and OpenAPI generator, and fix two analyzer gaps it uncovered on drizzle-orm 0.4x
+
+  `{ kind: 'json-schema' }` emits plain JSON Schema per table, with no runtime dependency at all.
+  The other four generators each target one validation library, so the output only helps a
+  TypeScript program that installs that library. JSON Schema is what OpenAPI documents, API
+  gateways, form builders and validators in other languages already read, and nothing in the
+  official Drizzle family emits it.
+
+  `target` picks the dialect: `draft-2020-12` (default), `openapi-3.1`, or `openapi-3.0`. The last
+  is genuinely different rather than older, spelling nullable as `nullable: true` and an exclusive
+  bound as a boolean beside the bound. Since JSON Schema ignores unknown keywords rather than
+  rejecting them, emitting the wrong dialect gives a document that validates and then accepts what
+  the constraint exists to reject.
+
+  Running the new generator through the real CLI surfaced two analyzer bugs affecting **every**
+  generator on drizzle-orm 0.4x, the version the analyzer depends on:
+
+  - **`.array()` columns came back `unknown`.** 0.4x wraps the column in a `PgArray` whose
+    `baseColumn` is the element; v1 leaves the class alone and raises `dimensions`. Only the v1
+    signal was read.
+  - **`pgEnum` columns came back `unknown`, on both majors.** The class map had no arm for
+    `PgEnumColumn` and `describeV1Column` does not read `dataType: 'string enum'` either. The
+    emitted schemas were still correct, because every generator reads `enumValues` ahead of
+    `tsType`, so this one was a gap in the analysis model rather than a validation hole.
+
+  The array bug did produce schemas that accepted anything, in all five generators, with nothing
+  reporting a problem. `verify-packed.sh` pins `drizzle-orm@1.0.0-rc.4`, so the whole verification
+  ladder only ever ran on one major; it now runs a stage against 0.4x that fails on any column the
+  analyzer cannot name. That stage found the enum gap the first time it ran.
+
+- 698e7b3: One options builder for every validation generator, and a default that was being dropped.
+
+  Each of the four generator branches in the CLI hand-built its own options object. Three documented
+  options had already been found silently dead that way: `typedJson` never reached typebox, and
+  `coerceDates` and `applyDefaults` never reached anything but zod. Fixing each instance did not
+  address the shape of the problem, so the four now share one builder and an option added once
+  reaches everything that can act on it.
+
+  What stays per-generator is a real capability rather than an oversight, and it is named as one:
+  ArkType does not receive the schema-import options, because it emits one string per field and a
+  TypeScript type reference has nowhere to live inside a string DSL.
+
+  ### The default that was being dropped
+
+  Auditing the result immediately turned up another: with `typedColumns` **and** `applyDefaults`
+  both on, the typebox generator emitted no default at all.
+
+  ```ts
+  // before
+  country: Type.Optional(Type.Unsafe<(typeof users.$inferInsert)['country']>(Type.String())),
+  // after
+  country: Type.Optional(Type.Unsafe<(typeof users.$inferInsert)['country']>(Type.String({ default: 'GB' }))),
+  ```
+
+  The default was being applied after the `Type.Unsafe` wrapper, where it lands on the wrapper
+  rather than the schema, and the helper that attaches it declines anything that is not a bare
+  `Type.X(...)`. So it returned the expression untouched and the default vanished without a word.
+  It now goes on the schema before anything wraps it.
+
+  Neither option is on by default, so this only affects a project that had turned both on.
+
+- c29891a: Warn when a column gets a validator that accepts anything
+
+  `tsType: 'unknown'` is the exact shape two real bugs took: `.array()` and `pgEnum` columns came
+  back untyped on drizzle-orm 0.4x, every generator emitted a validator accepting any value, and
+  nothing anywhere said so. The only way to find out was to read the generated file.
+
+  `verify-packed.sh` now fails on it, which protects this repository and does nothing for a user
+  whose schema uses a column type DRZL has not modelled. That is the case where it matters most,
+  because their validators are silently open and nobody has told them.
+
+  The analyzer now reports `DRZL_ANL_UNKNOWN_COLUMN` per column, and the CLI prints a summary after
+  analysis, naming the column and its SQL type. It stays a warning: the rest of the schema still
+  generates and the generated code is still useful.
+
+  The condition is "the emitted validator will be wide", not "the type is unknown". A `json` column
+  is also untyped and is not wide, since the generators emit the JSON value space for it. A
+  `customType` is wide, and gets a hint pointing at `.$type<T>()` with `typedColumns`, which is the
+  documented fix.
+
+### Patch Changes
+
+- Updated dependencies [19dfa3b]
+- Updated dependencies [78aeca2]
+- Updated dependencies [43c32de]
+- Updated dependencies [03f7810]
+- Updated dependencies [dc13c47]
+- Updated dependencies [3e15ea8]
+- Updated dependencies [b274391]
+- Updated dependencies [698e7b3]
+- Updated dependencies [c29891a]
+  - @drzl/generator-arktype@3.9.0
+  - @drzl/generator-typebox@0.7.0
+  - @drzl/analyzer@1.13.0
+  - @drzl/generator-zod@3.14.1
+  - @drzl/generator-valibot@3.13.0
+  - @drzl/generator-json-schema@0.2.0
+
 ## 4.12.0
 
 ### Minor Changes

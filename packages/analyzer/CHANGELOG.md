@@ -1,5 +1,74 @@
 # @drzl/analyzer
 
+## 1.13.0
+
+### Minor Changes
+
+- 78aeca2: Give json columns the JSON value space, and stop losing SQLite's mode columns
+
+  Every generator has a branch for `shape: { kind: 'json' }` that emits a real definition of what
+  JSON can hold. Nothing ever set that shape outside the drizzle v1 path, so a plain `json()` column
+  landed on `tsType: 'any'` and the branch never ran. The emitted validator was `z.any()`, which
+  accepts `undefined`, `NaN`, `Infinity`, a bigint, a Date and a Buffer, none of which survive a
+  round trip through a json column. It is now `z.json()`.
+
+  SQLite spells a mode as a distinct class rather than as config, so `text({ mode: 'json' })` is a
+  `SQLiteTextJson` and `blob({ mode: 'bigint' })` is a `SQLiteBigInt`. Neither matched any arm of
+  the class-name map, so both came back `UNKNOWN`, which is wider still than `any`.
+
+  Found by the untyped-column warning firing on a json column, which was correct.
+
+- c29891a: Warn when a column gets a validator that accepts anything
+
+  `tsType: 'unknown'` is the exact shape two real bugs took: `.array()` and `pgEnum` columns came
+  back untyped on drizzle-orm 0.4x, every generator emitted a validator accepting any value, and
+  nothing anywhere said so. The only way to find out was to read the generated file.
+
+  `verify-packed.sh` now fails on it, which protects this repository and does nothing for a user
+  whose schema uses a column type DRZL has not modelled. That is the case where it matters most,
+  because their validators are silently open and nobody has told them.
+
+  The analyzer now reports `DRZL_ANL_UNKNOWN_COLUMN` per column, and the CLI prints a summary after
+  analysis, naming the column and its SQL type. It stays a warning: the rest of the schema still
+  generates and the generated code is still useful.
+
+  The condition is "the emitted validator will be wide", not "the type is unknown". A `json` column
+  is also untyped and is not wide, since the generators emit the JSON value space for it. A
+  `customType` is wide, and gets a hint pointing at `.$type<T>()` with `typedColumns`, which is the
+  documented fix.
+
+### Patch Changes
+
+- dc13c47: Add a JSON Schema and OpenAPI generator, and fix two analyzer gaps it uncovered on drizzle-orm 0.4x
+
+  `{ kind: 'json-schema' }` emits plain JSON Schema per table, with no runtime dependency at all.
+  The other four generators each target one validation library, so the output only helps a
+  TypeScript program that installs that library. JSON Schema is what OpenAPI documents, API
+  gateways, form builders and validators in other languages already read, and nothing in the
+  official Drizzle family emits it.
+
+  `target` picks the dialect: `draft-2020-12` (default), `openapi-3.1`, or `openapi-3.0`. The last
+  is genuinely different rather than older, spelling nullable as `nullable: true` and an exclusive
+  bound as a boolean beside the bound. Since JSON Schema ignores unknown keywords rather than
+  rejecting them, emitting the wrong dialect gives a document that validates and then accepts what
+  the constraint exists to reject.
+
+  Running the new generator through the real CLI surfaced two analyzer bugs affecting **every**
+  generator on drizzle-orm 0.4x, the version the analyzer depends on:
+
+  - **`.array()` columns came back `unknown`.** 0.4x wraps the column in a `PgArray` whose
+    `baseColumn` is the element; v1 leaves the class alone and raises `dimensions`. Only the v1
+    signal was read.
+  - **`pgEnum` columns came back `unknown`, on both majors.** The class map had no arm for
+    `PgEnumColumn` and `describeV1Column` does not read `dataType: 'string enum'` either. The
+    emitted schemas were still correct, because every generator reads `enumValues` ahead of
+    `tsType`, so this one was a gap in the analysis model rather than a validation hole.
+
+  The array bug did produce schemas that accepted anything, in all five generators, with nothing
+  reporting a problem. `verify-packed.sh` pins `drizzle-orm@1.0.0-rc.4`, so the whole verification
+  ladder only ever ran on one major; it now runs a stage against 0.4x that fails on any column the
+  analyzer cannot name. That stage found the enum gap the first time it ran.
+
 ## 1.12.0
 
 ### Minor Changes

@@ -1,5 +1,99 @@
 # @drzl/generator-typebox
 
+## 0.7.0
+
+### Minor Changes
+
+- 19dfa3b: Apply `cardinality()` CHECK constraints in the ArkType and TypeBox generators
+
+  `CHECK (cardinality(tags) >= 2)` was parsed and then dropped by both, so an array the database
+  refuses validated clean. zod and valibot already applied it.
+
+  Each states it natively rather than as a predicate. ArkType bounds an array's length with the same
+  operators it bounds a number with, so it folds into the type: `string[] >= 2`. TypeBox uses
+  `minItems` and `maxItems`, which means the constraint survives serialisation to JSON Schema. JSON
+  Schema has no exclusive form of either keyword, but a length is an integer, so `> 2` becomes
+  `minItems: 3` and nothing is approximated.
+
+  The bound binds to the outermost array, so it counts what `cardinality()` counts, and it sits
+  inside the union with null on a nullable column, so null still passes.
+
+- 3e15ea8: Apply `length()` CHECK constraints in the ArkType and TypeBox generators
+
+  `CHECK (length(name) >= 3)` was parsed, applied by zod and valibot, and dropped in silence by the
+  other two: ArkType emitted a bare `string` and TypeBox a bare `Type.String()`. A constraint the
+  database enforces and the validator does not is precisely the gap these generators exist to close.
+
+  Neither uses its native length keyword, and that is deliberate. ArkType's `string >= 3` and
+  TypeBox's `minLength` both count UTF-16 code units, while SQL's `length()` counts characters, so
+  three thumbs-up characters are six units to both. On a minimum that only under-enforces; on a
+  maximum it refuses rows the database accepts, which is the `varchar(n)` bug the zod generator
+  already avoids by counting code points.
+
+  So each goes where an exact count can be expressed: a `.narrow()` on the object for ArkType, and a
+  branch of the same registered-kind intersection the row checks use for TypeBox. Null and absent
+  both pass, matching SQL.
+
+  The cost for TypeBox is that this constraint does not survive serialisation to JSON Schema, where
+  a bare `minLength` would. Emitting the wrong count in a form that serialises is not a better
+  trade.
+
+- b274391: Enforce row-level CHECK constraints in the valibot, TypeBox and ArkType generators
+
+  `CHECK (start_date < end_date)` compares two columns, so it cannot be a field constraint. Only the
+  zod generator applied one; the other three parsed it and dropped it, so a row the database refuses
+  validated clean. Each generator now states it in its own idiom: `v.check` on a pipe for valibot,
+  `.narrow` for ArkType, and for TypeBox a registered kind intersected with the object, which both
+  `Value.Check` and `TypeCompiler` honour. Serialising a TypeBox schema to JSON Schema keeps the
+  constraint as a description, since JSON Schema cannot compare two fields.
+
+  Both sides are guarded for null first, matching SQL, where a comparison involving NULL leaves the
+  CHECK satisfied. A constraint naming a column a given mode does not carry is left out rather than
+  emitted against an undefined value.
+
+  Also fixes an ArkType crash this uncovered: a CHECK on a column with no declared width, which is
+  every numeric type but the integers, emitted `0 < number`. ArkType rejects a left bound with no
+  right bound, so the generated module threw the moment anything imported it. A lone bound is now
+  written as `number > 0`.
+
+### Patch Changes
+
+- 698e7b3: One options builder for every validation generator, and a default that was being dropped.
+
+  Each of the four generator branches in the CLI hand-built its own options object. Three documented
+  options had already been found silently dead that way: `typedJson` never reached typebox, and
+  `coerceDates` and `applyDefaults` never reached anything but zod. Fixing each instance did not
+  address the shape of the problem, so the four now share one builder and an option added once
+  reaches everything that can act on it.
+
+  What stays per-generator is a real capability rather than an oversight, and it is named as one:
+  ArkType does not receive the schema-import options, because it emits one string per field and a
+  TypeScript type reference has nowhere to live inside a string DSL.
+
+  ### The default that was being dropped
+
+  Auditing the result immediately turned up another: with `typedColumns` **and** `applyDefaults`
+  both on, the typebox generator emitted no default at all.
+
+  ```ts
+  // before
+  country: Type.Optional(Type.Unsafe<(typeof users.$inferInsert)['country']>(Type.String())),
+  // after
+  country: Type.Optional(Type.Unsafe<(typeof users.$inferInsert)['country']>(Type.String({ default: 'GB' }))),
+  ```
+
+  The default was being applied after the `Type.Unsafe` wrapper, where it lands on the wrapper
+  rather than the schema, and the helper that attaches it declines anything that is not a bare
+  `Type.X(...)`. So it returned the expression untouched and the default vanished without a word.
+  It now goes on the schema before anything wraps it.
+
+  Neither option is on by default, so this only affects a project that had turned both on.
+
+- Updated dependencies [78aeca2]
+- Updated dependencies [dc13c47]
+- Updated dependencies [c29891a]
+  - @drzl/analyzer@1.13.0
+
 ## 0.6.0
 
 ### Minor Changes

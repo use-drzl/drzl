@@ -1,5 +1,68 @@
 # @drzl/generator-arktype
 
+## 3.9.0
+
+### Minor Changes
+
+- 19dfa3b: Apply `cardinality()` CHECK constraints in the ArkType and TypeBox generators
+
+  `CHECK (cardinality(tags) >= 2)` was parsed and then dropped by both, so an array the database
+  refuses validated clean. zod and valibot already applied it.
+
+  Each states it natively rather than as a predicate. ArkType bounds an array's length with the same
+  operators it bounds a number with, so it folds into the type: `string[] >= 2`. TypeBox uses
+  `minItems` and `maxItems`, which means the constraint survives serialisation to JSON Schema. JSON
+  Schema has no exclusive form of either keyword, but a length is an integer, so `> 2` becomes
+  `minItems: 3` and nothing is approximated.
+
+  The bound binds to the outermost array, so it counts what `cardinality()` counts, and it sits
+  inside the union with null on a nullable column, so null still passes.
+
+- 3e15ea8: Apply `length()` CHECK constraints in the ArkType and TypeBox generators
+
+  `CHECK (length(name) >= 3)` was parsed, applied by zod and valibot, and dropped in silence by the
+  other two: ArkType emitted a bare `string` and TypeBox a bare `Type.String()`. A constraint the
+  database enforces and the validator does not is precisely the gap these generators exist to close.
+
+  Neither uses its native length keyword, and that is deliberate. ArkType's `string >= 3` and
+  TypeBox's `minLength` both count UTF-16 code units, while SQL's `length()` counts characters, so
+  three thumbs-up characters are six units to both. On a minimum that only under-enforces; on a
+  maximum it refuses rows the database accepts, which is the `varchar(n)` bug the zod generator
+  already avoids by counting code points.
+
+  So each goes where an exact count can be expressed: a `.narrow()` on the object for ArkType, and a
+  branch of the same registered-kind intersection the row checks use for TypeBox. Null and absent
+  both pass, matching SQL.
+
+  The cost for TypeBox is that this constraint does not survive serialisation to JSON Schema, where
+  a bare `minLength` would. Emitting the wrong count in a form that serialises is not a better
+  trade.
+
+- b274391: Enforce row-level CHECK constraints in the valibot, TypeBox and ArkType generators
+
+  `CHECK (start_date < end_date)` compares two columns, so it cannot be a field constraint. Only the
+  zod generator applied one; the other three parsed it and dropped it, so a row the database refuses
+  validated clean. Each generator now states it in its own idiom: `v.check` on a pipe for valibot,
+  `.narrow` for ArkType, and for TypeBox a registered kind intersected with the object, which both
+  `Value.Check` and `TypeCompiler` honour. Serialising a TypeBox schema to JSON Schema keeps the
+  constraint as a description, since JSON Schema cannot compare two fields.
+
+  Both sides are guarded for null first, matching SQL, where a comparison involving NULL leaves the
+  CHECK satisfied. A constraint naming a column a given mode does not carry is left out rather than
+  emitted against an undefined value.
+
+  Also fixes an ArkType crash this uncovered: a CHECK on a column with no declared width, which is
+  every numeric type but the integers, emitted `0 < number`. ArkType rejects a left bound with no
+  right bound, so the generated module threw the moment anything imported it. A lone bound is now
+  written as `number > 0`.
+
+### Patch Changes
+
+- Updated dependencies [78aeca2]
+- Updated dependencies [dc13c47]
+- Updated dependencies [c29891a]
+  - @drzl/analyzer@1.13.0
+
 ## 3.8.0
 
 ### Minor Changes
