@@ -130,6 +130,34 @@ export function isGeneratedColumn(c: Column, _primaryKeyColumns: string[] = []):
  * was true only while integers were the sole bounded type, so it is kept strictly for an
  * analysis produced before `Column.integer` existed, and never consulted when the flag is set.
  */
+/**
+ * Patterns for string columns whose contents the database constrains.
+ *
+ * Every entry was validated against Postgres through PGlite rather than reasoned about: the
+ * pattern and the database agree on a pool built to include the awkward *valid* forms, because
+ * the real hazard is over-rejection. A check that turns away something Postgres accepts breaks
+ * working code, which is worse than the bare `string` it replaces.
+ *
+ * That is why there is exactly one entry. Candidates for `date`, `timestamp`, `time`, `interval`,
+ * `inet`, `cidr` and `macaddr` were all built and all rejected, each by a value Postgres accepts
+ * and the pattern did not:
+ *
+ *   date      `today`, `January 8, 1999`, `20200101`, `01/02/2020`, `infinity`
+ *   time      `allballs`, `12:00:00+02`
+ *   macaddr   `2020-01-01`, which Postgres pads into `20:20:00:01:00:01`
+ *   inet      `10.1/16`, `::ffff:1.2.3.4`
+ *   cidr      parses as `inet` and then demands zero host bits, which no regex can state
+ */
+export const COLUMN_FORMATS: Record<string, string> = {
+  // Sign, decimals, exponents, NaN/Infinity, surrounding whitespace, and the underscore digit
+  // separators and 0x/0o/0b integer literals Postgres 16 added. Agrees with Postgres on all 43
+  // probes, `1_000` and `0xDEAD_beef` through to `1__0`, `_1`, `0x` and `1e+`.
+  numeric:
+    '^\\s*([+-]?(0[xX][0-9a-fA-F](_?[0-9a-fA-F])*|0[oO][0-7](_?[0-7])*|0[bB][01](_?[01])*)' +
+    '|[+-]?(\\d(_?\\d)*(\\.(\\d(_?\\d)*)?)?|\\.\\d(_?\\d)*)([eE][+-]?\\d(_?\\d)*)?' +
+    '|[+-]?(NaN|Infinity))\\s*$',
+};
+
 export function isIntegerColumn(c: Column): boolean {
   if (typeof c.integer === 'boolean') return c.integer;
   return c.dbType === 'INTEGER' || (c.min !== undefined && c.max !== undefined);

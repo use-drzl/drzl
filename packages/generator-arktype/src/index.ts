@@ -6,6 +6,7 @@ import type {
 } from '@drzl/validation-core';
 import type { ColumnCheck } from '@drzl/validation-core';
 import {
+  COLUMN_FORMATS,
   insertColumns,
   isIntegerColumn,
   parseCheck,
@@ -127,6 +128,9 @@ function atTypeForColumn(
       );
       if (eq) return `'${eq.value.replace(/'/g, "\\'")}'`;
       if (c.format === 'uuid') return 'string.uuid';
+      // See the zod generator. ArkType states a pattern as a bare regex literal in its DSL.
+      const pattern = c.format ? COLUMN_FORMATS[c.format] : undefined;
+      if (pattern) return `/${pattern}/`;
       return c.maxLength ? `string <= ${c.maxLength}` : 'string';
     }
     case 'number': {
