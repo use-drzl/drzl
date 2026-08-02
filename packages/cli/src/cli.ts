@@ -241,6 +241,32 @@ program
             console.error(chalk.gray('Error details:'), e?.message ?? e);
             process.exit(1);
           }
+        } else if (g.kind === 'typebox') {
+          try {
+            const { TypeBoxGenerator } = await import('@drzl/generator-typebox');
+            const gen = new TypeBoxGenerator(analysis);
+            const target = g.path ?? 'src/validators/typebox';
+            const files = await gen.generate({
+              outDir: target,
+              outputHeader: g.outputHeader,
+              format: g.format,
+              schemaSuffix: g.schemaSuffix,
+              fileSuffix: g.fileSuffix,
+              importExtension: g.importExtension,
+              affix: g.affix,
+            });
+            progress.stop();
+            ora().succeed(chalk.green(`Generated (typebox): ${files.length} files`));
+            files.forEach((f: string) => console.log('  -', chalk.cyan(f)));
+          } catch (e: any) {
+            progress.stop();
+            console.error(
+              chalk.red('ArkType generator missing.'),
+              chalk.yellow('\nInstall with: npm install @drzl/generator-typebox')
+            );
+            console.error(chalk.gray('Error details:'), e?.message ?? e);
+            process.exit(1);
+          }
         }
       }
       if (driftBefore) {

@@ -24,3 +24,4 @@ docs/.vitepress/cache
 # writes can resolve drizzle-orm by the normal node_modules walk.
 packages/*/test/.e2e-tmp
 packages/*/test/.cmd-tmp
+packages/*/test/.tmp-run

@@ -71,7 +71,7 @@ export const AffixSchema = z
 export const ImportExtensionSchema = z.enum(IMPORT_EXTENSIONS);
 
 export const GeneratorSchema = z.object({
-  kind: z.enum(['orpc', 'service', 'zod', 'valibot', 'arktype']),
+  kind: z.enum(['orpc', 'service', 'zod', 'valibot', 'arktype', 'typebox']),
   /**
    * Overrides the top-level `importExtension` for this generator alone, for a project whose
    * generated directories are compiled by different tsconfigs.
@@ -379,6 +379,7 @@ export function computeGeneratorOutputDirs(cfg: DrzlConfig, cwd = process.cwd())
     if (g.kind === 'zod') dirs.add(abs(g.path ?? 'src/validators/zod'));
     if (g.kind === 'valibot') dirs.add(abs(g.path ?? 'src/validators/valibot'));
     if (g.kind === 'arktype') dirs.add(abs(g.path ?? 'src/validators/arktype'));
+    if (g.kind === 'typebox') dirs.add(abs(g.path ?? 'src/validators/typebox'));
   }
   return [...dirs];
 }

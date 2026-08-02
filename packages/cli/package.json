@@ -32,6 +32,7 @@
     "@drzl/generator-arktype": "workspace:^",
     "@drzl/generator-orpc": "workspace:^",
     "@drzl/generator-service": "workspace:^",
+    "@drzl/generator-typebox": "workspace:^",
     "@drzl/generator-valibot": "workspace:^",
     "@drzl/generator-zod": "workspace:^",
     "@drzl/validation-core": "workspace:^",

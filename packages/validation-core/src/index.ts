@@ -14,7 +14,7 @@ export interface Table {
   primaryKey?: { columns: string[] };
 }
 
-export type ValidationLibrary = 'zod' | 'valibot' | 'arktype';
+export type ValidationLibrary = 'zod' | 'valibot' | 'arktype' | 'typebox';
 
 export interface FormatOptions {
   enabled?: boolean;

@@ -59,6 +59,7 @@ export default {
           { text: 'Zod', link: '/generators/zod' },
           { text: 'Valibot', link: '/generators/valibot' },
           { text: 'ArkType', link: '/generators/arktype' },
+          { text: 'TypeBox', link: '/generators/typebox' },
           { text: 'Adapters (Overview)', link: '/adapters/overview' },
           { text: 'Router Adapters', link: '/adapters/router' },
         ],
