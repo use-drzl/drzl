@@ -423,6 +423,9 @@ export const matrix = pgTable('matrix', {
 
   // --- arrays ---
   c_text_arr: text().array().notNull(),
+  // A capped element inside an array. Without one, dropping the element's cap looked identical to
+  // keeping it: every array in this fixture held an uncapped type.
+  c_varchar_arr: varchar({ length: 10 }).array().notNull(),
   c_int_arr: integer().array().notNull(),
   c_enum_arr: moodEnum().array().notNull(),
 
@@ -681,6 +684,10 @@ const POOL: [string, unknown][] = [
   ["'25:99:99'", '25:99:99'],
   ['{}', {}], ["{a:'s'}", { a: 's' }], ['[]', []], ["['a']", ['a']], ['[1,2]', [1, 2]],
   ["['happy']", ['happy']], ['[1,2,3]', [1, 2, 3]],
+  // An array holding a value past its element's cap. Every array probe above holds something
+  // short, so dropping an element's constraint looked identical to keeping it: two generators
+  // stopped capping array elements and nothing here could tell.
+  ['["11-char"]', ['x'.repeat(11)]], ['["3 emoji"]', ['\u{1F44D}\u{1F44D}\u{1F44D}']],
   ['Buffer', Buffer.from('ab')], ['Uint8Array', new Uint8Array([1, 2])],
   ["'999.999.999.999'", '999.999.999.999'], ["'10.0.0.1'", '10.0.0.1'],
   ['{x:1,y:2}', { x: 1, y: 2 }], ["'12.5'", '12.5'], ["'0101'", '0101'], ["'010'", '010'],
@@ -1060,6 +1067,7 @@ CREATE TABLE matrix (
   c_time time,
   c_interval interval,
   c_text_arr text[],
+  c_varchar_arr varchar(10)[],
   c_int_arr integer[],
   c_enum_arr mood[],
   c_bytea bytea,
@@ -2016,5 +2024,6 @@ cd "$APP"
 echo "OK: $count packages packed, installed into an empty project, generated, and the output"
 echo "    typechecks under bundler, node16 and nodenext, and validates at least as strictly as"
 echo "    the first-party drizzle-orm validator modules across three dialects and three modes,"
-echo "    checked against a real Postgres and a real SQLite, and analyzed with no column left"
-echo "    unnamed on both drizzle-orm majors."
+echo "    checked against a real Postgres, a real SQLite and, where MYSQL_URL is set, a real"
+echo "    MySQL, with applyDefaults compared against what the database writes, and analyzed with"
+echo "    no column left unnamed on either drizzle-orm major."

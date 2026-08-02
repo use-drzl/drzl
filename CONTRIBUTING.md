@@ -13,8 +13,17 @@ Thanks for your interest in contributing! This guide explains how to set up your
 - Build, Test, Lint, Format:
   - `pnpm build`
   - `pnpm -r test`
+  - `pnpm typecheck`
   - `pnpm lint`
   - `pnpm format`
+- The gate that matters:
+  - `pnpm verify:packed` packs every package, installs the tarballs into an empty project,
+    generates from three dialects, typechecks the output under three module resolutions, compares
+    it column by column against the official `drizzle-orm` validators, and runs it against a real
+    Postgres (PGlite) and a real SQLite (`node:sqlite`). Set `MYSQL_URL` to include MySQL, which
+    CI provides as a service container; without it that stage skips and says so.
+  - It takes a couple of minutes and it is the only thing here that exercises what a consumer
+    actually gets. Everything else imports from source.
 
 ## Repo Structure (packages/)
 
@@ -60,14 +69,21 @@ Examples:
 - [ ] Changes are focused and documented
 - [ ] Tests added or updated
 - [ ] `pnpm -r test` passes locally
-- [ ] `pnpm lint` passes (no new warnings/errors)
-- [ ] README/CHANGELOG updated where appropriate
+- [ ] `pnpm typecheck` and `pnpm lint` pass (no new warnings/errors)
+- [ ] `pnpm verify:packed` passes
+- [ ] Docs updated where behaviour changed, including the emitted examples on the generator pages
+- [ ] A changeset added for anything a consumer can observe
 
 ## Testing Philosophy
 
 - Prefer unit‑level tests near the code under test.
 - Use temporary directories for any filesystem output and clean up after tests.
 - Keep tests independent and deterministic.
+- **Execute the emitted code rather than matching its text.** Source text cannot tell a schema
+  that validates from one that merely parses, and most of the real bugs found here were emitted
+  modules that read correctly and behaved wrongly, including several that threw on import.
+- **Check a new gate by breaking something on purpose.** A gate that has never failed has not been
+  shown to work; several here went green on their first run while measuring nothing.
 
 ## Code Style
 

@@ -283,8 +283,8 @@ function vExprForColumn(
       // See the zod generator: a bare string accepted values Postgres rejects.
       const pattern = c.format ? COLUMN_FORMATS[c.format] : undefined;
       if (pattern) return piped('v.string()', [`v.regex(new RegExp(${JSON.stringify(pattern)}))`]);
-      // Not `v.maxLength(n)`, which counts UTF-16 units where the column counts characters. See
-      // the zod generator and `CODEPOINT_LENGTH` in validation-core.
+      // Not `v.maxLength(n)`, which counts UTF-16 units where the column counts characters. All
+      // four generators count code points; see `CODEPOINT_LENGTH` in validation-core.
       // Two different measurements. `varchar(n)` counts characters in both databases; MySQL's
       // TEXT family counts bytes, so a tinytext takes 255 ascii characters and only 63 emoji.
       const caps: string[] = [];

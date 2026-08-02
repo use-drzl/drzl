@@ -1,6 +1,6 @@
 # Contributing
 
-Thanks for your interest in DRZL! Please read the full guide in [CONTRIBUTING.md](https://github.com/omar-dulaimi/drzl/blob/master/CONTRIBUTING.md).
+Thanks for your interest in DRZL! Please read the full guide in [CONTRIBUTING.md](https://github.com/use-drzl/drzl/blob/master/CONTRIBUTING.md).
 
 Quick checklist:
 

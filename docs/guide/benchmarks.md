@@ -83,13 +83,18 @@ generator wrote.
 ## What is not measured here
 
 Correctness against the database, which is checked separately and continuously. `verify-packed.sh`
-runs 1365 type probes and 53 `CHECK` probes against a real Postgres via PGlite on every commit:
+runs the emitted schemas against **three real databases** on every commit: Postgres in-process via
+PGlite, SQLite via `node:sqlite`, and MySQL as a CI service container.
 
 ```
-    1365 probes against a real Postgres (39 columns)
-    agree with the database: DRZL 974, drizzle-orm 946
+    1400 probes against a real Postgres (40 columns)
+    agree with the database: DRZL 1007, drizzle-orm 979
     DRZL closer than drizzle-orm on 28, further on 0
 
     53 CHECK probes against a real Postgres (13 constrained columns)
     rows Postgres rejects and the validator accepts: DRZL 0, drizzle-orm 22
+
+    9 defaulted columns, 9 reproduced by applyDefaults
+    32 CHECK probes against a real SQLite (10 constrained columns)
+    37 probes against a real MySQL
 ```

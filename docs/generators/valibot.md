@@ -35,7 +35,7 @@ What the column declares is enforced, in Valibot's pipeline form:
 
 ```ts
 id:    v.pipe(v.string(), v.uuid()),                      // uuid()
-name:  v.pipe(v.string(), v.maxLength(255)),              // varchar(255)
+name:  v.pipe(v.string(), v.check((val) => [...val].length <= 255, 'at most 255 characters')),  // varchar(255)
 small: v.pipe(v.number(), v.integer(),                    // smallint()
               v.minValue(-32768), v.maxValue(32767)),
 ```
@@ -45,15 +45,24 @@ enforces CHECK constraints**, in any library:
 
 ```ts
 // check('age_adult', sql`${t.age} >= 18`)
-age: v.pipe(v.number(), v.integer(), v.minValue(-2147483648), v.maxValue(2147483647),
-            v.check((val) => val >= 18, "age_adult: age >= 18")),
+age: v.pipe(v.number(), v.integer(), v.minValue(18), v.maxValue(2147483647)),
+
+// check('n_range', sql`${t.n} > 0`)
+n: v.pipe(v.number(), v.integer(), v.gtValue(0), v.maxValue(2147483647)),
 ```
 
-The constraint sits on the inner schema, so `v.nullable()` wrapping it lets `null` through. That
-matches SQL, where a CHECK passes when it evaluates to TRUE **or NULL**.
+A numeric comparison **replaces** the end of the range it narrows rather than sitting beside it. A
+CHECK can only narrow, never widen, since the declared range is the column's type. valibot has the
+exclusive forms natively, so `> 0` is `v.gtValue(0)` rather than a closure, and the issue it
+raises carries `requirement: 0` as data rather than a sentence this generator wrote.
 
-Only unambiguous comparisons are translated. Cross-column comparisons such as
-`start_date < end_date`, compound predicates, function calls and regex matches are skipped rather
+A constraint with no native form stays a `v.check`. The constraint sits on the inner schema, so
+`v.nullable()` wrapping it lets `null` through. That matches SQL, where a CHECK passes when it
+evaluates to TRUE **or NULL**.
+
+Only unambiguous comparisons are translated. `start_date < end_date` is applied on the object,
+`length()` and `cardinality()` are applied on the field, and disjunctions, negations, regex
+matches and unrecognised function calls are skipped rather
 than guessed at, since a schema enforcing a guess rejects rows the database would accept. See
 [Zod → CHECK constraints](/generators/zod#check-constraints) for the full table.
 
@@ -63,7 +72,7 @@ A column declared with `.array()` produces a schema for the array, keeping every
 declares inside it:
 
 ```ts
-tags:   v.array(v.pipe(v.string(), v.maxLength(50))),          // varchar(50).array()
+tags:   v.array(v.pipe(v.string(), v.check((val) => [...val].length <= 50, 'at most 50 characters'))),  // varchar(50).array()
 scores: v.array(v.pipe(v.number(), v.integer(), v.minValue(-32768), v.maxValue(32767))),
 ```
 

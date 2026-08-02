@@ -32,8 +32,8 @@ Zero‑friction codegen for Drizzle ORM. Analyze your schema. Generate validatio
 - Analyzer: turns Drizzle schemas into a normalized analysis model
 - Generators: Zod, Valibot, ArkType, TypeBox validation; JSON Schema and OpenAPI; typed CRUD services; router templates (oRPC)
 - Batteries: formatting, naming, reusable/shared schemas, relation support
-- Verified against real databases every commit: 1365 type probes and 53 CHECK probes against Postgres
-  (PGlite), 32 against SQLite (`node:sqlite`), and 37 against MySQL (a CI service container).
+- Verified against three real databases every commit: 1400 type probes and 53 CHECK probes against
+  Postgres (PGlite), 32 against SQLite (`node:sqlite`), 37 against MySQL (a CI service container).
   On the CHECK probes DRZL accepts 0 rows the database rejects; `drizzle-orm/zod` accepts 22
 - Monorepo: pnpm workspace, lockstep releases with Changesets
 

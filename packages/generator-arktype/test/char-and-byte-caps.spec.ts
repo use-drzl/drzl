@@ -74,3 +74,16 @@ describe('a column with neither', () => {
     expect(ok(s, 'x'.repeat(100000))).toBe(true);
   });
 });
+
+describe('an array of capped strings', () => {
+  it('caps the element, not the array', async () => {
+    // `varchar(50).array()` limits each element. Dropping the cap because the column is an array
+    // is how the first version of this went: the field is the array, and the cap describes what
+    // is in it.
+    const s = await schemaFor(col({ maxLength: 3, arrayDimensions: 1, tsType: 'string' }));
+    expect(ok(s, ['ab', 'abc'])).toBe(true);
+    expect(ok(s, ['abcd'])).toBe(false);
+    expect(ok(s, [EMOJI.repeat(3)]), '3 characters').toBe(true);
+    expect(ok(s, []), 'an empty array is fine').toBe(true);
+  });
+});

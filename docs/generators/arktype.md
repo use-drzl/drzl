@@ -35,22 +35,56 @@ declares becomes part of the type itself:
 
 ```ts
 id:    "string.uuid",                    // uuid()
-name:  "string <= 255",                  // varchar(255)
 small: "-32768 <= number <= 32767",      // smallint()
+
+// A varchar cap counts characters, which the string DSL cannot express, so the field holds a
+// Type carrying a narrow. See "Character limits count characters" below.
+name: type("string").narrow(
+  (v, ctx) => v == null || [...v].length <= 255 || ctx.mustBe("at most 255 characters")
+),
 ```
 
 A `check()` narrows that range rather than sitting beside it. **No official Drizzle validator
 module enforces CHECK constraints**, in any library:
 
 ```ts
-age:   "18 <= number <= 2147483647",     // check(sql`${t.age} >= 18`) on an integer
-score: "(0 <= number <= 100 | null)",    // check(sql`${t.score} BETWEEN 0 AND 100`)
-tier:  "'gold'",                         // check(sql`${t.tier} = 'gold'`)
+age:   "18 <= number.integer <= 2147483647",  // check(sql`${t.age} >= 18`) on an integer
+score: "(0 <= number.integer <= 100 | null)", // check(sql`${t.score} BETWEEN 0 AND 100`)
+n:     "number > 0",                          // check(sql`${t.n} > 0`) on a double
+tags:  "string[] >= 2",                       // check(sql`cardinality(${t.tags}) >= 2`)
+tier:  "'gold'",                              // check(sql`${t.tier} = 'gold'`)
 ```
 
-An exclusive comparison stays exclusive, so `CHECK (n > 0)` yields `0 < number`. An equality on a
-string becomes a literal type. Because the constraint is folded into the range, a nullable column
-reads `(0 <= number <= 100 | null)`, which lets `null` through exactly as SQL does.
+The `.integer` is load bearing: an integer range does not imply integrality in ArkType, and
+without it every `integer()` column accepted `1.5`.
+
+A **lone** bound is written on the right of the type, as `number > 0`. ArkType refuses a left
+bound with no right bound (`0 < number` is a parse error), so the module used to throw the moment
+anything imported it. A pair still reads `0 < number < 10`.
+
+An equality on a string becomes a literal type. Because a constraint is folded into the range, a
+nullable column reads `(0 <= number.integer <= 100 | null)`, which lets `null` through exactly as
+SQL does.
+
+### What goes on the object
+
+Two constraints cannot live in a field's type, and both go on the object as a `.narrow`:
+
+```ts
+})
+  .narrow((o, ctx) =>
+    o['lo'] == null || o['hi'] == null || o['lo'] < o['hi'] || ctx.mustBe('order: lo < hi'))
+  .narrow((o, ctx) =>
+    o['name'] == null || [...o['name']].length >= 3 || ctx.mustBe('len: length(name) >= 3'));
+```
+
+- **`CHECK (lo < hi)`** compares two columns, so neither field alone can decide it. Both sides are
+  null-guarded, matching SQL, where a comparison involving NULL leaves the CHECK satisfied.
+- **`CHECK (length(name) >= 3)`** counts characters, and `string >= 3` counts UTF-16 code units.
+  See [Character limits count characters](#character-limits-count-characters).
+
+A constraint naming a column the mode does not carry, a generated column on insert say, is left
+out rather than evaluated against `undefined`.
 
 Only unambiguous comparisons are translated; see
 [Zod → CHECK constraints](/generators/zod#check-constraints) for what is skipped and why.
@@ -64,7 +98,11 @@ not what an enum array means:
 ```ts
 tags:  "string[]",                      // text().array()
 moods: "('happy' | 'sad')[]",           // moodEnum().array()
-names: "(string <= 50)[]",              // varchar(50).array()
+
+// varchar(50).array(): the cap limits each entry, so the narrow goes on the element.
+names: type("string")
+  .narrow((v, ctx) => v == null || [...v].length <= 50 || ctx.mustBe("at most 50 characters"))
+  .array(),
 ```
 
 | Column                      | Emitted                                           |
@@ -88,15 +126,33 @@ comparison operators take numeric literals, so a 64 bit bound cannot be written 
 DSL at all; `drizzle-orm/arktype` states it through a narrow predicate built with the builder
 API instead. Every other column type is bounded here exactly as the official module bounds it.
 
-## Character limits are approximate
+## Character limits count characters
 
-A `varchar(n)` limit is n **characters**, and ArkType's `string <= n` counts `.length`, which is
-UTF-16 code units. The two agree until the text leaves the basic plane: a `varchar(10)` column
-accepts ten emoji, and `string <= 10` refuses eight of them.
+A `varchar(n)` limit is n **characters**, in both Postgres and MySQL. ArkType's `string <= n`
+counts UTF-16 code units, which is a different measurement: a `varchar(10)` column accepts ten
+emoji and `string <= 10` refuses eight of them.
 
-ArkType states a length declaratively and this generator emits one string per field, so there is
-nowhere to put a code-point count. The zod and valibot generators are exact here; pair one of them
-with this generator if your columns hold emoji or other astral-plane text near their limit.
+That is the direction that breaks working code, so the cap is not written in the string DSL at
+all. The field holds a Type instead, carrying a narrow that counts code points:
+
+```ts
+name: type("string").narrow(
+  (v, ctx) => v == null || [...v].length <= 255 || ctx.mustBe("at most 255 characters")
+),
+```
+
+For an array column the narrow goes on the element, since `varchar(50).array()` limits each entry
+rather than the list:
+
+```ts
+tags: type("string")
+  .narrow((v, ctx) => v == null || [...v].length <= 50 || ctx.mustBe("at most 50 characters"))
+  .array(),
+```
+
+MySQL's TEXT family is a byte budget rather than a character count, and gets a narrow counting
+encoded bytes. All four generators agree on every one of these, checked column by column against
+`drizzle-orm/arktype` and against Postgres, SQLite and MySQL on every commit.
 
 See [Zod, character limits](/generators/zod#character-limits-count-characters) for the
 measurements against Postgres.

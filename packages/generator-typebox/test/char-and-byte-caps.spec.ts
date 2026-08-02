@@ -74,3 +74,13 @@ describe('a column with neither', () => {
     expect(ok(s, 'x'.repeat(100000))).toBe(true);
   });
 });
+
+describe('an array of capped strings', () => {
+  it('caps the element, not the array', async () => {
+    const s = await schemaFor(col({ maxLength: 3, arrayDimensions: 1, tsType: 'string' }));
+    expect(ok(s, ['ab', 'abc'])).toBe(true);
+    expect(ok(s, ['abcd'])).toBe(false);
+    expect(ok(s, [EMOJI.repeat(3)]), '3 characters').toBe(true);
+    expect(ok(s, []), 'an empty array is fine').toBe(true);
+  });
+});
