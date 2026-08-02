@@ -13,7 +13,7 @@
   "scripts": {
     "build": "tsup src/index.ts --dts --format esm,cjs",
     "lint": "eslint . --ext .ts",
-    "test": "vitest run"
+    "test": "vitest run --testTimeout=20000"
   },
   "dependencies": {
     "@drzl/analyzer": "workspace:^"

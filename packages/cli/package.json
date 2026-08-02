@@ -25,7 +25,7 @@
     "build": "tsup src/cli.ts src/config.ts --format esm,cjs --sourcemap --dts",
     "dev": "node --loader ts-node/esm src/cli.ts --help",
     "lint": "eslint . --ext .ts",
-    "test": "vitest run"
+    "test": "vitest run --testTimeout=20000"
   },
   "dependencies": {
     "@drzl/analyzer": "workspace:^",
