@@ -140,6 +140,10 @@ function tbShapeExpr(c: Column, typedJsonRef?: string): string | undefined {
       // `typedJson` still wins, since the inferred type is narrower than "any JSON".
       if (typedJsonRef) return `Type.Unsafe<${typedJsonRef}>(Type.Unknown())`;
       return JSON_CONST;
+    case 'custom':
+      // Nothing to check at runtime: see the zod generator for why guessing from `getSQLType()`
+      // would be wrong. `Type.Unsafe<T>` is TypeBox's escape hatch for exactly this.
+      return typedJsonRef ? `Type.Unsafe<${typedJsonRef}>(Type.Unknown())` : 'Type.Unknown()';
     case 'buffer':
       return 'Type.Uint8Array()';
     case 'tuple':
@@ -149,7 +153,11 @@ function tbShapeExpr(c: Column, typedJsonRef?: string): string | undefined {
     case 'bitstring':
       // `pattern` rather than `format`, which TypeBox ignores unless the consuming project has
       // registered it on `FormatRegistry` first.
-      return `Type.String({ pattern: '^[01]*$'${s.length ? `, minLength: ${s.length}, maxLength: ${s.length}` : ''} })`;
+      // Both bounds for a Postgres `bit(n)`, only the ceiling for a MySQL `binary(n)`.
+      if (!s.length) return `Type.String({ pattern: '^[01]*$' })`;
+      return s.exact
+        ? `Type.String({ pattern: '^[01]*$', minLength: ${s.length}, maxLength: ${s.length} })`
+        : `Type.String({ pattern: '^[01]*$', maxLength: ${s.length} })`;
   }
 }
 
@@ -252,7 +260,7 @@ function renderObjectShape(
   return cols
     .map((c) => {
       const ref =
-        typedJson && c.tsType === 'any'
+        typedJson && (c.tsType === 'any' || c.shape?.kind === 'custom')
           ? `(typeof ${typedJson.table}.$infer${typedJson.mode === 'insert' ? 'Insert' : 'Select'})[${JSON.stringify(c.name)}]`
           : undefined;
       return `  ${JSON.stringify(c.name)}: ${tbField(c, mode, coerceDates, checks, ref)},`;

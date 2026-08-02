@@ -51,5 +51,6 @@ generators: [
 ## Behavior
 
 - Reuses pre-generated Insert/Update/Select schemas when `validation.useShared` is true.
-- Otherwise, inlines schemas using the chosen library (zod/valibot/arktype).
+- Otherwise, inlines schemas using the chosen library (zod/valibot/arktype). TypeBox cannot be
+  used here, because oRPC requires a Standard Schema validator and TypeBox does not implement it.
 - Works with templates for different wiring (service-backed, minimal, custom). With `@drzl/template-orpc-service`, a `dbMiddleware` is emitted and `context.db` is passed to services.

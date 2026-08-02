@@ -358,6 +358,10 @@ echo "==> differential parity against the official drizzle-orm validators"
 # schemas column by column and compare the verdicts. Reading the emitted source cannot do this,
 # because a schema that parses and a schema that validates look identical as text.
 #
+# Three dialects and all three modes, because the gaps cluster in the corners: MySQL owns the
+# narrow integer widths and the text/blob caps, SQLite owns the blob modes, and insert and update
+# own optionality and the generated-column rules.
+#
 # It runs here, against the packed tarballs, rather than as a unit test, because it needs
 # drizzle-orm v1 and the workspace is still on 0.4x. Installing v1 into this throwaway tree keeps
 # it out of the repo's own dependency graph.
@@ -366,7 +370,7 @@ mkdir -p "$PARITY/src"
 cd "$PARITY"
 echo '{ "name": "parity", "private": true, "type": "module" }' > package.json
 
-cat > src/schema.ts <<'PARITY_SCHEMA'
+cat > src/schema.ts <<'PARITY_PG'
 import {
   pgTable, pgEnum, text, varchar, char, uuid, integer, smallint, bigint, serial,
   boolean, real, doublePrecision, numeric, decimal, json, jsonb, date, timestamp,
@@ -376,12 +380,15 @@ import {
 export const moodEnum = pgEnum('mood', ['happy', 'sad', 'neutral']);
 
 export const matrix = pgTable('matrix', {
+  // --- text family ---
   c_text: text().notNull(),
   c_varchar: varchar({ length: 255 }).notNull(),
   c_char: char({ length: 4 }).notNull(),
   c_uuid: uuid().notNull(),
   c_text_enum: text({ enum: ['a', 'b', 'c'] }).notNull(),
   c_varchar_enum: varchar({ length: 10, enum: ['x', 'y'] }).notNull(),
+
+  // --- numeric family ---
   c_int: integer().notNull(),
   c_smallint: smallint().notNull(),
   c_bigint_n: bigint({ mode: 'number' }).notNull(),
@@ -392,20 +399,32 @@ export const matrix = pgTable('matrix', {
   c_numeric: numeric({ precision: 10, scale: 2 }).notNull(),
   c_numeric_n: numeric({ precision: 10, scale: 2, mode: 'number' }).notNull(),
   c_decimal: decimal().notNull(),
+
+  // --- boolean ---
   c_bool: boolean().notNull(),
+
+  // --- enum ---
   c_enum: moodEnum().notNull(),
+
+  // --- json ---
   c_json: json().notNull(),
   c_jsonb: jsonb().notNull(),
   c_jsonb_typed: jsonb().$type<{ a: string }>().notNull(),
+
+  // --- temporal ---
   c_date_d: date({ mode: 'date' }).notNull(),
   c_date_s: date({ mode: 'string' }).notNull(),
   c_ts_d: timestamp({ mode: 'date' }).notNull(),
   c_ts_s: timestamp({ mode: 'string' }).notNull(),
   c_time: time().notNull(),
   c_interval: interval().notNull(),
+
+  // --- arrays ---
   c_text_arr: text().array().notNull(),
   c_int_arr: integer().array().notNull(),
   c_enum_arr: moodEnum().array().notNull(),
+
+  // --- binary / network / geometry / vector ---
   c_bytea: bytea().notNull(),
   c_inet: inet().notNull(),
   c_cidr: cidr().notNull(),
@@ -416,57 +435,123 @@ export const matrix = pgTable('matrix', {
   c_bit: bit({ dimensions: 3 }).notNull(),
   c_vector: vector({ dimensions: 3 }).notNull(),
 });
-PARITY_SCHEMA
+PARITY_PG
 
-cat > drzl.config.ts <<'PARITY_CONFIG'
-import { defineConfig } from '@drzl/cli/config';
+cat > src/schema-mysql.ts <<'PARITY_MYSQL'
+import {
+  mysqlTable, mysqlEnum, text, varchar, char, int, tinyint, smallint, mediumint,
+  bigint, serial, boolean, real, double, float, decimal, json, date, datetime,
+  timestamp, time, year, binary, varbinary, blob, tinytext, mediumtext, longtext,
+} from 'drizzle-orm/mysql-core';
 
-export default defineConfig({
-  schema: 'src/schema.ts',
-  outDir: 'src/gen',
-  generators: [
-    { kind: 'zod', path: 'src/gen/zod' },
-    { kind: 'valibot', path: 'src/gen/valibot' },
-    { kind: 'arktype', path: 'src/gen/arktype' },
-    { kind: 'typebox', path: 'src/gen/typebox' },
-  ],
+export const matrix = mysqlTable('matrix', {
+  m_text: text().notNull(),
+  m_tinytext: tinytext().notNull(),
+  m_mediumtext: mediumtext().notNull(),
+  m_longtext: longtext().notNull(),
+  m_varchar: varchar({ length: 255 }).notNull(),
+  m_char: char({ length: 4 }).notNull(),
+  m_enum: mysqlEnum(['a', 'b', 'c']).notNull(),
+
+  m_tinyint: tinyint().notNull(),
+  m_smallint: smallint().notNull(),
+  m_mediumint: mediumint().notNull(),
+  m_int: int().notNull(),
+  m_bigint_n: bigint({ mode: 'number' }).notNull(),
+  m_bigint_b: bigint({ mode: 'bigint' }).notNull(),
+  m_serial: serial().notNull(),
+  m_real: real().notNull(),
+  m_double: double().notNull(),
+  m_float: float().notNull(),
+  m_decimal: decimal({ precision: 10, scale: 2 }).notNull(),
+
+  m_bool: boolean().notNull(),
+  m_json: json().notNull(),
+
+  m_date: date({ mode: 'date' }).notNull(),
+  m_date_s: date({ mode: 'string' }).notNull(),
+  m_datetime: datetime({ mode: 'date' }).notNull(),
+  m_ts: timestamp({ mode: 'date' }).notNull(),
+  m_time: time().notNull(),
+  m_year: year().notNull(),
+
+  m_binary: binary({ length: 4 }).notNull(),
+  m_varbinary: varbinary({ length: 16 }).notNull(),
+  m_blob: blob().notNull(),
 });
-PARITY_CONFIG
+PARITY_MYSQL
+
+cat > src/schema-sqlite.ts <<'PARITY_SQLITE'
+import { sqliteTable, text, integer, real, numeric, blob } from 'drizzle-orm/sqlite-core';
+
+export const matrix = sqliteTable('matrix', {
+  s_text: text().notNull(),
+  s_text_len: text({ length: 50 }).notNull(),
+  s_text_enum: text({ enum: ['a', 'b'] }).notNull(),
+  s_text_json: text({ mode: 'json' }).notNull(),
+
+  s_int: integer().notNull(),
+  s_int_bool: integer({ mode: 'boolean' }).notNull(),
+  s_int_ts: integer({ mode: 'timestamp' }).notNull(),
+  s_int_ts_ms: integer({ mode: 'timestamp_ms' }).notNull(),
+
+  s_real: real().notNull(),
+  s_numeric: numeric().notNull(),
+
+  s_blob: blob().notNull(),
+  s_blob_buf: blob({ mode: 'buffer' }).notNull(),
+  s_blob_json: blob({ mode: 'json' }).notNull(),
+  s_blob_bigint: blob({ mode: 'bigint' }).notNull(),
+});
+PARITY_SQLITE
 
 cat > src/parity.ts <<'PARITY_HARNESS'
 /**
- * Two passes:
- *   1. every column, DRZL against `drizzle-orm/{zod,valibot,arktype}`
- *   2. every column, DRZL's four generators against each other
+ * Differential parity for DRZL's validator generators.
  *
- * `drizzle-orm/typebox` is absent from pass 1 deliberately. At 1.0.0-rc.4 it declares a peer on
- * `@sinclair/typebox` while its code imports `typebox`, and against the released `typebox` it
- * throws `Class extends value undefined` on import. Pass 2 is what holds the typebox output.
+ * Pass 1 compares DRZL against `drizzle-orm/{zod,valibot,arktype}` for every column of every
+ * table, across three dialects and all three schema modes, by pushing the same pool of values
+ * through both and comparing verdicts. Reading the emitted source cannot do this: a schema that
+ * validates and one that merely parses look identical as text.
+ *
+ * Pass 2 cross-checks DRZL's own four generators against each other, which is what covers the
+ * typebox output. `drizzle-orm/typebox` is absent from pass 1 on purpose: at 1.0.0-rc.4 it
+ * declares a peer on `@sinclair/typebox` while its code imports `typebox`, and against the
+ * released `typebox` it throws `Class extends value undefined` on import.
  */
-import { matrix } from './schema.js';
-import { createSelectSchema as zSel } from 'drizzle-orm/zod';
-import { createSelectSchema as vSel } from 'drizzle-orm/valibot';
-import { createSelectSchema as aSel } from 'drizzle-orm/arktype';
+import { createSelectSchema, createInsertSchema, createUpdateSchema } from 'drizzle-orm/zod';
+import {
+  createSelectSchema as vSelect,
+  createInsertSchema as vInsert,
+  createUpdateSchema as vUpdate,
+} from 'drizzle-orm/valibot';
+import {
+  createSelectSchema as aSelect,
+  createInsertSchema as aInsert,
+  createUpdateSchema as aUpdate,
+} from 'drizzle-orm/arktype';
 import * as v from 'valibot';
 import { type } from 'arktype';
 import { Value } from '@sinclair/typebox/value';
 
-import { SelectmatrixSchema as dZod } from './gen/zod/matrix.zod.js';
-import { SelectmatrixSchema as dVal } from './gen/valibot/matrix.valibot.js';
-import { SelectmatrixSchema as dArk } from './gen/arktype/matrix.arktype.js';
-import { SelectmatrixSchema as dTb } from './gen/typebox/matrix.typebox.js';
+import { matrix as pgTable } from './schema.js';
+import { matrix as myTable } from './schema-mysql.js';
+import { matrix as sqTable } from './schema-sqlite.js';
 
 const POOL: [string, unknown][] = [
   ['null', null], ['undefined', undefined], ['""', ''], ["'hello'", 'hello'],
-  ['300-char string', 'x'.repeat(300)], ['5-char string', 'xxxxx'], ["'not-a-uuid'", 'not-a-uuid'],
-  ['a real uuid', '3f2504e0-4f89-11d3-9a0c-0305e82c3301'], ["'zzz'", 'zzz'], ["'happy'", 'happy'],
-  ['0', 0], ['1.5', 1.5], ['-1', -1], ['40000', 40000], ['2147483648', 2147483648],
-  ['9007199254740993', 9007199254740993], ['NaN', NaN], ['Infinity', Infinity],
-  ['1n', 1n], ['2n**70n', 2n ** 70n], ['true', true],
+  ['300-char', 'x'.repeat(300)], ['70k-char', 'x'.repeat(70000)], ['5-char', 'xxxxx'],
+  ["'not-a-uuid'", 'not-a-uuid'], ['uuid', '3f2504e0-4f89-11d3-9a0c-0305e82c3301'],
+  ["'zzz'", 'zzz'], ["'a'", 'a'], ["'happy'", 'happy'],
+  ['0', 0], ['1', 1], ['1.5', 1.5], ['-1', -1], ['200', 200], ['40000', 40000],
+  ['9000000', 9000000], ['2147483648', 2147483648], ['9007199254740993', 9007199254740993],
+  ['1900', 1900], ['2500', 2500], ['NaN', NaN], ['Infinity', Infinity],
+  ['1n', 1n], ['2n**70n', 2n ** 70n], ['true', true], ['false', false],
   ['Date', new Date('2020-01-01T00:00:00Z')], ["'2020-01-01'", '2020-01-01'],
-  ["'2020-01-01T00:00:00Z'", '2020-01-01T00:00:00Z'], ["'25:99:99'", '25:99:99'],
+  ["'2020-01-01T00:00:00Z'", '2020-01-01T00:00:00Z'], ["'12:00:00'", '12:00:00'],
+  ["'25:99:99'", '25:99:99'],
   ['{}', {}], ["{a:'s'}", { a: 's' }], ['[]', []], ["['a']", ['a']], ['[1,2]', [1, 2]],
-  ["['happy']", ['happy']], ["['zzz']", ['zzz']], ['[1,2,3]', [1, 2, 3]],
+  ["['happy']", ['happy']], ['[1,2,3]', [1, 2, 3]],
   ['Buffer', Buffer.from('ab')], ['Uint8Array', new Uint8Array([1, 2])],
   ["'999.999.999.999'", '999.999.999.999'], ["'10.0.0.1'", '10.0.0.1'],
   ['{x:1,y:2}', { x: 1, y: 2 }], ["'12.5'", '12.5'], ["'0101'", '0101'], ["'010'", '010'],
@@ -481,6 +566,12 @@ const LIBS: Record<string, Lib> = {
   typebox: { field: (s, k) => s.properties[k], ok: (f, x) => Value.Check(f, x) },
 };
 
+const OFFICIAL: Record<string, Record<string, (t: any) => any>> = {
+  zod: { select: createSelectSchema, insert: createInsertSchema, update: createUpdateSchema },
+  valibot: { select: vSelect, insert: vInsert, update: vUpdate },
+  arktype: { select: aSelect, insert: aInsert, update: aUpdate },
+};
+
 const safeOk = (lib: Lib, f: any, x: unknown) => {
   try {
     return lib.ok(f, x);
@@ -488,115 +579,181 @@ const safeOk = (lib: Lib, f: any, x: unknown) => {
     return false;
   }
 };
-
-const DRZL: Record<string, any> = { zod: dZod, valibot: dVal, arktype: dArk, typebox: dTb };
-const OFFICIAL: Record<string, any> = {
-  zod: zSel(matrix),
-  valibot: vSel(matrix),
-  arktype: aSel(matrix),
+const safeField = (lib: Lib, s: any, k: string) => {
+  try {
+    return lib.field(s, k);
+  } catch {
+    return undefined;
+  }
 };
 
 /**
  * Divergences that are deliberate and reasoned. Anything not named here is a finding, so a new
  * disagreement fails this script rather than quietly widening the list.
+ *
+ * Keyed `<library>/<column>`; a bare column name applies to every library.
  */
 const ALLOWED: Record<string, string> = {
-  'zod/c_bytea': 'accepts any Uint8Array where official demands a Buffer: portable to runtimes with no Buffer, and matches how a SQLite blob is validated',
-  'valibot/c_bytea': 'as zod/c_bytea',
-  'arktype/c_bytea': 'as zod/c_bytea',
-  'valibot/c_json': 'DRZL is stricter: rejects Infinity and non-plain objects, official accepts both',
+  // Binary payloads are typed as Uint8Array rather than Buffer. A Buffer is a Uint8Array, so
+  // nothing official accepts is turned away. The wider check needs no `@types/node`, survives a
+  // runtime where `Buffer` is undefined, and makes bytea and blob validate the same way.
+  c_bytea: 'Uint8Array accepted where official demands a Buffer',
+  s_blob_buf: 'as c_bytea',
+  // `coerceDates` defaults to coercing on insert and update, which is a documented DRZL option
+  // and is what `coerceDates: 'none'` turns off to match official exactly. Only strings and
+  // numbers are coerced: null, booleans and arrays are rejected, which `z.coerce.date()` accepts.
+  c_date_d: 'coerceDates accepts a date string or epoch number on write',
+  c_ts_d: 'as c_date_d',
+  m_date: 'as c_date_d',
+  m_datetime: 'as c_date_d',
+  m_ts: 'as c_date_d',
+  s_int_ts: 'as c_date_d',
+  s_int_ts_ms: 'as c_date_d',
+  // Stricter than official, in DRZL's favour.
+  'valibot/c_json': 'DRZL rejects Infinity and non-plain objects; official accepts both',
   'valibot/c_jsonb': 'as valibot/c_json',
   'valibot/c_jsonb_typed': 'as valibot/c_json',
-  'valibot/c_point': 'DRZL is stricter: v.strictTuple rejects a third element, official v.tuple ignores extras',
+  'valibot/c_point': 'v.strictTuple rejects a third element; official v.tuple ignores extras',
   'valibot/c_geometry': 'as valibot/c_point',
-  'arktype/c_bigint_b': 'official bounds bigints with a narrow predicate, which ArkType states through its builder rather than its string DSL; this generator emits strings',
+  // ArkType states a bigint range through a narrow predicate built with its builder API. This
+  // generator emits one string per field, and the string DSL's comparators take numeric literals.
+  'arktype/c_bigint_b': 'ArkType cannot bound a bigint in its string DSL',
+  'arktype/s_blob_bigint': 'as arktype/c_bigint_b',
 };
 
-/** Cross-generator gaps that follow from what each library can express, not from a defect. */
-const CROSS_ALLOWED = (k: string) => k.startsWith('c_json') || k === 'c_bigint_b';
+const allowed = (lib: string, col: string) => ALLOWED[`${lib}/${col}`] ?? ALLOWED[col];
 
-const cols = Object.keys(OFFICIAL.zod.shape);
+/** Cross-generator gaps that follow from what each library can express, not from a defect. */
+const CROSS_ALLOWED = (k: string) => k.startsWith('c_json') || k.startsWith('c_jsonb') || /bigint_b|blob_bigint/.test(k);
+
+const DIALECTS = [
+  {
+    name: 'pg',
+    table: pgTable,
+    libs: ['zod', 'valibot', 'arktype', 'typebox'],
+    mods: {
+      zod: () => import('./gen/pg/zod/matrix.zod.js'),
+      valibot: () => import('./gen/pg/valibot/matrix.valibot.js'),
+      arktype: () => import('./gen/pg/arktype/matrix.arktype.js'),
+      typebox: () => import('./gen/pg/typebox/matrix.typebox.js'),
+    } as Record<string, () => Promise<any>>,
+  },
+  {
+    name: 'mysql',
+    table: myTable,
+    libs: ['zod'],
+    mods: { zod: () => import('./gen/mysql/zod/matrix.zod.js') } as Record<string, () => Promise<any>>,
+  },
+  {
+    name: 'sqlite',
+    table: sqTable,
+    libs: ['zod'],
+    mods: { zod: () => import('./gen/sqlite/zod/matrix.zod.js') } as Record<string, () => Promise<any>>,
+  },
+];
+
+const PREFIX = { select: 'Select', insert: 'Insert', update: 'Update' } as const;
 let findings = 0;
 
-for (const libName of ['zod', 'valibot', 'arktype']) {
-  const lib = LIBS[libName];
-  const rows: string[] = [];
-  let diverged = 0;
+for (const d of DIALECTS) {
+  const loaded: Record<string, any> = {};
+  for (const lib of d.libs) loaded[lib] = await d.mods[lib]();
 
-  for (const key of cols) {
-    let o: any, d: any;
-    try {
-      o = lib.field(OFFICIAL[libName], key);
-      d = lib.field(DRZL[libName], key);
-    } catch {
-      continue;
-    }
-    if (!d) {
-      rows.push(`      ${key}: missing from the DRZL output entirely`);
-      findings++;
-      continue;
-    }
-    const looser: string[] = [];
-    const tighter: string[] = [];
-    for (const [label, x] of POOL) {
-      const a = safeOk(lib, o, x);
-      const b = safeOk(lib, d, x);
-      if (a !== b) (b ? looser : tighter).push(label);
-    }
-    if (!looser.length && !tighter.length) continue;
-    if (ALLOWED[`${libName}/${key}`]) {
-      diverged++;
-      continue;
-    }
-    findings++;
-    rows.push(
-      `      ${key}:` +
-        (looser.length ? `\n        DRZL accepts, official rejects: ${looser.join(', ')}` : '') +
-        (tighter.length ? `\n        DRZL rejects, official accepts: ${tighter.join(', ')}` : '')
-    );
-  }
-  console.log(
-    `    ${libName.padEnd(8)} ${cols.length} columns, ${rows.length ? 'DIFFERS' : 'parity'}` +
-      `${diverged ? ` (${diverged} allowed divergence${diverged > 1 ? 's' : ''})` : ''}`
-  );
-  if (rows.length) console.log(rows.join('\n'));
-}
+  for (const mode of ['select', 'insert', 'update'] as const) {
+    for (const libName of d.libs) {
+      const off = OFFICIAL[libName]?.[mode];
+      if (!off) continue; // typebox: no usable official module
+      const lib = LIBS[libName];
+      const official = off(d.table as never);
+      const mine = loaded[libName][`${PREFIX[mode]}matrixSchema`];
+      if (!mine) {
+        console.log(`    ${d.name}/${libName}/${mode}: no ${PREFIX[mode]}matrixSchema exported`);
+        findings++;
+        continue;
+      }
 
-const disagreements: string[] = [];
-for (const key of cols) {
-  if (CROSS_ALLOWED(key)) continue;
-  const fields: Record<string, any> = {};
-  for (const [n, s] of Object.entries(DRZL)) {
-    try {
-      fields[n] = LIBS[n].field(s, key);
-    } catch {
-      fields[n] = undefined;
+      // Column names come from the zod schema regardless of library: every generator emits the
+      // same set, and zod is the one whose shape is trivially enumerable.
+      const oShape = OFFICIAL.zod[mode](d.table as never).shape;
+      const rows: string[] = [];
+      let waived = 0;
+
+      for (const k of Object.keys(oShape)) {
+        const o = safeField(lib, official, k);
+        const m = safeField(lib, mine, k);
+        if (!o && !m) continue;
+        if (!m) {
+          if (allowed(libName, k)) { waived++; continue; }
+          rows.push(`        ${k}: official has it, DRZL omits it`);
+          continue;
+        }
+        if (!o) {
+          if (allowed(libName, k)) { waived++; continue; }
+          rows.push(`        ${k}: DRZL has it, official omits it`);
+          continue;
+        }
+        const looser: string[] = [];
+        const tighter: string[] = [];
+        for (const [label, x] of POOL) {
+          const a = safeOk(lib, o, x);
+          const b = safeOk(lib, m, x);
+          if (a !== b) (b ? looser : tighter).push(label);
+        }
+        if (!looser.length && !tighter.length) continue;
+        if (allowed(libName, k)) { waived++; continue; }
+        rows.push(
+          `        ${k}:` +
+            (looser.length ? `\n          DRZL accepts, official rejects: ${looser.join(', ')}` : '') +
+            (tighter.length ? `\n          DRZL rejects, official accepts: ${tighter.join(', ')}` : '')
+        );
+      }
+
+      console.log(
+        `    ${d.name.padEnd(7)} ${libName.padEnd(8)} ${mode.padEnd(7)} ` +
+          `${Object.keys(oShape).length} cols  ${rows.length ? 'DIFFERS' : 'parity'}` +
+          `${waived ? ` (${waived} waived)` : ''}`
+      );
+      if (rows.length) {
+        console.log(rows.join('\n'));
+        findings += rows.length;
+      }
     }
   }
-  const absent = Object.entries(fields).filter(([, f]) => !f).map(([n]) => n);
-  if (absent.length) {
-    disagreements.push(`      ${key}: missing from ${absent.join(', ')}`);
-    continue;
-  }
-  for (const [label, x] of POOL) {
-    const verdicts = Object.entries(fields).map(([n, f]) => [n, safeOk(LIBS[n], f, x)] as const);
-    const yes = verdicts.filter(([, r]) => r).map(([n]) => n);
-    const no = verdicts.filter(([, r]) => !r).map(([n]) => n);
-    if (yes.length && no.length) {
-      disagreements.push(`      ${key} on ${label}: ${yes.join('/')} accept, ${no.join('/')} reject`);
+
+  // Pass 2, on the dialect that has all four generators.
+  if (d.libs.length === 4) {
+    const oShape = OFFICIAL.zod.select(d.table as never).shape;
+    const disagreements: string[] = [];
+    for (const k of Object.keys(oShape)) {
+      if (CROSS_ALLOWED(k)) continue;
+      const fields: Record<string, any> = {};
+      for (const lib of d.libs) fields[lib] = safeField(LIBS[lib], loaded[lib].SelectmatrixSchema, k);
+      const absent = Object.entries(fields).filter(([, f]) => !f).map(([n]) => n);
+      if (absent.length) {
+        disagreements.push(`        ${k}: missing from ${absent.join(', ')}`);
+        continue;
+      }
+      for (const [label, x] of POOL) {
+        const verdicts = d.libs.map((n) => [n, safeOk(LIBS[n], fields[n], x)] as const);
+        const yes = verdicts.filter(([, r]) => r).map(([n]) => n);
+        const no = verdicts.filter(([, r]) => !r).map(([n]) => n);
+        if (yes.length && no.length) {
+          disagreements.push(`        ${k} on ${label}: ${yes.join('/')} accept, ${no.join('/')} reject`);
+        }
+      }
+    }
+    if (disagreements.length) {
+      console.log('    the four generators disagree with each other:');
+      console.log(disagreements.join('\n'));
+      findings += disagreements.length;
+    } else {
+      console.log('    all four generators agree with each other on every column and value');
     }
   }
-}
-if (disagreements.length) {
-  console.log('    the four generators disagree with each other:');
-  console.log(disagreements.join('\n'));
-  findings += disagreements.length;
-} else {
-  console.log(`    all four generators agree with each other on every column and value`);
 }
 
 if (findings) {
-  console.error(`FAIL: ${findings} parity finding(s). A generated schema that is looser than the`);
+  console.error(`FAIL: ${findings} parity finding(s). A generated schema looser than the`);
   console.error('      first-party module accepts rows the database will reject.');
   process.exit(1);
 }
@@ -607,12 +764,31 @@ PARITY_HARNESS
 npm install --no-audit --no-fund --loglevel=error \
   "$TARS"/*.tgz drizzle-orm@1.0.0-rc.4 zod valibot arktype @sinclair/typebox tsx >/dev/null
 
-npx drzl generate >/dev/null
-for kind in zod valibot arktype typebox; do
-  if [ ! -e "src/gen/$kind/matrix.$kind.ts" ]; then
-    echo "FAIL: the $kind generator produced no file for the parity matrix." >&2
-    exit 1
-  fi
+for dialect in pg mysql sqlite; do
+  case "$dialect" in
+    pg)     schema=src/schema.ts;        libs="zod valibot arktype typebox" ;;
+    mysql)  schema=src/schema-mysql.ts;  libs="zod" ;;
+    sqlite) schema=src/schema-sqlite.ts; libs="zod" ;;
+  esac
+  gens=""
+  for lib in $libs; do gens="$gens    { kind: '$lib', path: 'src/gen/$dialect/$lib' },"$'\n'; done
+  cat > "drzl.$dialect.config.ts" <<CONFIG
+import { defineConfig } from '@drzl/cli/config';
+
+export default defineConfig({
+  schema: '$schema',
+  outDir: 'src/gen/$dialect',
+  generators: [
+$gens  ],
+});
+CONFIG
+  npx drzl generate --config "drzl.$dialect.config.ts" >/dev/null
+  for lib in $libs; do
+    if [ ! -e "src/gen/$dialect/$lib/matrix.$lib.ts" ]; then
+      echo "FAIL: the $lib generator produced no file for the $dialect parity matrix." >&2
+      exit 1
+    fi
+  done
 done
 
 if ! npx tsx src/parity.ts; then
@@ -623,4 +799,4 @@ cd "$APP"
 
 echo "OK: $count packages packed, installed into an empty project, generated, and the output"
 echo "    typechecks under bundler, node16 and nodenext, and validates at least as strictly as"
-echo "    the first-party drizzle-orm validator modules."
+echo "    the first-party drizzle-orm validator modules across three dialects and three modes."

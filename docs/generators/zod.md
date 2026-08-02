@@ -87,6 +87,61 @@ defined, and makes a Postgres `bytea` and a SQLite `blob` validate the same way.
 A CHECK constraint naming an array or a structured column is skipped rather than folded in, since
 the comparison is against a scalar literal and describes neither.
 
+## Dialects other than Postgres
+
+The same rules apply, with each dialect's own widths:
+
+| Column                                  | Emitted                                                    |
+| --------------------------------------- | ---------------------------------------------------------- |
+| MySQL `tinyint()`                       | `z.number().int().gte(-128).lte(127)`                      |
+| MySQL `mediumint()`                     | `z.number().int().gte(-8388608).lte(8388607)`              |
+| MySQL `year()`                          | `z.number().int().gte(1901).lte(2155)`                     |
+| MySQL `serial()`                        | `z.number().int().gte(0)`, since it is unsigned            |
+| MySQL `text()`                          | `z.string().max(65535)`, the width the type itself implies |
+| MySQL `binary(4)`                       | `z.string().regex(/^[01]*$/).max(4)`                       |
+| SQLite `blob({ mode: 'json' })`         | `z.json()`                                                 |
+| SQLite `blob({ mode: 'bigint' })`       | `z.bigint()` with the 64 bit range                         |
+| SQLite `integer({ mode: 'timestamp' })` | a date                                                     |
+
+MySQL's text and blob caps are byte counts and this is a character count, which is the same
+approximation `drizzle-orm/zod` makes: without knowing the column's charset it is the only one
+available. Postgres `text` has no cap and does not get one.
+
+## Which columns appear on insert
+
+A column is omitted from the insert schema only when the database would **refuse** a value for
+it, which is narrower than "the database can fill it in":
+
+| Column                              | On insert |
+| ----------------------------------- | --------- |
+| `serial()`, MySQL `autoincrement()` | optional  |
+| `generatedByDefaultAsIdentity()`    | optional  |
+| `generatedAlwaysAsIdentity()`       | omitted   |
+| `generatedAlwaysAs(...)`            | omitted   |
+| `.default(...)`                     | optional  |
+
+An `AUTO_INCREMENT` or `serial` column supplies a value when you omit one; it does not forbid you
+from supplying your own, which is how backfills and sentinel rows get written. Only
+`GENERATED ALWAYS` really rejects an explicit value.
+
+## Date columns
+
+`coerceDates` decides what a date column accepts, and defaults to `'input'`: strict on select,
+coercing on insert and update, so a client may send an ISO string or an epoch number.
+
+```ts
+{ kind: 'zod', path: 'src/validators/zod', coerceDates: 'none' }
+```
+
+- `'input'` (default) coerces on write only. A `Date`, a date string and an epoch number are
+  accepted; `null`, booleans, arrays and unparseable strings are not.
+- `'all'` coerces on select as well.
+- `'none'` accepts only a real `Date` anywhere, which is what `drizzle-orm/zod` does.
+
+Coercion is deliberately limited to strings and numbers. `z.coerce.date()` would accept anything
+`new Date()` does not choke on, and `new Date(null)` is the epoch while `new Date(true)` is one
+millisecond past it, so a NOT NULL column would accept both.
+
 ## CHECK constraints
 
 A `check()` in your schema becomes a refinement. **No official Drizzle validator module does
@@ -151,6 +206,38 @@ insert and its type differs there.
 Off by default because it adds an `import type` of your schema module to the generated file.
 That import is erased at build time, so it adds no runtime dependency and cannot create a runtime
 cycle, but the coupling should be a choice.
+
+## `customType` columns
+
+A `customType` column has nothing checkable at runtime, and DRZL does not pretend otherwise:
+
+```ts
+balance: z.unknown(),
+```
+
+`getSQLType()` does report the declared SQL type, but that is the database side. `fromDriver` can
+map it to anything, so a `numeric(12,2)` custom column may well hand back a `number` where a plain
+`numeric` hands back a string. A schema built from the SQL type would reject the real value.
+
+What can be recovered is the type, and `typedJson` does it the same way it does for json, by
+referencing Drizzle's own inference rather than guessing:
+
+```ts
+{ kind: 'zod', path: 'src/validators/zod', typedJson: true }
+```
+
+```ts
+balance: z.custom<(typeof accounts.$inferSelect)['balance']>(),
+```
+
+`drizzle-orm/zod` emits `z.any()` here, which loses the declared type and also loses the narrowing
+that `unknown` forces at the call site.
+
+## Views
+
+Views get schemas too, including materialized views and views declared with an explicit column
+list. There is nothing special to configure: a view in your schema file produces
+`Select<View>Schema` alongside the tables.
 
 ## Custom names
 

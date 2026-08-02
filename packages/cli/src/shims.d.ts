@@ -14,3 +14,6 @@ declare module '@drzl/generator-valibot' {
 declare module '@drzl/generator-arktype' {
   export const ArkTypeGenerator: any;
 }
+declare module '@drzl/generator-typebox' {
+  export const TypeBoxGenerator: any;
+}

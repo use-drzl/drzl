@@ -136,6 +136,10 @@ function vShapeExpr(c: Column): string | undefined {
   switch (s.kind) {
     case 'json':
       return JSON_CONST;
+    case 'custom':
+      // A `customType` column carries no runtime information: `fromDriver` may map its SQL type
+      // to anything, so guessing from `getSQLType()` would reject the real value.
+      return 'v.unknown()';
     case 'buffer':
       // Matches the SQLite blob mapping, so binary validates the same way in either dialect.
       return 'v.instance(Uint8Array)';
@@ -147,8 +151,13 @@ function vShapeExpr(c: Column): string | undefined {
       return s.length
         ? `v.pipe(v.array(v.number()), v.length(${s.length}))`
         : 'v.array(v.number())';
-    case 'bitstring':
-      return `v.pipe(v.string(), v.regex(/^[01]*$/)${s.length ? `, v.length(${s.length})` : ''})`;
+    case 'bitstring': {
+      // `v.length` for a Postgres `bit(n)`, `v.maxLength` for a MySQL `binary(n)`.
+      const len = s.length
+        ? `, ${s.exact ? `v.length(${s.length})` : `v.maxLength(${s.length})`}`
+        : '';
+      return `v.pipe(v.string(), v.regex(/^[01]*$/)${len})`;
+    }
   }
 }
 

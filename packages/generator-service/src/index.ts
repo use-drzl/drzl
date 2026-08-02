@@ -237,12 +237,7 @@ export class ServiceGenerator {
           ? resolveConfiguredImport(opts.dbImportPath, out, process.cwd(), opts.importExtension)
           : undefined,
         opts.schemaImportPath
-          ? resolveConfiguredImport(
-              opts.schemaImportPath,
-              out,
-              process.cwd(),
-              opts.importExtension
-            )
+          ? resolveConfiguredImport(opts.schemaImportPath, out, process.cwd(), opts.importExtension)
           : undefined,
         opts.databaseInjection,
         opts.importExtension

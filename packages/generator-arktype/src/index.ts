@@ -85,6 +85,9 @@ function atShapeType(c: Column): string | undefined {
       // Flat rather than recursive, matching what `drizzle-orm/arktype` builds. `object` covers
       // both arrays and records, so nesting needs no separate arm.
       return 'number | object | string | boolean | null';
+    case 'custom':
+      // See the valibot generator: a custom column carries nothing checkable at runtime.
+      return 'unknown';
     case 'buffer':
       return 'TypedArray.Uint8';
     case 'tuple':
@@ -92,7 +95,9 @@ function atShapeType(c: Column): string | undefined {
     case 'numberVector':
       return s.length ? `number[] == ${s.length}` : 'number[]';
     case 'bitstring':
-      return s.length ? `/^[01]*$/ & string == ${s.length}` : '/^[01]*$/';
+      // `== n` for a Postgres `bit(n)`, `<= n` for a MySQL `binary(n)`.
+      if (!s.length) return '/^[01]*$/';
+      return `/^[01]*$/ & string ${s.exact ? '==' : '<='} ${s.length}`;
   }
 }
 

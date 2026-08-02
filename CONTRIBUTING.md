@@ -20,7 +20,7 @@ Thanks for your interest in contributing! This guide explains how to set up your
 
 - `analyzer`: Drizzle schema analysis
 - `cli`: drzl CLI
-- `generator-*`: code generators (oRPC, service, zod, valibot, arktype)
+- `generator-*`: code generators (oRPC, service, zod, valibot, arktype, typebox)
 - `template-*`: oRPC templates
 - `validation-core`: shared validation codegen helpers
 

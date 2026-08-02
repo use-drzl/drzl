@@ -101,8 +101,23 @@ export type ColumnShape =
   | { kind: 'tuple'; length: number }
   /** `vector`, `halfvec`: a numeric vector, with a fixed length where one is declared. */
   | { kind: 'numberVector'; length?: number }
-  /** `bit`: a string of `0`/`1`, with a fixed length where one is declared. */
-  | { kind: 'bitstring'; length?: number };
+  /**
+   * A `customType` column, whose JavaScript type exists only at compile time.
+   *
+   * `getSQLType()` gives the declared SQL type, but that is the *database* side: `fromDriver` may
+   * map it to anything, so a `numeric(12,2)` custom column can perfectly well hand back a number
+   * where a plain numeric hands back a string. Guessing from the SQL type would reject the real
+   * value, so the type is taken from Drizzle's own inference or not at all.
+   */
+  | { kind: 'custom'; sqlType?: string }
+  /**
+   * A string of `0`/`1`: Postgres `bit(n)`, MySQL `binary(n)`/`varbinary(n)`.
+   *
+   * `exact` separates the two. A Postgres `bit(3)` is always three digits, while a MySQL
+   * `varbinary(16)` is at most sixteen, so treating both as exact rejected the empty string on
+   * every MySQL binary column.
+   */
+  | { kind: 'bitstring'; length?: number; exact?: boolean };
 
 export interface Key {
   name?: string;
@@ -184,6 +199,23 @@ function renderSqlLiteral(v: unknown): string {
 }
 
 /**
+ * Widths MySQL's text and blob types carry intrinsically, keyed by codec.
+ *
+ * A `text` column has no `length` to read: the type itself is the limit, so the constraint exists
+ * nowhere on the column and has to come from a table like this one.
+ */
+const MYSQL_TEXT_CAPS: Record<string, number> = {
+  tinytext: 255,
+  text: 65535,
+  mediumtext: 16777215,
+  longtext: 4294967295,
+  tinyblob: 255,
+  blob: 65535,
+  mediumblob: 16777215,
+  longblob: 4294967295,
+};
+
+/**
  * Bounds `drizzle-orm/zod` puts on the inexact numeric types, matched deliberately.
  *
  * They are narrower than the column: Postgres `real` holds values up to ~3.4e38. The bound is
@@ -213,28 +245,73 @@ const V1_FLOAT_BOUNDS: Record<string, [string, string]> = {
 export function describeV1Column(column: any): Partial<Column> | null {
   const codec = column?.codec;
   const dataType = column?.dataType;
-  if (typeof codec !== 'string' || typeof dataType !== 'string') return null;
+  if (typeof dataType !== 'string') return null;
+
+  // `customType` reports `dataType: 'custom'` and no codec at all, so it has to be recognised
+  // before the gate below, which would otherwise send it to the class-name path and `unknown`.
+  if (dataType === 'custom') {
+    const sqlType = typeof column?.getSQLType === 'function' ? column.getSQLType() : undefined;
+    return {
+      tsType: 'unknown',
+      dbType: typeof sqlType === 'string' && sqlType ? sqlType.toUpperCase() : 'UNKNOWN',
+      shape: { kind: 'custom', sqlType: typeof sqlType === 'string' ? sqlType : undefined },
+    };
+  }
 
   const [js, semantic = ''] = dataType.split(' ');
+  // SQLite columns carry a `dataType` but no `codec` at all, so gating on the codec alone left
+  // the whole dialect on the class-name path: its json text and blob modes stayed `any`, its
+  // buffer mode stayed `unknown`, and its bigint blob mode lost its range. A semantic half is
+  // just as good a v1 marker, since 0.4x spells every dataType as a single bare word.
+  if (typeof codec !== 'string' && !semantic) return null;
+
   const out: Partial<Column> = {};
 
   switch (semantic) {
+    case 'int8':
     case 'int16':
+    case 'int24':
     case 'int32':
     case 'int53':
+    case 'uint53':
     case 'int64': {
+      // Every width Drizzle names. Missing `int8` and `int24` did not leave MySQL's `tinyint` and
+      // `mediumint` alone: they fell through to the bare-number arm below, whose safe-integer
+      // bounds then *overrode* the correct ones the class-name table had supplied, so a tinyint
+      // went from +/-127 to +/-9007199254740991 and stopped being an integer at all.
       const range = {
+        int8: ['-128', '127'],
         int16: ['-32768', '32767'],
+        int24: ['-8388608', '8388607'],
         int32: ['-2147483648', '2147483647'],
         int53: ['-9007199254740991', '9007199254740991'],
+        // MySQL `serial` is `bigint unsigned auto_increment`, so it starts at 0 rather than
+        // spanning the signed range.
+        uint53: ['0', '9007199254740991'],
         int64: ['-9223372036854775808', '9223372036854775807'],
       }[semantic]!;
       [out.min, out.max] = range;
       out.integer = true;
       out.tsType = js === 'bigint' ? 'bigint' : 'number';
-      out.dbType = semantic === 'int16' ? 'SMALLINT' : semantic === 'int32' ? 'INTEGER' : 'BIGINT';
+      out.dbType =
+        semantic === 'int8'
+          ? 'TINYINT'
+          : semantic === 'int16'
+            ? 'SMALLINT'
+            : semantic === 'int24'
+              ? 'MEDIUMINT'
+              : semantic === 'int32'
+                ? 'INTEGER'
+                : 'BIGINT';
       break;
     }
+    case 'year':
+      // MySQL YEAR holds 1901 to 2155, which is neither an integer width nor a date.
+      out.tsType = 'number';
+      out.dbType = 'YEAR';
+      out.integer = true;
+      [out.min, out.max] = ['1901', '2155'];
+      break;
     case 'float':
     case 'double': {
       [out.min, out.max] = V1_FLOAT_BOUNDS[semantic]!;
@@ -266,7 +343,7 @@ export function describeV1Column(column: any): Partial<Column> | null {
     case 'date':
       // `date`/`timestamp` in `{ mode: 'string' }` report a js type of string.
       out.tsType = js === 'string' ? 'string' : 'Date';
-      out.dbType = codec.startsWith('timestamp') ? 'TIMESTAMP' : 'DATE';
+      out.dbType = codec?.startsWith('timestamp') ? 'TIMESTAMP' : 'DATE';
       break;
     case 'timestamp':
       out.tsType = js === 'string' ? 'string' : 'Date';
@@ -287,11 +364,19 @@ export function describeV1Column(column: any): Partial<Column> | null {
       out.dbType = semantic.toUpperCase();
       break;
     case 'binary':
-      // `bit(n)`. Named "binary" by the dataType and `PgBinaryVector` by the class, but the
-      // value is a string of '0' and '1' rather than anything vector shaped.
+      // Two unrelated families share this semantic and only the codec separates them. Postgres
+      // `bit(n)`, which the class calls `PgBinaryVector`, is a string of '0' and '1'. MySQL
+      // `binary(n)`/`varbinary(n)` hold arbitrary bytes. Treating both as bit strings made every
+      // MySQL binary column reject the empty string and anything not a run of 0s and 1s.
       out.tsType = 'string';
-      out.dbType = 'BIT';
-      out.shape = { kind: 'bitstring', length: declaredLength(column) };
+      out.dbType = codec === 'bit' ? 'BIT' : 'BINARY';
+      out.shape = {
+        kind: 'bitstring',
+        length: declaredLength(column),
+        // A Postgres `bit(3)` holds exactly three digits; a MySQL `binary(4)`/`varbinary(16)`
+        // holds at most that many, which is why `''` is valid there and not here.
+        exact: codec === 'bit',
+      };
       break;
     case 'point':
     case 'geometry':
@@ -326,6 +411,19 @@ export function describeV1Column(column: any): Partial<Column> | null {
       } else if (js === 'string') {
         out.tsType = 'string';
         out.dbType = codec === 'varchar' ? 'VARCHAR' : codec === 'char' ? 'CHAR' : 'TEXT';
+        // MySQL's text and blob families are capped by the type itself rather than by a declared
+        // length, so nothing else on the column states it and the schema accepted a megabyte for
+        // a column that tops out at 64 KB. The cap is really a byte count and this is a character
+        // count, which is the approximation `drizzle-orm/zod` makes too: without knowing the
+        // column's charset it is the only one available.
+        //
+        // Gated on the dialect because the codec names collide: Postgres `text` reports the codec
+        // `text` as well, and it has no length limit at all, so applying the table unguarded
+        // capped every Postgres text column at 64 KB. `drizzle:entityKind` is the discriminator
+        // rather than `constructor.name` because it survives minification.
+        const kind = String(column?.constructor?.[Symbol.for('drizzle:entityKind')] ?? '');
+        const cap = codec && kind.startsWith('MySql') ? MYSQL_TEXT_CAPS[codec] : undefined;
+        if (cap) out.maxLength = cap;
       } else {
         // Something this release added that is not modelled yet. Falling back to the class
         // name beats inventing a type: a wrong scalar rejects rows, `unknown` only fails to
@@ -883,7 +981,25 @@ export class SchemaAnalyzer {
       }
       const ev = (col as any)?.enumValues as string[] | undefined;
       const nullable = !(col as any)?.notNull && !(col as any)?.config?.notNull;
-      const isGenerated = !!((col as any)?.autoIncrement || (col as any)?.isGenerated);
+      // What the database refuses to be given a value for, which is narrower than "the database
+      // fills this in".
+      //
+      // This read `col.autoIncrement || col.isGenerated`, and `col.isGenerated` is undefined on
+      // every Drizzle column of every dialect, so the second half never fired: a
+      // `GENERATED ALWAYS AS (...)` column appeared in insert schemas, and an insert built from
+      // one is rejected by Postgres outright. The first half then over-fired in the other
+      // direction, dropping MySQL `autoIncrement` columns entirely when an AUTO_INCREMENT value
+      // may be supplied explicitly. The same construct therefore behaved differently per dialect:
+      // a Postgres `serial` was optional on insert while a MySQL `serial` was absent.
+      //
+      // An identity column splits on its own type. GENERATED ALWAYS rejects an explicit value,
+      // GENERATED BY DEFAULT accepts one, so only the former is omitted here.
+      const generatedIdentity = (col as any)?.generatedIdentity;
+      const isGenerated = !!(
+        (col as any)?.generated ||
+        generatedIdentity?.type === 'always' ||
+        (col as any)?.isGenerated
+      );
       // `col.hasDefault` is the property Drizzle actually sets, and it is the only thing that
       // separates a key the database fills in from one the caller must supply. Reading
       // `col.default` and `col.config.default` instead, neither of which Drizzle populates,

@@ -100,6 +100,13 @@ function shapeExpr(c: Column, typedJsonRef?: string): string | undefined {
       // Zod's own JSON value space. `z.any()` accepted `undefined`, `NaN`, `Infinity`, bigints,
       // Dates and Buffers, none of which survive the round trip through the column.
       return 'z.json()';
+    case 'custom':
+      // A `customType` column's JavaScript type exists only at compile time, and `fromDriver` can
+      // map the SQL type to anything, so there is nothing to check at runtime and guessing from
+      // `getSQLType()` would reject the real value. `typedJson` still recovers the *type*, from
+      // Drizzle's own inference rather than from a guess, which `drizzle-orm/zod` does not do at
+      // all: it emits `z.any()`, losing both the type and the narrowing `unknown` would force.
+      return typedJsonRef ? `z.custom<${typedJsonRef}>()` : 'z.unknown()';
     case 'buffer':
       // `Uint8Array` rather than `Buffer`, which is the one place the output is deliberately
       // wider than `drizzle-orm/zod`. A Buffer is a Uint8Array, so everything official accepts
@@ -113,7 +120,12 @@ function shapeExpr(c: Column, typedJsonRef?: string): string | undefined {
     case 'numberVector':
       return `z.array(z.number())${s.length ? `.length(${s.length})` : ''}`;
     case 'bitstring':
-      return `z.string().regex(/^[01]*$/)${s.length ? `.length(${s.length})` : ''}`;
+      // `.length` for a Postgres `bit(n)`, `.max` for a MySQL `binary(n)`: the first is a fixed
+      // width, the second a ceiling, and `''` is valid only under the second.
+      return (
+        'z.string().regex(/^[01]*$/)' +
+        (s.length ? (s.exact ? `.length(${s.length})` : `.max(${s.length})`) : '')
+      );
   }
 }
 
@@ -145,11 +157,19 @@ function zodExprForColumn(
       return 'z.bigint()' + numericBounds(c, (v) => `${v}n`);
     case 'boolean':
       return 'z.boolean()';
-    case 'Date':
-      if (coerceDates === 'all') return 'z.coerce.date()';
+    case 'Date': {
+      // Not `z.coerce.date()`. That is `new Date(v)` on anything at all, and `new Date(null)` is
+      // the epoch, `new Date(true)` is one millisecond past it, and `new Date([1, 2])` parses as
+      // a string, so a NOT NULL timestamp column accepted `null`, `true` and an array on insert.
+      // Coercing only from the two types that carry a date, and validating the result, keeps the
+      // intent while rejecting all three.
+      const coerced =
+        "z.preprocess((v) => (typeof v === 'string' || typeof v === 'number' ? new Date(v) : v), z.date())";
+      if (coerceDates === 'all') return coerced;
       if (coerceDates === 'none') return 'z.date()';
       // 'input'
-      return mode === 'select' ? 'z.date()' : 'z.coerce.date()';
+      return mode === 'select' ? 'z.date()' : coerced;
+    }
     case 'Uint8Array':
       return 'z.instanceof(Uint8Array)';
     case 'any':
@@ -205,7 +225,7 @@ function renderObjectShape(
     .map((c) => {
       // Only json-ish columns get a reference; everything else already has a real type.
       const ref =
-        typedJson && c.tsType === 'any'
+        typedJson && (c.tsType === 'any' || c.shape?.kind === 'custom')
           ? `typeof ${typedJson.table}.$infer${typedJson.mode === 'insert' ? 'Insert' : 'Select'}[${JSON.stringify(c.name)}]`
           : undefined;
       return `  ${JSON.stringify(c.name)}: ${zodField(c, mode, coerceDates, checks, ref)},`;
