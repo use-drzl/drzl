@@ -51,7 +51,7 @@ describe.each(Object.entries(DIALECTS))('%s', (dialect, d) => {
     const a = await analyzeSource(`checks-${dialect}`, source);
     const checks = a.tables.find((x) => x.name === 't')?.checks ?? [];
     const adult = checks.find((c) => c.name === 'adult');
-    expect(adult?.expression.trim()).toBe('age >= 18');
+    expect(adult?.expression?.trim()).toBe('age >= 18');
   });
 
   it('names the column as the analyzer names it, not as SQL quotes it', async () => {
@@ -81,6 +81,6 @@ describe.each(Object.entries(DIALECTS))('%s, when the TS name differs from the c
   it('renders the TS name, which is what the emitted schema keys on', async () => {
     const a = await analyzeSource(`checks-renamed-${dialect}`, source);
     const checks = a.tables.find((x) => x.name === 't')?.checks ?? [];
-    expect(checks[0]?.expression.trim()).toBe('userAge >= 18');
+    expect(checks[0]?.expression?.trim()).toBe('userAge >= 18');
   });
 });
