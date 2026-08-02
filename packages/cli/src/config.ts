@@ -99,6 +99,14 @@ export const GeneratorSchema = z.object({
   typedColumns: z.boolean().optional(),
   // Reproduce literal column defaults in the insert schema, so parsing fills them in.
   applyDefaults: z.boolean().optional(),
+  /**
+   * Emit `findDuplicate<Table>` beside the schemas: the rows in a batch that collide with an
+   * earlier row on a unique constraint.
+   *
+   * Uniqueness is the one constraint a per-row validator structurally cannot see, since it is a
+   * fact about the table rather than the row. This checks the half that needs no database.
+   */
+  duplicateFinder: z.boolean().optional(),
   naming: NamingSchema.optional(),
   outputHeader: z
     .object({

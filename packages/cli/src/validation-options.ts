@@ -23,6 +23,7 @@ type GeneratorConfig = {
   applyDefaults?: unknown;
   typedJson?: unknown;
   typedColumns?: unknown;
+  duplicateFinder?: unknown;
 };
 
 export interface GeneratorCapabilities {
@@ -53,6 +54,7 @@ export function validationOptions(
     affix: g.affix,
     coerceDates: g.coerceDates,
     applyDefaults: g.applyDefaults,
+    duplicateFinder: g.duplicateFinder,
     // Only where the generator can act on them, so an unsupported option is absent rather than
     // present and ignored.
     ...(caps.schemaTypes

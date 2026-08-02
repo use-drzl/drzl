@@ -17,6 +17,7 @@ import {
   moduleFileName,
   moduleSpecifier,
   parseCheck,
+  renderDuplicateFinder,
   resolveAffix,
   resolveConfiguredImport,
   schemaName,
@@ -373,7 +374,8 @@ function renderTableSchemas(
   affix: ResolvedAffix,
   coerceDates: NonNullable<ValidationGenerateOptions['coerceDates']>,
   typedJson?: { schemaSpecifier: string; allColumns?: boolean },
-  applyDefaults = false
+  applyDefaults = false,
+  wantsDuplicateFinder = false
 ) {
   const T = table.tsName;
   const insertSchema = schemaName('insert', T, affix);
@@ -453,7 +455,14 @@ function renderTableSchemas(
     );
   const rowImport = needsRows ? `, Kind, TypeRegistry` : '';
 
-  return `import { Type${rowImport} } from '@sinclair/typebox';
+    // Uniqueness is a fact about the table, so no per-row schema can see it. This checks the
+  // half that needs no database: whether a batch collides with itself.
+  const finder = wantsDuplicateFinder
+    ? renderDuplicateFinder(table, `findDuplicate${T}`, insertType)
+    : undefined;
+  const duplicates = finder ? `\n${finder}\n` : '';
+
+return `import { Type${rowImport} } from '@sinclair/typebox';
 import type { Static } from '@sinclair/typebox';
 ${schemaImport}${needsJson ? `\n${JSON_PREAMBLE}` : ''}${needsRows ? `\n${ROW_PREAMBLE}` : ''}
 export const ${insertSchema} = ${tbWrapRows(`Type.Object({\n${bodyInsert}\n})`, rows, insertCols, lengths)};
@@ -465,7 +474,7 @@ export const ${selectSchema} = ${tbWrapRows(`Type.Object({\n${bodySelect}\n})`, 
 export type ${insertType} = Static<typeof ${insertSchema}>;
 export type ${updateType} = Static<typeof ${updateSchema}>;
 export type ${selectType} = Static<typeof ${selectSchema}>;
-`;
+${duplicates}`;
 }
 
 /**
@@ -595,6 +604,15 @@ function tbWrapRows(
 
 export interface TypeBoxGenerateOptions extends ValidationGenerateOptions {
   outputHeader?: { enabled?: boolean; text?: string };
+  /**
+   * Also emit `findDuplicate<Table>` beside the schemas: the rows in a batch that collide with an
+   * earlier row on a unique constraint.
+   *
+   * Uniqueness is the one constraint a per-row validator structurally cannot see, since it is a
+   * fact about the table. This checks the half that needs no database. Off by default, because
+   * generated code ships in the consumer's bundle.
+   */
+  duplicateFinder?: boolean;
 }
 
 export class TypeBoxGenerator implements ValidationRenderer<TypeBoxGenerateOptions> {
@@ -634,7 +652,8 @@ export class TypeBoxGenerator implements ValidationRenderer<TypeBoxGenerateOptio
 
     for (const table of this.analysis.tables) {
       const filePath = path.join(out, moduleFileName(table.tsName, fileSuffix));
-      const code = renderTableSchemas(table, affix, coerceDates, typedJson, !!opts.applyDefaults);
+      const code = renderTableSchemas(table, affix, coerceDates, typedJson, !!opts.applyDefaults,
+      !!opts?.duplicateFinder);
       const formatted = await formatCode(
         buildHeader(opts.outputHeader) + code,
         filePath,
@@ -661,7 +680,8 @@ export class TypeBoxGenerator implements ValidationRenderer<TypeBoxGenerateOptio
       resolveAffix(opts),
       opts?.coerceDates ?? 'input',
       undefined,
-      !!opts?.applyDefaults
+      !!opts?.applyDefaults,
+      !!opts?.duplicateFinder
     );
   }
 

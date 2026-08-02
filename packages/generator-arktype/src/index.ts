@@ -14,6 +14,7 @@ import {
   insertColumns,
   isIntegerColumn,
   parseCheck,
+  renderDuplicateFinder,
   updateColumns,
   selectColumns,
   formatCode,
@@ -368,7 +369,8 @@ function renderTableSchemas(
   table: Table,
   affix: ResolvedAffix,
   coerceDates: NonNullable<ValidationGenerateOptions['coerceDates']>,
-  applyDefaults = false
+  applyDefaults = false,
+  wantsDuplicateFinder = false
 ) {
   const T = table.tsName;
   const insertSchema = schemaName('insert', T, affix);
@@ -413,7 +415,14 @@ function renderTableSchemas(
     applyDefaults,
     cardinalities
   );
-  return `import { type } from 'arktype';
+    // Uniqueness is a fact about the table, so no per-row schema can see it. This checks the
+  // half that needs no database: whether a batch collides with itself.
+  const finder = wantsDuplicateFinder
+    ? renderDuplicateFinder(table, `findDuplicate${T}`, insertType)
+    : undefined;
+  const duplicates = finder ? `\n${finder}\n` : '';
+
+return `import { type } from 'arktype';
 
 export const ${insertSchema} = type({
 ${bodyInsert}
@@ -430,11 +439,20 @@ ${bodySelect}
 export type ${insertType} = typeof ${insertSchema}["infer"];
 export type ${updateType} = typeof ${updateSchema}["infer"];
 export type ${selectType} = typeof ${selectSchema}["infer"];
-`;
+${duplicates}`;
 }
 
 export interface ArkTypeGenerateOptions extends ValidationGenerateOptions {
   outputHeader?: { enabled?: boolean; text?: string };
+  /**
+   * Also emit `findDuplicate<Table>` beside the schemas: the rows in a batch that collide with an
+   * earlier row on a unique constraint.
+   *
+   * Uniqueness is the one constraint a per-row validator structurally cannot see, since it is a
+   * fact about the table. This checks the half that needs no database. Off by default, because
+   * generated code ships in the consumer's bundle.
+   */
+  duplicateFinder?: boolean;
 }
 
 export class ArkTypeGenerator implements ValidationRenderer<ArkTypeGenerateOptions> {
@@ -454,7 +472,8 @@ export class ArkTypeGenerator implements ValidationRenderer<ArkTypeGenerateOptio
     // rename identifiers, never modules, so the barrel and importPath keep resolving.
     for (const table of this.analysis.tables) {
       const filePath = path.join(out, moduleFileName(table.tsName, fileSuffix));
-      const code = renderTableSchemas(table, affix, coerceDates, !!opts.applyDefaults);
+      const code = renderTableSchemas(table, affix, coerceDates, !!opts.applyDefaults,
+      !!opts?.duplicateFinder);
       const formatted = await formatCode(
         buildHeader(opts.outputHeader) + code,
         filePath,
@@ -476,7 +495,13 @@ export class ArkTypeGenerator implements ValidationRenderer<ArkTypeGenerateOptio
   }
 
   renderTable(table: Table, opts?: ArkTypeGenerateOptions) {
-    return renderTableSchemas(table, resolveAffix(opts), opts?.coerceDates ?? 'input');
+    return renderTableSchemas(
+      table,
+      resolveAffix(opts),
+      opts?.coerceDates ?? 'input',
+      !!opts?.applyDefaults,
+      !!opts?.duplicateFinder
+    );
   }
 
   private defaultIndex(analysis: Analysis, opts: ArkTypeGenerateOptions) {

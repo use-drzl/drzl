@@ -1351,6 +1351,20 @@ export class SchemaAnalyzer {
       const cols = (cfg.columns ?? []).map((c: any) => toTs(c?.name)).filter(Boolean);
       if (!cols.length) continue;
 
+      // A table-level `unique()` keeps `columns` directly on the instance and carries no
+      // `unique` flag, exactly like a primary key builder, so "no flag means primary key" claimed
+      // it. The result was not a missing constraint but a wrong one: a table keyed on `id`
+      // reported a composite primary key on whatever the unique named, and the service and router
+      // generators build their lookups from that.
+      //
+      // `drizzle:entityKind` is the discriminator, as elsewhere in this file: it survives
+      // minification, and the dialect prefix varies while the suffix does not.
+      const entityKind = String(entry?.constructor?.[Symbol.for('drizzle:entityKind')] ?? '');
+      if (entityKind.endsWith('UniqueConstraintBuilder')) {
+        unique.push({ columns: cols, name: entry?.name });
+        continue;
+      }
+
       // Only an index has a `unique` flag, so its absence identifies the primary key.
       if (cfg.unique === undefined) {
         pkCols.splice(0, pkCols.length, ...cols);

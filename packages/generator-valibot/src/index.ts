@@ -11,6 +11,7 @@ import {
   insertColumns,
   isIntegerColumn,
   parseCheck,
+  renderDuplicateFinder,
   resolveConfiguredImport,
   updateColumns,
   selectColumns,
@@ -444,7 +445,8 @@ function renderTableSchemas(
   affix: ResolvedAffix,
   coerceDates: NonNullable<ValidationGenerateOptions['coerceDates']>,
   applyDefaults = false,
-  typedColumns?: { schemaSpecifier: string }
+  typedColumns?: { schemaSpecifier: string },
+  wantsDuplicateFinder = false
 ) {
   const T = table.tsName;
   const insertSchema = schemaName('insert', T, affix);
@@ -510,7 +512,14 @@ function renderTableSchemas(
     (c) => c.shape?.kind === 'json'
   );
 
-  return `import * as v from 'valibot';
+    // Uniqueness is a fact about the table, so no per-row schema can see it. This checks the
+  // half that needs no database: whether a batch collides with itself.
+  const finder = wantsDuplicateFinder
+    ? renderDuplicateFinder(table, `findDuplicate${T}`, insertType)
+    : undefined;
+  const duplicates = finder ? `\n${finder}\n` : '';
+
+return `import * as v from 'valibot';
 import type { InferInput, InferOutput } from 'valibot';
 ${schemaImport}${needsJson ? `\n${JSON_PREAMBLE}` : ''}
 export const ${insertSchema} = ${wrapRows(`v.object({\n${bodyInsert}\n})`, rows, insertCols)};
@@ -522,11 +531,20 @@ export const ${selectSchema} = ${wrapRows(`v.object({\n${bodySelect}\n})`, rows,
 export type ${insertType} = InferInput<typeof ${insertSchema}>;
 export type ${updateType} = InferInput<typeof ${updateSchema}>;
 export type ${selectType} = InferOutput<typeof ${selectSchema}>;
-`;
+${duplicates}`;
 }
 
 export interface ValibotGenerateOptions extends ValidationGenerateOptions {
   outputHeader?: { enabled?: boolean; text?: string };
+  /**
+   * Also emit `findDuplicate<Table>` beside the schemas: the rows in a batch that collide with an
+   * earlier row on a unique constraint.
+   *
+   * Uniqueness is the one constraint a per-row validator structurally cannot see, since it is a
+   * fact about the table. This checks the half that needs no database. Off by default, because
+   * generated code ships in the consumer's bundle.
+   */
+  duplicateFinder?: boolean;
 }
 
 export class ValibotGenerator implements ValidationRenderer<ValibotGenerateOptions> {
@@ -570,7 +588,8 @@ export class ValibotGenerator implements ValidationRenderer<ValibotGenerateOptio
         affix,
         coerceDates,
         !!opts.applyDefaults,
-        typedColumns
+        typedColumns,
+      !!opts?.duplicateFinder
       );
       const formatted = await formatCode(
         buildHeader(opts.outputHeader) + code,
@@ -593,7 +612,14 @@ export class ValibotGenerator implements ValidationRenderer<ValibotGenerateOptio
   }
 
   renderTable(table: Table, opts?: ValibotGenerateOptions) {
-    return renderTableSchemas(table, resolveAffix(opts), opts?.coerceDates ?? 'input');
+    return renderTableSchemas(
+      table,
+      resolveAffix(opts),
+      opts?.coerceDates ?? 'input',
+      !!opts?.applyDefaults,
+      undefined,
+      !!opts?.duplicateFinder
+    );
   }
 
   private defaultIndex(analysis: Analysis, opts: ValibotGenerateOptions) {
