@@ -2,6 +2,7 @@ import type { Analysis, Table, Column } from '@drzl/analyzer';
 import type {
   ColumnCheck,
   ColumnSet,
+  CardinalityCheck,
   ResolvedAffix,
   RowCheck,
   ValidationRenderer,
@@ -164,6 +165,31 @@ function tbShapeExpr(c: Column, typedJsonRef?: string): string | undefined {
   }
 }
 
+/**
+ * `CHECK (cardinality(tags) >= 2)` as `minItems` and `maxItems`.
+ *
+ * These are the JSON Schema keywords for an array length, so the constraint survives
+ * serialisation rather than living in a predicate that cannot. JSON Schema has no exclusive form
+ * of either, but a length is an integer, so `> 2` is exactly `minItems: 3` and nothing is
+ * approximated by the rewrite. `<>` has no keyword at all and is left unstated.
+ */
+function tbCardinalityOptions(c: Column, cardinalities: CardinalityCheck[]): Array<[string, string]> {
+  if (!c.arrayDimensions) return [];
+  const out = new Map<string, string>();
+  const step = (v: string, by: number) => String(BigInt(v) + BigInt(by));
+  for (const k of cardinalities.filter((x) => x.column === c.name)) {
+    if (k.operator === '>=') out.set('minItems', k.value);
+    else if (k.operator === '>') out.set('minItems', step(k.value, 1));
+    else if (k.operator === '<=') out.set('maxItems', k.value);
+    else if (k.operator === '<') out.set('maxItems', step(k.value, -1));
+    else if (k.operator === '=') {
+      out.set('minItems', k.value);
+      out.set('maxItems', k.value);
+    }
+  }
+  return [...out];
+}
+
 function tbExprForColumn(
   c: Column,
   mode: Mode,
@@ -276,12 +302,18 @@ function tbField(
   typedJsonRef?: string,
   sets: ColumnSet[] = [],
   applyDefault = false,
-  narrowRef?: string
+  narrowRef?: string,
+  cardinalities: CardinalityCheck[] = []
 ): string {
   let expr = tbExprForColumn(c, mode, coerceDates, checks, typedJsonRef, sets);
   // Drizzle keeps an array on the element's own column class, so everything above describes the
   // element and the wrapping belongs out here, after its bounds are attached.
-  for (let i = 0; i < (c.arrayDimensions ?? 0); i++) expr = `Type.Array(${expr})`;
+  // The length bound belongs on the outermost array, which is the one `cardinality()` counts.
+  const cardOpts = renderOptions(tbCardinalityOptions(c, cardinalities));
+  const dims = c.arrayDimensions ?? 0;
+  for (let i = 0; i < dims; i++) {
+    expr = `Type.Array(${expr}${i === dims - 1 && cardOpts ? `, ${cardOpts}` : ''})`;
+  }
   // Nullability wraps the constrained type, so null skips the constraint. That reproduces SQL,
   // where a CHECK passes when it evaluates to TRUE or NULL.
   if (c.nullable) expr = `Type.Union([${expr}, Type.Null()])`;
@@ -315,7 +347,8 @@ function renderObjectShape(
   checks: ColumnCheck[] = [],
   typedJson?: { table: string; mode: 'insert' | 'select'; allColumns?: boolean },
   sets: ColumnSet[] = [],
-  applyDefaults = false
+  applyDefaults = false,
+  cardinalities: CardinalityCheck[] = []
 ) {
   return cols
     .map((c) => {
@@ -327,7 +360,7 @@ function renderObjectShape(
         typedJson && (c.tsType === 'any' || c.shape?.kind === 'custom')
           ? `(typeof ${typedJson.table}.$infer${typedJson.mode === 'insert' ? 'Insert' : 'Select'})[${JSON.stringify(c.name)}]`
           : undefined;
-      return `  ${JSON.stringify(c.name)}: ${tbField(c, mode, coerceDates, checks, ref, sets, applyDefaults, narrow)},`;
+      return `  ${JSON.stringify(c.name)}: ${tbField(c, mode, coerceDates, checks, ref, sets, applyDefaults, narrow, cardinalities)},`;
     })
     .join('\n');
 }
@@ -356,6 +389,7 @@ function renderTableSchemas(
   const checks = parsedChecks.flatMap((p) => (p.ok ? p.checks : []));
   const sets = parsedChecks.flatMap((p) => (p.ok ? (p.sets ?? []) : []));
   const rows = parsedChecks.flatMap((p) => (p.ok ? (p.rows ?? []) : []));
+  const cardinalities = parsedChecks.flatMap((p) => (p.ok ? (p.cardinalities ?? []) : []));
 
   const tj = typedJson
     ? { table: T, mode: 'select' as const, allColumns: typedJson.allColumns }
@@ -370,7 +404,8 @@ function renderTableSchemas(
     checks,
     tjInsert,
     sets,
-    applyDefaults
+    applyDefaults,
+    cardinalities
   );
   const bodyUpdate = renderObjectShape(
     updateCols,
@@ -379,7 +414,8 @@ function renderTableSchemas(
     checks,
     tjInsert,
     sets,
-    applyDefaults
+    applyDefaults,
+    cardinalities
   );
   const bodySelect = renderObjectShape(
     selectCols,
@@ -388,7 +424,8 @@ function renderTableSchemas(
     checks,
     tj,
     sets,
-    applyDefaults
+    applyDefaults,
+    cardinalities
   );
 
   const schemaImport = typedJson
