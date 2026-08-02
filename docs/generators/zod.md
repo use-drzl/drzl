@@ -229,6 +229,21 @@ function and is read too. Counted in code points, so it agrees with the database
 derived from a JavaScript string without choosing one. Neither is `lower`, which would need a
 locale to be faithful.
 
+### `cardinality()` becomes an element count
+
+```ts
+// check('tags_rule', sql`cardinality(${t.tags}) > 0`)
+tags: z.array(z.string())
+  .refine((v) => v.length > 0, { message: 'tags_rule: cardinality(tags) > 0' }),
+```
+
+The array analogue of `length()`, and free of the question that one carries: an element count is
+the same number in SQL and in JavaScript. `array_length(col, 1)` reads the same way, since for a
+one-dimensional array it is that count. Any other dimension is refused.
+
+This is the one check an array column takes. The others are skipped there because a comparison
+against a scalar literal says nothing usable about an array, whereas this one is _about_ it.
+
 **Only unambiguous constraints are translated.** These are skipped rather than guessed at:
 
 | Skipped                       | Why                                                      |

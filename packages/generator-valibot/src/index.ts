@@ -4,7 +4,7 @@ import type {
   ValidationRenderer,
   ValidationGenerateOptions,
 } from '@drzl/validation-core';
-import type { ColumnCheck, ColumnSet, LengthCheck } from '@drzl/validation-core';
+import type { CardinalityCheck, ColumnCheck, ColumnSet, LengthCheck } from '@drzl/validation-core';
 import {
   COLUMN_FORMATS,
   insertColumns,
@@ -187,6 +187,32 @@ function vLengthChecks(c: Column, lengths: LengthCheck[]): string[] {
     });
 }
 
+/**
+ * `v.check(...)` actions for the `cardinality(col)` constraints naming this column.
+ *
+ * Only for an array column, and applied to the array rather than to an element, which is why it
+ * is threaded to the field rather than folded into the element pipe.
+ */
+function vCardinalityChecks(c: Column, cardinalities: CardinalityCheck[]): string[] {
+  if (!c.arrayDimensions) return [];
+  const OPS: Record<CardinalityCheck['operator'], string> = {
+    '>=': '>=',
+    '>': '>',
+    '<=': '<=',
+    '<': '<',
+    '=': '===',
+    '<>': '!==',
+  };
+  return cardinalities
+    .filter((k) => k.column === c.name)
+    .map((k) => {
+      const msg = JSON.stringify(
+        `${k.name ? `${k.name}: ` : ''}cardinality(${c.name}) ${k.operator} ${k.value}`
+      );
+      return `v.check((val) => val.length ${OPS[k.operator]} ${k.value}, ${msg})`;
+    });
+}
+
 function vExprForColumn(
   c: Column,
   mode: Mode,
@@ -266,12 +292,16 @@ function vField(
   checks: ColumnCheck[] = [],
   sets: ColumnSet[] = [],
   applyDefault = false,
-  lengths: LengthCheck[] = []
+  lengths: LengthCheck[] = [],
+  cardinalities: CardinalityCheck[] = []
 ): string {
   let expr = vExprForColumn(c, mode, coerceDates, checks, sets, lengths);
   // Drizzle keeps an array on the element's own column class, so everything above describes the
   // element and the wrapping belongs out here, after the bounds and length limits are attached.
   for (let i = 0; i < (c.arrayDimensions ?? 0); i++) expr = `v.array(${expr})`;
+  // After the wrapping, because this constrains the array rather than an element.
+  const card = vCardinalityChecks(c, cardinalities);
+  if (card.length) expr = `v.pipe(${expr}, ${card.join(', ')})`;
   if (c.nullable) expr = `v.nullable(${expr})`;
   if (mode !== 'select') {
     // A literal default is reproduced as valibot's second argument to `optional`, which is where
@@ -294,12 +324,13 @@ function renderObjectShape(
   checks: ColumnCheck[] = [],
   sets: ColumnSet[] = [],
   applyDefaults = false,
-  lengths: LengthCheck[] = []
+  lengths: LengthCheck[] = [],
+  cardinalities: CardinalityCheck[] = []
 ) {
   return cols
     .map(
       (c) =>
-        `  ${JSON.stringify(c.name)}: ${vField(c, mode, coerceDates, checks, sets, applyDefaults, lengths)},`
+        `  ${JSON.stringify(c.name)}: ${vField(c, mode, coerceDates, checks, sets, applyDefaults, lengths, cardinalities)},`
     )
     .join('\n');
 }
@@ -326,6 +357,7 @@ function renderTableSchemas(
   const checks = parsedChecks.flatMap((p) => (p.ok ? p.checks : []));
   const sets = parsedChecks.flatMap((p) => (p.ok ? (p.sets ?? []) : []));
   const lengths = parsedChecks.flatMap((p) => (p.ok ? (p.lengths ?? []) : []));
+  const cardinalities = parsedChecks.flatMap((p) => (p.ok ? (p.cardinalities ?? []) : []));
   const bodyInsert = renderObjectShape(
     insertCols,
     'insert',
@@ -333,7 +365,8 @@ function renderTableSchemas(
     checks,
     sets,
     applyDefaults,
-    lengths
+    lengths,
+    cardinalities
   );
   const bodyUpdate = renderObjectShape(
     updateCols,
@@ -342,7 +375,8 @@ function renderTableSchemas(
     checks,
     sets,
     applyDefaults,
-    lengths
+    lengths,
+    cardinalities
   );
   const bodySelect = renderObjectShape(
     selectCols,
@@ -351,7 +385,8 @@ function renderTableSchemas(
     checks,
     sets,
     applyDefaults,
-    lengths
+    lengths,
+    cardinalities
   );
   // Emitted only where a json column exists, so a file without one gains nothing unused.
   const needsJson = [...insertCols, ...updateCols, ...selectCols].some(

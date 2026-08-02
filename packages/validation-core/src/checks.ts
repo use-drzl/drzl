@@ -74,6 +74,19 @@ export interface LengthCheck {
   name?: string;
 }
 
+/**
+ * A constraint on an array column's element count, from `CHECK (cardinality(tags) > 0)`.
+ *
+ * The array analogue of `LengthCheck`, and free of the question that one carries: an element
+ * count is the same number in SQL and in JavaScript, with no encoding involved.
+ */
+export interface CardinalityCheck {
+  column: string;
+  operator: ColumnCheck['operator'];
+  value: string;
+  name?: string;
+}
+
 /** A check that was understood, or the reason it was not. */
 export type ParsedCheck =
   | {
@@ -82,6 +95,7 @@ export type ParsedCheck =
       sets?: ColumnSet[];
       rows?: RowCheck[];
       lengths?: LengthCheck[];
+      cardinalities?: CardinalityCheck[];
     }
   | { ok: false; reason: string };
 
@@ -90,6 +104,11 @@ const IN_LIST = /^\s*([A-Za-z_][A-Za-z0-9_]*)\s+IN\s*\((.+)\)\s*$/i;
 // `length` and `char_length` are the same function in Postgres and both count characters.
 // `octet_length` is deliberately absent: it counts bytes, which depends on the encoding and
 // cannot be derived from a JavaScript string without choosing one.
+// `cardinality(a)` is the element count. `array_length(a, 1)` is the length of the first
+// dimension, which is the same number for a one-dimensional array; any other dimension is not an
+// element count and is refused.
+const CARDINALITY_OF =
+  /^\s*(?:cardinality\s*\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*\)|array_length\s*\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*,\s*1\s*\))\s*(>=|<=|<>|!=|>|<|=)\s*(\d+)\s*$/i;
 const LENGTH_OF =
   /^\s*(?:length|char_length)\s*\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*\)\s*(>=|<=|<>|!=|>|<|=)\s*(\d+)\s*$/i;
 
@@ -250,6 +269,7 @@ export function parseCheck(expression: string | undefined, name?: string): Parse
     const sets: ColumnSet[] = [];
     const rows: RowCheck[] = [];
     const lengths: LengthCheck[] = [];
+    const cardinalities: CardinalityCheck[] = [];
     for (const part of parts) {
       const parsed = parseCheck(part, name);
       if (!parsed.ok)
@@ -258,6 +278,7 @@ export function parseCheck(expression: string | undefined, name?: string): Parse
       if (parsed.sets) sets.push(...parsed.sets);
       if (parsed.rows) rows.push(...parsed.rows);
       if (parsed.lengths) lengths.push(...parsed.lengths);
+      if (parsed.cardinalities) cardinalities.push(...parsed.cardinalities);
     }
     return {
       ok: true,
@@ -265,6 +286,7 @@ export function parseCheck(expression: string | undefined, name?: string): Parse
       ...(sets.length ? { sets } : {}),
       ...(rows.length ? { rows } : {}),
       ...(lengths.length ? { lengths } : {}),
+      ...(cardinalities.length ? { cardinalities } : {}),
     };
   }
 
@@ -278,6 +300,23 @@ export function parseCheck(expression: string | undefined, name?: string): Parse
       ok: true,
       checks: [],
       lengths: [{ column: lengthOf[1], operator: op, value: lengthOf[3], name }],
+    };
+  }
+
+  const cardinalityOf = expr.match(CARDINALITY_OF);
+  if (cardinalityOf) {
+    const op = cardinalityOf[3] === '!=' ? '<>' : (cardinalityOf[3] as ColumnCheck['operator']);
+    return {
+      ok: true,
+      checks: [],
+      cardinalities: [
+        {
+          column: cardinalityOf[1] ?? cardinalityOf[2],
+          operator: op,
+          value: cardinalityOf[4],
+          ...(name ? { name } : {}),
+        },
+      ],
     };
   }
 

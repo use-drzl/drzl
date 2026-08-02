@@ -4,7 +4,13 @@ import type {
   ValidationGenerateOptions,
   ValidationRenderer,
 } from '@drzl/validation-core';
-import type { ColumnCheck, ColumnSet, LengthCheck, RowCheck } from '@drzl/validation-core';
+import type {
+  ColumnCheck,
+  ColumnSet,
+  CardinalityCheck,
+  LengthCheck,
+  RowCheck,
+} from '@drzl/validation-core';
 import {
   formatCode,
   parseCheck,
@@ -76,6 +82,34 @@ function lengthRefinements(c: Column, lengths: LengthCheck[]): string {
         `${k.name ? `${k.name}: ` : ''}length(${c.name}) ${k.operator} ${k.value}`
       );
       return `.refine((v) => [...v].length ${OPS[k.operator]} ${k.value}, { message: ${msg} })`;
+    })
+    .join('');
+}
+
+/**
+ * `.refine()` calls for the `cardinality(col)` constraints naming this column.
+ *
+ * Only for an array column: on anything else there is nothing to count, and comparing `.length`
+ * of a string would enforce a different constraint than the schema stated. This is the one check
+ * an array column does take, since it is about the array rather than about an element.
+ */
+function cardinalityRefinements(c: Column, cardinalities: CardinalityCheck[]): string {
+  if (!c.arrayDimensions) return '';
+  const OPS: Record<CardinalityCheck['operator'], string> = {
+    '>=': '>=',
+    '>': '>',
+    '<=': '<=',
+    '<': '<',
+    '=': '===',
+    '<>': '!==',
+  };
+  return cardinalities
+    .filter((k) => k.column === c.name)
+    .map((k) => {
+      const msg = JSON.stringify(
+        `${k.name ? `${k.name}: ` : ''}cardinality(${c.name}) ${k.operator} ${k.value}`
+      );
+      return `.refine((v) => v.length ${OPS[k.operator]} ${k.value}, { message: ${msg} })`;
     })
     .join('');
 }
@@ -240,6 +274,7 @@ function zodField(
   sets: ColumnSet[] = [],
   applyDefault = false,
   lengths: LengthCheck[] = [],
+  cardinalities: CardinalityCheck[] = [],
   /**
    * A reference to Drizzle's inferred type for a column that already has a runtime schema.
    *
@@ -259,6 +294,8 @@ function zodField(
   // check, as the database does.
   expr += checkRefinements(c, checks);
   expr += lengthRefinements(c, lengths);
+  // After the array wrapping above, because this constrains the array rather than an element.
+  expr += cardinalityRefinements(c, cardinalities);
   // For selects, nullable columns should allow null values
   if (c.nullable) {
     expr = `${expr}.nullable()`;
@@ -293,7 +330,8 @@ function renderObjectShape(
   typedJson?: { table: string; mode: 'insert' | 'select'; allColumns?: boolean },
   sets: ColumnSet[] = [],
   applyDefaults = false,
-  lengths: LengthCheck[] = []
+  lengths: LengthCheck[] = [],
+  cardinalities: CardinalityCheck[] = []
 ) {
   return cols
     .map((c) => {
@@ -305,7 +343,7 @@ function renderObjectShape(
       const replaces = c.tsType === 'any' || c.shape?.kind === 'custom';
       const ref = typedJson && replaces ? refFor(typedJson) : undefined;
       const narrow = typedJson?.allColumns && !replaces ? refFor(typedJson) : undefined;
-      return `  ${JSON.stringify(c.name)}: ${zodField(c, mode, coerceDates, checks, ref, sets, applyDefaults, lengths, narrow)},`;
+      return `  ${JSON.stringify(c.name)}: ${zodField(c, mode, coerceDates, checks, ref, sets, applyDefaults, lengths, cardinalities, narrow)},`;
     })
     .join('\n');
 }
@@ -375,6 +413,7 @@ function renderTableSchemas(
   const sets = parsedChecks.flatMap((p) => (p.ok ? (p.sets ?? []) : []));
   const rows = parsedChecks.flatMap((p) => (p.ok ? (p.rows ?? []) : []));
   const lengths = parsedChecks.flatMap((p) => (p.ok ? (p.lengths ?? []) : []));
+  const cardinalities = parsedChecks.flatMap((p) => (p.ok ? (p.cardinalities ?? []) : []));
   // Insert and select can disagree: a json column with a default is optional on insert, so its
   // inferred type differs. Each shape therefore references the matching inference.
   const tj = typedJson
@@ -391,7 +430,8 @@ function renderTableSchemas(
     tjInsert,
     sets,
     applyDefaults,
-    lengths
+    lengths,
+    cardinalities
   );
   const bodyUpdate = renderObjectShape(
     updateCols,
@@ -401,7 +441,8 @@ function renderTableSchemas(
     tjInsert,
     sets,
     applyDefaults,
-    lengths
+    lengths,
+    cardinalities
   );
   const bodySelect = renderObjectShape(
     selectCols,
@@ -411,7 +452,8 @@ function renderTableSchemas(
     tj,
     sets,
     applyDefaults,
-    lengths
+    lengths,
+    cardinalities
   );
   // A type-only import: it disappears at build time, so this adds no runtime dependency on the
   // schema module and cannot create an import cycle at runtime.
