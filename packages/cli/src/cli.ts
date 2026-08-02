@@ -220,6 +220,28 @@ program
             console.error(chalk.gray('Error details:'), e?.message ?? e);
             process.exit(1);
           }
+        } else if (g.kind === 'json-schema') {
+          try {
+            const { JsonSchemaGenerator } = await import('@drzl/generator-json-schema');
+            const gen = new JsonSchemaGenerator(analysis);
+            const target = g.path ?? 'src/validators/json-schema';
+            const files = await gen.generate({
+              // JSON Schema is data, so nothing here references a type from the schema module.
+              ...(validationOptions(g, cfg, target, { schemaTypes: false }) as object),
+              target: g.target,
+            } as never);
+            progress.stop();
+            ora().succeed(chalk.green(`Generated (json-schema): ${files.length} files`));
+            files.forEach((f: string) => console.log('  -', chalk.cyan(f)));
+          } catch (e: any) {
+            progress.stop();
+            console.error(
+              chalk.red('JSON Schema generator missing.'),
+              chalk.yellow('\nInstall with: npm install @drzl/generator-json-schema')
+            );
+            console.error(chalk.gray('Error details:'), e?.message ?? e);
+            process.exit(1);
+          }
         } else if (g.kind === 'typebox') {
           try {
             const { TypeBoxGenerator } = await import('@drzl/generator-typebox');
@@ -234,7 +256,7 @@ program
           } catch (e: any) {
             progress.stop();
             console.error(
-              chalk.red('ArkType generator missing.'),
+              chalk.red('TypeBox generator missing.'),
               chalk.yellow('\nInstall with: npm install @drzl/generator-typebox')
             );
             console.error(chalk.gray('Error details:'), e?.message ?? e);

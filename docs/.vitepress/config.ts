@@ -60,6 +60,7 @@ export default {
           { text: 'Valibot', link: '/generators/valibot' },
           { text: 'ArkType', link: '/generators/arktype' },
           { text: 'TypeBox', link: '/generators/typebox' },
+          { text: 'JSON Schema', link: '/generators/json-schema' },
           { text: 'Adapters (Overview)', link: '/adapters/overview' },
           { text: 'Router Adapters', link: '/adapters/router' },
         ],

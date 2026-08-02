@@ -30,6 +30,7 @@
   "dependencies": {
     "@drzl/analyzer": "workspace:^",
     "@drzl/generator-arktype": "workspace:^",
+    "@drzl/generator-json-schema": "workspace:^",
     "@drzl/generator-orpc": "workspace:^",
     "@drzl/generator-service": "workspace:^",
     "@drzl/generator-typebox": "workspace:^",

@@ -71,7 +71,7 @@ export const AffixSchema = z
 export const ImportExtensionSchema = z.enum(IMPORT_EXTENSIONS);
 
 export const GeneratorSchema = z.object({
-  kind: z.enum(['orpc', 'service', 'zod', 'valibot', 'arktype', 'typebox']),
+  kind: z.enum(['orpc', 'service', 'zod', 'valibot', 'arktype', 'typebox', 'json-schema']),
   /**
    * Overrides the top-level `importExtension` for this generator alone, for a project whose
    * generated directories are compiled by different tsconfigs.
@@ -113,6 +113,16 @@ export const GeneratorSchema = z.object({
       configPath: z.string().optional(),
     })
     .optional(),
+  /**
+   * Which spelling of JSON Schema the `json-schema` generator emits.
+   *
+   * OpenAPI 3.0 is not an older superset of the 2020-12 draft, it is a different dialect: a
+   * nullable type is `nullable: true` rather than a type array, and an exclusive bound is a
+   * boolean flag beside the bound rather than its own keyword. An unknown keyword is not an error
+   * in JSON Schema, it is ignored, so emitting the wrong dialect produces a document that
+   * validates and then accepts the values the constraints exist to reject.
+   */
+  target: z.enum(['draft-2020-12', 'openapi-3.1', 'openapi-3.0']).optional(),
   // service generator specific options
   path: z.string().optional(),
   dataAccess: z.enum(['stub', 'drizzle']).default('stub').optional(),
@@ -388,6 +398,7 @@ export function computeGeneratorOutputDirs(cfg: DrzlConfig, cwd = process.cwd())
     if (g.kind === 'valibot') dirs.add(abs(g.path ?? 'src/validators/valibot'));
     if (g.kind === 'arktype') dirs.add(abs(g.path ?? 'src/validators/arktype'));
     if (g.kind === 'typebox') dirs.add(abs(g.path ?? 'src/validators/typebox'));
+    if (g.kind === 'json-schema') dirs.add(abs(g.path ?? 'src/validators/json-schema'));
   }
   return [...dirs];
 }
