@@ -89,6 +89,18 @@ instance such as a `Date` is refused rather than being rebuilt as an empty objec
 See [Zod → Structured columns](/generators/zod#structured-columns) for why `bytea` is typed as a
 `Uint8Array`.
 
+## Character limits count characters
+
+A `varchar(n)` limit is n **characters**, and `v.maxLength` counts `.length`, which is UTF-16 code
+units. This generator emits a code-point check instead, so it accepts the emoji the column does:
+
+```ts
+name: v.pipe(v.string(), v.check((val) => [...val].length <= 10, 'at most 10 characters')),
+```
+
+See [Zod, character limits](/generators/zod#character-limits-count-characters) for the
+measurements against Postgres.
+
 ## `applyDefaults`
 
 Drizzle knows what a column defaults to, and `drizzle-orm` reproduces none of them.

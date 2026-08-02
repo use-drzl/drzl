@@ -4,7 +4,7 @@ import type {
   ValidationRenderer,
   ValidationGenerateOptions,
 } from '@drzl/validation-core';
-import type { ColumnCheck, ColumnSet } from '@drzl/validation-core';
+import type { ColumnCheck, ColumnSet, LengthCheck } from '@drzl/validation-core';
 import {
   COLUMN_FORMATS,
   insertColumns,
@@ -162,12 +162,38 @@ function vShapeExpr(c: Column): string | undefined {
   }
 }
 
+/**
+ * `v.check(...)` actions for the `length(col)` constraints naming this column.
+ *
+ * Code points, because Postgres counts characters. See the zod generator.
+ */
+function vLengthChecks(c: Column, lengths: LengthCheck[]): string[] {
+  if (c.arrayDimensions || c.shape) return [];
+  const OPS: Record<LengthCheck['operator'], string> = {
+    '>=': '>=',
+    '>': '>',
+    '<=': '<=',
+    '<': '<',
+    '=': '===',
+    '<>': '!==',
+  };
+  return lengths
+    .filter((k) => k.column === c.name)
+    .map((k) => {
+      const msg = JSON.stringify(
+        `${k.name ? `${k.name}: ` : ''}length(${c.name}) ${k.operator} ${k.value}`
+      );
+      return `v.check((val) => [...val].length ${OPS[k.operator]} ${k.value}, ${msg})`;
+    });
+}
+
 function vExprForColumn(
   c: Column,
   mode: Mode,
   coerceDates: NonNullable<ValidationGenerateOptions['coerceDates']>,
   checks: ColumnCheck[] = [],
-  sets: ColumnSet[] = []
+  sets: ColumnSet[] = [],
+  lengths: LengthCheck[] = []
 ): string {
   const shaped = vShapeExpr(c);
   if (shaped) return shaped;
@@ -178,7 +204,7 @@ function vExprForColumn(
       ? `v.picklist([${set.values.map((v) => JSON.stringify(v)).join(', ')}] as const)`
       : `v.union([${set.values.map((v) => `v.literal(${v})`).join(', ')}])`;
   }
-  const extra = vChecks(c, checks);
+  const extra = [...vChecks(c, checks), ...vLengthChecks(c, lengths)];
   /** Fold the constraint actions into whatever base this column maps to. */
   const piped = (base: string, actions: string[]) => {
     const all = [...actions, ...extra];
@@ -239,9 +265,10 @@ function vField(
   coerceDates: NonNullable<ValidationGenerateOptions['coerceDates']>,
   checks: ColumnCheck[] = [],
   sets: ColumnSet[] = [],
-  applyDefault = false
+  applyDefault = false,
+  lengths: LengthCheck[] = []
 ): string {
-  let expr = vExprForColumn(c, mode, coerceDates, checks, sets);
+  let expr = vExprForColumn(c, mode, coerceDates, checks, sets, lengths);
   // Drizzle keeps an array on the element's own column class, so everything above describes the
   // element and the wrapping belongs out here, after the bounds and length limits are attached.
   for (let i = 0; i < (c.arrayDimensions ?? 0); i++) expr = `v.array(${expr})`;
@@ -266,12 +293,13 @@ function renderObjectShape(
   coerceDates: NonNullable<ValidationGenerateOptions['coerceDates']>,
   checks: ColumnCheck[] = [],
   sets: ColumnSet[] = [],
-  applyDefaults = false
+  applyDefaults = false,
+  lengths: LengthCheck[] = []
 ) {
   return cols
     .map(
       (c) =>
-        `  ${JSON.stringify(c.name)}: ${vField(c, mode, coerceDates, checks, sets, applyDefaults)},`
+        `  ${JSON.stringify(c.name)}: ${vField(c, mode, coerceDates, checks, sets, applyDefaults, lengths)},`
     )
     .join('\n');
 }
@@ -297,13 +325,15 @@ function renderTableSchemas(
   const parsedChecks = (table.checks ?? []).map((k) => parseCheck(k.expression, k.name));
   const checks = parsedChecks.flatMap((p) => (p.ok ? p.checks : []));
   const sets = parsedChecks.flatMap((p) => (p.ok ? (p.sets ?? []) : []));
+  const lengths = parsedChecks.flatMap((p) => (p.ok ? (p.lengths ?? []) : []));
   const bodyInsert = renderObjectShape(
     insertCols,
     'insert',
     coerceDates,
     checks,
     sets,
-    applyDefaults
+    applyDefaults,
+    lengths
   );
   const bodyUpdate = renderObjectShape(
     updateCols,
@@ -311,7 +341,8 @@ function renderTableSchemas(
     coerceDates,
     checks,
     sets,
-    applyDefaults
+    applyDefaults,
+    lengths
   );
   const bodySelect = renderObjectShape(
     selectCols,
@@ -319,7 +350,8 @@ function renderTableSchemas(
     coerceDates,
     checks,
     sets,
-    applyDefaults
+    applyDefaults,
+    lengths
   );
   // Emitted only where a json column exists, so a file without one gains nothing unused.
   const needsJson = [...insertCols, ...updateCols, ...selectCols].some(

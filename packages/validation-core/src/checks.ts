@@ -59,13 +59,39 @@ export interface RowCheck {
   name?: string;
 }
 
+/**
+ * A constraint on a column's *character* count, from `CHECK (length(name) > 3)`.
+ *
+ * Kept apart from `ColumnCheck` because it is not a comparison of the value: it compares a count
+ * derived from it, and the count Postgres takes is code points rather than UTF-16 units. See
+ * `CODEPOINT_LENGTH` for why that distinction is load bearing.
+ */
+export interface LengthCheck {
+  column: string;
+  operator: ColumnCheck['operator'];
+  /** Decimal, as text, matching how the other bounds are carried. */
+  value: string;
+  name?: string;
+}
+
 /** A check that was understood, or the reason it was not. */
 export type ParsedCheck =
-  | { ok: true; checks: ColumnCheck[]; sets?: ColumnSet[]; rows?: RowCheck[] }
+  | {
+      ok: true;
+      checks: ColumnCheck[];
+      sets?: ColumnSet[];
+      rows?: RowCheck[];
+      lengths?: LengthCheck[];
+    }
   | { ok: false; reason: string };
 
 const COMPARISON = /^\s*([A-Za-z_][A-Za-z0-9_]*)\s*(>=|<=|<>|!=|>|<|=)\s*(.+?)\s*$/;
 const IN_LIST = /^\s*([A-Za-z_][A-Za-z0-9_]*)\s+IN\s*\((.+)\)\s*$/i;
+// `length` and `char_length` are the same function in Postgres and both count characters.
+// `octet_length` is deliberately absent: it counts bytes, which depends on the encoding and
+// cannot be derived from a JavaScript string without choosing one.
+const LENGTH_OF =
+  /^\s*(?:length|char_length)\s*\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*\)\s*(>=|<=|<>|!=|>|<|=)\s*(\d+)\s*$/i;
 
 /**
  * Split on `AND`s that are at the top level, outside parentheses and outside quotes.
@@ -223,6 +249,7 @@ export function parseCheck(expression: string | undefined, name?: string): Parse
     const checks: ColumnCheck[] = [];
     const sets: ColumnSet[] = [];
     const rows: RowCheck[] = [];
+    const lengths: LengthCheck[] = [];
     for (const part of parts) {
       const parsed = parseCheck(part, name);
       if (!parsed.ok)
@@ -230,12 +257,27 @@ export function parseCheck(expression: string | undefined, name?: string): Parse
       checks.push(...parsed.checks);
       if (parsed.sets) sets.push(...parsed.sets);
       if (parsed.rows) rows.push(...parsed.rows);
+      if (parsed.lengths) lengths.push(...parsed.lengths);
     }
     return {
       ok: true,
       checks,
       ...(sets.length ? { sets } : {}),
       ...(rows.length ? { rows } : {}),
+      ...(lengths.length ? { lengths } : {}),
+    };
+  }
+
+  // `length(col) <op> n`: a character-count bound. The only function call this parser reads, and
+  // it is read rather than refused because the mapping is exact, which is more than can be said
+  // for the others: see the skip list in the docs.
+  const lengthOf = expr.match(LENGTH_OF);
+  if (lengthOf) {
+    const op = lengthOf[2] === '!=' ? '<>' : (lengthOf[2] as ColumnCheck['operator']);
+    return {
+      ok: true,
+      checks: [],
+      lengths: [{ column: lengthOf[1], operator: op, value: lengthOf[3], name }],
     };
   }
 

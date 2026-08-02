@@ -549,6 +549,10 @@ import { matrix as sqTable } from './schema-sqlite.js';
 const POOL: [string, unknown][] = [
   ['null', null], ['undefined', undefined], ['""', ''], ["'hello'", 'hello'],
   ['300-char', 'x'.repeat(300)], ['70k-char', 'x'.repeat(70000)], ['5-char', 'xxxxx'],
+  // Astral-plane characters, which tell a code-point count from a UTF-16 `.length`. Without them
+  // the pool cannot see the difference, which is exactly how the `varchar(n)` bug survived.
+  ['3 emoji', '\u{1F44D}\u{1F44D}\u{1F44D}'],
+  ['5 emoji', '\u{1F44D}\u{1F44D}\u{1F44D}\u{1F44D}\u{1F44D}'],
   // Astral-plane characters, where a code-point count and a UTF-16 `.length` disagree.
   // Postgres counts characters for `varchar(n)`, so a 3-emoji string fits in a varchar(5)
   // that every library's `.max(5)` refuses.
