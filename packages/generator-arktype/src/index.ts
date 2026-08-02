@@ -1,9 +1,13 @@
 import type { Analysis, Table, Column } from '@drzl/analyzer';
 import type {
+  CardinalityCheck,
+  ColumnCheck,
+  ColumnSet,
   ResolvedAffix,
+  RowCheck,
   ValidationRenderer,
-  ValidationGenerateOptions, RowCheck } from '@drzl/validation-core';
-import type { ColumnCheck, ColumnSet } from '@drzl/validation-core';
+  ValidationGenerateOptions,
+} from '@drzl/validation-core';
 import {
   COLUMN_FORMATS,
   insertColumns,
@@ -187,13 +191,34 @@ function atTypeForColumn(
   }
 }
 
+/**
+ * `CHECK (cardinality(tags) >= 2)` as a bound on the array.
+ *
+ * ArkType bounds an array's length with the same operators it bounds a number with, so this is
+ * one statement about the type rather than an opaque predicate beside it. `<>` has no such form
+ * and is left unstated rather than approximated.
+ */
+function atCardinality(c: Column, cardinalities: CardinalityCheck[]): { lower?: Bound; upper?: Bound; equals?: string } {
+  let lower: Bound | undefined;
+  let upper: Bound | undefined;
+  let equals: string | undefined;
+  if (!c.arrayDimensions) return {};
+  for (const k of cardinalities.filter((x) => x.column === c.name)) {
+    if (k.operator === '>=' || k.operator === '>') lower = { op: k.operator, value: k.value };
+    else if (k.operator === '<=' || k.operator === '<') upper = { op: k.operator, value: k.value };
+    else if (k.operator === '=') equals = k.value;
+  }
+  return { lower, upper, equals };
+}
+
 function atField(
   c: Column,
   mode: Mode,
   coerceDates: NonNullable<ValidationGenerateOptions['coerceDates']>,
   checks: ColumnCheck[] = [],
   sets: ColumnSet[] = [],
-  applyDefault = false
+  applyDefault = false,
+  cardinalities: CardinalityCheck[] = []
 ): string {
   let t = atTypeForColumn(c, mode, coerceDates, checks, sets);
   // The element is parenthesised whenever it is anything but a bare keyword, because `[]` binds
@@ -202,6 +227,11 @@ function atField(
   // so `string[]` stays `string[]` while `('a' | 'b')[]` and `(string <= 255)[]` get them.
   const bare = /^[A-Za-z_][A-Za-z0-9_.]*$/.test(t);
   for (let i = 0; i < (c.arrayDimensions ?? 0); i++) t = bare && i === 0 ? `${t}[]` : `(${t})[]`;
+  // Applied after the brackets and before the null union, so the bound binds to the array rather
+  // than to the element or to the union.
+  const card = atCardinality(c, cardinalities);
+  if (card.equals !== undefined) t = `${t} == ${card.equals}`;
+  else if (card.lower || card.upper) t = atRange(t, card.lower, card.upper);
   if (c.nullable) t = `(${t} | null)`;
   if (mode !== 'select') {
     // ArkType states a default in the DSL itself: `"string = 'GB'"`. That already makes the key
@@ -221,12 +251,13 @@ function renderObjectShape(
   coerceDates: NonNullable<ValidationGenerateOptions['coerceDates']>,
   checks: ColumnCheck[] = [],
   sets: ColumnSet[] = [],
-  applyDefaults = false
+  applyDefaults = false,
+  cardinalities: CardinalityCheck[] = []
 ) {
   return cols
     .map(
       (c) =>
-        `  ${JSON.stringify(c.name)}: ${JSON.stringify(atField(c, mode, coerceDates, checks, sets, applyDefaults))},`
+        `  ${JSON.stringify(c.name)}: ${JSON.stringify(atField(c, mode, coerceDates, checks, sets, applyDefaults, cardinalities))},`
     )
     .join('\n');
 }
@@ -284,13 +315,15 @@ function renderTableSchemas(
   const checks = parsedChecks.flatMap((p) => (p.ok ? p.checks : []));
   const sets = parsedChecks.flatMap((p) => (p.ok ? (p.sets ?? []) : []));
   const rows = parsedChecks.flatMap((p) => (p.ok ? (p.rows ?? []) : []));
+  const cardinalities = parsedChecks.flatMap((p) => (p.ok ? (p.cardinalities ?? []) : []));
   const bodyInsert = renderObjectShape(
     insertCols,
     'insert',
     coerceDates,
     checks,
     sets,
-    applyDefaults
+    applyDefaults,
+    cardinalities
   );
   const bodyUpdate = renderObjectShape(
     updateCols,
@@ -298,7 +331,8 @@ function renderTableSchemas(
     coerceDates,
     checks,
     sets,
-    applyDefaults
+    applyDefaults,
+    cardinalities
   );
   const bodySelect = renderObjectShape(
     selectCols,
@@ -306,7 +340,8 @@ function renderTableSchemas(
     coerceDates,
     checks,
     sets,
-    applyDefaults
+    applyDefaults,
+    cardinalities
   );
   return `import { type } from 'arktype';
 
