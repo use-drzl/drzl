@@ -14,6 +14,7 @@ import type {
 import {
   formatCode,
   parseCheck,
+  renderDuplicateFinder,
   resolveConfiguredImport,
   COLUMN_FORMATS,
   insertColumns,
@@ -435,7 +436,8 @@ function renderTableSchemas(
   affix: ResolvedAffix,
   coerceDates: NonNullable<ValidationGenerateOptions['coerceDates']>,
   typedJson?: { schemaSpecifier: string; allColumns?: boolean },
-  applyDefaults = false
+  applyDefaults = false,
+  wantsDuplicateFinder = false
 ) {
   const T = table.tsName;
   const insertSchema = schemaName('insert', T, affix);
@@ -520,18 +522,34 @@ ${bodyUpdate}
 export type ${updateType} = z.input<typeof ${updateSchema}>;
 `;
 
-  return `import { z } from 'zod';
+    // Uniqueness is a fact about the table, so no per-row schema can see it. This checks the
+  // half that needs no database: whether a batch collides with itself.
+  const finder = wantsDuplicateFinder
+    ? renderDuplicateFinder(table, `findDuplicate${T}`, insertType)
+    : undefined;
+  const duplicates = finder ? `\n${finder}\n` : '';
+
+return `import { z } from 'zod';
 ${schemaImport}
 ${writes}export const ${selectSchema} = z.object({
 ${bodySelect}
 })${rowRefinements(rows, selectCols)};
 
 ${writeTypes}export type ${selectType} = z.output<typeof ${selectSchema}>;
-`;
+${duplicates}`;
 }
 
 export interface ZodGenerateOptions extends ValidationGenerateOptions {
   outputHeader?: { enabled?: boolean; text?: string };
+  /**
+   * Also emit `findDuplicate<Table>` beside the schemas: the rows in a batch that collide with an
+   * earlier row on a unique constraint.
+   *
+   * Uniqueness is the one constraint a per-row validator structurally cannot see, since it is a
+   * fact about the table. This checks the half that needs no database. Off by default, because
+   * generated code ships in the consumer's bundle.
+   */
+  duplicateFinder?: boolean;
 }
 
 export class ZodGenerator implements ValidationRenderer<ZodGenerateOptions> {
@@ -573,7 +591,8 @@ export class ZodGenerator implements ValidationRenderer<ZodGenerateOptions> {
     // rename identifiers, never modules, so the barrel and importPath keep resolving.
     for (const table of this.analysis.tables) {
       const filePath = path.join(out, moduleFileName(table.tsName, fileSuffix));
-      const code = renderTableSchemas(table, affix, coerceDates, typedJson, !!opts.applyDefaults);
+      const code = renderTableSchemas(table, affix, coerceDates, typedJson, !!opts.applyDefaults,
+      !!opts?.duplicateFinder);
       const formatted = await formatCode(
         buildHeader(opts.outputHeader) + code,
         filePath,
@@ -597,7 +616,14 @@ export class ZodGenerator implements ValidationRenderer<ZodGenerateOptions> {
   }
 
   renderTable(table: Table, opts?: ZodGenerateOptions) {
-    return renderTableSchemas(table, resolveAffix(opts), opts?.coerceDates ?? 'input');
+    return renderTableSchemas(
+      table,
+      resolveAffix(opts),
+      opts?.coerceDates ?? 'input',
+      undefined,
+      !!opts?.applyDefaults,
+      !!opts?.duplicateFinder
+    );
   }
 
   renderIndex?(analysis: Analysis, opts?: ZodGenerateOptions): string;

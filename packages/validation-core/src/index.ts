@@ -240,3 +240,5 @@ export async function formatCode(code: string, filePath: string, fmt?: FormatOpt
 
 // Re-export analyzer types for test/type convenience
 // (Keep local Table as exported type)
+
+export * from './duplicates';
