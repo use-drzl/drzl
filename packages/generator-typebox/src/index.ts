@@ -450,9 +450,7 @@ function renderTableSchemas(
   const needsRows =
     rows.some((r) => rowCols.some((s) => s.has(r.left) && s.has(r.right))) ||
     lengths.some((k) => rowCols.some((s) => s.has(k.column))) ||
-    [insertCols, updateCols, selectCols].some((cs) =>
-      cs.some((c) => c.tsType === 'string' && !c.arrayDimensions && !c.shape && (c.maxLength || c.maxBytes))
-    );
+    [insertCols, updateCols, selectCols].some((cs) => cs.some(tbNeedsCapKind));
   const rowImport = needsRows ? `, Kind, TypeRegistry` : '';
 
     // Uniqueness is a fact about the table, so no per-row schema can see it. This checks the
@@ -523,8 +521,21 @@ const ROW_PREAMBLE = `TypeRegistry.Set('DrzlRowCheck', (schema: any, value: any)
  * The cost is that a cap no longer serialises into the JSON Schema. Emitting a number that means
  * something else in a form that serialises is not a better trade.
  */
+/**
+ * Whether this column's cap needs the registered kind.
+ *
+ * Shared with the preamble check on purpose. They were two copies of the same condition and they
+ * drifted the moment one changed: an array of `varchar(n)` emitted `[Kind]` into a file that did
+ * not import it, so the module threw the moment anything loaded it.
+ */
+function tbNeedsCapKind(c: Column): boolean {
+  // Not excluded for an array column: the cap describes the *element*, and the array wraps it
+  // after, so `varchar(50).array()` caps each entry.
+  return c.tsType === 'string' && !c.shape && !!(c.maxLength || c.maxBytes);
+}
+
 function tbCapExpr(c: Column, base: string): string {
-  if (c.tsType !== 'string' || c.arrayDimensions || c.shape) return base;
+  if (!tbNeedsCapKind(c)) return base;
   const branch = (desc: string, expr: string) => `Type.Unsafe<unknown>({
     [Kind]: 'DrzlRowCheck',
     description: ${JSON.stringify(desc)},

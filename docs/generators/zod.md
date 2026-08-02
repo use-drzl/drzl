@@ -174,19 +174,25 @@ this**, in any library: a table declaring `check('age_adult', sql\`${t.age} >= 1
 
 ```ts
 // check('age_adult', sql`${t.age} >= 18`)
-age: z.number().int().gte(-2147483648).lte(2147483647)
-  .refine((v) => v >= 18, { message: "age_adult: age >= 18" }),
+age: z.number().int().gte(18).lte(2147483647),
 
 // check('score_range', sql`${t.score} BETWEEN 0 AND 100`)
-score: z.number().int()
-  .refine((v) => v >= 0, { message: "score_range: score >= 0" })
-  .refine((v) => v <= 100, { message: "score_range: score <= 100" })
-  .nullable(),
+score: z.number().int().gte(0).lte(100).nullable(),
 ```
 
-Note the ordering on `score`: the refinement sits inside `.nullable()`, so `null` skips it. That
-is deliberate, because a SQL CHECK passes when it evaluates to TRUE **or NULL**. Enforcing it on
-a nullable column would make the schema stricter than the database.
+A numeric comparison **replaces** the end of the range it narrows rather than sitting beside it. A
+CHECK can only narrow, never widen, since the declared range is the column's type, so
+`.gte(-2147483648).lte(2147483647).refine((v) => v >= 18)` was a bound that can never fail plus a
+closure saying what the bound should have said.
+
+The error is the reason this matters more than the speed. `.gte(18)` produces zod's own `Too
+small, expected number to be >=18`, with the bound machine-readable on the issue, rather than a
+sentence this generator wrote that a client would have to parse.
+
+A constraint that has no native form stays a refinement, and where one does the ordering is
+deliberate: it sits inside `.nullable()`, so `null` skips it. A SQL CHECK passes when it evaluates
+to TRUE **or NULL**, and enforcing it on a nullable column would make the schema stricter than the
+database.
 
 ### `IN` lists become enums
 
@@ -202,11 +208,11 @@ predicate, and the static type narrows with it.
 
 ```ts
 // check('n_bounds', sql`${t.n} > 0 AND ${t.n} < 10 AND ${t.n} <> 5`)
-n: z.number().int()
-  .refine((v) => v > 0, { message: "n_bounds: n > 0" })
-  .refine((v) => v < 10, { message: "n_bounds: n < 10" })
+n: z.number().int().gt(0).lt(10)
   .refine((v) => v !== 5, { message: "n_bounds: n <> 5" }),
 ```
+
+The two bounds fold into the range; the inequality has no native form and stays a refinement.
 
 Every part of an `AND` has to hold on its own, which is exactly what a list of refinements means.
 The split walks the expression rather than splitting on the text, so the `AND` inside a `BETWEEN`
@@ -246,14 +252,18 @@ against a scalar literal says nothing usable about an array, whereas this one is
 
 **Only unambiguous constraints are translated.** These are skipped rather than guessed at:
 
-| Skipped                       | Why                                                      |
-| ----------------------------- | -------------------------------------------------------- |
-| `start_date < end_date`       | A statement about the row, not about either field        |
-| `age >= 18 OR age <= 65`      | A disjunction cannot be split the way a conjunction can  |
-| `NOT (age >= 18)`             | Same: negation changes the scope of everything inside it |
-| `age >= 18 AND length(n) > 3` | One part is not understood, so neither is enforced       |
+| Skipped                            | Why                                                      |
+| ---------------------------------- | -------------------------------------------------------- |
+| `age >= 18 OR age <= 65`           | A disjunction cannot be split the way a conjunction can  |
+| `NOT (age >= 18)`                  | Same: negation changes the scope of everything inside it |
+| `age >= 18 AND lower(n) = 'x'`     | One part is not understood, so neither is enforced       |
+| `email ~ '^[a-z]+$'`               | Postgres `~` is POSIX ERE, not JavaScript's regex dialect |
+| `octet_length(s) <= 5`             | Bytes, and the column's encoding is not in the schema    |
 
-| `email ~ '^[a-z]+$'` | Postgres `~` is POSIX ERE, not JavaScript's regex dialect |
+Applied, and worth naming because they read like exceptions: `start_date < end_date` goes on the
+object as a row-level check, `length()` and `char_length()` count code points, `cardinality()`
+bounds an array, `BETWEEN` folds into the range, and `IN` becomes an enum. A conjunction is
+applied when **every** part is understood.
 
 A schema that quietly enforces a _guess_ at your constraint is worse than one enforcing nothing,
 because it rejects rows the database would have accepted.

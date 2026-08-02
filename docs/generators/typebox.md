@@ -34,7 +34,7 @@ export type SelectpeopleOutput = Static<typeof SelectpeopleSchema>;
 
 | Column              | Emitted                                                                |
 | ------------------- | ---------------------------------------------------------------------- |
-| `varchar(255)`      | `Type.String({ maxLength: 255 })`                                      |
+| `varchar(255)`      | `Type.Intersect([Type.String(), <code-point cap>])`, see below          |
 | `uuid()`            | `Type.String({ pattern: '...' })`                                      |
 | `smallint()`        | `Type.Integer({ minimum: -32768, maximum: 32767 })`                    |
 | `real()`            | `Type.Number({ minimum: -8388608, maximum: 8388607 })`                 |
@@ -51,12 +51,44 @@ valid uuid. A pattern needs no setup and behaves the same everywhere, so that is
 **No official Drizzle validator module enforces these**, in any library. TypeBox states them
 declaratively:
 
-| Constraint                        | Emitted                    |
-| --------------------------------- | -------------------------- |
-| `CHECK (age >= 18)`               | `minimum: 18`              |
-| `CHECK (n > 0)`                   | `exclusiveMinimum: 0`      |
-| `CHECK (score BETWEEN 0 AND 100)` | `minimum: 0, maximum: 100` |
-| `CHECK (tier = 'gold')`           | `Type.Literal("gold")`     |
+| Constraint                          | Emitted                    |
+| ----------------------------------- | -------------------------- |
+| `CHECK (age >= 18)`                 | `minimum: 18`              |
+| `CHECK (n > 0)`                     | `exclusiveMinimum: 0`      |
+| `CHECK (score BETWEEN 0 AND 100)`   | `minimum: 0, maximum: 100` |
+| `CHECK (tier = 'gold')`             | `Type.Literal("gold")`     |
+| `CHECK (cardinality(tags) >= 2)`    | `minItems: 2`              |
+| `CHECK (status IN ('a', 'b'))`      | `Type.Union([...literals])` |
+
+A bound **replaces** the end of the declared range it narrows rather than sitting beside it: a
+CHECK can only narrow, never widen, since the range is the column's type.
+
+### What goes on the object
+
+Two constraints have no keyword at all, and both become branches of an intersection carrying a
+registered kind:
+
+```ts
+export const SelecttSchema = Type.Intersect([
+  Type.Object({ ... }),
+  Type.Unsafe<unknown>({
+    [Kind]: 'DrzlRowCheck',
+    description: 'order: lo < hi',
+    assert: (o: any) => o == null || o['lo'] == null || o['hi'] == null || o['lo'] < o['hi'],
+  }),
+]);
+```
+
+- **`CHECK (lo < hi)`** compares two columns, so no field can decide it. Both sides are
+  null-guarded, matching SQL.
+- **`CHECK (length(name) >= 3)`** counts characters, and `minLength` counts UTF-16 code units.
+
+Intersecting is what keeps the properties checked. Setting the kind on the object itself parses,
+enforces the predicate, and **silently stops validating the fields**, so `{ lo: 'x' }` passes.
+Both `Value.Check` and `TypeCompiler` honour the intersection.
+
+Serialising to JSON Schema stays valid: the branch carries no keywords, so it renders as a schema
+that accepts everything, keeping its `description` so a reader still learns the rule.
 
 An equality becomes `Type.Literal`, not a `const` option. TypeBox accepts a `const` option on
 `Type.String` and `Type.Integer` and then ignores it: `Type.String({ const: 'gold' })` validates
@@ -74,7 +106,8 @@ A column declared with `.array()` becomes `Type.Array` of the element, with the 
 constraints intact:
 
 ```ts
-tags:   Type.Array(Type.String({ maxLength: 50 })),
+// varchar(50).array(): the cap limits each entry, so it is intersected onto the element.
+tags:   Type.Array(Type.Intersect([Type.String(), /* at most 50 characters */])),
 scores: Type.Array(Type.Integer({ minimum: -32768, maximum: 32767 })),
 ```
 
@@ -122,18 +155,41 @@ The generator itself is unaffected: TypeBox schemas are the right choice whereve
 yourself, or hand them to something that speaks JSON Schema. Pair it with a `zod` generator if you
 also want oRPC routers in the same project.
 
-## Character limits are approximate
+## Character limits count characters
 
-A `varchar(n)` limit is n **characters**, and TypeBox's `maxLength` counts `.length`, which is
-UTF-16 code units. The two agree until the text leaves the basic plane: a `varchar(10)` column
-accepts ten emoji, and `maxLength: 10` refuses eight of them.
+A `varchar(n)` limit is n **characters**, in both Postgres and MySQL. TypeBox's `maxLength` counts
+UTF-16 code units, which is a different measurement: a `varchar(10)` column accepts ten emoji and
+`maxLength: 10` refuses eight of them. JSON Schema defines the keyword in code points, so this is
+TypeBox's implementation rather than the spec, but the effect is the same.
 
-JSON Schema defines `maxLength` in code points, so this is TypeBox's implementation rather than
-the spec, and there is no predicate to hook in a declarative schema. The zod and valibot
-generators are exact here.
+That is the direction that breaks working code, so the keyword is not used. The cap is intersected
+onto the field as a registered kind, which counts code points:
+
+```ts
+name: Type.Intersect([
+  Type.String(),
+  Type.Unsafe<unknown>({
+    [Kind]: 'DrzlRowCheck',
+    description: 'at most 255 characters',
+    assert: (v: any) => v == null || [...v].length <= 255,
+  }),
+]),
+```
+
+For an array column it goes on the element, since `varchar(50).array()` limits each entry rather
+than the list.
+
+The trade is that this cap does not survive `JSON.stringify` into a JSON Schema, where a bare
+`maxLength` would. Emitting a number that means something else in a form that serialises is not a
+better trade. If you want the document, the
+[JSON Schema generator](/generators/json-schema) emits one directly.
+
+MySQL's TEXT family is a byte budget rather than a character count, and gets a branch counting
+encoded bytes. Both are honoured by `Value.Check` and by `TypeCompiler`, and all four generators
+agree on every one of them, checked against Postgres, SQLite and MySQL on every commit.
 
 See [Zod, character limits](/generators/zod#character-limits-count-characters) for the
-measurements against Postgres.
+measurements against the databases.
 
 ## `applyDefaults`
 
@@ -168,7 +224,9 @@ ordinary string to anything reading it at runtime and the narrowing is lost.
 ```
 
 ```ts
-role: Type.Unsafe<(typeof users.$inferSelect)['role']>(Type.String({ maxLength: 50 })),
+role: Type.Unsafe<(typeof users.$inferSelect)['role']>(
+  Type.Intersect([Type.String(), /* at most 50 characters */])
+),
 ```
 
 `Type.Unsafe<T>` wraps the existing schema, so every check it carried still runs and only the

@@ -47,6 +47,17 @@ The CLI consumes this analysis to generate validation, services, and routers.
 - relations (incl. inferred), enums
 - issues (warnings/errors) for constraints and shape
 
+Per column, beyond the type: `nullable`, `hasDefault`, `defaultValue` (literal defaults only),
+`isGenerated`, `enumValues`, `maxLength` (characters), `maxBytes` (MySQL's TEXT family is a byte
+budget, which is a different measurement on the same kind of column), `min`/`max`,
+`arrayDimensions`, `format`, and `shape` for values that are not scalars (json, buffer, tuple,
+vector, bitstring, customType).
+
+`DRZL_ANL_UNKNOWN_COLUMN` is reported for any column whose validator would accept anything, which
+is the shape a missing type mapping takes: nothing throws, and every row passes.
+
 ## Notes
 
-- Best‑effort introspection aligned with Drizzle symbols across versions.
+- Best‑effort introspection aligned with Drizzle symbols across versions. Both live majors are
+  covered and diffed against each other in CI: 0.4x and v1 model arrays and enums differently, and
+  reading only one silently typed every `.array()` column as `unknown` on the other.

@@ -271,7 +271,12 @@ function renderObjectShape(
       const optional = dsl.endsWith('?');
       const inner = optional ? dsl.slice(0, -1) : dsl;
       const key = JSON.stringify(optional ? `${c.name}?` : c.name);
-      return `  ${key}: type(${JSON.stringify(inner)})${caps},`;
+      // The cap describes the element, so for an array column the narrow goes on the element and
+      // `.array()` wraps it. Narrowing the array instead would ask how many characters a list has.
+      const dims = c.arrayDimensions ?? 0;
+      const element = dims ? inner.replace(/(\[\])+$/, '').replace(/^\((.*)\)$/, '$1') : inner;
+      const wrap = '.array()'.repeat(dims);
+      return `  ${key}: type(${JSON.stringify(element)})${caps}${wrap},`;
     })
     .join('\n');
 }
@@ -328,7 +333,7 @@ function atRowNarrows(rows: RowCheck[], cols: Column[]): string {
  * MySQL counts `tinytext` in bytes, so both are written out here rather than approximated.
  */
 function atCapNarrows(c: Column): string {
-  if (c.tsType !== 'string' || c.arrayDimensions || c.shape) return '';
+  if (c.tsType !== 'string' || c.shape) return '';
   const out: string[] = [];
   if (c.maxLength) {
     const msg = JSON.stringify(`at most ${c.maxLength} characters`);

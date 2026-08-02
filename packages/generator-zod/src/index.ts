@@ -258,8 +258,8 @@ function zodExprForColumn(
       const pattern = c.format ? COLUMN_FORMATS[c.format] : undefined;
       if (pattern) return `z.string().regex(new RegExp(${JSON.stringify(pattern)}))`;
       // Not `.max(n)`. A `varchar(n)` limit is n *characters*, and `.max` counts UTF-16 units, so
-      // it refuses eight emoji in a `varchar(10)` the database is happy with. See
-      // `CODEPOINT_LENGTH` in validation-core for the measurements.
+      // it refuses eight emoji in a `varchar(10)` the database is happy with. All four generators
+      // count code points now; see `CODEPOINT_LENGTH` in validation-core for the measurements.
       // Two different measurements, and a column can carry either. `varchar(n)` counts
       // characters in both Postgres and MySQL; MySQL's TEXT family counts bytes, so a tinytext
       // takes 255 ascii characters and only 63 thumbs-up ones. Both verified against the servers.

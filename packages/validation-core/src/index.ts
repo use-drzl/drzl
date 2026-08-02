@@ -191,8 +191,15 @@ export const COLUMN_FORMATS: Record<string, string> = {
  * Refusing a user's emoji is the failure mode this avoids, and it is the same rule applied
  * everywhere else here: never reject what the database accepts.
  *
- * `@sinclair/typebox` and ArkType cannot express it. Both state a length declaratively with no
- * predicate to hook, so they keep the UTF-16 form and are documented as approximate.
+ * All four generators count code points. `@sinclair/typebox` and ArkType cannot say it in their
+ * declarative forms, so neither uses `maxLength` or `string <= n`: TypeBox intersects a registered
+ * kind onto the field and ArkType puts a Type carrying a narrow there. Both cost something,
+ * TypeBox's cap no longer serialising into a JSON Schema, and emitting a number that means a
+ * different measurement is not a better trade.
+ *
+ * MySQL's TEXT family is a byte budget rather than a character count, carried separately as
+ * `maxBytes`. Two measurements on string columns in the same database, verified against a real
+ * MySQL 8 on utf8mb4: `varchar(10)` takes ten emoji, `tinytext` takes 63 of them and refuses 64.
  */
 export const CODEPOINT_LENGTH = '[...v].length';
 

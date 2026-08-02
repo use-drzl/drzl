@@ -50,6 +50,23 @@ Shared interfaces and helpers used by validation generators.
     output and misses `node16`/`nodenext` ES modules. `'ts'` needs
     `allowImportingTsExtensions`. `.mts` and `.cts` become `.mjs` and `.cjs` under both
     `'js'` and `'none'`, since an extensionless specifier never resolves to them.
+- CHECK constraints (shared by every generator that reads them)
+  - `parseCheck(expression, name)` -> the parts of a `CHECK` that can be stated with certainty:
+    column comparisons, `BETWEEN`, `IN (...)`, top-level `AND`, `length()`/`char_length()`,
+    `cardinality()`/`array_length(col, 1)`, and comparisons between two columns. A disjunction, a
+    negation, `octet_length`, an unrecognised function call and a regex match are all refused
+    whole rather than half-applied.
+  - `COLUMN_FORMATS` -> patterns for the column formats that are expressible. Only `numeric` is:
+    Postgres accepts `today`, `January 8, 1999` and `allballs`, so a date or time pattern would
+    reject rows the database takes.
+  - `CODEPOINT_LENGTH` -> `[...v].length`, since `varchar(n)` counts characters and JavaScript's
+    `.length` counts UTF-16 units. All four generators use it.
+  - `isIntegerColumn(c)`
+- Uniqueness
+  - `renderDuplicateFinder(table, fnName, rowType)` -> the source of a function returning the rows
+    in a batch that collide with an earlier row on a unique constraint. Plain TypeScript with no
+    reference to any validation library, so all four generators emit the same one. Null and absent
+    columns skip a constraint, matching SQL.
 - Naming (shared by every generator that emits a schema name)
   - `resolveAffix({ affix, schemaSuffix })` -> `ResolvedAffix`
   - `schemaName(mode, tsName, resolved)`, `typeName(mode, tsName, resolved)`
