@@ -152,3 +152,30 @@ describe('the emitted expressions are ones arktype accepts', () => {
     expect(isErr(T({ age: 30, score: 50, tier: 'silver' })), 'wrong tier').toBe(true);
   });
 });
+
+describe('a bound with no opposite bound', () => {
+  // ArkType refuses `0 < number`: "Left bounds are only valid when paired with right bounds".
+  // So a CHECK on a column carrying no width, which is every numeric type but the integers,
+  // produced a module that threw at import. A lone bound has to be written on the right.
+  it('writes a lone lower bound on the right, where ArkType accepts it', async () => {
+    const t = await typeOf(col('n', { dbType: 'DOUBLE PRECISION' }), [
+      { name: 'positive', expression: 'n > 0' },
+    ]);
+    expect(t).toBe('number > 0');
+  });
+
+  it('writes a lone upper bound the same way', async () => {
+    const t = await typeOf(col('n', { dbType: 'DOUBLE PRECISION' }), [
+      { name: 'small', expression: 'n <= 10' },
+    ]);
+    expect(t).toBe('number <= 10');
+  });
+
+  it('still pairs them when both are present', async () => {
+    const t = await typeOf(col('n', { dbType: 'DOUBLE PRECISION' }), [
+      { expression: 'n > 0' },
+      { expression: 'n < 10' },
+    ]);
+    expect(t).toBe('0 < number < 10');
+  });
+});

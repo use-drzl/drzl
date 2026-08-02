@@ -3,6 +3,7 @@ import type {
   ColumnCheck,
   ColumnSet,
   ResolvedAffix,
+  RowCheck,
   ValidationRenderer,
   ValidationGenerateOptions,
 } from '@drzl/validation-core';
@@ -354,6 +355,7 @@ function renderTableSchemas(
   const parsedChecks = (table.checks ?? []).map((k) => parseCheck(k.expression, k.name));
   const checks = parsedChecks.flatMap((p) => (p.ok ? p.checks : []));
   const sets = parsedChecks.flatMap((p) => (p.ok ? (p.sets ?? []) : []));
+  const rows = parsedChecks.flatMap((p) => (p.ok ? (p.rows ?? []) : []));
 
   const tj = typedJson
     ? { table: T, mode: 'select' as const, allColumns: typedJson.allColumns }
@@ -399,25 +401,79 @@ function renderTableSchemas(
     !typedJson &&
     [...insertCols, ...updateCols, ...selectCols].some((c) => c.shape?.kind === 'json');
 
-  return `import { Type } from '@sinclair/typebox';
+  const rowCols = [insertCols, updateCols, selectCols].map(
+    (cols) => new Set(cols.map((c) => c.name))
+  );
+  const needsRows = rows.some((r) => rowCols.some((s) => s.has(r.left) && s.has(r.right)));
+  const rowImport = needsRows ? `, Kind, TypeRegistry` : '';
+
+  return `import { Type${rowImport} } from '@sinclair/typebox';
 import type { Static } from '@sinclair/typebox';
-${schemaImport}${needsJson ? `\n${JSON_PREAMBLE}` : ''}
-export const ${insertSchema} = Type.Object({
-${bodyInsert}
-});
+${schemaImport}${needsJson ? `\n${JSON_PREAMBLE}` : ''}${needsRows ? `\n${ROW_PREAMBLE}` : ''}
+export const ${insertSchema} = ${tbWrapRows(`Type.Object({\n${bodyInsert}\n})`, rows, insertCols)};
 
-export const ${updateSchema} = Type.Object({
-${bodyUpdate}
-});
+export const ${updateSchema} = ${tbWrapRows(`Type.Object({\n${bodyUpdate}\n})`, rows, updateCols)};
 
-export const ${selectSchema} = Type.Object({
-${bodySelect}
-});
+export const ${selectSchema} = ${tbWrapRows(`Type.Object({\n${bodySelect}\n})`, rows, selectCols)};
 
 export type ${insertType} = Static<typeof ${insertSchema}>;
 export type ${updateType} = Static<typeof ${updateSchema}>;
 export type ${selectType} = Static<typeof ${selectSchema}>;
 `;
+}
+
+/**
+ * The registry entry a row-level check needs, emitted once per file that has one.
+ *
+ * TypeBox has no `.refine`. What it has is a type registry: a kind whose check function is looked
+ * up at validation time, honoured by both `Value.Check` and `TypeCompiler`. Registering is
+ * idempotent, so several generated modules in one process are fine.
+ */
+const ROW_PREAMBLE = `TypeRegistry.Set('DrzlRowCheck', (schema: any, value: any) =>
+  schema.assert(value)
+);
+`;
+
+/**
+ * A row-level CHECK as a branch of an intersection.
+ *
+ * Intersecting rather than setting the kind on the object itself is what keeps the properties
+ * checked. `{ ...Type.Object({...}), [Kind]: 'DrzlRowCheck' }` parses, validates the predicate,
+ * and quietly stops validating the fields, so `{ lo: 'x' }` passes.
+ *
+ * The branch carries no JSON Schema keywords, so `JSON.stringify` renders it as `{}` and the
+ * document stays valid: JSON Schema cannot compare two fields, and an empty branch says nothing
+ * rather than something wrong. `description` survives for a reader, and a failing validation
+ * reports it on `error.schema.description`.
+ */
+function tbWrapRows(objectExpr: string, rows: RowCheck[], cols: Column[]): string {
+  const present = new Set(cols.map((c) => c.name));
+  const OPS: Record<RowCheck['operator'], string> = {
+    '>=': '>=',
+    '>': '>',
+    '<=': '<=',
+    '<': '<',
+    '=': '===',
+    '<>': '!==',
+  };
+  const branches = rows
+    // A check naming a column this mode does not carry cannot be evaluated: an insert schema
+    // omits generated columns, so the comparison would read undefined and always pass or fail.
+    .filter((r) => present.has(r.left) && present.has(r.right))
+    .map((r) => {
+      const l = `o[${JSON.stringify(r.left)}]`;
+      const rt = `o[${JSON.stringify(r.right)}]`;
+      const msg = JSON.stringify(`${r.name ? `${r.name}: ` : ''}${r.left} ${r.operator} ${r.right}`);
+      // Null on either side means SQL never applied the comparison, so neither does this.
+      return `Type.Unsafe<unknown>({
+    [Kind]: 'DrzlRowCheck',
+    description: ${msg},
+    assert: (o: any) => o == null || ${l} == null || ${rt} == null || ${l} ${OPS[r.operator]} ${rt},
+  })`;
+    });
+  return branches.length
+    ? `Type.Intersect([\n  ${objectExpr},\n  ${branches.join(',\n  ')},\n])`
+    : objectExpr;
 }
 
 export interface TypeBoxGenerateOptions extends ValidationGenerateOptions {
