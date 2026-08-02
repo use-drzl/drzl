@@ -916,6 +916,15 @@ export class SchemaAnalyzer {
         return { tsType: 'number', dbType: 'REAL' };
       case 'SQLiteBlob':
         return { tsType: 'Uint8Array', dbType: 'BLOB' };
+      // SQLite spells a mode as a distinct class rather than as config, so `text({mode:'json'})`
+      // is a `SQLiteTextJson` and matched no arm at all: the column came back UNKNOWN, which is
+      // wider than the `any` a json column at least used to get.
+      case 'SQLiteTextJson':
+      case 'SQLiteBlobJson':
+        return { tsType: 'any', dbType: 'JSON' };
+      case 'SQLiteBigInt':
+        // A blob holding a bigint. Its range is the 64 bit one, applied by the constraint table.
+        return { tsType: 'bigint', dbType: 'BIGINT' };
       case 'SQLiteNumeric':
         // Drizzle returns numeric as a string; a JS number cannot hold arbitrary precision.
         return { tsType: 'string', dbType: 'NUMERIC' };
@@ -1201,6 +1210,18 @@ export class SchemaAnalyzer {
       const constraints = this.columnConstraints(col);
       if (v1?.shape) delete constraints.maxLength;
 
+      // A json column carries the JSON value space, which every generator already knows how to
+      // emit and nothing ever asked it to. v1 states `dataType: 'object json'` and reaches the
+      // shape through `describeV1Column`; 0.4x states a bare `json`, so the class-name path lands
+      // on `tsType: 'any'` and the branch never runs. `z.any()` accepts `undefined`, `NaN`,
+      // `Infinity`, a bigint, a Date and a Buffer, none of which survive a round trip.
+      //
+      // SQLite spells it as a mode on a text column rather than as a type.
+      const jsonShape =
+        dbType === 'JSON' || dbType === 'JSONB' || (col as any)?.config?.mode === 'json'
+          ? ({ kind: 'json' } as const)
+          : undefined;
+
       // A column with no type is how two real bugs looked from the outside: `.array()` and
       // `pgEnum` columns on drizzle-orm 0.4x came back `unknown`, every generator emitted a
       // schema that accepted anything, and nothing said so. `verify-packed.sh` fails on it now,
@@ -1214,7 +1235,7 @@ export class SchemaAnalyzer {
       // The condition is "the emitted validator will be wide", not "tsType is unknown". A json
       // column is also `unknown` and is not wide: the generators emit the JSON value space for
       // it. A `custom` shape is wide, and is the one case where the user has a documented fix.
-      const shape = (v1?.shape ?? (constraints as any)?.shape)?.kind;
+      const shape = (v1?.shape ?? jsonShape)?.kind;
       const finalTs = (v1?.tsType ?? tsType) as string;
       const wide = (finalTs === 'unknown' || finalTs === 'any') && (!shape || shape === 'custom');
       if (wide) {
@@ -1249,6 +1270,8 @@ export class SchemaAnalyzer {
         // After the v1 spread, which sets its own `arrayDimensions` from `dimensions`. On 0.4x
         // that spread has nothing to say and this is the only source.
         ...(arrayDims ? { arrayDimensions: arrayDims } : {}),
+        // Only where v1 did not already describe the value, so a shaped column keeps its shape.
+        ...(jsonShape && !v1?.shape ? { shape: jsonShape } : {}),
       });
     }
 
