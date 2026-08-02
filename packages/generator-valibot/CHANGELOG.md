@@ -1,5 +1,48 @@
 # @drzl/generator-valibot
 
+## 3.13.0
+
+### Minor Changes
+
+- b274391: Enforce row-level CHECK constraints in the valibot, TypeBox and ArkType generators
+
+  `CHECK (start_date < end_date)` compares two columns, so it cannot be a field constraint. Only the
+  zod generator applied one; the other three parsed it and dropped it, so a row the database refuses
+  validated clean. Each generator now states it in its own idiom: `v.check` on a pipe for valibot,
+  `.narrow` for ArkType, and for TypeBox a registered kind intersected with the object, which both
+  `Value.Check` and `TypeCompiler` honour. Serialising a TypeBox schema to JSON Schema keeps the
+  constraint as a description, since JSON Schema cannot compare two fields.
+
+  Both sides are guarded for null first, matching SQL, where a comparison involving NULL leaves the
+  CHECK satisfied. A constraint naming a column a given mode does not carry is left out rather than
+  emitted against an undefined value.
+
+  Also fixes an ArkType crash this uncovered: a CHECK on a column with no declared width, which is
+  every numeric type but the integers, emitted `0 < number`. ArkType rejects a left bound with no
+  right bound, so the generated module threw the moment anything imported it. A lone bound is now
+  written as `number > 0`.
+
+### Patch Changes
+
+- 03f7810: Fold a numeric CHECK into valibot's range instead of adding an action beside it
+
+  `CHECK (age >= 18)` on an integer column emitted `v.minValue(-2147483648), v.maxValue(2147483647),
+v.check((val) => val >= 18)`: a bound that can never fail, plus a closure saying what the bound
+  should have said. It is now `v.minValue(18), v.maxValue(2147483647)`, matching the fix already
+  applied to the zod generator.
+
+  valibot has the exclusive forms natively, so `> 0` becomes `v.gtValue(0)` and `< 10` becomes
+  `v.ltValue(10)` rather than closures. The issue valibot raises then carries `requirement: 0` as
+  data instead of a sentence this generator wrote, which is what a client needs in order to render
+  its own message.
+
+  The pg fixture's valibot output falls from 397 to 360 bytes per column.
+
+- Updated dependencies [78aeca2]
+- Updated dependencies [dc13c47]
+- Updated dependencies [c29891a]
+  - @drzl/analyzer@1.13.0
+
 ## 3.12.0
 
 ### Minor Changes
