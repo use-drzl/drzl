@@ -533,9 +533,16 @@ export class SchemaAnalyzer {
       const ev = (col as any)?.enumValues as string[] | undefined;
       const nullable = !(col as any)?.notNull && !(col as any)?.config?.notNull;
       const isGenerated = !!((col as any)?.autoIncrement || (col as any)?.isGenerated);
+      // `col.hasDefault` is the property Drizzle actually sets, and it is the only thing that
+      // separates a key the database fills in from one the caller must supply. Reading
+      // `col.default` and `col.config.default` instead, neither of which Drizzle populates,
+      // reported false for every Postgres `serial`, every identity column and every SQLite
+      // rowid alias, making them indistinguishable from a plain `integer('id').primaryKey()`.
       const hasDefault =
+        (col as any)?.hasDefault === true ||
         (col as any)?.default !== undefined ||
         (col as any)?.config?.default !== undefined ||
+        (col as any)?.defaultFn !== undefined ||
         isGenerated;
       // `col.references` does not exist on a Drizzle column; reading it always produced
       // undefined, so no foreign key was ever reported. The real data is collected from the

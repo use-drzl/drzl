@@ -61,13 +61,26 @@ export interface ValidationRenderer<
   generate(opts: TOptions): Promise<string[]>;
 }
 
-export function isGeneratedColumn(c: Column, primaryKeyColumns: string[]): boolean {
-  return c.isGenerated || primaryKeyColumns.includes(c.name);
+/**
+ * Whether the database generates this column's value, so it cannot be written.
+ *
+ * `primaryKeyColumns` is accepted for backwards compatibility and no longer consulted. It used
+ * to make every primary key count as generated, which dropped it from the insert schema whether
+ * or not the database supplied it. Right for a MySQL autoincrement column; wrong for a Postgres
+ * `integer('id').primaryKey()`, which Postgres does not generate, and for any natural key such
+ * as `text('slug').primaryKey()`. Those inserts became impossible to express: the required
+ * column was simply absent, with no way to provide it.
+ *
+ * Being a key says nothing about who supplies the value. `isGenerated` marks a column that
+ * cannot be written; `hasDefault` marks one that need not be, and those stay in the schema as
+ * optional.
+ */
+export function isGeneratedColumn(c: Column, _primaryKeyColumns: string[] = []): boolean {
+  return c.isGenerated;
 }
 
 export function insertColumns(table: Table): Column[] {
-  const pkCols = table.primaryKey?.columns ?? [];
-  return table.columns.filter((c) => !isGeneratedColumn(c, pkCols));
+  return table.columns.filter((c) => !isGeneratedColumn(c));
 }
 
 export function updateColumns(table: Table): Column[] {
