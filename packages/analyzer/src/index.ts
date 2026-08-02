@@ -177,6 +177,12 @@ export interface Table {
   indexes: Index[];
   checks?: Check[];
   foreignKeys?: ForeignKey[];
+  /**
+   * Set when the relation refuses writes, which today means a materialized view. Insert and
+   * update schemas are not emitted for one, because the database will always refuse the
+   * operation they describe.
+   */
+  readOnly?: boolean;
   meta?: Record<string, unknown>;
 }
 
@@ -496,6 +502,24 @@ function getSymbolOf(target: any, key: string): unknown {
  * `relations` record whose entries carry a `relationType`. That is specific enough not to
  * collide with a table or an enum, both of which are checked before this.
  */
+/**
+ * Whether a relation refuses writes outright.
+ *
+ * A materialized view does: `INSERT INTO mv ...` fails with `cannot change materialized view`,
+ * verified against Postgres. An insert or update schema for one describes an operation the
+ * database will always refuse.
+ *
+ * An ordinary view is deliberately not included. Postgres accepts an INSERT into a simple
+ * auto-updatable view, and whether a given view qualifies depends on its query rather than on
+ * anything the schema file states, so refusing them all would take away something that works.
+ */
+export function isReadOnlyRelation(val: any): boolean {
+  if (!val || typeof val !== 'object') return false;
+  return Object.getOwnPropertySymbols(val).some((sym) =>
+    String((sym as any).description).includes('MaterializedViewConfig')
+  );
+}
+
 export function isRelationsV2(val: any): boolean {
   if (!val || typeof val !== 'object' || Array.isArray(val)) return false;
   const entries = Object.values(val as Record<string, any>);
@@ -1255,6 +1279,9 @@ export class SchemaAnalyzer {
       indexes: [...(pkCols.length ? ([{ columns: pkCols }] as Index[]) : []), ...indexes],
       checks,
       foreignKeys,
+      // A materialized view refuses every write, so the generators skip its insert and update
+      // schemas rather than describe an operation the database will always reject.
+      ...(isReadOnlyRelation(tbl) ? { readOnly: true } : {}),
       meta: {},
     };
   }

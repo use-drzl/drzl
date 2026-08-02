@@ -460,9 +460,11 @@ function renderTableSchemas(
   const schemaImport = typedJson
     ? `import type { ${table.tsName} } from '${typedJson.schemaSpecifier}';\n`
     : '';
-  return `import { z } from 'zod';
-${schemaImport}
-export const ${insertSchema} = z.object({
+  // A materialized view refuses every write, so an insert or update schema for one would describe
+  // an operation the database always rejects. The select schema is the only meaningful one.
+  const writes = table.readOnly
+    ? ''
+    : `export const ${insertSchema} = z.object({
 ${bodyInsert}
 })${rowRefinements(rows, insertCols)};
 
@@ -470,13 +472,20 @@ export const ${updateSchema} = z.object({
 ${bodyUpdate}
 })${rowRefinements(rows, updateCols)};
 
-export const ${selectSchema} = z.object({
+`;
+  const writeTypes = table.readOnly
+    ? ''
+    : `export type ${insertType} = z.input<typeof ${insertSchema}>;
+export type ${updateType} = z.input<typeof ${updateSchema}>;
+`;
+
+  return `import { z } from 'zod';
+${schemaImport}
+${writes}export const ${selectSchema} = z.object({
 ${bodySelect}
 })${rowRefinements(rows, selectCols)};
 
-export type ${insertType} = z.input<typeof ${insertSchema}>;
-export type ${updateType} = z.input<typeof ${updateSchema}>;
-export type ${selectType} = z.output<typeof ${selectSchema}>;
+${writeTypes}export type ${selectType} = z.output<typeof ${selectSchema}>;
 `;
 }
 
