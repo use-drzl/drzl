@@ -29,6 +29,7 @@ packages/*/test/.tmp-structured
 packages/*/test/.tmp-dates
 packages/*/test/.tmp-custom-*
 packages/*/test/.tmp-typedcols-*
+packages/*/test/.tmp-typedcols-run
 packages/*/test/.tmp-numfmt
 packages/*/test/.tmp-rowchecks
 packages/*/test/.tmp-defaults

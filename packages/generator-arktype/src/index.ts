@@ -178,7 +178,8 @@ function atField(
   mode: Mode,
   coerceDates: NonNullable<ValidationGenerateOptions['coerceDates']>,
   checks: ColumnCheck[] = [],
-  sets: ColumnSet[] = []
+  sets: ColumnSet[] = [],
+  applyDefault = false
 ): string {
   let t = atTypeForColumn(c, mode, coerceDates, checks, sets);
   // The element is parenthesised whenever it is anything but a bare keyword, because `[]` binds
@@ -189,7 +190,13 @@ function atField(
   for (let i = 0; i < (c.arrayDimensions ?? 0); i++) t = bare && i === 0 ? `${t}[]` : `(${t})[]`;
   if (c.nullable) t = `(${t} | null)`;
   if (mode !== 'select') {
-    if (mode === 'update' || c.nullable || c.hasDefault) t = `${t}?`;
+    // ArkType states a default in the DSL itself: `"string = 'GB'"`. That already makes the key
+    // optional, so it replaces the `?` suffix rather than combining with it.
+    if (mode === 'insert' && applyDefault && c.defaultValue !== undefined) {
+      t = `${t} = ${JSON.stringify(c.defaultValue)}`;
+    } else if (mode === 'update' || c.nullable || c.hasDefault) {
+      t = `${t}?`;
+    }
   }
   return t;
 }
@@ -199,12 +206,13 @@ function renderObjectShape(
   mode: Mode,
   coerceDates: NonNullable<ValidationGenerateOptions['coerceDates']>,
   checks: ColumnCheck[] = [],
-  sets: ColumnSet[] = []
+  sets: ColumnSet[] = [],
+  applyDefaults = false
 ) {
   return cols
     .map(
       (c) =>
-        `  ${JSON.stringify(c.name)}: ${JSON.stringify(atField(c, mode, coerceDates, checks, sets))},`
+        `  ${JSON.stringify(c.name)}: ${JSON.stringify(atField(c, mode, coerceDates, checks, sets, applyDefaults))},`
     )
     .join('\n');
 }
@@ -212,7 +220,8 @@ function renderObjectShape(
 function renderTableSchemas(
   table: Table,
   affix: ResolvedAffix,
-  coerceDates: NonNullable<ValidationGenerateOptions['coerceDates']>
+  coerceDates: NonNullable<ValidationGenerateOptions['coerceDates']>,
+  applyDefaults = false
 ) {
   const T = table.tsName;
   const insertSchema = schemaName('insert', T, affix);
@@ -227,9 +236,30 @@ function renderTableSchemas(
   const parsedChecks = (table.checks ?? []).map((k) => parseCheck(k.expression, k.name));
   const checks = parsedChecks.flatMap((p) => (p.ok ? p.checks : []));
   const sets = parsedChecks.flatMap((p) => (p.ok ? (p.sets ?? []) : []));
-  const bodyInsert = renderObjectShape(insertCols, 'insert', coerceDates, checks, sets);
-  const bodyUpdate = renderObjectShape(updateCols, 'update', coerceDates, checks, sets);
-  const bodySelect = renderObjectShape(selectCols, 'select', coerceDates, checks, sets);
+  const bodyInsert = renderObjectShape(
+    insertCols,
+    'insert',
+    coerceDates,
+    checks,
+    sets,
+    applyDefaults
+  );
+  const bodyUpdate = renderObjectShape(
+    updateCols,
+    'update',
+    coerceDates,
+    checks,
+    sets,
+    applyDefaults
+  );
+  const bodySelect = renderObjectShape(
+    selectCols,
+    'select',
+    coerceDates,
+    checks,
+    sets,
+    applyDefaults
+  );
   return `import { type } from 'arktype';
 
 export const ${insertSchema} = type({
@@ -271,7 +301,7 @@ export class ArkTypeGenerator implements ValidationRenderer<ArkTypeGenerateOptio
     // rename identifiers, never modules, so the barrel and importPath keep resolving.
     for (const table of this.analysis.tables) {
       const filePath = path.join(out, moduleFileName(table.tsName, fileSuffix));
-      const code = renderTableSchemas(table, affix, coerceDates);
+      const code = renderTableSchemas(table, affix, coerceDates, !!opts.applyDefaults);
       const formatted = await formatCode(
         buildHeader(opts.outputHeader) + code,
         filePath,

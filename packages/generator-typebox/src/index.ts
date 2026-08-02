@@ -245,13 +245,37 @@ function tbExprForColumn(
   }
 }
 
+/**
+ * Attach a JSON Schema `default` to whatever schema expression this is.
+ *
+ * `Type.String()` renders with no options and `Type.String({ maxLength: 5 })` renders with some,
+ * so the annotation is added by re-opening the call rather than by string surgery on the options
+ * object, which would have to parse what is already there.
+ */
+function withDefault(expr: string, value: unknown): string {
+  const json = JSON.stringify(value);
+  const open = expr.lastIndexOf('(');
+  const close = expr.lastIndexOf(')');
+  // Only a bare `Type.X()` or `Type.X({...})` can take one. Anything composed, a union or a
+  // pipe, has no single place to put it, and guessing would attach it to the wrong member.
+  if (!/^Type\.[A-Za-z]+\(/.test(expr) || open === -1 || close !== expr.length - 1) return expr;
+  const inner = expr.slice(open + 1, close).trim();
+  if (!inner) return `${expr.slice(0, open)}({ default: ${json} })`;
+  if (inner.startsWith('{') && inner.endsWith('}')) {
+    return `${expr.slice(0, open)}({ ${inner.slice(1, -1).trim().replace(/,$/, '')}, default: ${json} })`;
+  }
+  return `${expr.slice(0, close)}, { default: ${json} })`;
+}
+
 function tbField(
   c: Column,
   mode: Mode,
   coerceDates: NonNullable<ValidationGenerateOptions['coerceDates']>,
   checks: ColumnCheck[] = [],
   typedJsonRef?: string,
-  sets: ColumnSet[] = []
+  sets: ColumnSet[] = [],
+  applyDefault = false,
+  narrowRef?: string
 ): string {
   let expr = tbExprForColumn(c, mode, coerceDates, checks, typedJsonRef, sets);
   // Drizzle keeps an array on the element's own column class, so everything above describes the
@@ -260,8 +284,19 @@ function tbField(
   // Nullability wraps the constrained type, so null skips the constraint. That reproduces SQL,
   // where a CHECK passes when it evaluates to TRUE or NULL.
   if (c.nullable) expr = `Type.Union([${expr}, Type.Null()])`;
+  // `typedColumns` narrows the static type without touching the runtime schema. `Type.Unsafe<T>`
+  // is TypeBox's own primitive for exactly that: it wraps an existing schema, so every check it
+  // carries still runs, and only the inferred type is replaced.
+  if (narrowRef) expr = `Type.Unsafe<${narrowRef}>(${expr})`;
   if (mode !== 'select') {
-    if (mode === 'update' || c.nullable || c.hasDefault) expr = `Type.Optional(${expr})`;
+    // A literal default becomes a JSON Schema `default` annotation. Note that `Value.Check` does
+    // not materialise it, only `Value.Parse` and `Value.Default` do: TypeBox separates validating
+    // from defaulting, where zod and valibot fold the two together.
+    if (mode === 'insert' && applyDefault && c.defaultValue !== undefined) {
+      expr = `Type.Optional(${withDefault(expr, c.defaultValue)})`;
+    } else if (mode === 'update' || c.nullable || c.hasDefault) {
+      expr = `Type.Optional(${expr})`;
+    }
   }
   return expr;
 }
@@ -271,16 +306,21 @@ function renderObjectShape(
   mode: Mode,
   coerceDates: NonNullable<ValidationGenerateOptions['coerceDates']>,
   checks: ColumnCheck[] = [],
-  typedJson?: { table: string; mode: 'insert' | 'select' },
-  sets: ColumnSet[] = []
+  typedJson?: { table: string; mode: 'insert' | 'select'; allColumns?: boolean },
+  sets: ColumnSet[] = [],
+  applyDefaults = false
 ) {
   return cols
     .map((c) => {
+      const refFor = (t: { table: string; mode: 'insert' | 'select' }) =>
+        `(typeof ${t.table}.$infer${t.mode === 'insert' ? 'Insert' : 'Select'})[${JSON.stringify(c.name)}]`;
+      const replaces = c.tsType === 'any' || c.shape?.kind === 'custom';
+      const narrow = typedJson?.allColumns && !replaces ? refFor(typedJson) : undefined;
       const ref =
         typedJson && (c.tsType === 'any' || c.shape?.kind === 'custom')
           ? `(typeof ${typedJson.table}.$infer${typedJson.mode === 'insert' ? 'Insert' : 'Select'})[${JSON.stringify(c.name)}]`
           : undefined;
-      return `  ${JSON.stringify(c.name)}: ${tbField(c, mode, coerceDates, checks, ref, sets)},`;
+      return `  ${JSON.stringify(c.name)}: ${tbField(c, mode, coerceDates, checks, ref, sets, applyDefaults, narrow)},`;
     })
     .join('\n');
 }
@@ -289,7 +329,8 @@ function renderTableSchemas(
   table: Table,
   affix: ResolvedAffix,
   coerceDates: NonNullable<ValidationGenerateOptions['coerceDates']>,
-  typedJson?: { schemaSpecifier: string }
+  typedJson?: { schemaSpecifier: string; allColumns?: boolean },
+  applyDefaults = false
 ) {
   const T = table.tsName;
   const insertSchema = schemaName('insert', T, affix);
@@ -308,11 +349,39 @@ function renderTableSchemas(
   const checks = parsedChecks.flatMap((p) => (p.ok ? p.checks : []));
   const sets = parsedChecks.flatMap((p) => (p.ok ? (p.sets ?? []) : []));
 
-  const tj = typedJson ? { table: T, mode: 'select' as const } : undefined;
-  const tjInsert = typedJson ? { table: T, mode: 'insert' as const } : undefined;
-  const bodyInsert = renderObjectShape(insertCols, 'insert', coerceDates, checks, tjInsert, sets);
-  const bodyUpdate = renderObjectShape(updateCols, 'update', coerceDates, checks, tjInsert, sets);
-  const bodySelect = renderObjectShape(selectCols, 'select', coerceDates, checks, tj, sets);
+  const tj = typedJson
+    ? { table: T, mode: 'select' as const, allColumns: typedJson.allColumns }
+    : undefined;
+  const tjInsert = typedJson
+    ? { table: T, mode: 'insert' as const, allColumns: typedJson.allColumns }
+    : undefined;
+  const bodyInsert = renderObjectShape(
+    insertCols,
+    'insert',
+    coerceDates,
+    checks,
+    tjInsert,
+    sets,
+    applyDefaults
+  );
+  const bodyUpdate = renderObjectShape(
+    updateCols,
+    'update',
+    coerceDates,
+    checks,
+    tjInsert,
+    sets,
+    applyDefaults
+  );
+  const bodySelect = renderObjectShape(
+    selectCols,
+    'select',
+    coerceDates,
+    checks,
+    tj,
+    sets,
+    applyDefaults
+  );
 
   const schemaImport = typedJson
     ? `import type { ${T} } from '${typedJson.schemaSpecifier}';\n`
@@ -363,8 +432,11 @@ export class TypeBoxGenerator implements ValidationRenderer<TypeBoxGenerateOptio
     const coerceDates = opts.coerceDates ?? 'input';
     const fileSuffix = opts.fileSuffix ?? DEFAULT_FILE_SUFFIX;
 
+    // `typedColumns` is the wider form of the same idea and implies it: both need the schema
+    // imported back in order to reference what Drizzle inferred.
+    const wantsTypes = opts.typedJson || opts.typedColumns;
     const typedJson =
-      opts.typedJson && opts.schemaPath
+      wantsTypes && opts.schemaPath
         ? {
             schemaSpecifier: resolveConfiguredImport(
               opts.schemaPath,
@@ -372,9 +444,10 @@ export class TypeBoxGenerator implements ValidationRenderer<TypeBoxGenerateOptio
               process.cwd(),
               opts.importExtension
             ),
+            allColumns: !!opts.typedColumns,
           }
         : undefined;
-    if (opts.typedJson && !opts.schemaPath) {
+    if (wantsTypes && !opts.schemaPath) {
       console.warn(
         '[drzl] typedJson was requested but the schema path is unknown, so json columns keep their wide type.'
       );
@@ -382,7 +455,7 @@ export class TypeBoxGenerator implements ValidationRenderer<TypeBoxGenerateOptio
 
     for (const table of this.analysis.tables) {
       const filePath = path.join(out, moduleFileName(table.tsName, fileSuffix));
-      const code = renderTableSchemas(table, affix, coerceDates, typedJson);
+      const code = renderTableSchemas(table, affix, coerceDates, typedJson, !!opts.applyDefaults);
       const formatted = await formatCode(
         buildHeader(opts.outputHeader) + code,
         filePath,
@@ -404,7 +477,13 @@ export class TypeBoxGenerator implements ValidationRenderer<TypeBoxGenerateOptio
   }
 
   renderTable(table: Table, opts?: TypeBoxGenerateOptions) {
-    return renderTableSchemas(table, resolveAffix(opts), opts?.coerceDates ?? 'input');
+    return renderTableSchemas(
+      table,
+      resolveAffix(opts),
+      opts?.coerceDates ?? 'input',
+      undefined,
+      !!opts?.applyDefaults
+    );
   }
 
   private defaultIndex(analysis: Analysis, opts: TypeBoxGenerateOptions) {

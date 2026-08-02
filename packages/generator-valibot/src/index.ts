@@ -229,7 +229,8 @@ function vField(
   mode: Mode,
   coerceDates: NonNullable<ValidationGenerateOptions['coerceDates']>,
   checks: ColumnCheck[] = [],
-  sets: ColumnSet[] = []
+  sets: ColumnSet[] = [],
+  applyDefault = false
 ): string {
   let expr = vExprForColumn(c, mode, coerceDates, checks, sets);
   // Drizzle keeps an array on the element's own column class, so everything above describes the
@@ -237,8 +238,15 @@ function vField(
   for (let i = 0; i < (c.arrayDimensions ?? 0); i++) expr = `v.array(${expr})`;
   if (c.nullable) expr = `v.nullable(${expr})`;
   if (mode !== 'select') {
-    // optional for insert when nullable/hasDefault, and for all fields in update
-    if (mode === 'update' || c.nullable || c.hasDefault) expr = `v.optional(${expr})`;
+    // A literal default is reproduced as valibot's second argument to `optional`, which is where
+    // it puts one. `v.optional(schema, value)` already makes the key optional, so this replaces
+    // the plain wrapper rather than nesting inside it.
+    if (mode === 'insert' && applyDefault && c.defaultValue !== undefined) {
+      expr = `v.optional(${expr}, ${JSON.stringify(c.defaultValue)})`;
+    } else if (mode === 'update' || c.nullable || c.hasDefault) {
+      // optional for insert when nullable/hasDefault, and for all fields in update
+      expr = `v.optional(${expr})`;
+    }
   }
   return expr;
 }
@@ -248,17 +256,22 @@ function renderObjectShape(
   mode: Mode,
   coerceDates: NonNullable<ValidationGenerateOptions['coerceDates']>,
   checks: ColumnCheck[] = [],
-  sets: ColumnSet[] = []
+  sets: ColumnSet[] = [],
+  applyDefaults = false
 ) {
   return cols
-    .map((c) => `  ${JSON.stringify(c.name)}: ${vField(c, mode, coerceDates, checks, sets)},`)
+    .map(
+      (c) =>
+        `  ${JSON.stringify(c.name)}: ${vField(c, mode, coerceDates, checks, sets, applyDefaults)},`
+    )
     .join('\n');
 }
 
 function renderTableSchemas(
   table: Table,
   affix: ResolvedAffix,
-  coerceDates: NonNullable<ValidationGenerateOptions['coerceDates']>
+  coerceDates: NonNullable<ValidationGenerateOptions['coerceDates']>,
+  applyDefaults = false
 ) {
   const T = table.tsName;
   const insertSchema = schemaName('insert', T, affix);
@@ -275,9 +288,30 @@ function renderTableSchemas(
   const parsedChecks = (table.checks ?? []).map((k) => parseCheck(k.expression, k.name));
   const checks = parsedChecks.flatMap((p) => (p.ok ? p.checks : []));
   const sets = parsedChecks.flatMap((p) => (p.ok ? (p.sets ?? []) : []));
-  const bodyInsert = renderObjectShape(insertCols, 'insert', coerceDates, checks, sets);
-  const bodyUpdate = renderObjectShape(updateCols, 'update', coerceDates, checks, sets);
-  const bodySelect = renderObjectShape(selectCols, 'select', coerceDates, checks, sets);
+  const bodyInsert = renderObjectShape(
+    insertCols,
+    'insert',
+    coerceDates,
+    checks,
+    sets,
+    applyDefaults
+  );
+  const bodyUpdate = renderObjectShape(
+    updateCols,
+    'update',
+    coerceDates,
+    checks,
+    sets,
+    applyDefaults
+  );
+  const bodySelect = renderObjectShape(
+    selectCols,
+    'select',
+    coerceDates,
+    checks,
+    sets,
+    applyDefaults
+  );
   // Emitted only where a json column exists, so a file without one gains nothing unused.
   const needsJson = [...insertCols, ...updateCols, ...selectCols].some(
     (c) => c.shape?.kind === 'json'
@@ -325,7 +359,7 @@ export class ValibotGenerator implements ValidationRenderer<ValibotGenerateOptio
     // rename identifiers, never modules, so the barrel and importPath keep resolving.
     for (const table of this.analysis.tables) {
       const filePath = path.join(out, moduleFileName(table.tsName, fileSuffix));
-      const code = renderTableSchemas(table, affix, coerceDates);
+      const code = renderTableSchemas(table, affix, coerceDates, !!opts.applyDefaults);
       const formatted = await formatCode(
         buildHeader(opts.outputHeader) + code,
         filePath,

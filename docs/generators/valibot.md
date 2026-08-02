@@ -89,6 +89,25 @@ instance such as a `Date` is refused rather than being rebuilt as an empty objec
 See [Zod → Structured columns](/generators/zod#structured-columns) for why `bytea` is typed as a
 `Uint8Array`.
 
+## `applyDefaults`
+
+Drizzle knows what a column defaults to, and `drizzle-orm` reproduces none of them.
+
+```ts
+{ kind: 'valibot', path: 'src/validators/valibot', applyDefaults: true }
+```
+
+```ts
+country: v.optional(v.string(), 'GB'),
+```
+
+Only **literal** defaults. `defaultNow()`, `defaultRandom()` and any `sql` default are evaluated
+by the database, and `$defaultFn` is called by Drizzle at insert time, so those stay optional: a
+schema guessing at them would produce a different value than the one actually stored.
+
+Insert only, and off by default, because it changes what parsing _returns_ rather than only what
+it accepts.
+
 ## Custom names
 
 `Insert<Table>Schema` is the default, not the only option. The `affix` block renames the

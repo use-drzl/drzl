@@ -178,6 +178,7 @@ program
               typedJson: g.typedJson,
               typedColumns: g.typedColumns,
               applyDefaults: g.applyDefaults,
+              coerceDates: g.coerceDates,
             });
             progress.stop();
             ora().succeed(chalk.green(`Generated (zod): ${files.length} files`));
@@ -204,6 +205,8 @@ program
               fileSuffix: g.fileSuffix,
               importExtension: g.importExtension,
               affix: g.affix,
+              applyDefaults: g.applyDefaults,
+              coerceDates: g.coerceDates,
             });
             progress.stop();
             ora().succeed(chalk.green(`Generated (valibot): ${files.length} files`));
@@ -230,6 +233,8 @@ program
               fileSuffix: g.fileSuffix,
               importExtension: g.importExtension,
               affix: g.affix,
+              applyDefaults: g.applyDefaults,
+              coerceDates: g.coerceDates,
             });
             progress.stop();
             ora().succeed(chalk.green(`Generated (arktype): ${files.length} files`));
@@ -256,6 +261,12 @@ program
               fileSuffix: g.fileSuffix,
               importExtension: g.importExtension,
               affix: g.affix,
+              coerceDates: g.coerceDates,
+              // Needed by typedJson, which imports the schema back to reference the type
+              schemaPath: cfg.schema,
+              typedJson: g.typedJson,
+              typedColumns: g.typedColumns,
+              applyDefaults: g.applyDefaults,
             });
             progress.stop();
             ora().succeed(chalk.green(`Generated (typebox): ${files.length} files`));

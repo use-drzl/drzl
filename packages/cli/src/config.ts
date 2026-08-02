@@ -90,6 +90,10 @@ export const GeneratorSchema = z.object({
    * Off by default because it makes the generated file import your schema module, as a
    * type-only import that disappears at build time.
    */
+  // What a date column accepts. Documented on the zod generator and, until now, accepted by the
+  // config parser and then dropped on the floor: the generators default it to 'input' themselves,
+  // so setting it here changed nothing.
+  coerceDates: z.enum(['input', 'all', 'none']).optional(),
   typedJson: z.boolean().optional(),
   // The wider form: every column's static type comes from Drizzle, not just the untyped ones.
   typedColumns: z.boolean().optional(),
