@@ -1,6 +1,6 @@
 import type { Analysis, Table, Column } from '@drzl/analyzer';
 import type { ImportExtension } from '@drzl/validation-core';
-import { importSpecifier } from '@drzl/validation-core';
+import { importSpecifier, resolveConfiguredImport } from '@drzl/validation-core';
 
 export interface ServiceGenerateOptions {
   outDir: string;
@@ -15,8 +15,11 @@ export interface ServiceGenerateOptions {
    * every `moduleResolution` without a compiler flag. Use `'none'` for the extensionless
    * specifiers drzl emitted before 2.0.
    *
-   * It does not touch `dbImportPath` or `schemaImportPath`, which are spelled by the config
-   * and emitted verbatim.
+   * It also governs `dbImportPath` and `schemaImportPath`. Those used to be emitted verbatim,
+   * which meant a project-relative value like `src/db/connection` became a bare specifier
+   * naming a package in node_modules, and the import resolved to nothing. A path already
+   * written relative to the output directory keeps its own spelling, and a real package name is
+   * left untouched.
    */
   importExtension?: ImportExtension;
   databaseInjection?: {
@@ -223,11 +226,24 @@ export class ServiceGenerator {
       const typesPath = path.join(typesDir, `${table.tsName}.ts`);
       const svcPath = path.join(out, `${singularize(table.tsName)}Service.ts`);
       const typesCode = renderTypes(table);
+      // Resolved here, where the absolute output directory is known. Both used to be emitted
+      // verbatim, so a project-relative value like `src/db/connection`, which is what the
+      // getting-started guide shows and how the rest of the config names directories, became a
+      // bare specifier: Node and tsc looked for a package of that name and never found the file.
       const svcCode = renderService(
         table,
         opts.dataAccess ?? 'stub',
-        opts.dbImportPath,
-        opts.schemaImportPath,
+        opts.dbImportPath
+          ? resolveConfiguredImport(opts.dbImportPath, out, process.cwd(), opts.importExtension)
+          : undefined,
+        opts.schemaImportPath
+          ? resolveConfiguredImport(
+              opts.schemaImportPath,
+              out,
+              process.cwd(),
+              opts.importExtension
+            )
+          : undefined,
         opts.databaseInjection,
         opts.importExtension
       );

@@ -89,10 +89,17 @@ async function exportedConsts(dir: string): Promise<Set<string>> {
   return names;
 }
 
-/** Names the router pulls out of `importPath`, i.e. the left side of each `X as Y`. */
+/**
+ * Names the router pulls out of `importPath`, i.e. the left side of each `X as Y`.
+ *
+ * Matches on a prefix rather than the exact configured value. The generator no longer emits
+ * that value verbatim: a directory gains `/index` and an extension, so `../validators/zod`
+ * arrives as `../validators/zod/index.js`. This assertion is about the names, so it should not
+ * also pin the spelling of the path; configured-import.spec.ts covers that.
+ */
 function importedFrom(code: string, importPath: string): string[] {
   const re = new RegExp(
-    `import\\s*\\{([^}]*)\\}\\s*from\\s*['"]${importPath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}['"]`
+    `import\\s*\\{([^}]*)\\}\\s*from\\s*['"]${importPath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[^'"]*['"]`
   );
   const m = code.match(re);
   if (!m) return [];

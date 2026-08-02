@@ -1,6 +1,11 @@
 import type { Analysis, Column, Table } from '@drzl/analyzer';
 import type { AffixOptions, ImportExtension } from '@drzl/validation-core';
-import { importSpecifier, resolveAffix, schemaName } from '@drzl/validation-core';
+import {
+  importSpecifier,
+  resolveAffix,
+  resolveConfiguredImport,
+  schemaName,
+} from '@drzl/validation-core';
 
 export type Case = 'camel' | 'kebab' | 'snake';
 export interface NamingOptions {
@@ -23,8 +28,10 @@ export interface GenerateOptions {
    * every `moduleResolution` without a compiler flag. Use `'none'` for the extensionless
    * specifiers drzl emitted before 2.0.
    *
-   * It does not touch `validation.importPath`, which is spelled by the config and emitted
-   * verbatim.
+   * It also governs `validation.importPath`. That used to be emitted verbatim, which meant a
+   * project-relative value like `src/validators/zod` became a bare specifier naming a package
+   * in node_modules, and the import resolved to nothing. A path already written relative to the
+   * output directory keeps its own spelling, and a real package name is left untouched.
    */
   importExtension?: ImportExtension;
   validation?: {
@@ -660,8 +667,19 @@ export const exampleRouter = {
     });
     const sharedName = (mode: 'insert' | 'update' | 'select') =>
       schemaName(mode, table.tsName, sharedAffix);
+    // `importPath` used to be emitted verbatim. A project-relative value such as
+    // `src/validators/zod`, which is what the guide showed and how the rest of the config names
+    // directories, is a bare specifier to Node and tsc, so the import resolved to nothing.
+    const sharedImportSpecifier = useShared
+      ? resolveConfiguredImport(
+          validation!.importPath!,
+          outDir,
+          process.cwd(),
+          importExtension
+        )
+      : '';
     const importSchemas = useShared
-      ? `\nimport { ${sharedName('insert')} as ${createSchemaName}, ${sharedName('update')} as ${updateSchemaName}, ${sharedName('select')} as ${selectSchemaName} } from '${validation!.importPath}';`
+      ? `\nimport { ${sharedName('insert')} as ${createSchemaName}, ${sharedName('update')} as ${updateSchemaName}, ${sharedName('select')} as ${selectSchemaName} } from '${sharedImportSpecifier}';`
       : '';
     const imports = importsBase + importSchemas;
     const prelude = template.prelude ? template.prelude([table], ctx) : '';
