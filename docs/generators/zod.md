@@ -475,3 +475,46 @@ these names when it imports shared schemas.
 ::: tip Need something else?
 If this generator doesn't cover what you need, DM me on X (https://x.com/omardulaimidev) and we can scope it together.
 :::
+
+## `duplicateFinder`
+
+Uniqueness is the one constraint a per-row validator structurally cannot check: whether a value is
+unique is a fact about the table, not about the row. No first-party validator attempts it, and
+neither does a schema here.
+
+What needs no database is whether a **batch collides with itself**, and that is the half you can
+fix before sending anything. It matters for a bulk insert, where a thousand rows fail whole on one
+collision and the error names a constraint rather than a row.
+
+```ts
+{ kind: 'zod', path: 'src/validators/zod', duplicateFinder: true }
+```
+
+emits, for a table with unique constraints:
+
+```ts
+export function findDuplicateusers(
+  rows: readonly InsertusersInput[]
+): Array<{ index: number; constraint: string; firstIndex: number }> { ... }
+```
+
+```ts
+findDuplicateusers([
+  { email: 'a@b.co', org: 'x', handle: 'h' },
+  { email: 'a@b.co', org: 'y', handle: 'h' },
+]);
+// [{ index: 1, constraint: 'email', firstIndex: 0 }]
+```
+
+Two details it follows:
+
+- **Null is not equal to null.** A constraint is skipped for any row where one of its columns is
+  null or absent, because a unique index accepts any number of NULLs. Reporting those would send
+  you chasing rows the database is perfectly happy with.
+- **Composite keys compare by value.** The key is JSON, so `[1, '2']` never collides with
+  `['1', 2]`, which a separator-joined key would.
+
+A batch that passes can still collide with rows already stored. This checks the half that needs no
+round trip.
+
+Off by default: generated code ships in your bundle.
