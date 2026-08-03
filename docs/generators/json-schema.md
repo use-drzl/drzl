@@ -123,9 +123,31 @@ type says:
 | `json`, `jsonb` | `{}`, which is how the format spells "any JSON value" |
 | `point` | `prefixItems` of two numbers, with `minItems` and `maxItems` |
 
+`contentEncoding` is worth one warning. In draft 2020-12 and in OpenAPI 3.1 it is an **annotation**,
+not an assertion: a conforming validator records that the string is meant to be base64 and does not
+check that it is. So `{ type: 'string', contentEncoding: 'base64' }` accepts any string at all, and
+a client sending `"hello!"` for a `bytea` field is turned away by the decoder rather than by the
+contract.
+
 ## Verification
 
 Every emitted schema in the test suite is compiled by [ajv](https://ajv.js.org) in **strict mode**,
 which rejects unknown keywords rather than ignoring them, and then asserted on which values it
 accepts. Nothing asserts on the shape of the emitted object, because a schema that looks right and
 means nothing is the failure this format makes easy.
+
+The same happens to the **published** artefact in `scripts/verify-packed.sh`, against the tarball a
+consumer installs rather than the working tree:
+
+- every emitted schema and every entry of the `components` document compiles under ajv in strict
+  mode, and each one is asked to refuse something, so a schema that compiled to nothing is caught
+- each column's schema is compared with a real Postgres, value by value, over a pool shared with the
+  zod generator's ground-truth stage. The values are converted to their JSON form first, since a
+  document cannot carry a `Date` or a `Uint8Array`, and the database is asked about that same
+  converted value. The gate is that this generator must never disagree with Postgres where the zod
+  output agrees
+- the schemas are a fifth voice alongside zod, valibot, ArkType and TypeBox on every CHECK probe,
+  and all five have to agree
+- the row-level exemption above is asserted rather than waived: Postgres and the four validators
+  reject a disordered row, this generator accepts it, and the constraint is still named in the
+  `description`. If any of those three changes, the gate fails and this page has to change with it
