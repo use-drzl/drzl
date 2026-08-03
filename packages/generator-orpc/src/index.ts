@@ -1,6 +1,7 @@
 import type { Analysis, Column, Table } from '@drzl/analyzer';
 import type { AffixOptions, ImportExtension } from '@drzl/validation-core';
 import {
+  formatCode,
   importSpecifier,
   resolveAffix,
   resolveConfiguredImport,
@@ -457,44 +458,6 @@ export class ORPCGenerator {
     return specs;
   }
 
-  private async formatCode(
-    code: string,
-    filePath: string,
-    fmt?: GenerateOptions['format']
-  ): Promise<string> {
-    if (fmt && fmt.enabled === false) return code;
-    const engine = fmt?.engine ?? 'auto';
-    // Best-effort: use user's Prettier if available; otherwise return original
-    try {
-      if (engine === 'prettier' || engine === 'auto') {
-        const prettier: any = await import('prettier');
-        const cfgRef = fmt?.configPath ?? filePath;
-        const cfg = await prettier.resolveConfig(cfgRef).catch(() => null);
-        return prettier.format(code, {
-          ...(cfg ?? {}),
-          parser: 'typescript',
-          filepath: filePath,
-        });
-      }
-    } catch {}
-    try {
-      if (engine === 'biome' || engine === 'auto') {
-        // Dynamic import via Function to avoid bundler/module resolution at build time
-        const dynamicImport: any = Function('s', 'return import(s)');
-        const biome: any = await dynamicImport('@biomejs/biome').catch(() => null);
-        if (biome && (biome.formatContent || (biome as any).format)) {
-          if (biome.formatContent) {
-            const res = await biome.formatContent(code, { filePath });
-            return (res && (res.content || res.formatted)) ?? code;
-          }
-          const res = await (biome as any).format?.(code, { filePath });
-          return res ?? code;
-        }
-      }
-    } catch {}
-    return code;
-  }
-
   async generate(opts: GenerateOptions) {
     const fs = await import('node:fs/promises');
     const path = await import('node:path');
@@ -532,7 +495,7 @@ export class ORPCGenerator {
     // Emit one file per table or a placeholder when none.
     if (!this.analysis.tables.length) {
       const p = path.join(out, 'placeholder.orpc.ts');
-      const formatted = await this.formatCode(
+      const formatted = await formatCode(
         buildHeader(opts.outputHeader) + this.renderPlaceholder(),
         p,
         opts.format
@@ -549,7 +512,7 @@ export class ORPCGenerator {
       const filePath = template.filePath(table, { outDir: out, naming: opts.naming });
       await fs.mkdir(path.dirname(filePath), { recursive: true });
       const content = this.renderRouter(table, template, out, opts);
-      const formatted = await this.formatCode(
+      const formatted = await formatCode(
         buildHeader(opts.outputHeader) + content,
         filePath,
         opts.format
@@ -580,7 +543,7 @@ export class ORPCGenerator {
         .join('\n');
       const barrel = `${importLines}\n\nexport const ${groupName} = {\n${bodyLines}\n};\n`;
       const barrelPath = path.join(out, 'index.ts');
-      const barrelFormatted = await this.formatCode(
+      const barrelFormatted = await formatCode(
         buildHeader(opts.outputHeader) + barrel,
         barrelPath,
         opts.format

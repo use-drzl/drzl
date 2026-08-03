@@ -1,6 +1,6 @@
 import type { Analysis, Table, Column } from '@drzl/analyzer';
 import type { ImportExtension } from '@drzl/validation-core';
-import { importSpecifier, resolveConfiguredImport } from '@drzl/validation-core';
+import { formatCode, importSpecifier, resolveConfiguredImport } from '@drzl/validation-core';
 
 export interface ServiceGenerateOptions {
   outDir: string;
@@ -190,30 +190,6 @@ export class ${Service} {
 export class ServiceGenerator {
   constructor(private analysis: Analysis) {}
 
-  private async format(code: string, filePath: string, fmt?: ServiceGenerateOptions['format']) {
-    if (fmt && fmt.enabled === false) return code;
-    const engine = fmt?.engine ?? 'auto';
-    try {
-      if (engine === 'prettier' || engine === 'auto') {
-        const prettier: any = await import('prettier');
-        const cfgRef = fmt?.configPath ?? filePath;
-        const cfg = await prettier.resolveConfig(cfgRef).catch(() => null);
-        return prettier.format(code, { ...(cfg ?? {}), parser: 'typescript', filepath: filePath });
-      }
-    } catch {}
-    try {
-      if (engine === 'biome' || engine === 'auto') {
-        const dynamicImport: any = Function('s', 'return import(s)');
-        const biome: any = await dynamicImport('@biomejs/biome').catch(() => null);
-        if (biome?.formatContent) {
-          const res = await biome.formatContent(code, { filePath });
-          return (res && (res.content || res.formatted)) ?? code;
-        }
-      }
-    } catch {}
-    return code;
-  }
-
   async generate(opts: ServiceGenerateOptions) {
     const fs = await import('node:fs/promises');
     const path = await import('node:path');
@@ -242,12 +218,12 @@ export class ServiceGenerator {
         opts.databaseInjection,
         opts.importExtension
       );
-      const formattedTypes = await this.format(
+      const formattedTypes = await formatCode(
         buildHeader(opts.outputHeader) + typesCode,
         typesPath,
         opts.format
       );
-      const formattedSvc = await this.format(
+      const formattedSvc = await formatCode(
         buildHeader(opts.outputHeader) + svcCode,
         svcPath,
         opts.format

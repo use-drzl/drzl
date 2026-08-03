@@ -11,11 +11,19 @@
   ],
   "sideEffects": false,
   "scripts": {
-    "build": "tsup src/index.ts --dts --format esm,cjs",
+    "build": "tsup src/index.ts --dts --format esm,cjs --external prettier --clean",
     "test": "vitest run --testTimeout=20000"
   },
   "dependencies": {
     "@drzl/analyzer": "workspace:^"
+  },
+  "peerDependencies": {
+    "prettier": ">=3"
+  },
+  "peerDependenciesMeta": {
+    "prettier": {
+      "optional": true
+    }
   },
   "devDependencies": {
     "tsup": "^8.5.1",

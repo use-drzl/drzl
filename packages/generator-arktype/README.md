@@ -43,7 +43,9 @@ generators: [{ kind: 'arktype', path: 'src/validators/arktype' }];
 
 ## Notes
 
-- Formatting integrates with Prettier/Biome (via `format.engine: 'auto'`).
+- Formatting integrates with Prettier/Biome (via `format.engine: 'auto'`). Neither is bundled;
+  whichever your project has is used, with your config, and with neither the files are written
+  as rendered.
 
 ## Custom names
 

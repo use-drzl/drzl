@@ -26,10 +26,41 @@ APP="$WORK/consumer"
 mkdir -p "$TARS" "$APP/src/db"
 
 echo "==> building"
+# A file in every dist that no build produces, checked for afterwards.
+#
+# `files: ["dist"]` packs whatever is in the directory, and tsup does not clean it unless told to,
+# so anything a previous build left behind is published. That is not theoretical: @drzl/cli's dist
+# held 46 files totalling 950 KB where a clean build produces 16 and 417 KB, 30 stale
+# content-hashed chunks from three different dates, and validation-core held two full generations
+# of prettier's parser chunks. CI checks out fresh and never sees it; a maintainer running
+# `pnpm release` locally publishes it. The size ceiling below cannot catch this, because stale
+# chunks are small.
+#
+# A canary rather than a file-list comparison, because it costs one build instead of two and
+# fails for exactly one reason: this package's build does not clean its output.
+CANARY='stale-canary.js'
+for dir in "$ROOT"/packages/*/; do
+  mkdir -p "$dir/dist"
+  echo '// seeded by verify-packed; a build that cleans its output removes this' > "$dir/dist/$CANARY"
+done
+
 # `build:packages`, not `build`: the workspace also contains the docs site, whose vitepress
 # build is slow and cannot affect a tarball. This is the same filtered, topologically sorted
 # build the release workflow runs, so what gets packed here is what gets packed there.
 (cd "$ROOT" && pnpm build:packages >/dev/null)
+
+stale=""
+for dir in "$ROOT"/packages/*/; do
+  [ -e "$dir/dist/$CANARY" ] && stale="$stale $(basename "$dir")"
+  rm -f "$dir/dist/$CANARY"
+done
+if [ -n "$stale" ]; then
+  echo "FAIL: these builds do not clean their output dir, so stale files from a previous" >&2
+  echo "      build get published:$stale" >&2
+  echo "      Add --clean to the tsup invocation in each package's build script." >&2
+  exit 1
+fi
+echo "    every build cleans its output dir"
 
 echo "==> packing publishable packages"
 count=0
@@ -47,6 +78,28 @@ if [ "$count" -eq 0 ]; then
   echo "FAIL: nothing was packed. A build that emits nothing must not pass silently." >&2
   exit 1
 fi
+
+# What each package weighs on the wire, which is the only number a user pays.
+#
+# Three of these shipped at 2.8 MB packed and 11 MB unpacked, because `await import('prettier')`
+# is a specifier tsup can resolve and esbuild inlined the whole formatter behind it. Installing
+# @drzl/cli pulled in roughly 32 MB of duplicated prettier parsers. Nothing in the workspace could
+# see it: the source was right, the tests passed, and only the artefact was wrong.
+#
+# The ceiling is per tarball and deliberately far above the real figures, which are tens of
+# kilobytes. It is a tripwire for a dependency that got bundled, not a byte budget. Raising it is
+# not how you fix a build that started inlining one.
+TARBALL_CEILING=1000000
+size_over=0
+for tgz in "$TARS"/*.tgz; do
+  bytes=$(wc -c < "$tgz")
+  if [ "$bytes" -gt "$TARBALL_CEILING" ]; then
+    echo "FAIL: $(basename "$tgz") is $bytes bytes packed, over the ${TARBALL_CEILING} ceiling." >&2
+    echo "      Something is being bundled that should be external." >&2
+    size_over=1
+  fi
+done
+[ "$size_over" = 0 ] || exit 1
 
 echo "==> installing them into an empty project"
 # A real foreign key, because the oRPC generator derives relation endpoints from one and a
@@ -102,8 +155,13 @@ node -e "
 # and npm's flat layout is the harsher test of whether `dependencies` are actually declared.
 # valibot, arktype and @orpc/server are peers of the generators, so the generated tree cannot
 # typecheck without them present, exactly as in a consumer's project.
+#
+# prettier is here because it is now an *optional* peer of @drzl/validation-core rather than
+# something bundled into it, and npm does not install optional peers. Naming it is what a
+# consumer who wants formatted output does, and it makes this run cover the peer resolving from
+# a real install. The stage further down removes it again to cover the other case.
 npm install --no-audit --no-fund --loglevel=error \
-  "$TARS"/*.tgz drizzle-orm zod valibot arktype @orpc/server typescript tsx >/dev/null
+  "$TARS"/*.tgz drizzle-orm zod valibot arktype @orpc/server typescript tsx prettier >/dev/null
 
 if [ ! -e node_modules/.bin/drzl ]; then
   echo "FAIL: the drzl bin did not resolve after a real install." >&2
@@ -154,9 +212,18 @@ fi
 rm -f load-probe.mjs
 
 # Exit code alone is not enough: a generator that writes an empty barrel still exits 0.
+#
+# Double quotes deliberately, and they are load-bearing twice over. The generator emits single
+# quotes; the double ones are prettier's defaults rewriting them, so this line is also the only
+# end-to-end proof in the whole run that formatting actually happened through a real install of
+# the optional peer. Nothing else here would notice formatting silently stopping, which is not
+# hypothetical: the CJS bundle formatted nothing at all for as long as it existed and every gate
+# stayed green. The single-quoted form is asserted further down, with prettier hidden.
 grep -q 'export \* from "./users.zod.js";' "$BARREL" || {
-  echo "FAIL: the barrel does not emit a .js specifier. Generated output will not resolve" >&2
-  echo "      under moduleResolution node16 or nodenext. Barrel was:" >&2
+  echo "FAIL: the barrel is not what a consumer with prettier installed should get. Either the" >&2
+  echo "      .js specifier is missing, so the output will not resolve under moduleResolution" >&2
+  echo "      node16 or nodenext, or the optional peer stopped being used and nothing was" >&2
+  echo "      formatted. Barrel was:" >&2
   cat "$BARREL" >&2
   exit 1
 }
@@ -261,6 +328,62 @@ EOF
   fi
   echo "    $dialect ok"
 done
+
+# ---------------------------------------------------------------------------------------------
+# The consumer who has no formatter at all.
+#
+# prettier used to be bundled into three packages, 11 MB each, so formatting could not fail to be
+# available. It is an optional peer now, which makes "no formatter installed" an ordinary and
+# supported state rather than a broken install. The whole run happens after every file has been
+# rendered, so an unhandled rejection there would lose a completed generation at the last step.
+#
+# Hidden rather than uninstalled, because npm would take the tarballs with it.
+# ---------------------------------------------------------------------------------------------
+echo "==> generating with no formatter installed"
+mv node_modules/prettier node_modules/.prettier-hidden
+cat > drzl.config.ts <<'CONFIG'
+export default {
+  schema: './src/db/schema.ts',
+  outDir: './src/unformatted/api',
+  generators: [
+    { kind: 'zod', path: './src/unformatted/zod' },
+    { kind: 'service', path: './src/unformatted/services' },
+    { kind: 'orpc' },
+  ],
+};
+CONFIG
+if ! npx drzl generate >/dev/null; then
+  mv node_modules/.prettier-hidden node_modules/prettier
+  echo "FAIL: drzl generate does not survive prettier being absent. It is an optional peer," >&2
+  echo "      so this is a normal install, and the failure would come after every file was" >&2
+  echo "      already rendered." >&2
+  exit 1
+fi
+mv node_modules/.prettier-hidden node_modules/prettier
+
+# Unformatted has to still mean complete and valid. Single quotes are what the generator emits
+# before a formatter sees it, so this also confirms nothing formatted the file behind our backs
+# and made the check vacuous.
+grep -q "export \* from './users.zod.js';" src/unformatted/zod/index.ts || {
+  echo "FAIL: the unformatted barrel is not what the generator emits. Was:" >&2
+  cat src/unformatted/zod/index.ts >&2
+  exit 1
+}
+cat > tsconfig.unformatted.json <<'EOF'
+{
+  "compilerOptions": {
+    "strict": true, "noEmit": true, "target": "es2022",
+    "module": "nodenext", "moduleResolution": "nodenext", "skipLibCheck": true
+  },
+  "include": ["src/unformatted/**/*.ts", "src/db/**/*.ts"]
+}
+EOF
+if ! npx tsc -p tsconfig.unformatted.json; then
+  echo "FAIL: output emitted without a formatter does not typecheck. Formatting is cosmetic," >&2
+  echo "      so anything broken here was broken before prettier tidied it." >&2
+  exit 1
+fi
+echo "    unformatted output is complete and typechecks"
 
 # ---------------------------------------------------------------------------------------------
 # Every config the documentation tells a reader to write.

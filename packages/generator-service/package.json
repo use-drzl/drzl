@@ -11,7 +11,7 @@
   ],
   "sideEffects": false,
   "scripts": {
-    "build": "tsup src/index.ts --dts --format esm,cjs",
+    "build": "tsup src/index.ts --dts --format esm,cjs --external prettier --clean",
     "lint": "eslint . --ext .ts",
     "test": "vitest run --testTimeout=20000"
   },
