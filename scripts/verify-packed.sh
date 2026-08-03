@@ -924,9 +924,15 @@ const POOL: [string, unknown][] = [
   ['5 emoji', '\u{1F44D}\u{1F44D}\u{1F44D}\u{1F44D}\u{1F44D}'],
   ["'not-a-uuid'", 'not-a-uuid'], ['uuid', '3f2504e0-4f89-11d3-9a0c-0305e82c3301'],
   ["'zzz'", 'zzz'], ["'a'", 'a'], ["'happy'", 'happy'],
+  // A member of the `varchar({ enum: ['x', 'y'] })` fixture column. Without it the pool held no
+  // value that column accepts, so both sides rejected all of it and the comparison agreed while
+  // measuring nothing. The vacuity check below is what found it.
+  ["'x'", 'x'],
   ['0', 0], ['1', 1], ['1.5', 1.5], ['-1', -1], ['200', 200], ['40000', 40000],
   ['9000000', 9000000], ['2147483648', 2147483648], ['9007199254740993', 9007199254740993],
-  ['1900', 1900], ['2500', 2500], ['NaN', NaN], ['Infinity', Infinity],
+  // 1900 and 2500 sit either side of MySQL's YEAR range and nothing sat inside it, so `m_year`
+  // was the same vacuous agreement as the enum above: rejected by both, proving nothing.
+  ['1900', 1900], ['2000', 2000], ['2500', 2500], ['NaN', NaN], ['Infinity', Infinity],
   ['1n', 1n], ['2n**70n', 2n ** 70n], ['true', true], ['false', false],
   ['Date', new Date('2020-01-01T00:00:00Z')], ["'2020-01-01'", '2020-01-01'],
   ["'2020-01-01T00:00:00Z'", '2020-01-01T00:00:00Z'], ["'12:00:00'", '12:00:00'],
@@ -981,61 +987,115 @@ const safeField = (lib: Lib, s: any, k: string) => {
  * Divergences that are deliberate and reasoned. Anything not named here is a finding, so a new
  * disagreement fails this script rather than quietly widening the list.
  *
- * Keyed `<library>/<column>`; a bare column name applies to every library.
+ * Keyed `<dialect>/<library>/<column>`; `<dialect>/<column>` applies to every library on that
+ * dialect. The dialect is part of the key because this file compared all four libraries on
+ * Postgres alone for most of its life, and a waiver keyed on a column name would have started
+ * covering a same-named column on MySQL or SQLite the moment those dialects were widened. The
+ * fixtures use distinct `c_`/`m_`/`s_` prefixes, which makes the dialect redundant today and
+ * load-bearing the day someone adds a column without one.
  */
 const ALLOWED: Record<string, string> = {
   // Binary payloads are typed as Uint8Array rather than Buffer. A Buffer is a Uint8Array, so
   // nothing official accepts is turned away. The wider check needs no `@types/node`, survives a
   // runtime where `Buffer` is undefined, and makes bytea and blob validate the same way.
-  c_bytea: 'Uint8Array accepted where official demands a Buffer',
-  s_blob_buf: 'as c_bytea',
+  'pg/c_bytea': 'Uint8Array accepted where official demands a Buffer',
+  'sqlite/s_blob_buf': 'as pg/c_bytea',
   // `coerceDates` defaults to coercing on insert and update, which is a documented DRZL option
   // and is what `coerceDates: 'none'` turns off to match official exactly. Only strings and
   // numbers are coerced: null, booleans and arrays are rejected, which `z.coerce.date()` accepts.
-  c_date_d: 'coerceDates accepts a date string or epoch number on write',
-  c_ts_d: 'as c_date_d',
-  m_date: 'as c_date_d',
-  m_datetime: 'as c_date_d',
-  m_ts: 'as c_date_d',
-  s_int_ts: 'as c_date_d',
-  s_int_ts_ms: 'as c_date_d',
+  'pg/c_date_d': 'coerceDates accepts a date string or epoch number on write',
+  'pg/c_ts_d': 'as pg/c_date_d',
+  'mysql/m_date': 'as pg/c_date_d',
+  'mysql/m_datetime': 'as pg/c_date_d',
+  'mysql/m_ts': 'as pg/c_date_d',
+  'sqlite/s_int_ts': 'as pg/c_date_d',
+  'sqlite/s_int_ts_ms': 'as pg/c_date_d',
   // Official emits `Type.String({ format: 'uuid' })`, and TypeBox fails a format it has no entry
   // for rather than ignoring it, so that schema rejects every valid uuid in any project that has
   // not populated `FormatRegistry` first. This generator emits a pattern, which needs no setup.
-  'typebox/c_uuid': 'official uses an unregistered `format`, which rejects every uuid',
+  'pg/typebox/c_uuid': 'official uses an unregistered `format`, which rejects every uuid',
   // A character limit counts *characters*; official counts `.length`, which is UTF-16 units, so
   // it refuses three emoji in a `char(4)` the database accepts. Measured against Postgres.
-  c_char: 'character limit counts code points; official counts UTF-16 units',
-  m_char: 'as c_char',
+  'pg/c_char': 'character limit counts code points; official counts UTF-16 units',
+  'mysql/m_char': 'as pg/c_char',
   // Stricter than official, and verified against Postgres itself through PGlite: a `numeric`
   // column is a string, and a bare string schema accepts 'hello' where the database rejects it.
   // Official accepts all of these; the database does not.
-  c_numeric: 'numeric format enforced; official accepts any string, Postgres does not',
-  c_decimal: 'as c_numeric',
-  m_decimal: 'as c_numeric',
+  'pg/c_numeric': 'numeric format enforced; official accepts any string, Postgres does not',
+  'pg/c_decimal': 'as pg/c_numeric',
+  'mysql/m_decimal': 'as pg/c_numeric',
   // Stricter than official, in DRZL's favour.
-  'valibot/c_json': 'DRZL rejects Infinity and non-plain objects; official accepts both',
-  'valibot/c_jsonb': 'as valibot/c_json',
-  'valibot/c_jsonb_typed': 'as valibot/c_json',
-  'valibot/c_point': 'v.strictTuple rejects a third element; official v.tuple ignores extras',
-  'valibot/c_geometry': 'as valibot/c_point',
+  'pg/valibot/c_json': 'DRZL rejects Infinity and non-plain objects; official accepts both',
+  'pg/valibot/c_jsonb': 'as pg/valibot/c_json',
+  'pg/valibot/c_jsonb_typed': 'as pg/valibot/c_json',
+  'mysql/valibot/m_json': 'as pg/valibot/c_json',
+  'sqlite/valibot/s_text_json': 'as pg/valibot/c_json',
+  'sqlite/valibot/s_blob_json': 'as pg/valibot/c_json',
+  // A `blob()` with no mode is Drizzle's json mode, not its buffer mode, so this is the same
+  // column shape as s_blob_json and gets the same reasoning. `s_blob_buf` above is the buffer one.
+  'sqlite/valibot/s_blob': 'as pg/valibot/c_json; a bare blob() is Drizzle json mode',
+  'pg/valibot/c_point': 'v.strictTuple rejects a third element; official v.tuple ignores extras',
+  'pg/valibot/c_geometry': 'as pg/valibot/c_point',
+  // Official emits `Type.RegExp`, whose check runs `RegExp.prototype.test` against the raw value,
+  // and `test` stringifies what it is given: `[]` becomes '' and matches `^[01]*$`. So official
+  // accepts an empty array for a binary column. This generator emits a `string` carrying a
+  // `pattern`, which refuses a non-string before the pattern is consulted. Postgres masks the
+  // same hole on `c_bit` only because that column has a `minLength` an array cannot satisfy.
+  'mysql/typebox/m_binary': 'official Type.RegExp accepts a non-string whose string form matches',
+  'mysql/typebox/m_varbinary': 'as mysql/typebox/m_binary',
   // ArkType states a bigint range through a narrow predicate built with its builder API. This
-  // generator emits one string per field, and the string DSL's comparators take numeric literals.
-  'arktype/c_bigint_b': 'ArkType cannot bound a bigint in its string DSL',
-  'arktype/s_blob_bigint': 'as arktype/c_bigint_b',
+  // generator emits one string per field, and the string DSL's comparators take numeric literals:
+  // `type('bigint >= -9223372036854775808n')` is a parse error, not a wider schema.
+  'pg/arktype/c_bigint_b': 'ArkType cannot bound a bigint in its string DSL',
+  'sqlite/arktype/s_blob_bigint': 'as pg/arktype/c_bigint_b',
+  'mysql/arktype/m_bigint_b': 'as pg/arktype/c_bigint_b',
 };
 
-const allowed = (lib: string, col: string) => ALLOWED[`${lib}/${col}`] ?? ALLOWED[col];
+const usedWaivers = new Set<string>();
+const allowed = (dialect: string, lib: string, col: string) => {
+  for (const key of [`${dialect}/${lib}/${col}`, `${dialect}/${col}`]) {
+    if (ALLOWED[key]) {
+      usedWaivers.add(key);
+      return ALLOWED[key];
+    }
+  }
+  return undefined;
+};
 
-/** Cross-generator gaps that follow from what each library can express, not from a defect. */
-const CROSS_ALLOWED = (k: string) =>
-  k.startsWith('c_json') ||
-  k.startsWith('c_jsonb') ||
-  /bigint_b|blob_bigint/.test(k) ||
+/**
+ * Cross-generator gaps that follow from what each library can express, not from a defect in one
+ * generator. Keyed `<dialect>/<column>` and carrying its reason, for the same reason ALLOWED is.
+ */
+const CROSS_ALLOWED: Record<string, string> = {
+  // ArkType's string DSL has no recursive JSON value, so this generator emits
+  // `number | object | string | boolean | null`, which takes NaN, Infinity and any object at all.
+  // The other three build a real JSON value check. A capability difference between the libraries:
+  // official `drizzle-orm/arktype` produces the same widening, which is why this shows up here and
+  // not against official.
+  'pg/c_json': "arktype's string DSL cannot state a recursive JSON value",
+  'pg/c_jsonb': 'as pg/c_json',
+  'pg/c_jsonb_typed': 'as pg/c_json',
+  'mysql/m_json': 'as pg/c_json',
+  'sqlite/s_text_json': 'as pg/c_json',
+  'sqlite/s_blob_json': 'as pg/c_json',
+  'sqlite/s_blob': 'as pg/c_json; a bare blob() is Drizzle json mode',
+  // As `pg/arktype/c_bigint_b` above: the three others bound the bigint, arktype cannot.
+  'pg/c_bigint_b': 'ArkType cannot bound a bigint in its string DSL',
+  'mysql/m_bigint_b': 'as pg/c_bigint_b',
+  'sqlite/s_blob_bigint': 'as pg/c_bigint_b',
   // zod and valibot count code points for a character limit; TypeBox and ArkType state a length
   // declaratively with no predicate to hook, so they keep the UTF-16 form and stay approximate for
   // astral text. A capability difference between the libraries, not a defect in one generator.
-  k === 'c_char';
+  'pg/c_char': 'zod and valibot count code points; TypeBox and ArkType count UTF-16 units',
+};
+
+const usedCrossWaivers = new Set<string>();
+const crossAllowed = (dialect: string, col: string) => {
+  const key = `${dialect}/${col}`;
+  if (!CROSS_ALLOWED[key]) return false;
+  usedCrossWaivers.add(key);
+  return true;
+};
 
 const DIALECTS = [
   {
@@ -1052,14 +1112,24 @@ const DIALECTS = [
   {
     name: 'mysql',
     table: myTable,
-    libs: ['zod'],
-    mods: { zod: () => import('./gen/mysql/zod/matrix.zod.js') } as Record<string, () => Promise<any>>,
+    libs: ['zod', 'valibot', 'arktype', 'typebox'],
+    mods: {
+      zod: () => import('./gen/mysql/zod/matrix.zod.js'),
+      valibot: () => import('./gen/mysql/valibot/matrix.valibot.js'),
+      arktype: () => import('./gen/mysql/arktype/matrix.arktype.js'),
+      typebox: () => import('./gen/mysql/typebox/matrix.typebox.js'),
+    } as Record<string, () => Promise<any>>,
   },
   {
     name: 'sqlite',
     table: sqTable,
-    libs: ['zod'],
-    mods: { zod: () => import('./gen/sqlite/zod/matrix.zod.js') } as Record<string, () => Promise<any>>,
+    libs: ['zod', 'valibot', 'arktype', 'typebox'],
+    mods: {
+      zod: () => import('./gen/sqlite/zod/matrix.zod.js'),
+      valibot: () => import('./gen/sqlite/valibot/matrix.valibot.js'),
+      arktype: () => import('./gen/sqlite/arktype/matrix.arktype.js'),
+      typebox: () => import('./gen/sqlite/typebox/matrix.typebox.js'),
+    } as Record<string, () => Promise<any>>,
   },
 ];
 
@@ -1088,30 +1158,58 @@ for (const d of DIALECTS) {
       const oShape = OFFICIAL.zod[mode](d.table as never).shape;
       const rows: string[] = [];
       let waived = 0;
+      // Columns where both sides yielded a field and the pool was actually pushed through them.
+      // Printing the shape's column count says how many columns *exist*, which is not the same
+      // number and stayed reassuring in a run that compared none of them.
+      let compared = 0;
 
       for (const k of Object.keys(oShape)) {
         const o = safeField(lib, official, k);
         const m = safeField(lib, mine, k);
-        if (!o && !m) continue;
+        if (!o && !m) {
+          // Never a skip. Both sides absent means this column was measured by nothing, and
+          // `safeField` returns undefined for a lookup that threw as well as for one that was
+          // missing, so the quiet version of this branch reported parity on an exception.
+          rows.push(`        ${k}: neither official nor DRZL yielded a field, so nothing was compared`);
+          continue;
+        }
         if (!m) {
-          if (allowed(libName, k)) { waived++; continue; }
+          if (allowed(d.name, libName, k)) { waived++; continue; }
           rows.push(`        ${k}: official has it, DRZL omits it`);
           continue;
         }
         if (!o) {
-          if (allowed(libName, k)) { waived++; continue; }
+          if (allowed(d.name, libName, k)) { waived++; continue; }
           rows.push(`        ${k}: DRZL has it, official omits it`);
           continue;
         }
+        compared++;
         const looser: string[] = [];
         const tighter: string[] = [];
+        let officialTook = false;
+        let drzlTook = false;
         for (const [label, x] of POOL) {
           const a = safeOk(lib, o, x);
           const b = safeOk(lib, m, x);
+          officialTook ||= a;
+          drzlTook ||= b;
           if (a !== b) (b ? looser : tighter).push(label);
         }
+        // A column both sides reject every probe for agrees perfectly and proves nothing: the two
+        // schemas could be a correct one and a broken one and this loop could not tell them apart.
+        // It is not hypothetical. `c_varchar_enum` accepts only 'x' or 'y' and `m_year` only
+        // 1901..2155, and the pool held no member of either, so two columns had been sitting in
+        // this comparison contributing a confident nothing. Deliberately outside the waiver check
+        // below: a waiver says a difference is fine, not that a column need not be measured.
+        if (!officialTook && !drzlTook) {
+          rows.push(
+            `        ${k}: neither side accepts any pool value, so this column proves nothing.` +
+              `\n          Add a value this column accepts to POOL.`
+          );
+          continue;
+        }
         if (!looser.length && !tighter.length) continue;
-        if (allowed(libName, k)) { waived++; continue; }
+        if (allowed(d.name, libName, k)) { waived++; continue; }
         rows.push(
           `        ${k}:` +
             (looser.length ? `\n          DRZL accepts, official rejects: ${looser.join(', ')}` : '') +
@@ -1119,9 +1217,16 @@ for (const d of DIALECTS) {
         );
       }
 
+      // A run that compared no column at all would otherwise print `parity` and pass. That is the
+      // shape of failure this file has been bitten by most: the stage was green because it had
+      // measured nothing, not because there was nothing to find.
+      if (compared === 0) {
+        rows.push('        no column was compared on both sides, so this pairing measured nothing');
+      }
+
       console.log(
         `    ${d.name.padEnd(7)} ${libName.padEnd(8)} ${mode.padEnd(7)} ` +
-          `${Object.keys(oShape).length} cols  ${rows.length ? 'DIFFERS' : 'parity'}` +
+          `${compared}/${Object.keys(oShape).length} cols compared  ${rows.length ? 'DIFFERS' : 'parity'}` +
           `${waived ? ` (${waived} waived)` : ''}`
       );
       if (rows.length) {
@@ -1131,12 +1236,12 @@ for (const d of DIALECTS) {
     }
   }
 
-  // Pass 2, on the dialect that has all four generators.
+  // Pass 2, on every dialect that has all four generators, which is now all three.
   if (d.libs.length === 4) {
     const oShape = OFFICIAL.zod.select(d.table as never).shape;
     const disagreements: string[] = [];
     for (const k of Object.keys(oShape)) {
-      if (CROSS_ALLOWED(k)) continue;
+      if (crossAllowed(d.name, k)) continue;
       const fields: Record<string, any> = {};
       for (const lib of d.libs) fields[lib] = safeField(LIBS[lib], loaded[lib].SelectmatrixSchema, k);
       const absent = Object.entries(fields).filter(([, f]) => !f).map(([n]) => n);
@@ -1154,20 +1259,39 @@ for (const d of DIALECTS) {
       }
     }
     if (disagreements.length) {
-      console.log('    the four generators disagree with each other:');
+      console.log(`    the four ${d.name} generators disagree with each other:`);
       console.log(disagreements.join('\n'));
       findings += disagreements.length;
     } else {
-      console.log('    all four generators agree with each other on every column and value');
+      console.log(`    all four ${d.name} generators agree with each other on every column and value`);
     }
   }
+}
+
+// A waiver that suppresses nothing is not harmless. It is a sentence claiming a divergence exists
+// and is fine, sitting next to the divergences that really do, and the next person to widen this
+// file reads it as covered ground. Every key above has to earn its place on this run or be
+// deleted, which is also the only thing standing between this list and being used as a way to
+// make a failure go away.
+const deadWaivers = [
+  ...Object.keys(ALLOWED).filter((k) => !usedWaivers.has(k)).map((k) => `ALLOWED[${k}]`),
+  ...Object.keys(CROSS_ALLOWED).filter((k) => !usedCrossWaivers.has(k)).map((k) => `CROSS_ALLOWED[${k}]`),
+];
+if (deadWaivers.length) {
+  console.error('FAIL: these waivers suppressed nothing on this run, so they describe a');
+  console.error('      divergence that no longer happens. Delete them rather than keeping a');
+  console.error('      reason for something nobody can observe:');
+  for (const k of deadWaivers) console.error(`      ${k}`);
 }
 
 if (findings) {
   console.error(`FAIL: ${findings} parity finding(s). A generated schema looser than the`);
   console.error('      first-party module accepts rows the database will reject.');
-  process.exit(1);
 }
+
+// Counted separately and exited on together, so one run reports both rather than hiding the
+// second behind the first. A dead waiver is not a looser schema and must not be described as one.
+if (findings || deadWaivers.length) process.exit(1);
 PARITY_HARNESS
 
 # drizzle-orm is pinned: the parity target is a specific release, and a floating one would turn
@@ -1182,9 +1306,15 @@ npm install --no-audit --no-fund --loglevel=error \
 
 for dialect in pg mysql sqlite; do
   case "$dialect" in
+    # All four libraries on every dialect. It was four on Postgres and one everywhere else, so
+    # valibot, arktype and typebox had never been compared with anything on MySQL or SQLite:
+    # eighteen combinations with no differential coverage at all. The official modules take any
+    # Drizzle table regardless of dialect, so there was never a structural reason for it. Widening
+    # this also turns pass 2, the cross-generator check, on for MySQL and SQLite, which is where it
+    # found the arktype json column disagreeing with its three siblings.
     pg)     schema=src/schema.ts;        libs="zod valibot arktype typebox" ;;
-    mysql)  schema=src/schema-mysql.ts;  libs="zod" ;;
-    sqlite) schema=src/schema-sqlite.ts; libs="zod" ;;
+    mysql)  schema=src/schema-mysql.ts;  libs="zod valibot arktype typebox" ;;
+    sqlite) schema=src/schema-sqlite.ts; libs="zod valibot arktype typebox" ;;
   esac
   gens=""
   for lib in $libs; do gens="$gens    { kind: '$lib', path: 'src/gen/$dialect/$lib' },"$'\n'; done
@@ -3091,7 +3221,8 @@ cd "$APP"
 
 echo "OK: $count packages packed, installed into an empty project, generated, and the output"
 echo "    typechecks under bundler, node16 and nodenext, and validates at least as strictly as"
-echo "    the first-party drizzle-orm validator modules across three dialects and three modes,"
+echo "    all four first-party drizzle-orm validator modules on each of three dialects and three"
+echo "    modes, with the four generators cross-checked against each other on every dialect,"
 echo "    checked against a real Postgres, a real SQLite and, where MYSQL_URL is set, a real"
 echo "    MySQL, with applyDefaults compared against what the database writes, and analyzed with"
 echo "    no column left unnamed on either drizzle-orm major. The JSON Schema output compiles"
