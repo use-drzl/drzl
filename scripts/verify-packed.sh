@@ -1172,8 +1172,13 @@ PARITY_HARNESS
 
 # drizzle-orm is pinned: the parity target is a specific release, and a floating one would turn
 # an upstream change into a mysterious failure here rather than a deliberate re-measurement.
+#
+# ajv and ajv-formats are the JSON Schema generator's own declared devDependency ranges, so the
+# packed artefact is read by the same validator its unit tests claim it is checked against. They
+# are not dependencies of anything DRZL publishes: JSON Schema output is data with no runtime.
 npm install --no-audit --no-fund --loglevel=error \
-  "$TARS"/*.tgz drizzle-orm@1.0.0-rc.4 zod valibot arktype @sinclair/typebox tsx >/dev/null
+  "$TARS"/*.tgz drizzle-orm@1.0.0-rc.4 zod valibot arktype @sinclair/typebox tsx \
+  ajv@^8.17.1 ajv-formats@^3.0.1 >/dev/null
 
 for dialect in pg mysql sqlite; do
   case "$dialect" in
@@ -1183,6 +1188,20 @@ for dialect in pg mysql sqlite; do
   esac
   gens=""
   for lib in $libs; do gens="$gens    { kind: '$lib', path: 'src/gen/$dialect/$lib' },"$'\n'; done
+  # The sixth generator, on the one dialect with a real database behind it.
+  #
+  # It is deliberately not in `libs`: there is no official JSON Schema module for the parity pass
+  # to compare it against, so it takes no part in that pass and is measured against Postgres
+  # instead. Until this line existed it appeared in exactly one stage of this file, the
+  # documented-configs one, which asks only whether the emitted TypeScript compiles. The generator
+  # that emits a published API contract was the only one whose output was never compared with a
+  # database, with its siblings, or with a validator of any kind.
+  #
+  # `components: true` because the OpenAPI document is a second emission with its own rules, and
+  # nothing outside the generator's own unit tests had ever produced one.
+  if [ "$dialect" = pg ]; then
+    gens="$gens    { kind: 'json-schema', path: 'src/gen/$dialect/json-schema', components: true },"$'\n'
+  fi
   cat > "drzl.$dialect.config.ts" <<CONFIG
 import { defineConfig } from '@drzl/cli/config';
 
@@ -1214,7 +1233,173 @@ CONFIG
       exit 1
     fi
   done
+  # Named individually rather than derived, because this generator's file suffix and its extra
+  # `components.ts` are not the `<table>.<lib>.ts` shape the loop above assumes, and a kind that
+  # emitted nothing at all would otherwise be found only by an import failing much further down.
+  if [ "$dialect" = pg ]; then
+    for f in matrix.schema.ts checked.schema.ts defaulted.schema.ts components.ts index.ts; do
+      if [ ! -e "src/gen/pg/json-schema/$f" ]; then
+        echo "FAIL: the json-schema generator produced no src/gen/pg/json-schema/$f." >&2
+        exit 1
+      fi
+    done
+  fi
 done
+
+cat > src/json-schema-valid.ts <<'JSON_SCHEMA_VALID'
+/**
+ * Every emitted JSON Schema, compiled by a real validator in strict mode.
+ *
+ * A JSON Schema is data, which makes it very easy to emit something that looks right and means
+ * nothing: an unknown keyword is not an error in JSON Schema, it is ignored. `exclusiveMinimum` in
+ * the wrong spelling, `prefixItems` in a draft that has no such keyword, `nullable` in a draft that
+ * has no such keyword: each produces a document that validates as a schema and then accepts the
+ * value the constraint exists to reject. ajv's strict mode refuses an unknown or misspelled
+ * keyword instead, which is why the generator's own unit tests work this way.
+ *
+ * This runs the same check on the packed artefact rather than on `src`, because that is the file a
+ * consumer's OpenAPI tooling reads. Five of the six generators go through the packed gate and this
+ * one, the one that emits a published API contract, went through none of it.
+ */
+import Ajv2020 from 'ajv/dist/2020';
+import addFormats from 'ajv-formats';
+import { is, Table } from 'drizzle-orm';
+import * as pgSchema from './schema.js';
+import * as emitted from './gen/pg/json-schema/index.js';
+
+/**
+ * What the barrel is expected to hold, derived from the Drizzle schema rather than listed.
+ *
+ * A listed set stops covering a table the moment the fixture grows one. Deriving it makes the
+ * count a positive control: an emission that silently dropped a table, or a barrel that exported
+ * nothing, fails here rather than passing over an empty loop.
+ */
+const tableNames = Object.entries(pgSchema)
+  .filter(([, value]) => is(value, Table))
+  .map(([name]) => name)
+  .sort();
+const MODES = ['Insert', 'Update', 'Select'] as const;
+const expectedSchemas = tableNames.flatMap((t) => MODES.map((m) => `${m}${t}Schema`)).sort();
+const expectedComponents = tableNames.flatMap((t) => MODES.map((m) => `${t}${m}`)).sort();
+
+if (!tableNames.length) {
+  console.error('    FAIL: no Drizzle tables found in the fixture, so nothing was measured.');
+  process.exit(1);
+}
+
+const problems: string[] = [];
+
+const emittedSchemas = Object.entries(emitted)
+  .filter(([name]) => name.endsWith('Schema'))
+  .sort(([a], [b]) => a.localeCompare(b));
+const emittedNames = emittedSchemas.map(([name]) => name);
+if (emittedNames.join(',') !== expectedSchemas.join(',')) {
+  problems.push(`the barrel exports [${emittedNames.join(', ')}], not [${expectedSchemas.join(', ')}]`);
+}
+
+/**
+ * One ajv instance for all of them, not one each, so two schemas claiming the same `$id` collide
+ * here rather than in a consumer's document. ajv also refuses an `$id` carrying a fragment, which
+ * is the mistake the components document below exists to avoid making.
+ */
+function instance() {
+  const ajv = new Ajv2020({ strict: true, allErrors: true });
+  addFormats(ajv as never);
+  return ajv;
+}
+
+const perTable = instance();
+let compiled = 0;
+for (const [name, schema] of emittedSchemas) {
+  let validate: (x: unknown) => boolean;
+  try {
+    validate = perTable.compile(schema as never) as never;
+  } catch (err) {
+    // Never a skip: a schema ajv refuses is the failure this stage exists to catch.
+    problems.push(`${name} does not compile under ajv strict mode: ${(err as Error).message}`);
+    continue;
+  }
+  compiled++;
+
+  // A schema that compiles can still be inert, so every one of them is asked to refuse something.
+  //
+  // On an update schema this probe is exact rather than indicative: an update requires no key, so
+  // `additionalProperties: false` is the only thing in the object that can refuse an unknown one.
+  // On insert and select a missing `required` key refuses it too, which makes the same probe a
+  // vacuity check there rather than a statement about closedness.
+  if (validate({ drzl_not_a_column: 1 })) {
+    problems.push(
+      name.startsWith('Update')
+        ? `${name} accepts a key that is not a column, so it is no longer a closed object`
+        : `${name} accepts a key that is not a column and requires nothing, so it constrains nothing`
+    );
+  }
+  // The 2020-12 output declares its dialect. The components document strips that, and stripping it
+  // only means anything while it was there to strip.
+  const dialect = (schema as Record<string, unknown>).$schema;
+  if (dialect !== 'https://json-schema.org/draft/2020-12/schema') {
+    problems.push(`${name} declares ${JSON.stringify(dialect)} rather than the 2020-12 dialect it targets`);
+  }
+}
+if (compiled === 0) {
+  problems.push('not one emitted schema compiled, so this stage measured nothing');
+}
+
+/**
+ * The components document, which is the shape an OpenAPI consumer actually reads.
+ *
+ * Two details are easy to get quietly wrong and both are asserted rather than assumed: a nested
+ * `$schema` is read as a dialect switch by OpenAPI 3.1, and a draft 2020-12 `$id` may not contain
+ * a fragment, so the obvious `#/components/schemas/<name>` makes ajv refuse the schema outright.
+ * The unit tests cover both against `src`; this covers the file that ships.
+ */
+const components = (emitted as { components?: { schemas?: Record<string, unknown> } }).components;
+if (!components?.schemas) {
+  problems.push('the barrel exports no components document, so `components: true` emitted nothing');
+} else {
+  const names = Object.keys(components.schemas).sort();
+  if (names.join(',') !== expectedComponents.join(',')) {
+    problems.push(`components.schemas holds [${names.join(', ')}], not [${expectedComponents.join(', ')}]`);
+  }
+  const doc = instance();
+  let docCompiled = 0;
+  for (const [name, schema] of Object.entries(components.schemas)) {
+    const s = schema as Record<string, unknown>;
+    if ('$id' in s) {
+      problems.push(`components.schemas.${name} carries an $id; the map key is the identity`);
+    }
+    if ('$schema' in s) {
+      problems.push(`components.schemas.${name} carries a $schema, which 3.1 reads as a dialect switch`);
+    }
+    try {
+      doc.compile(schema as never);
+      docCompiled++;
+    } catch (err) {
+      problems.push(`components.schemas.${name} does not compile: ${(err as Error).message}`);
+    }
+  }
+  if (docCompiled === 0) {
+    problems.push('not one schema in the components document compiled');
+  }
+  console.log(
+    `    ${compiled} emitted schemas and ${docCompiled} components schemas compile under ajv strict mode`
+  );
+}
+
+if (problems.length) {
+  console.error('\n    FAIL: the emitted JSON Schema output is not what a validator can read:');
+  for (const p of problems) console.error(`      ${p}`);
+  console.error('\n    An unknown keyword is ignored rather than rejected, so a schema that no');
+  console.error('    validator refuses can still mean nothing at all.');
+  process.exit(1);
+}
+JSON_SCHEMA_VALID
+
+echo "==> the emitted JSON Schema compiles as a schema"
+if ! npx tsx src/json-schema-valid.ts; then
+  echo "FAIL: the emitted JSON Schema output is not something a validator can read." >&2
+  exit 1
+fi
 
 # ---------------------------------------------------------------------------------------------
 # What the output costs.
@@ -1361,6 +1546,79 @@ CREATE TABLE checked (
 `;
 GROUND_DDL
 
+cat > src/probes.ts <<'PROBES'
+/**
+ * The probe pools, in one place, because more than one stage asks the database about them.
+ *
+ * The zod ground-truth and CHECK stages owned these inline until the JSON Schema stage arrived
+ * asking the same questions of the same columns, and a second copy of a pool is a pool that
+ * drifts. The emoji probes are the example that matters: they exist because a code-point count and
+ * a UTF-16 `.length` disagree, and a copy that quietly lost them would stay green having stopped
+ * measuring the one thing the pool was built for.
+ */
+
+/**
+ * Values pushed at every column of the `matrix` table.
+ *
+ * Astral-plane characters are load-bearing: Postgres counts *characters* for `varchar(n)`, so a
+ * 3-emoji string fits in a `varchar(5)` that every library's `.max(5)` refuses. Without these in
+ * the pool no stage can see that.
+ */
+export const MATRIX_POOL: [string, unknown][] = [
+  ['0', 0], ['1.5', 1.5], ['-1', -1], ['40000', 40000], ['2147483648', 2147483648],
+  ['1e9', 1e9], ['1e300', 1e300], ['9007199254740993', 9007199254740993],
+  ['NaN', NaN], ['Infinity', Infinity],
+  ["''", ''], ["'hello'", 'hello'], ['300-char', 'x'.repeat(300)],
+  ['3 emoji', '\u{1F44D}\u{1F44D}\u{1F44D}'],
+  ['5 emoji', '\u{1F44D}\u{1F44D}\u{1F44D}\u{1F44D}\u{1F44D}'],
+  ["'0101'", '0101'], ["'010'", '010'], ["'12.5'", '12.5'], ["'1_000'", '1_000'], ["'0x1f'", '0x1f'],
+  ['uuid', '3f2504e0-4f89-11d3-9a0c-0305e82c3301'], ["'not-a-uuid'", 'not-a-uuid'],
+  ["'happy'", 'happy'], ["'zzz'", 'zzz'],
+  ['true', true], ['Date', new Date('2020-01-01T00:00:00Z')],
+  ["'2020-01-01'", '2020-01-01'], ["'12:00:00'", '12:00:00'],
+  ["['a']", ['a']], ['[1,2]', [1, 2]], ['[1,2,3]', [1, 2, 3]],
+  ['{a:1}', { a: 1 }], ['Uint8Array', new Uint8Array([1, 2])],
+  ["'10.0.0.1'", '10.0.0.1'], ["'999.999.999.999'", '999.999.999.999'],
+];
+
+/**
+ * Values chosen to sit on both sides of every bound in the `checked` table, since a probe pool
+ * that never lands on a boundary cannot tell `>` from `>=`. That distinction is most of what a
+ * CHECK says.
+ */
+export const CHECK_PROBES: Record<string, unknown[]> = {
+  k_min: [17, 18, 19, 0, -1],
+  k_max: [99, 100, 101, 0],
+  k_lo: [0, 1, 2, -1],
+  k_hi: [8, 9, 10, 11],
+  k_between: [4, 5, 10, 15, 16],
+  k_eq: [6, 7, 8],
+  k_in_s: ['a', 'c', 'd', '', 'A'],
+  k_in_n: [1, 3, 4, 0],
+  k_len: ['ab', 'abc', 'abcd', '', '\u{1F44D}\u{1F44D}\u{1F44D}'],
+  k_len_max: ['abcde', 'abcdef', '', '\u{1F44D}\u{1F44D}\u{1F44D}\u{1F44D}\u{1F44D}'],
+  k_card: [[], ['a'], ['a', 'b'], ['a', 'b', 'c']],
+  // One side of a row-level comparison, with the other NULL. SQL leaves the CHECK satisfied, so
+  // an emitted schema that rejects here would turn away rows the database takes.
+  k_pair_a: [1, 100, -1],
+  k_pair_b: [1, 100, -1],
+};
+
+/**
+ * Both sides of the row-level check at once, which is the only way to reach it.
+ *
+ * Every probe above sets one column, and `CHECK (k_pair_a < k_pair_b)` is satisfied whenever
+ * either side is NULL, so nothing above can tell a generator that enforces the comparison from one
+ * that ignores it. Nothing did, for as long as the row-check support has existed.
+ */
+export const ROW_PAIR_PROBES: { row: Record<string, unknown>; satisfied: boolean }[] = [
+  { row: { k_pair_a: 1, k_pair_b: 5 }, satisfied: true },
+  { row: { k_pair_a: 5, k_pair_b: 1 }, satisfied: false },
+  // Equal, because `<` and `<=` are one character apart and only this pair separates them.
+  { row: { k_pair_a: 1, k_pair_b: 1 }, satisfied: false },
+];
+PROBES
+
 cat > src/ground-truth.ts <<'GROUND_TRUTH'
 /**
  * Ground truth: DRZL's schemas against Postgres itself, not against another library's opinion.
@@ -1382,26 +1640,9 @@ import { createSelectSchema } from 'drizzle-orm/zod';
 import { matrix } from './schema.js';
 import { SelectmatrixSchema as drzl } from './gen/pg/zod/matrix.zod.js';
 import { DDL } from './ddl.js';
-
-const POOL: [string, unknown][] = [
-  ['0', 0], ['1.5', 1.5], ['-1', -1], ['40000', 40000], ['2147483648', 2147483648],
-  ['1e9', 1e9], ['1e300', 1e300], ['9007199254740993', 9007199254740993],
-  ['NaN', NaN], ['Infinity', Infinity],
-  ["''", ''], ["'hello'", 'hello'], ['300-char', 'x'.repeat(300)],
-  // Astral-plane characters, where a code-point count and a UTF-16 `.length` disagree. Postgres
-  // counts *characters* for `varchar(n)`, so a 3-emoji string fits in a `varchar(5)` that every
-  // library's `.max(5)` refuses. Without these in the pool the gate cannot see that.
-  ['3 emoji', '\u{1F44D}\u{1F44D}\u{1F44D}'],
-  ['5 emoji', '\u{1F44D}\u{1F44D}\u{1F44D}\u{1F44D}\u{1F44D}'],
-  ["'0101'", '0101'], ["'010'", '010'], ["'12.5'", '12.5'], ["'1_000'", '1_000'], ["'0x1f'", '0x1f'],
-  ['uuid', '3f2504e0-4f89-11d3-9a0c-0305e82c3301'], ["'not-a-uuid'", 'not-a-uuid'],
-  ["'happy'", 'happy'], ["'zzz'", 'zzz'],
-  ['true', true], ['Date', new Date('2020-01-01T00:00:00Z')],
-  ["'2020-01-01'", '2020-01-01'], ["'12:00:00'", '12:00:00'],
-  ["['a']", ['a']], ['[1,2]', [1, 2]], ['[1,2,3]', [1, 2, 3]],
-  ['{a:1}', { a: 1 }], ['Uint8Array', new Uint8Array([1, 2])],
-  ["'10.0.0.1'", '10.0.0.1'], ["'999.999.999.999'", '999.999.999.999'],
-];
+// Shared with the JSON Schema ground-truth stage, so the two ask the database the same questions
+// rather than two copies of them that have drifted apart.
+import { MATRIX_POOL as POOL } from './probes.js';
 
 const db = new PGlite();
 await db.exec(DDL);
@@ -1489,6 +1730,224 @@ if ! npx tsx src/ground-truth.ts; then
   exit 1
 fi
 
+cat > src/json-schema-truth.ts <<'JSON_SCHEMA_TRUTH'
+/**
+ * The emitted JSON Schema against Postgres itself.
+ *
+ * The zod ground-truth stage above asks whether a generated validator agrees with the database.
+ * This asks the same question of the generator that emits a published API contract, which until
+ * now was compared with nothing at all: not with a database, not with its siblings, not with a
+ * validator.
+ *
+ * **The value has to be the same value.** A JSON Schema describes a document, and a document
+ * cannot carry a `Date`, a `Uint8Array` or a `bigint`; those travel as an ISO string, as base64 and
+ * as digits. So each probe is converted once and the database, the reference and the schema are
+ * all asked about the converted value. An earlier draft asked Postgres about the JavaScript value
+ * and ajv about its encoding, and reported 31 disagreements, every one of which was two different
+ * questions rather than one answer: Postgres had been shown a `Uint8Array` and ajv the string
+ * `"AQI="`.
+ *
+ * **What is gated**: the schema must never disagree with Postgres where the zod output agrees.
+ * There is no official JSON Schema generator to be the reference, so zod stands in for one: it is
+ * already gated against both this database and the first-party `drizzle-orm/zod` module, so where
+ * zod matches Postgres and this does not, this one is alone and wrong. Where both differ from the
+ * database it is the deliberate a-validator-is-stricter-than-a-driver gap the other stages already
+ * tolerate, and it is counted rather than gated.
+ */
+import { PGlite } from '@electric-sql/pglite';
+import Ajv2020 from 'ajv/dist/2020';
+import addFormats from 'ajv-formats';
+import { SelectmatrixSchema as jsonSelect } from './gen/pg/json-schema/matrix.schema.js';
+import { SelectmatrixSchema as zodSelect } from './gen/pg/zod/matrix.zod.js';
+import { DDL } from './ddl.js';
+import { MATRIX_POOL } from './probes.js';
+
+/**
+ * A probe as it appears inside a JSON document.
+ *
+ * Tagged rather than nullable, because "there is no JSON form" and "the JSON form is `null`" are
+ * different facts and `JSON.stringify` conflates them: it turns `NaN` into `null`, which is a value
+ * the schema has an opinion about and the probe never was.
+ */
+type JsonForm = { carried: true; value: unknown } | { carried: false; why: string };
+
+function asJson(value: unknown): JsonForm {
+  if (typeof value === 'number' && !Number.isFinite(value)) {
+    return { carried: false, why: 'JSON has no NaN and no Infinity' };
+  }
+  if (typeof value === 'bigint') return { carried: true, value: value.toString() };
+  if (value instanceof Date) return { carried: true, value: value.toISOString() };
+  if (value instanceof Uint8Array) {
+    return { carried: true, value: Buffer.from(value).toString('base64') };
+  }
+  return { carried: true, value };
+}
+
+const db = new PGlite();
+await db.exec(DDL);
+
+const props = (jsonSelect as unknown as { properties: Record<string, unknown> }).properties;
+const cols = Object.keys(props);
+const zodShape = (zodSelect as unknown as {
+  shape: Record<string, { safeParse(v: unknown): { success: boolean } }>;
+}).shape;
+
+// The two generators have to be describing the same table, or a column missing from one of them
+// would simply not be compared and the run would go quiet about it.
+const zodCols = Object.keys(zodShape).sort();
+if (cols.slice().sort().join(',') !== zodCols.join(',')) {
+  console.error('    FAIL: the JSON Schema and zod outputs describe different columns.');
+  console.error(`      json-schema: ${cols.slice().sort().join(', ')}`);
+  console.error(`      zod:         ${zodCols.join(', ')}`);
+  await db.close();
+  process.exit(1);
+}
+
+// One validator per column, compiled from that column's subschema, which is the JSON Schema
+// equivalent of reaching into zod's `.shape`. Compiling the whole object instead would answer a
+// different question: every probe sets one column, and a whole-row schema would refuse the row for
+// the thirty-nine columns the probe left out.
+const validators: Record<string, (x: unknown) => boolean> = {};
+for (const [col, sub] of Object.entries(props)) {
+  const ajv = new Ajv2020({ strict: true, allErrors: true });
+  addFormats(ajv as never);
+  validators[col] = ajv.compile(sub as never) as never;
+}
+
+/** Does Postgres accept this value for this column? Each probe rolls back, so nothing persists. */
+async function dbAccepts(col: string, value: unknown): Promise<boolean> {
+  try {
+    await db.exec('BEGIN');
+    await db.query(`INSERT INTO matrix (${col}) VALUES ($1)`, [value as never]);
+    await db.exec('ROLLBACK');
+    return true;
+  } catch {
+    try {
+      await db.exec('ROLLBACK');
+    } catch {
+      /* already rolled back */
+    }
+    return false;
+  }
+}
+
+const zodOk = (col: string, value: unknown) => {
+  try {
+    return zodShape[col].safeParse(value).success;
+  } catch {
+    return false;
+  }
+};
+
+/**
+ * Every conversion above has to have been exercised, or the pool quietly stopped covering the cases
+ * the conversion exists for. Counted rather than assumed: a pool that lost its `Date` probe would
+ * leave `format: 'date-time'` measured by nothing while the totals still looked healthy.
+ */
+const converted = { date: 0, binary: 0, none: 0 };
+const pool: { label: string; value: unknown }[] = [];
+for (const [label, raw] of MATRIX_POOL) {
+  if (raw instanceof Date) converted.date++;
+  else if (raw instanceof Uint8Array) converted.binary++;
+  const form = asJson(raw);
+  if (!form.carried) {
+    converted.none++;
+    continue;
+  }
+  pool.push({ label, value: form.value });
+}
+const unexercised = Object.entries(converted)
+  .filter(([, n]) => n === 0)
+  .map(([k]) => k);
+if (unexercised.length) {
+  console.error(`    FAIL: the probe pool no longer contains a value needing the ${unexercised.join(', ')}`);
+  console.error('          conversion, so that branch of the JSON encoding is measured by nothing.');
+  await db.close();
+  process.exit(1);
+}
+
+type Row = { col: string; label: string; db: boolean; json: boolean; zod: boolean };
+const rows: Row[] = [];
+for (const col of cols) {
+  for (const { label, value } of pool) {
+    rows.push({
+      col,
+      label,
+      db: await dbAccepts(col, value),
+      json: validators[col](value),
+      zod: zodOk(col, value),
+    });
+  }
+}
+
+/**
+ * A column Postgres accepts nothing for cannot be measured, and saying so is not the same as
+ * waiving a disagreement.
+ *
+ * `bytea` is the case that forced this. Its JSON form is base64 text which the consumer decodes
+ * before Drizzle ever sees it, so the database is never shown that string, and a bound parameter
+ * for a `bytea` column takes bytes and nothing else: every probe is refused, including the exact
+ * base64 of a `Uint8Array` the same column accepts unencoded. Agreement would require a schema that
+ * accepts nothing at all, so there is no verdict to be had.
+ *
+ * Derived from a measurement rather than from a named list, so it disappears by itself the moment
+ * the database has an opinion, and a second column that becomes unmeasurable is printed rather than
+ * hidden. Every column ending up here is a broken fixture and fails.
+ */
+const unanswerable = cols.filter((c) => !rows.some((r) => r.col === c && r.db));
+if (unanswerable.length === cols.length) {
+  console.error('    FAIL: Postgres accepted no probe for any column, so nothing was measured.');
+  console.error('          That is a broken fixture, not a generator finding.');
+  await db.close();
+  process.exit(1);
+}
+
+const measured = rows.filter((r) => !unanswerable.includes(r.col));
+const findings = measured.filter((r) => r.json !== r.db && r.zod === r.db);
+const shared = measured.filter((r) => r.json !== r.db && r.zod !== r.db);
+const agrees = measured.filter((r) => r.json === r.db).length;
+// A run where the schema never refuses anything has compiled a pile of empty objects and would
+// agree with nothing but a database that also accepts everything.
+const refusals = measured.filter((r) => !r.json).length;
+
+console.log(`    ${rows.length} JSON probes against a real Postgres (${cols.length} columns)`);
+console.log(`    ${converted.none} probe(s) per column have no JSON form and were not asked (NaN, Infinity)`);
+for (const c of unanswerable) {
+  const asked = rows.filter((r) => r.col === c).length;
+  console.log(`    ${c} not measurable: Postgres accepted 0 of ${asked} JSON probes for it`);
+}
+console.log(`    agree with the database: ${agrees} of ${measured.length}; ${shared.length} differ where zod differs too`);
+console.log(`    the schema refused ${refusals} of ${measured.length} probes`);
+
+if (refusals === 0) {
+  console.error('\n    FAIL: the emitted schemas refused nothing at all, so they constrain nothing.');
+  await db.close();
+  process.exit(1);
+}
+
+if (findings.length) {
+  console.error('\n    FAIL: the emitted JSON Schema disagrees with Postgres where the zod output agrees:');
+  for (const r of findings.slice(0, 20)) {
+    console.error(
+      `      ${r.col} on ${r.label}: Postgres ${r.db ? 'accepts' : 'rejects'}, ` +
+        `the schema ${r.json ? 'accepts' : 'rejects'}`
+    );
+  }
+  console.error('\n    A contract that turns away what the database takes breaks working clients,');
+  console.error('    and one that takes what the database refuses promises an endpoint that 500s.');
+  await db.close();
+  process.exit(1);
+}
+
+await db.close();
+JSON_SCHEMA_TRUTH
+
+echo "==> ground truth: the emitted JSON Schema against a real Postgres"
+if ! npx tsx src/json-schema-truth.ts; then
+  echo "FAIL: the emitted JSON Schema disagrees with Postgres itself." >&2
+  exit 1
+fi
+
 cat > src/checks-truth.ts <<'CHECKS_TRUTH'
 /**
  * CHECK constraints against Postgres itself.
@@ -1508,7 +1967,10 @@ cat > src/checks-truth.ts <<'CHECKS_TRUTH'
  *          expressions it cannot read with certainty, so it is counted rather than gated.
  */
 import { PGlite } from '@electric-sql/pglite';
+import Ajv2020 from 'ajv/dist/2020';
+import addFormats from 'ajv-formats';
 import { DDL } from './ddl';
+import { CHECK_PROBES, ROW_PAIR_PROBES } from './probes';
 // The *update* schema, whose fields are all optional, so a one-column probe is a valid input.
 // The select schema is not usable here: a row-level check wraps the object in a ZodEffects, which
 // has no `.partial()` and no `.shape`, so every probe threw and read as a rejection. That looked
@@ -1520,6 +1982,8 @@ import { UpdatecheckedSchema as drzlUpdate } from './gen/pg/zod/checked.zod';
 import { UpdatecheckedSchema as vUpdate } from './gen/pg/valibot/checked.valibot';
 import { UpdatecheckedSchema as aUpdate } from './gen/pg/arktype/checked.arktype';
 import { UpdatecheckedSchema as tUpdate } from './gen/pg/typebox/checked.typebox';
+// The fifth voice. It emits data rather than a validator, so it is read by ajv rather than called.
+import { UpdatecheckedSchema as jUpdate } from './gen/pg/json-schema/checked.schema';
 import * as v from 'valibot';
 import { type } from 'arktype';
 import { Value } from '@sinclair/typebox/value';
@@ -1532,27 +1996,9 @@ await db.exec(DDL);
 const official: any = createUpdateSchema(checked);
 const drzl: any = drzlUpdate;
 
-/**
- * Values chosen to sit on both sides of every bound, since a probe pool that never lands on a
- * boundary cannot tell `>` from `>=`. That distinction is most of what a CHECK says.
- */
-const PROBES: Record<string, unknown[]> = {
-  k_min: [17, 18, 19, 0, -1],
-  k_max: [99, 100, 101, 0],
-  k_lo: [0, 1, 2, -1],
-  k_hi: [8, 9, 10, 11],
-  k_between: [4, 5, 10, 15, 16],
-  k_eq: [6, 7, 8],
-  k_in_s: ['a', 'c', 'd', '', 'A'],
-  k_in_n: [1, 3, 4, 0],
-  k_len: ['ab', 'abc', 'abcd', '', '\u{1F44D}\u{1F44D}\u{1F44D}'],
-  k_len_max: ['abcde', 'abcdef', '', '\u{1F44D}\u{1F44D}\u{1F44D}\u{1F44D}\u{1F44D}'],
-  k_card: [[], ['a'], ['a', 'b'], ['a', 'b', 'c']],
-  // One side of a row-level comparison, with the other NULL. SQL leaves the CHECK satisfied, so
-  // an emitted schema that rejects here would turn away rows the database takes.
-  k_pair_a: [1, 100, -1],
-  k_pair_b: [1, 100, -1],
-};
+// Both sides of every bound, from the shared pool, so the JSON Schema stage asks the database
+// exactly these questions rather than a copy of them that has drifted.
+const PROBES = CHECK_PROBES;
 
 async function dbAccepts(col: string, value: unknown): Promise<boolean> {
   try {
@@ -1600,11 +2046,20 @@ const parses = (schema: any, col: string, v: unknown) => {
  * Whole-object parsing, because a row-level check lives on the object and a per-field comparison
  * cannot reach it.
  */
+const ajv = new Ajv2020({ strict: true, allErrors: true });
+addFormats(ajv as never);
+const jsonSchemaOk = ajv.compile(jUpdate as never) as unknown as (o: unknown) => boolean;
+
 const RUNNERS: Record<string, (o: unknown) => boolean> = {
   zod: (o) => drzlUpdate.safeParse(o).success,
   valibot: (o) => v.safeParse(vUpdate as never, o).success,
   arktype: (o) => !((aUpdate as any)(o) instanceof type.errors),
   typebox: (o) => Value.Check(tUpdate as never, o),
+  // The fifth: ajv reading the emitted JSON Schema in strict mode. The shared parser reads a CHECK
+  // once and six generators render it, so this one dropping a form it understood would be invisible
+  // to every test that only reads its own output, which is exactly how `length()` came to be
+  // applied by two generators and emitted as nothing at all by two others.
+  'json-schema': jsonSchemaOk,
 };
 
 const safely = (f: (o: unknown) => boolean, o: unknown) => {
@@ -1667,13 +2122,106 @@ for (const [col, values] of Object.entries(PROBES)) {
 }
 
 if (split.length) {
-  console.error('\n    FAIL: the four generators disagree about a CHECK:');
+  console.error(`\n    FAIL: the ${Object.keys(RUNNERS).length} generators disagree about a CHECK:`);
   for (const line of split.slice(0, 20)) console.error(line);
   console.error('\n    One of them is dropping a constraint the parser read.');
   await db.close();
   process.exit(1);
 }
-console.log('    all four generators agree on every CHECK probe');
+console.log(`    all ${Object.keys(RUNNERS).length} generators agree on every CHECK probe`);
+
+/**
+ * The one place the JSON Schema output is knowingly looser than the database, asserted rather than
+ * waived.
+ *
+ * JSON Schema cannot compare one property against another. `if`/`then` and `dependentSchemas`
+ * branch on a property's presence or on a fixed value, and neither of those is
+ * `k_pair_a < k_pair_b`, so the generator carries the constraint as a `description` and does not
+ * pretend to enforce it. That is documented in docs/generators/json-schema.md.
+ *
+ * A documented exemption is worth nothing unless something checks it is still the exemption it says
+ * it is, so all three halves are asserted: Postgres rejects the disordered row, the four validator
+ * generators reject it, and the JSON Schema accepts it *and* still says so in prose. If it ever
+ * starts enforcing the comparison, or stops carrying the description, this fails and the
+ * documentation moves with it.
+ *
+ * None of the probes above can reach this. Each sets one column, and the CHECK is satisfied
+ * whenever either side is NULL, so a generator that had silently dropped the row check entirely
+ * would have looked identical to one that enforces it.
+ */
+const ENFORCING = ['zod', 'valibot', 'arktype', 'typebox'];
+const rowProblems: string[] = [];
+
+const description = (jUpdate as { description?: string }).description;
+if (!description || !description.includes('k_pair_a < k_pair_b')) {
+  rowProblems.push(
+    `the emitted schema no longer names the row constraint in its description (was ${JSON.stringify(description)}). ` +
+      'Carrying it as prose is the whole of what the format allows, so losing it leaves the ' +
+      'constraint stated nowhere at all.'
+  );
+}
+
+async function pairAccepted(row: Record<string, unknown>): Promise<boolean> {
+  const keys = Object.keys(row);
+  const params = keys.map((_, i) => `$${i + 1}`).join(', ');
+  try {
+    await db.exec('BEGIN');
+    await db.query(
+      `INSERT INTO checked (${keys.join(', ')}) VALUES (${params})`,
+      keys.map((k) => row[k]) as never
+    );
+    await db.exec('ROLLBACK');
+    return true;
+  } catch {
+    try {
+      await db.exec('ROLLBACK');
+    } catch {
+      /* already rolled back */
+    }
+    return false;
+  }
+}
+
+for (const { row, satisfied } of ROW_PAIR_PROBES) {
+  const label = JSON.stringify(row);
+  const inDb = await pairAccepted(row);
+  if (inDb !== satisfied) {
+    rowProblems.push(
+      `Postgres ${inDb ? 'accepts' : 'rejects'} ${label}, which the fixture says it should not. ` +
+        'The DDL and the probe disagree, so nothing below means anything.'
+    );
+    continue;
+  }
+  for (const name of ENFORCING) {
+    const verdict = safely(RUNNERS[name], row);
+    if (verdict !== satisfied) {
+      rowProblems.push(
+        `${name} ${verdict ? 'accepts' : 'rejects'} ${label} and Postgres ${satisfied ? 'accepts' : 'rejects'} it. ` +
+          'A row-level CHECK is the one constraint these four can express and the JSON Schema ' +
+          'cannot, so this one losing it makes the exemption meaningless.'
+      );
+    }
+  }
+  // The exemption itself. Accepting the satisfied row is agreement; accepting the violating one is
+  // the documented gap, and it has to still be there or the documentation is now wrong.
+  if (!safely(RUNNERS['json-schema'], row)) {
+    rowProblems.push(
+      `json-schema rejects ${label}. It has no way to compare two properties, so a rejection means ` +
+        'the schema is refusing the row for some other reason entirely.'
+    );
+  }
+}
+
+if (rowProblems.length) {
+  console.error('\n    FAIL: the row-level CHECK exemption is not what it is documented to be:');
+  for (const p of rowProblems) console.error(`      ${p}`);
+  await db.close();
+  process.exit(1);
+}
+console.log(
+  `    ${ROW_PAIR_PROBES.length} row-level probes: Postgres and the four validator generators ` +
+    'agree, and the JSON Schema carries the constraint as prose it cannot enforce'
+);
 
 await db.close();
 CHECKS_TRUTH
@@ -2448,6 +2996,8 @@ echo "    typechecks under bundler, node16 and nodenext, and validates at least 
 echo "    the first-party drizzle-orm validator modules across three dialects and three modes,"
 echo "    checked against a real Postgres, a real SQLite and, where MYSQL_URL is set, a real"
 echo "    MySQL, with applyDefaults compared against what the database writes, and analyzed with"
-echo "    no column left unnamed on either drizzle-orm major. Every tarball holds the files its"
-echo "    manifest names and nothing from the working tree, and every package npm is serving"
-echo "    carries a provenance attestation."
+echo "    no column left unnamed on either drizzle-orm major. The JSON Schema output compiles"
+echo "    under ajv in strict mode, agrees with Postgres wherever the zod output does, and speaks"
+echo "    as a fifth voice on every CHECK. Every tarball holds the files its manifest names and"
+echo "    nothing from the working tree, and every package npm is serving carries a provenance"
+echo "    attestation."
