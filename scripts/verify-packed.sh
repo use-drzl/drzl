@@ -3022,28 +3022,38 @@ fi
 cd "$APP"
 
 # ---------------------------------------------------------------------------------------------
-# The other drizzle major.
+# Both drizzle majors, against each other.
 #
-# Everything above pins drizzle-orm@1.0.0-rc.4, and every generator's own tests build fake column
-# objects. Between them, nothing in this repository ever ran against 0.4x, which is the version
-# the analyzer itself depends on and the one nearly every user has installed.
+# Every generator's own tests build fake column objects, the parity tree pins v1 and the consumer
+# tree takes whatever npm's `latest` tag serves. Between them, nothing here ever described one
+# schema under both majors and compared the two descriptions.
 #
 # What that hid: 0.4x models `.array()` by wrapping the column in a `PgArray` whose `baseColumn`
 # is the element, while v1 leaves the class alone and raises `dimensions`. The analyzer read only
 # the v1 signal, so on 0.4x every array column came back `unknown` in all five generators. The
-# fixture above contains three array columns and the gate was green the whole time.
+# fixture below contains four array columns and the gate was green the whole time.
 #
-# This stage is deliberately narrow: it does not repeat parity or ground truth, it asserts that
-# the analyzer still has an opinion about every column. A type it cannot name is the shape that
-# failure takes.
+# Two trees, each pinning its own major, because the version has to be a decision rather than
+# whatever a tag points at today. The v1 side used to be the consumer tree, whose `drizzle-orm`
+# is deliberately unpinned, and `latest` is 0.45.2: this stage compared 0.45.2 with 0.45.2 from
+# the day it was added until 2026-08-03 and passed for the same reason a diff of a file against
+# itself passes. Each side now records the version it ran under, and the two are compared before
+# any field is.
 # ---------------------------------------------------------------------------------------------
-echo "==> generating against drizzle-orm 0.4x"
+echo "==> installing both drizzle-orm majors"
 OLD="$WORK/old-major"
-rm -rf "$OLD"; mkdir -p "$OLD/src"
+NEW="$WORK/new-major"
+rm -rf "$OLD" "$NEW"; mkdir -p "$OLD/src" "$NEW/src"
 cd "$OLD"
 npm init -y >/dev/null 2>&1
 npm install --no-audit --no-fund --loglevel=error \
   "$TARS"/*.tgz drizzle-orm@0.45.2 zod tsx >/dev/null
+
+# The same tarballs and the other major. `zod` because the generate step below runs in the 0.4x
+# tree; this one only analyzes, and installing the same set keeps the two trees differing in
+# exactly one thing.
+( cd "$NEW" && npm init -y >/dev/null 2>&1 && npm install --no-audit --no-fund --loglevel=error \
+  "$TARS"/*.tgz drizzle-orm@1.0.0-rc.4 zod tsx >/dev/null )
 
 # Written once and analyzed under both majors, so the comparison below is about the analyzer
 # rather than about two schemas that happen to differ. Every type here exists in both.
@@ -3079,8 +3089,31 @@ export const rows = pgTable('rows', {
 });
 OLD_SCHEMA
 
-# The same file, analyzed by the v1 project, so the two runs can be compared directly.
-cp src/schema.ts "$APP/src/cross-major.ts"
+# The Postgres fixture the parity stage measures against the first-party validators: the
+# 40-column matrix, the defaults table, the nullable arrays and the twelve CHECK expressions.
+# Read out of the parity tree rather than re-typed, so widening that fixture widens this
+# comparison instead of leaving a copy of it behind to drift.
+#
+# One column comes out: 0.4x's pg-core has no `bytea` export at all, so a fixture carrying it
+# cannot even be imported there. That is asserted in check-old.ts rather than trusted, and the
+# edit below is checked for having changed something, since a `sed` that matches nothing is the
+# quiet way to end up analyzing the wrong file.
+[ -f "$PARITY/src/schema.ts" ] || {
+  echo "FAIL: the parity fixture is not where this stage expects it, so there is nothing to" >&2
+  echo "      analyze under both majors." >&2
+  exit 1
+}
+sed -e 's/ bytea,//' -e '/c_bytea/d' "$PARITY/src/schema.ts" > src/matrix.ts
+if cmp -s "$PARITY/src/schema.ts" src/matrix.ts; then
+  echo "FAIL: nothing was removed from the parity fixture, so either bytea is gone from it (in" >&2
+  echo "      which case delete the edit above and analyze the file as it is) or the edit no" >&2
+  echo "      longer matches what it is meant to remove." >&2
+  exit 1
+fi
+if grep -q 'bytea' src/matrix.ts; then
+  echo "FAIL: bytea survived the edit above, so this fixture cannot be imported under 0.4x." >&2
+  exit 1
+fi
 
 cat > drzl.config.ts <<'OLD_CONFIG'
 import { defineConfig } from '@drzl/cli/config';
@@ -3092,96 +3125,310 @@ export default defineConfig({
 });
 OLD_CONFIG
 
+echo "==> generating against drizzle-orm 0.4x"
 npx drzl generate --config drzl.config.ts >/dev/null
 
 cat > describe-columns.ts <<'DESCRIBE'
+import { readFileSync } from 'node:fs';
 import { SchemaAnalyzer } from '@drzl/analyzer';
 
-// What the analyzer claims about each column, reduced to the facts every generator reads.
+// Everything the analyzer says about these schema files, and the drizzle-orm that produced it.
+//
+// The whole column object rather than a chosen list of fields. A list is a decision, taken in
+// advance, about which facts are allowed to differ, and it is silently wrong the moment the
+// analyzer learns a new one: `integer`, `maxBytes`, `defaultValue`, `hasDefault`, `isGenerated`
+// and `references` are all fields the list this replaced did not have, and it flattened `shape`
+// to its `kind`, which drops a tuple's length and a bit string's exactness. `integer` alone
+// carries five of the differences reported below.
 main().catch((e) => {
   console.error(e);
   process.exit(1);
 });
 
 async function main() {
-  const file = process.argv[2];
-  const a = await new SchemaAnalyzer(file).analyze({});
-  const cols = a.tables.find((t) => t.name === 'rows')?.columns ?? [];
-  const out = cols.map((c) => ({
-    name: c.name,
-    tsType: c.tsType,
-    dbType: c.dbType,
-    nullable: c.nullable,
-    arrayDimensions: c.arrayDimensions ?? 0,
-    enumValues: c.enumValues ?? null,
-    maxLength: c.maxLength ?? null,
-    min: c.min ?? null,
-    max: c.max ?? null,
-    format: c.format ?? null,
-    shape: c.shape?.kind ?? null,
-  }));
+  // Off disk rather than through `require.resolve`: drizzle-orm's `exports` map has no
+  // `./package.json` entry, so resolving it throws ERR_PACKAGE_PATH_NOT_EXPORTED. Reading it is
+  // also the point of this line, which is to report the version of the tree this ran in rather
+  // than the version somebody believes it installed.
+  const pkg = JSON.parse(readFileSync('node_modules/drizzle-orm/package.json', 'utf8'));
+  const out: { drizzle: string; tables: Record<string, unknown>; columns: Record<string, unknown> } = {
+    drizzle: pkg.version,
+    tables: {},
+    columns: {},
+  };
+  for (const file of process.argv.slice(2)) {
+    const a = await new SchemaAnalyzer(file).analyze({});
+    for (const t of a.tables) {
+      const { columns, ...rest } = t;
+      out.tables[t.name] = rest;
+      for (const c of columns) out.columns[`${t.name}.${c.name}`] = c;
+    }
+  }
   console.log(JSON.stringify(out, null, 1));
 }
 DESCRIBE
 
-cp describe-columns.ts "$APP/describe-columns.ts"
-npx tsx describe-columns.ts src/schema.ts > "$WORK/cols-0.4x.json"
-( cd "$APP" && npx tsx describe-columns.ts src/cross-major.ts ) > "$WORK/cols-v1.json"
+echo "==> describing the same two schema files under both drizzle-orm majors"
+cp src/schema.ts src/matrix.ts "$NEW/src/"
+cp describe-columns.ts "$NEW/describe-columns.ts"
+npx tsx describe-columns.ts src/schema.ts src/matrix.ts > "$WORK/cols-0.4x.json"
+( cd "$NEW" && npx tsx describe-columns.ts src/schema.ts src/matrix.ts ) > "$WORK/cols-v1.json"
 
 cat > cross-major.ts <<'CROSS'
 import { readFileSync } from 'node:fs';
 
 /**
- * The same schema, analyzed under both drizzle majors, has to describe the same columns.
+ * The same two schema files, analyzed under both drizzle majors, have to describe the same
+ * columns.
  *
  * This is the systematic form of the bug that prompted the stage: the analyzer read v1's array
  * signal and not 0.4x's, so `.array()` columns were `unknown` on the version most people have.
- * A per-column diff catches every instance of that shape at once, including the ones nobody has
+ * A per-field diff catches every instance of that shape at once, including the ones nobody has
  * thought to write a test for.
  *
- * Anything genuinely different between the majors belongs here, named, with a reason. An empty
- * list is the claim that the analyzer is version independent.
+ * Two maps, because two different things are being said about a difference:
  *
- * This catches divergence. It cannot catch both majors being wrong the same way, which is why the
- * unnamed-column check below is separate rather than folded in: removing the analyzer's
- * `PgEnumColumn` arm makes both majors report `unknown`, so this comparison stays silent and that
- * one fires. Measured, not assumed.
+ *   ALLOWED  the majors really do differ here, and DRZL reflects each one correctly.
+ *   DEFECTS  the analyzer reads one major and not the other. Filed rather than fixed, and
+ *            reported on every run.
+ *
+ * An entry in either that suppresses nothing fails this stage, so fixing a defect forces its
+ * entry out instead of leaving a sentence behind that describes something nobody can observe.
+ *
+ * What it cannot catch is both majors being wrong the same way, which is why the unnamed-column
+ * check below is separate rather than folded in. Measured, in both directions, because the
+ * sentence that used to stand here was false: deleting the analyzer's `PgEnumColumn` arm does
+ * *not* go unnoticed here, since v1 reads its enums through `describeV1Column` and keeps saying
+ * `string` while 0.4x starts saying `unknown`, which is ten differences on this fixture. It
+ * takes deleting the v1 path as well to make five enum columns read `unknown` on both sides,
+ * and that is the state where this comparison goes quiet and only the absolute check fires.
+ * The old sentence read as measured because it was: against a run comparing 0.45.2 with itself,
+ * where every mutation stays silent.
  */
-const ALLOWED: Record<string, string> = {};
+const ALLOWED: Record<string, string> = {
+  // `.array().array()` is two dimensions in 0.4x and one in v1, and DRZL repeats each major
+  // faithfully rather than choosing. v1's `array()` takes the depth as a string, so
+  // `.array('[][]')` is the 2D spelling and a chained `.array()` sets `'[]'.length / 2 = 1`
+  // however often it is repeated. Confirmed against the first-party validator of each major on
+  // this exact column: drizzle-zod 0.8.3 on 0.45.2 accepts [['a']] and rejects ['a'], and
+  // drizzle-orm/zod on 1.0.0-rc.4 does the opposite. v1 also infers `string[]`, not `string[][]`.
+  'rows.grid.arrayDimensions': "v1 spells 2D `.array('[][]')`; chaining `.array()` stays at 1",
+};
+
+/**
+ * Differences that are DRZL defects rather than differences between the majors.
+ *
+ * Every one of these is the analyzer describing a column correctly under one major and not the
+ * other, so they are exactly what this stage was built to surface. They are named rather than
+ * fixed because fixing one means changing what the analyzer emits for 0.4x, and the gate that
+ * would show such a change is right does not exist yet: the parity comparison, which is the one
+ * thing here that checks DRZL against the first-party validators column by column, installs
+ * drizzle-orm@1.0.0-rc.4 and measures v1 alone.
+ */
+const DEFECTS: Record<string, string> = {
+  // ---- 0.4x names the SQL type coarsely, and once v1 does ------------------------------------
+  // 0.4x carries no `codec`, so the analyzer maps these off the class name, and that table folds
+  // PgVarchar, PgChar and PgSmallInt into TEXT and INTEGER, PgDate into TIMESTAMP, and
+  // PgInet/PgCidr/PgMacaddr into TEXT. `c_serial` runs the other way: 0.4x says SERIAL and v1
+  // says INTEGER.
+  //
+  // A label, and nothing more, on this fixture. `dbType` is read in exactly one place outside the
+  // analyzer, `isIntegerColumn`, which prefers the `integer` flag and only falls back to
+  // `dbType === 'INTEGER'`. Measured rather than reasoned: generating both fixtures under both
+  // majors with the zod and the JSON Schema generators, not one of the sixteen columns below
+  // appears in a changed line, while the fourteen columns in the groups after it all do.
+  'rows.small.dbType': 'label only: PgSmallInt is named INTEGER on 0.4x',
+  'rows.name.dbType': 'as rows.small.dbType, PgVarchar as TEXT',
+  'rows.code.dbType': 'as rows.small.dbType, PgChar as TEXT',
+  'rows.day.dbType': 'as rows.small.dbType, PgDate as TIMESTAMP',
+  'arrays.a_varchar_arr_null.dbType': 'as rows.name.dbType',
+  'matrix.c_varchar.dbType': 'as rows.name.dbType',
+  'matrix.c_char.dbType': 'as rows.code.dbType',
+  'matrix.c_smallint.dbType': 'as rows.small.dbType',
+  'matrix.c_serial.dbType': 'label only, the other way: 0.4x says SERIAL and v1 says INTEGER',
+  'matrix.c_real.dbType': 'label only: PgReal is named NUMERIC on 0.4x',
+  'matrix.c_date_d.dbType': 'as rows.day.dbType',
+  'matrix.c_date_s.dbType': 'as rows.day.dbType',
+  'matrix.c_varchar_arr.dbType': 'as rows.name.dbType',
+  'matrix.c_inet.dbType': 'label only: PgInet is named TEXT on 0.4x',
+  'matrix.c_cidr.dbType': 'as matrix.c_inet.dbType',
+  'matrix.c_macaddr.dbType': 'as matrix.c_inet.dbType',
+
+  // ---- a float carries no bounds on 0.4x -----------------------------------------------------
+  // v1 reads `number float` and `number double` and bounds them at 2^23 and 2^47, the range each
+  // width represents exactly; 0.4x reaches the same columns through the class name and bounds
+  // nothing. Not a difference between the majors: drizzle-zod 0.8.3, the first-party validator
+  // for 0.45.2, emits the same two bounds this fixture's 0.4x side is missing. Measured: it
+  // rejects 8388608 for `real` and 140737488355328 for `double precision`, exactly as
+  // drizzle-orm/zod does on 1.0.0-rc.4.
+  'rows.ratio.min': 'no float bound on 0.4x, which official drizzle-zod does emit there',
+  'rows.ratio.max': 'as rows.ratio.min',
+  'rows.ratio.integer': 'as rows.ratio.min; the flag comes with the bounds',
+  'defaulted.d_real.min': 'as rows.ratio.min',
+  'defaulted.d_real.max': 'as rows.ratio.min',
+  'defaulted.d_real.integer': 'as rows.ratio.integer',
+  'matrix.c_real.min': 'as rows.ratio.min',
+  'matrix.c_real.max': 'as rows.ratio.min',
+  'matrix.c_real.integer': 'as rows.ratio.integer',
+  'matrix.c_double.min': 'as rows.ratio.min',
+  'matrix.c_double.max': 'as rows.ratio.min',
+  'matrix.c_double.integer': 'as rows.ratio.integer',
+  // `numeric({ mode: 'number' })` is a JS number, so v1 bounds it at the safe-integer range.
+  'matrix.c_numeric_n.min': 'as rows.ratio.min, at the safe-integer range',
+  'matrix.c_numeric_n.max': 'as matrix.c_numeric_n.min',
+  'matrix.c_numeric_n.integer': 'as rows.ratio.integer',
+
+  // ---- a numeric column is unchecked on 0.4x -------------------------------------------------
+  // The numeric pattern is DRZL's own, kept because a bare string accepts 'hello' for a column
+  // Postgres refuses it in, which the ALLOWED entry in the parity harness records as verified
+  // through PGlite. It is attached in the v1 arm only, so on 0.4x these three columns emit a bare
+  // string and take 'hello' back.
+  'rows.amount.format': 'the numeric pattern is attached on v1 only',
+  'matrix.c_numeric.format': 'as rows.amount.format',
+  'matrix.c_decimal.format': 'as rows.amount.format',
+
+  // ---- point and line are typed as strings on 0.4x -------------------------------------------
+  // The worst of these, because it is not looseness: `PgPointTuple` and `PgLineTuple` hand back
+  // [x, y] and [a, b, c], and the class-name path answers `string`, so a select schema built on
+  // 0.4x rejects every row the driver returns. Official drizzle-zod 0.8.3 on 0.45.2 parses
+  // [1, 2] and refuses '1,2' for the same column.
+  'matrix.c_point.tsType': 'typed `string` on 0.4x, where the driver returns [x, y]',
+  'matrix.c_point.dbType': 'as matrix.c_point.tsType',
+  'matrix.c_point.shape': 'as matrix.c_point.tsType',
+  'matrix.c_line.tsType': 'as matrix.c_point.tsType, for [a, b, c]',
+  'matrix.c_line.dbType': 'as matrix.c_point.tsType',
+  'matrix.c_line.shape': 'as matrix.c_point.tsType',
+
+  // ---- geometry, bit and vector are unnamed on 0.4x ------------------------------------------
+  // No arm for `PgGeometry`, `PgBinaryVector` or `PgVector` in the class-name path, so all three
+  // come back `unknown` and every generator emits a validator that accepts anything. Official
+  // drizzle-zod 0.8.3 types all three on 0.45.2: it takes [1, 2] and refuses '1,2' for geometry,
+  // takes '101' and refuses 'xyz' for bit, and takes [1, 2, 3] and refuses 'abc' for vector.
+  // check-old.ts below names the same three columns, as an absolute check rather than a relative
+  // one, so a fix has to remove both entries.
+  'matrix.c_geometry.tsType': 'unnamed on 0.4x: no PgGeometry arm in the class-name path',
+  'matrix.c_geometry.dbType': 'as matrix.c_geometry.tsType',
+  'matrix.c_geometry.shape': 'as matrix.c_geometry.tsType',
+  'matrix.c_bit.tsType': 'unnamed on 0.4x: no PgBinaryVector arm, the class a bit column uses',
+  'matrix.c_bit.dbType': 'as matrix.c_bit.tsType',
+  'matrix.c_bit.shape': 'as matrix.c_bit.tsType',
+  'matrix.c_vector.tsType': 'unnamed on 0.4x: no PgVector arm in the class-name path',
+  'matrix.c_vector.dbType': 'as matrix.c_vector.tsType',
+  'matrix.c_vector.shape': 'as matrix.c_vector.tsType',
+};
 
 const a = JSON.parse(readFileSync(process.env.OLD_JSON!, 'utf8'));
 const b = JSON.parse(readFileSync(process.env.NEW_JSON!, 'utf8'));
-const key = (c: any) => c.name;
-const byName = (rows: any[]) => new Map(rows.map((c) => [key(c), c]));
-const old = byName(a);
-const now = byName(b);
 
-const names = [...new Set([...old.keys(), ...now.keys()])];
+// Nothing is compared until the two sides prove they came from different majors. Each file
+// carries the version read out of the tree that produced it, so this cannot be satisfied by
+// believing an install line: it is the only reason the stage below is a comparison at all.
+const major = (v: unknown) => (typeof v === 'string' && v ? v.split('.')[0] : '');
+if (!major(a.drizzle) || !major(b.drizzle) || major(a.drizzle) === major(b.drizzle)) {
+  console.error('    FAIL: this stage compares two drizzle-orm majors, and the two sides report');
+  console.error(`          ${JSON.stringify(a.drizzle)} and ${JSON.stringify(b.drizzle)}.`);
+  console.error('          A diff of one version against itself is green for the same reason a');
+  console.error('          diff of a file against itself is.');
+  process.exit(1);
+}
+
+const used = new Set<string>();
 const diffs: string[] = [];
+const suppressed: Array<{ key: string; defect: boolean }> = [];
+
+const compare = (label: string, l: Record<string, unknown>, r: Record<string, unknown>) => {
+  // The union of both sides' keys, so a field only one major produces is a difference rather
+  // than something the loop never looks at. Reading `Object.keys(l)` alone is how a v1-only
+  // field would go unexamined forever.
+  for (const f of new Set([...Object.keys(l), ...Object.keys(r)])) {
+    const lv = JSON.stringify(l[f]);
+    const rv = JSON.stringify(r[f]);
+    if (lv === rv) continue;
+    const key = `${label}.${f}`;
+    if (ALLOWED[key] || DEFECTS[key]) {
+      used.add(key);
+      suppressed.push({ key, defect: !ALLOWED[key] });
+      continue;
+    }
+    diffs.push(`${key}: 0.4x ${lv}, v1 ${rv}`);
+  }
+};
+
+let compared = 0;
+const names = [...new Set([...Object.keys(a.columns), ...Object.keys(b.columns)])];
 for (const n of names) {
-  const l = old.get(n);
-  const r = now.get(n);
+  const l = a.columns[n];
+  const r = b.columns[n];
   if (!l || !r) {
     diffs.push(`${n}: present on ${l ? '0.4x' : 'v1'} only`);
     continue;
   }
-  for (const f of Object.keys(l)) {
-    const lv = JSON.stringify(l[f]);
-    const rv = JSON.stringify(r[f]);
-    if (lv === rv) continue;
-    const waiver = ALLOWED[`${n}.${f}`];
-    if (waiver) continue;
-    diffs.push(`${n}.${f}: 0.4x ${lv}, v1 ${rv}`);
-  }
+  compared++;
+  compare(n, l, r);
 }
 
-console.log(`    ${names.length} columns compared across both drizzle majors`);
+// Everything the analyzer says about the table rather than about one column: its primary key,
+// its uniques, its indexes, its foreign keys and its parsed CHECK expressions. All of it is
+// identical across the majors today, and none of it was compared before.
+const tables = [...new Set([...Object.keys(a.tables), ...Object.keys(b.tables)])];
+for (const t of tables) {
+  const l = a.tables[t];
+  const r = b.tables[t];
+  if (!l || !r) {
+    diffs.push(`table ${t}: present on ${l ? '0.4x' : 'v1'} only`);
+    continue;
+  }
+  compare(`table:${t}`, l, r);
+}
+
+// A comparison that compared nothing must fail rather than print a reassuring number. Both
+// fixtures have to have loaded on both sides, and the CHECK expressions have to be there: they
+// are the only table-level fact this fixture carries that could differ, so a run without them
+// compares a handful of empty arrays and says nothing about CHECK parsing at all.
+const REQUIRED = ['rows', 'matrix', 'arrays', 'defaulted', 'checked'];
+const missing = REQUIRED.filter((t) => !a.tables[t] || !b.tables[t]);
+if (missing.length) {
+  diffs.push(`these tables are missing from one side or both: ${missing.join(', ')}`);
+}
+if (!compared) diffs.push('no column was described on both sides, so nothing was compared');
+const checks = (a.tables.checked?.checks ?? []).length;
+if (!checks) diffs.push('the checked table parsed no CHECK expressions, so nothing was compared');
+
+const defects = suppressed.filter((s) => s.defect);
+const columnsWithDefects = [...new Set(defects.map((s) => s.key.replace(/\.[^.]+$/, '')))];
+console.log(
+  `    ${compared} columns and ${tables.length} tables compared, ` +
+    `drizzle-orm ${a.drizzle} against ${b.drizzle}`
+);
+console.log(
+  `    ${suppressed.length - defects.length} documented difference(s) between the majors, ` +
+    `${defects.length} known-defect field(s) on ${columnsWithDefects.length} column(s)`
+);
+if (columnsWithDefects.length) {
+  console.log(`    described differently per major: ${columnsWithDefects.join(', ')}`);
+}
+
+// A waiver that suppresses nothing is a sentence claiming a difference exists, sitting next to
+// the ones that do. Both maps are held to it, so fixing a defect fails this stage until its
+// entry goes, which is the only thing keeping the DEFECTS map from becoming a place to put
+// failures.
+const dead = [
+  ...Object.keys(ALLOWED).filter((k) => !used.has(k)).map((k) => `ALLOWED[${k}]`),
+  ...Object.keys(DEFECTS).filter((k) => !used.has(k)).map((k) => `DEFECTS[${k}]`),
+];
+if (dead.length) {
+  console.error('    FAIL: these entries suppressed nothing on this run. If the analyzer was');
+  console.error('          fixed, delete them; they now describe something nobody can observe:');
+  for (const k of dead) console.error(`      ${k}`);
+}
+
 if (diffs.length) {
   console.error('    FAIL: the analyzer describes the same schema differently per major:');
   for (const d of diffs) console.error(`      ${d}`);
   console.error('\n    A generator reads these fields, so a difference here is a different schema.');
-  process.exit(1);
 }
+
+if (diffs.length || dead.length) process.exit(1);
 CROSS
 
 OLD_JSON="$WORK/cols-0.4x.json" NEW_JSON="$WORK/cols-v1.json" npx tsx cross-major.ts || {
@@ -3192,6 +3439,26 @@ OLD_JSON="$WORK/cols-0.4x.json" NEW_JSON="$WORK/cols-v1.json" npx tsx cross-majo
 cat > check-old.ts <<'OLD_CHECK'
 import { SchemaAnalyzer } from '@drzl/analyzer';
 
+/**
+ * What the analyzer makes of the 0.4x tree on its own, with no other major to compare against.
+ *
+ * The diff above is relative: it can only see the two majors disagreeing. This one is absolute,
+ * and it is what still fires when they agree about something wrong. Measured: deleting both the
+ * `PgEnumColumn` arm and the v1 path makes five enum columns `unknown` on both sides at once,
+ * where the comparison above has nothing to say and this reports every one of them.
+ */
+
+/**
+ * Columns 0.4x cannot name today. Filed, not tolerated: naming one makes its entry dead and
+ * fails this check, so a fix cannot land quietly. The same three columns carry entries in the
+ * DEFECTS map above, which is the relative half of the same finding.
+ */
+const KNOWN_UNNAMED: Record<string, string> = {
+  'matrix.c_geometry': 'no PgGeometry arm in the class-name path',
+  'matrix.c_bit': 'no PgBinaryVector arm, the class a bit column uses',
+  'matrix.c_vector': 'no PgVector arm in the class-name path',
+};
+
 // `npm init -y` leaves the project CommonJS, where tsx refuses a top-level await.
 main().catch((e) => {
   console.error(e);
@@ -3199,8 +3466,27 @@ main().catch((e) => {
 });
 
 async function main() {
-const a = await new SchemaAnalyzer('src/schema.ts').analyze({});
-const cols = a.tables.find((t) => t.name === 'rows')?.columns ?? [];
+let bad = 0;
+
+// The reason the matrix fixture loses a column on the way in. Asserted rather than trusted,
+// because the whole justification for editing that file is that this export does not exist
+// here, and a pin that moves to a release carrying it should say so instead of quietly
+// analyzing 40 columns where the parity stage analyzes 41.
+const pgCore: Record<string, unknown> = await import('drizzle-orm/pg-core');
+if (typeof pgCore.bytea === 'function') {
+  console.error('    FAIL: this drizzle-orm exports `bytea`, so the matrix fixture no longer has');
+  console.error('          to have it stripped. Drop the edit in the stage above and let this');
+  console.error('          fixture carry the column.');
+  bad++;
+}
+
+const cols: Array<{ table: string; name: string; tsType: string; dbType: string; arrayDimensions?: number }> = [];
+for (const file of ['src/schema.ts', 'src/matrix.ts']) {
+  const a = await new SchemaAnalyzer(file).analyze({});
+  for (const t of a.tables) {
+    for (const c of t.columns) cols.push({ table: t.name, ...c });
+  }
+}
 if (!cols.length) {
   console.error('FAIL: no columns analyzed on drizzle-orm 0.4x at all.');
   process.exit(1);
@@ -3208,26 +3494,49 @@ if (!cols.length) {
 
 // A column the analyzer cannot name is the shape this failure takes: nothing throws, the
 // generators emit `z.unknown()`, and every row validates.
-const vague = cols.filter((c) => c.tsType === 'unknown' || c.dbType === 'UNKNOWN');
-const arrays = cols.filter((c) => c.name.match(/^(tags|scores|moods|grid)$/));
+const named = (c: { table: string; name: string }) => `${c.table}.${c.name}`;
+const usedKnown = new Set<string>();
+const vague = cols.filter((c) => {
+  if (c.tsType !== 'unknown' && c.dbType !== 'UNKNOWN') return false;
+  if (KNOWN_UNNAMED[named(c)]) {
+    usedKnown.add(named(c));
+    return false;
+  }
+  return true;
+});
+const arrays = cols.filter((c) => c.name.match(/^(tags|scores|moods|grid|c_text_arr|c_int_arr|c_enum_arr|c_varchar_arr)$/));
 const notArrays = arrays.filter((c) => !c.arrayDimensions);
 
-console.log(`    ${cols.length} columns analyzed on drizzle-orm 0.4x, ${vague.length} unnamed`);
+console.log(
+  `    ${cols.length} columns analyzed on drizzle-orm 0.4x, ${vague.length} unnamed ` +
+    `beyond the ${Object.keys(KNOWN_UNNAMED).length} filed as defects`
+);
 
-let bad = 0;
 if (vague.length) {
   console.error('    FAIL: analyzed as unknown on 0.4x:');
-  for (const c of vague) console.error(`      ${c.name} (${c.dbType})`);
+  for (const c of vague) console.error(`      ${named(c)} (${c.dbType})`);
+  bad++;
+}
+const deadKnown = Object.keys(KNOWN_UNNAMED).filter((k) => !usedKnown.has(k));
+if (deadKnown.length) {
+  console.error('    FAIL: these columns are named on 0.4x now, so their entries describe a');
+  console.error('          defect that no longer happens. Delete them, here and in the DEFECTS');
+  console.error('          map of the comparison above:');
+  for (const k of deadKnown) console.error(`      ${k}`);
+  bad++;
+}
+if (!arrays.length) {
+  console.error('    FAIL: the fixture has no array columns, so nothing was checked for one.');
   bad++;
 }
 if (notArrays.length) {
   console.error('    FAIL: an .array() column carries no dimension:');
-  for (const c of notArrays) console.error(`      ${c.name}`);
+  for (const c of notArrays) console.error(`      ${named(c)}`);
   bad++;
 }
 const grid = cols.find((c) => c.name === 'grid');
-if (grid && grid.arrayDimensions !== 2) {
-  console.error(`    FAIL: text().array().array() reported ${grid.arrayDimensions} dimensions, not 2`);
+if (!grid || grid.arrayDimensions !== 2) {
+  console.error(`    FAIL: text().array().array() reported ${grid?.arrayDimensions} dimensions, not 2`);
   bad++;
 }
 if (bad) process.exit(1);
@@ -3449,9 +3758,10 @@ echo "    typechecks under bundler, node16 and nodenext, and validates at least 
 echo "    all four first-party drizzle-orm validator modules on each of three dialects and three"
 echo "    modes, with the four generators cross-checked against each other on every dialect,"
 echo "    checked against a real Postgres, a real SQLite and, where MYSQL_URL is set, a real"
-echo "    MySQL, with applyDefaults compared against what the database writes, and analyzed with"
-echo "    no column left unnamed on either drizzle-orm major. The JSON Schema output compiles"
-echo "    under ajv in strict mode, agrees with Postgres wherever the zod output does, and speaks"
+echo "    MySQL, with applyDefaults compared against what the database writes, and described the"
+echo "    same way by the analyzer under both drizzle-orm majors, bar the differences that stage"
+echo "    names one at a time. The JSON Schema output compiles under ajv in strict mode, agrees"
+echo "    with Postgres wherever the zod output does, and speaks"
 echo "    as a fifth voice on every CHECK. Every tarball holds the files its manifest names and"
 echo "    nothing from the working tree, and every package npm is serving carries a provenance"
 echo "    attestation."
