@@ -26,10 +26,41 @@ APP="$WORK/consumer"
 mkdir -p "$TARS" "$APP/src/db"
 
 echo "==> building"
+# A file in every dist that no build produces, checked for afterwards.
+#
+# `files: ["dist"]` packs whatever is in the directory, and tsup does not clean it unless told to,
+# so anything a previous build left behind is published. That is not theoretical: @drzl/cli's dist
+# held 46 files totalling 950 KB where a clean build produces 16 and 417 KB, 30 stale
+# content-hashed chunks from three different dates, and validation-core held two full generations
+# of prettier's parser chunks. CI checks out fresh and never sees it; a maintainer running
+# `pnpm release` locally publishes it. The size ceiling below cannot catch this, because stale
+# chunks are small.
+#
+# A canary rather than a file-list comparison, because it costs one build instead of two and
+# fails for exactly one reason: this package's build does not clean its output.
+CANARY='stale-canary.js'
+for dir in "$ROOT"/packages/*/; do
+  mkdir -p "$dir/dist"
+  echo '// seeded by verify-packed; a build that cleans its output removes this' > "$dir/dist/$CANARY"
+done
+
 # `build:packages`, not `build`: the workspace also contains the docs site, whose vitepress
 # build is slow and cannot affect a tarball. This is the same filtered, topologically sorted
 # build the release workflow runs, so what gets packed here is what gets packed there.
 (cd "$ROOT" && pnpm build:packages >/dev/null)
+
+stale=""
+for dir in "$ROOT"/packages/*/; do
+  [ -e "$dir/dist/$CANARY" ] && stale="$stale $(basename "$dir")"
+  rm -f "$dir/dist/$CANARY"
+done
+if [ -n "$stale" ]; then
+  echo "FAIL: these builds do not clean their output dir, so stale files from a previous" >&2
+  echo "      build get published:$stale" >&2
+  echo "      Add --clean to the tsup invocation in each package's build script." >&2
+  exit 1
+fi
+echo "    every build cleans its output dir"
 
 echo "==> packing publishable packages"
 count=0
@@ -182,13 +213,17 @@ rm -f load-probe.mjs
 
 # Exit code alone is not enough: a generator that writes an empty barrel still exits 0.
 #
-# Either quote, because the quote is the formatter's and not the generator's: the generator emits
-# single quotes and prettier's defaults rewrite them. Pinning the double-quoted form made this
-# read as an assertion about the `.js` extension while actually asserting that prettier had run,
-# and it failed with "the barrel does not emit a .js specifier" over a barrel that plainly did.
-grep -qE "export \* from ['\"]\./users\.zod\.js['\"];" "$BARREL" || {
-  echo "FAIL: the barrel does not emit a .js specifier. Generated output will not resolve" >&2
-  echo "      under moduleResolution node16 or nodenext. Barrel was:" >&2
+# Double quotes deliberately, and they are load-bearing twice over. The generator emits single
+# quotes; the double ones are prettier's defaults rewriting them, so this line is also the only
+# end-to-end proof in the whole run that formatting actually happened through a real install of
+# the optional peer. Nothing else here would notice formatting silently stopping, which is not
+# hypothetical: the CJS bundle formatted nothing at all for as long as it existed and every gate
+# stayed green. The single-quoted form is asserted further down, with prettier hidden.
+grep -q 'export \* from "./users.zod.js";' "$BARREL" || {
+  echo "FAIL: the barrel is not what a consumer with prettier installed should get. Either the" >&2
+  echo "      .js specifier is missing, so the output will not resolve under moduleResolution" >&2
+  echo "      node16 or nodenext, or the optional peer stopped being used and nothing was" >&2
+  echo "      formatted. Barrel was:" >&2
   cat "$BARREL" >&2
   exit 1
 }

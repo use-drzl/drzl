@@ -22,7 +22,7 @@
     "dist"
   ],
   "scripts": {
-    "build": "tsup src/cli.ts src/config.ts --format esm,cjs --sourcemap --dts",
+    "build": "tsup src/cli.ts src/config.ts --format esm,cjs --sourcemap --dts --clean",
     "dev": "node --loader ts-node/esm src/cli.ts --help",
     "lint": "eslint . --ext .ts",
     "test": "vitest run --testTimeout=20000"

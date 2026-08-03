@@ -7,10 +7,21 @@
  * source looked correct throughout. Only the artefact was wrong, which is why this asserts on a
  * real build rather than on the source.
  *
- * It builds each package with the `build` script from its own package.json, so removing the
- * `--external` flag there fails here rather than only at publish time, and it runs the built
- * entry in a child process with no node_modules in scope, which is a genuinely missing optional
- * peer rather than a mocked one.
+ * It builds each package with the `build` script from its own package.json rather than a build
+ * of its own, and runs the built entry in a child process with no node_modules in scope, which is
+ * a genuinely missing optional peer rather than a mocked one.
+ *
+ * What the byte-level checks below can and cannot see, measured rather than assumed. Two separate
+ * things keep prettier out of the bundle, and **either one alone is sufficient**: the
+ * `--external prettier` flag in the build script, and the `peerDependencies` entry, which tsup
+ * externalises by default. Deleting either one on its own leaves all of these green, because the
+ * bundle really is still correct. Only deleting both puts prettier back, and that these catch.
+ *
+ * That leaves a gap those checks structurally cannot cover, so it is asserted directly at the
+ * bottom of this file: dropping the peer entry keeps the bundle small and still breaks users.
+ * pnpm links an optional peer into the package's own node_modules only because it is declared,
+ * so without the entry `import('prettier')` resolves to nothing for a pnpm consumer and their
+ * output silently stops being formatted, with no size change to notice it by.
  *
  * It lives in validation-core because validation-core owns `formatCode`; the other two packages
  * are covered here because they are the ones that used to carry a private copy of it.
@@ -135,5 +146,36 @@ describe('the built validation-core entry', () => {
     const result = JSON.parse(raw);
     expect(result.resolved, 'prettier resolved in the sandbox, so this proved nothing').toBe(false);
     expect(result.out).toEqual({ './index.js': true, './index.cjs': true });
+  });
+});
+
+describe('the two declarations that keep prettier external', () => {
+  const manifest = async () =>
+    JSON.parse(
+      await fs.readFile(path.join(repoRoot, 'packages/validation-core/package.json'), 'utf8')
+    );
+
+  it('declares prettier as an optional peer, and the install honours it', async () => {
+    // The one deletion nothing above can see. Removing this entry leaves the bundle exactly as
+    // small and correct as it is now, and stops prettier resolving for a pnpm consumer, because
+    // pnpm links an optional peer into the package's own node_modules only when it is declared.
+    // Their generated files would quietly stop being formatted with no size change to notice by.
+    const pkg = await manifest();
+    expect(pkg.peerDependencies?.prettier).toBe('>=3');
+    expect(pkg.peerDependenciesMeta?.prettier?.optional).toBe(true);
+    // Declared and then actually linked, which is the mechanism rather than the intent. A missing
+    // link here means the entry was added without the lockfile being regenerated.
+    await expect(
+      fs.stat(path.join(repoRoot, 'packages/validation-core/node_modules/prettier'))
+    ).resolves.toBeTruthy();
+  });
+
+  it('also passes --external prettier, which is a second and independent guarantee', async () => {
+    // tsup externalises peerDependencies on its own, so this flag is redundant while the entry
+    // above exists, and that is the point: either one alone keeps prettier out of the bundle, so
+    // one of them being lost is survivable. Delete this assertion if you delete the flag, and
+    // know that the peer entry is then all that stands between this build and 11 MB.
+    const pkg = await manifest();
+    expect(pkg.scripts.build).toContain('--external prettier');
   });
 });
