@@ -3145,6 +3145,26 @@ export const notes = app.table('notes', {
 });
 OLD_SCHEMA
 
+# The one thing a Postgres fixture cannot describe: MySQL's text family, whose cap is a property
+# of the type rather than a declared length, and the only source of `maxBytes` in the whole
+# analysis.
+#
+# Hand written rather than taken from the parity MySQL fixture, which cannot be imported under
+# 0.45.2 at all: 0.4x's mysql-core has no `blob` export. That fact was briefly used here to
+# claim no fixture could cover `maxBytes`, which was false, and this file is what refutes it.
+# Four columns and a varchar key, all of which import on both majors.
+cat > src/mysql-text.ts <<'MYSQL_TEXT'
+import { mysqlTable, varchar, text, tinytext, mediumtext, longtext } from 'drizzle-orm/mysql-core';
+
+export const mtext = mysqlTable('mtext', {
+  id: varchar('id', { length: 20 }).primaryKey(),
+  t_text: text('t_text').notNull(),
+  t_tiny: tinytext('t_tiny').notNull(),
+  t_medium: mediumtext('t_medium').notNull(),
+  t_long: longtext('t_long').notNull(),
+});
+MYSQL_TEXT
+
 # The Postgres fixture the parity stage measures against the first-party validators: the
 # 40-column matrix, the defaults table, the nullable arrays and the twelve CHECK expressions.
 # Read out of the parity tree rather than re-typed, so widening that fixture widens this
@@ -3253,17 +3273,17 @@ async function main() {
 }
 DESCRIBE
 
-echo "==> describing the same two schema files under both drizzle-orm majors"
-cp src/schema.ts src/matrix.ts "$NEW/src/"
+echo "==> describing the same three schema files under both drizzle-orm majors"
+cp src/schema.ts src/matrix.ts src/mysql-text.ts "$NEW/src/"
 cp describe-columns.ts "$NEW/describe-columns.ts"
-npx tsx describe-columns.ts src/schema.ts src/matrix.ts > "$WORK/cols-0.4x.json"
-( cd "$NEW" && npx tsx describe-columns.ts src/schema.ts src/matrix.ts ) > "$WORK/cols-v1.json"
+npx tsx describe-columns.ts src/schema.ts src/matrix.ts src/mysql-text.ts > "$WORK/cols-0.4x.json"
+( cd "$NEW" && npx tsx describe-columns.ts src/schema.ts src/matrix.ts src/mysql-text.ts ) > "$WORK/cols-v1.json"
 
 cat > cross-major.ts <<'CROSS'
 import { readFileSync } from 'node:fs';
 
 /**
- * The same two schema files, analyzed under both drizzle majors, have to describe the same
+ * The same three schema files, analyzed under both drizzle majors, have to describe the same
  * columns.
  *
  * This is the systematic form of the bug that prompted the stage: the analyzer read v1's array
@@ -3302,6 +3322,20 @@ const ALLOWED: Record<string, string> = {
   // this exact column: drizzle-zod 0.8.3 on 0.45.2 accepts [['a']] and rejects ['a'], and
   // drizzle-orm/zod on 1.0.0-rc.4 does the opposite. v1 also infers `string[]`, not `string[][]`.
   'rows.grid.arrayDimensions': "v1 spells 2D `.array('[][]')`; chaining `.array()` stays at 1",
+  // v1's `MySqlText` carries `length` equal to the type's cap, 65535 for `text` and 255 for
+  // `tinytext`; 0.4x leaves it undefined, and the analyzer reads the column's declared length
+  // the same way on both. Upstream, not a reading of it: measured on the raw column objects.
+  //
+  // What really applies is a byte budget, which both majors emit, so nothing is accepted on one
+  // side and refused on the other: the extra character cap is the same number as the byte cap
+  // and a code point is never fewer than one byte. It is visible in the JSON Schema output,
+  // which has no byte check to fall back on, so on 0.4x these columns carry no cap at all
+  // there. That gap is filed already, from the round that found `maxBytes` unread by that
+  // generator.
+  'mtext.t_text.maxLength': "v1's MySqlText states `length`, 0.4x's does not",
+  'mtext.t_tiny.maxLength': 'as mtext.t_text.maxLength',
+  'mtext.t_medium.maxLength': 'as mtext.t_text.maxLength',
+  'mtext.t_long.maxLength': 'as mtext.t_text.maxLength',
 };
 
 /**
@@ -3344,6 +3378,7 @@ const DEFECTS: Record<string, string> = {
   'matrix.c_inet.dbType': 'label only: PgInet is named TEXT on 0.4x',
   'matrix.c_cidr.dbType': 'as matrix.c_inet.dbType',
   'matrix.c_macaddr.dbType': 'as matrix.c_inet.dbType',
+  'mtext.id.dbType': 'as rows.name.dbType, on MySQL: MySqlVarChar is named TEXT on 0.4x',
 
   // ---- a float carries no bounds on 0.4x -----------------------------------------------------
   // v1 reads `number float` and `number double` and bounds them at 2^23 and 2^47, the range each
@@ -3529,19 +3564,27 @@ for (const t of tables) {
 // It holds every field the analyzer *assigns*, including the ones it assigns `undefined` to on
 // every column, because the field names come from what it produced rather than from what
 // survived serialisation. It cannot hold a field that is spread in conditionally and never
-// fires, which is this analyzer's usual style for an optional one, so exactly two sit outside
-// it today and both were measured rather than assumed:
+// fires, which is this analyzer's usual style for an optional one. Measured with a control
+// either way: a field written `...(false ? { probe: 1 } : {})` never reaches the field list and
+// this stage stays green, while the same field written `probe: undefined` is named and it fails.
 //
-//   maxBytes   src/index.ts:1302, set only on MySQL's text and blob families. No fixture this
-//              stage can carry will produce one: the MySQL parity fixture cannot be imported
-//              under 0.45.2 at all, since 0.4x's mysql-core has no `blob` export.
-//   readOnly   src/index.ts:1414, set for a materialized view. Adding one covers it on the v1
-//              side alone: `pgMaterializedView` answers a `drizzle:Columns` lookup on
-//              1.0.0-rc.4 and returns undefined on 0.45.2, so the analyzer does not see a 0.4x
-//              materialized view as a relation at all, and this stage would report the table as
-//              present on v1 only. Covering `readOnly` here means dealing with that first.
+// One field is outside it today:
+//
+//   readOnly   packages/analyzer/src/index.ts:1414, set for a materialized view. Adding one
+//              covers the v1 side alone: `pgMaterializedView` answers a `drizzle:Columns`
+//              lookup on 1.0.0-rc.4 and returns undefined on 0.45.2, so the analyzer sees no
+//              0.4x view of any kind as a relation, and this stage would report the table as
+//              present on v1 only. Covering `readOnly` means dealing with that first.
+//
+// `maxBytes` was the other, on the claim that no fixture this stage could carry would produce
+// one, since the MySQL parity fixture cannot be imported under 0.45.2. That was an impossibility
+// argued from a different fixture, and it was false: `src/mysql-text.ts` above uses the text
+// family alone, imports on both majors and carries a cap on four columns, through
+// packages/analyzer/src/index.ts:478 on v1 and the conditional spread at :1302 on 0.4x. Both
+// sites are MySQL-gated, so "set only on MySQL" is the part of the old sentence that held.
 const REQUIRED = [
-  'rows', 'parents', 'children', 'pairs', 'notes', 'matrix', 'arrays', 'defaulted', 'checked',
+  'rows', 'parents', 'children', 'pairs', 'notes', 'mtext', 'matrix', 'arrays', 'defaulted',
+  'checked',
 ];
 const missing = REQUIRED.filter((t) => !a.tables[t] || !b.tables[t]);
 if (missing.length) {
@@ -3659,7 +3702,7 @@ if (typeof pgCore.bytea === 'function') {
 }
 
 const cols: Array<{ table: string; name: string; tsType: string; dbType: string; arrayDimensions?: number }> = [];
-for (const file of ['src/schema.ts', 'src/matrix.ts']) {
+for (const file of ['src/schema.ts', 'src/matrix.ts', 'src/mysql-text.ts']) {
   const a = await new SchemaAnalyzer(file).analyze({});
   for (const t of a.tables) {
     for (const c of t.columns) cols.push({ table: t.name, ...c });
