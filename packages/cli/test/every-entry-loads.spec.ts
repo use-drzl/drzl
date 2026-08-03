@@ -24,10 +24,13 @@
  * **What this does and does not prove.** The child inherits the Node running the tests, which in
  * this repo is 22.13 or newer, because pnpm 11 declares that floor and the workspace cannot be
  * installed below it. From Node 22.12 onwards `require()` of an ES module is allowed, and that is
- * what carries ten of these thirteen entries. It is not what the packages advertise: every
- * manifest says `engines.node: ">=18.17.0"`. So a green run here means the bundles load on the
- * Node this repo develops on, and says nothing about the floor the packages claim. The gap is
- * measured rather than left to a comment, at the bottom of this file.
+ * what carries ten of these thirteen entries. It is not what the packages advertise: eleven
+ * manifests say `engines.node: ">=18.17.0"` and `@drzl/cli` says `">=22"`, and every one of those
+ * floors predates 22.12. That last sentence is checked rather than trusted, by the first test
+ * below, because the previous version of this paragraph asserted a number that was wrong for one
+ * of the twelve. So a green run here means the bundles load on the Node this repo develops on,
+ * and says nothing about the floor the packages claim. The gap is measured rather than left to a
+ * comment, at the bottom of this file.
  *
  * This asserts on the build, so the build has to have happened. `pnpm build` first.
  */
@@ -46,6 +49,7 @@ interface Manifest {
   main?: string;
   bin?: Record<string, string>;
   exports?: Record<string, string | Record<string, string>>;
+  engines?: { node?: string };
 }
 
 const rel = (p: string) => p.replace(/^\.\//, '');
@@ -210,6 +214,29 @@ it('found every publishable package', () => {
   expect(cases.length).toBeGreaterThanOrEqual(publishable.length);
 });
 
+it('advertises a Node floor older than require(esm) everywhere', () => {
+  // The premise of the table at the bottom of this file, and of the header's claim about it,
+  // turned into something that fails rather than something a reader has to believe. The floors
+  // are not uniform: eleven manifests say 18.17.0 and @drzl/cli says 22, and a comment that said
+  // otherwise shipped once already.
+  const tooNew = publishable
+    .map(({ dir, manifest }) => {
+      const declared = manifest.engines?.node ?? '';
+      const m = declared.match(/>=\s*(\d+)(?:\.(\d+))?/);
+      const major = m ? Number(m[1]) : Number.NaN;
+      const minor = m ? Number(m[2] ?? 0) : Number.NaN;
+      // 22.12 is where `require()` of an ES module arrived. A floor at or above it would mean
+      // the table below is measuring a Node no consumer is promised, and is no longer evidence.
+      const predates = major < 22 || (major === 22 && minor < 12);
+      return { dir, declared, predates };
+    })
+    .filter((p) => !p.predates);
+  expect(
+    tooNew,
+    'engines.node no longer predates require(esm), so the table below is moot'
+  ).toEqual([]);
+});
+
 const entriesOf = (dir: string) => entryPoints(publishable.find((p) => p.dir === dir)!.manifest);
 
 describe.each(cases)('$name $entry.subpath', ({ dir, entry }) => {
@@ -264,11 +291,12 @@ describe.each(cases)('$name $entry.subpath', ({ dir, entry }) => {
 /**
  * The same CommonJS files, on the Node the packages say they run on.
  *
- * `engines.node` is `">=18.17.0"` in all twelve manifests. `require()` of an ES module did not
- * exist before Node 22.12, and ten of these thirteen entries need it, so on the advertised floor
- * they throw `ERR_REQUIRE_ESM`. The block above cannot see that, because the Node running the
- * tests is 22.13 or newer: pnpm 11 declares that floor and the workspace cannot be installed
- * below it.
+ * `engines.node` names a floor below 22.12 in all twelve manifests: eleven say `">=18.17.0"` and
+ * `@drzl/cli` says `">=22"`, which still predates it. That is asserted further up rather than
+ * left as a sentence here. `require()` of an ES module did not exist before 22.12, and ten of
+ * these thirteen entries need it, so on the advertised floor they throw `ERR_REQUIRE_ESM`. The
+ * block above cannot see that, because the Node running the tests is 22.13 or newer: pnpm 11
+ * declares that floor and the workspace cannot be installed below it.
  *
  * `--no-experimental-require-module` turns the newer behaviour off, which is the closest a modern
  * Node gets to the old one for this question.
@@ -331,6 +359,10 @@ describe.runIf(flagAccepted)('the CommonJS builds, on Node without require(esm)'
       const marker = String(run.stderr ?? '').match(/DRZL_LOAD_ERROR:(\w+)/);
       measured[`${dir} ${entry.subpath}`] = marker ? marker[1] : 'loads';
     }
-    expect(measured).toEqual(ON_THE_ADVERTISED_ENGINE_FLOOR);
+    expect(
+      measured,
+      'a + row is a package that has newly inherited this defect; a - row is one that no longer ' +
+        'has it, so update ON_THE_ADVERTISED_ENGINE_FLOOR and say which change fixed it'
+    ).toEqual(ON_THE_ADVERTISED_ENGINE_FLOOR);
   });
 });
