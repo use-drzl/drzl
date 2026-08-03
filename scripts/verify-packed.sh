@@ -1418,13 +1418,66 @@ done
 # is caught and read as a rejection, and rejection was the answer for most probe values anyway.
 # ---------------------------------------------------------------------------------------------
 echo "==> typechecking the parity matrix output"
+# Three columns are carved out of this stage, not two modules, for one defect that predates the
+# branch. Each claim below was measured, after two earlier attempts at this comment asserted
+# mechanisms that turned out not to exist.
+#
+# `c_numeric` and `c_decimal` on Postgres, and `m_decimal` on MySQL, each fail TS2589 on their own,
+# in a file holding nothing else. The arktype generator states a numeric format as a bare regex
+# literal inside the type expression, and that literal is around 200 characters that ArkType parses
+# in the type system. It is the one emitted construct expensive enough to exhaust the instantiation
+# budget by itself.
+#
+# What it is *not*, each checked rather than assumed:
+#
+#   - Not this branch's doing. Rewriting the emitted pg file back to the exact form the generator
+#     produced before the bigint bound and before the array fix reproduces it at the same position.
+#   - Not the narrows. Stripping every `.narrow(...)` from the pg matrix, leaving the same 40
+#     fields, fails identically at (7,40).
+#   - Not the number of fields. Every one of the 40 pg fields compiles alone except those two, and
+#     the first 10 compile together with or without their narrows.
+#   - Not the table size. sqlite's matrix is clean because it has no numeric-format column, not
+#     because it has 14 columns: SQLite `numeric` carries no format and emits a plain `"string"`.
+#
+# So the repair is to stop putting a 200-character regex in the type expression, not to change how
+# a whole-table object is emitted. That is reported separately and not done here.
+#
+# The carve-out is by column, so the other 38 pg and 28 mysql columns are still compiled: the two
+# modules are copied with exactly those field lines dropped, and the copy is what this stage
+# checks. `assert-removed` below fails if a different number of lines goes, so the carve-out
+# cannot quietly widen to cover a real defect.
+mkdir -p src/gen-tsc
+node - <<'CARVE'
+import fs from 'node:fs';
+const CARVED = { pg: ['c_numeric', 'c_decimal'], mysql: ['m_decimal'] };
+const MODES = 3;
+for (const [dialect, cols] of Object.entries(CARVED)) {
+  const from = `src/gen/${dialect}/arktype/matrix.arktype.ts`;
+  const lines = fs.readFileSync(from, 'utf8').split('\n');
+  const drop = new RegExp(`^\\s*"(${cols.join('|')})\\??":`);
+  const kept = lines.filter((l) => !drop.test(l));
+  const removed = lines.length - kept.length;
+  if (removed !== cols.length * MODES) {
+    console.error(
+      `FAIL: carving ${cols.join(', ')} out of ${from} removed ${removed} lines, not ` +
+        `${cols.length * MODES}. The emitted shape changed, so this exclusion no longer covers ` +
+        `what it says it covers and may now be hiding a real error.`
+    );
+    process.exit(1);
+  }
+  fs.writeFileSync(`src/gen-tsc/${dialect}-matrix.arktype.ts`, kept.join('\n'));
+}
+CARVE
 cat > tsconfig.gen.json <<'EOF'
 {
   "compilerOptions": {
     "strict": true, "noEmit": true, "target": "es2022",
     "module": "nodenext", "moduleResolution": "nodenext", "skipLibCheck": true
   },
-  "include": ["src/gen/**/*.ts", "src/schema.ts", "src/schema-mysql.ts", "src/schema-sqlite.ts"],
+  "include": [
+    "src/gen/**/*.ts", "src/gen-tsc/**/*.ts",
+    "src/schema.ts", "src/schema-mysql.ts", "src/schema-sqlite.ts"
+  ],
   "exclude": [
     "src/gen/pg/arktype/matrix.arktype.ts",
     "src/gen/mysql/arktype/matrix.arktype.ts",
@@ -1433,29 +1486,10 @@ cat > tsconfig.gen.json <<'EOF'
   ]
 }
 EOF
-# Four exclusions, named rather than silent, for one reported defect that predates this branch.
-#
-# The arktype output for the pg and mysql matrix tables each fail on their own with TS2589, "Type
-# instantiation is excessively deep and possibly infinite", at the `type({...})` call wrapping the
-# whole table. The sqlite one, 14 columns, is fine. What is known about it, each measured rather
-# than assumed:
-#
-#   - It is not this branch's doing. Rewriting the emitted pg file back to the exact form the
-#     generator produced before the bigint bound and before the array fix reproduces it at the
-#     identical position.
-#   - It is not the per-field `.narrow().narrow()` chain. Collapsing all fifteen double-narrow
-#     chains in the mysql file into single ones does not clear it.
-#   - It is the number of narrowed fields in one object literal, and the budget is global to the
-#     compilation: check the three arktype trees together and only the first file to exhaust it is
-#     reported, which is why this looked at first like a mysql-only problem.
-#
-# The barrels are excluded with them because `exclude` only filters the entry list: `index.ts`
-# re-exports the matrix module and would pull it back in.
-#
-# Nothing had ever compiled this output, and nothing had ever generated arktype for MySQL at all
-# until this branch widened the parity dialects, which is why a defect older than the branch
-# surfaced with it. Fixing it means changing how the generator emits a whole-table object, which
-# is a separate piece of work from anything here.
+# The originals are excluded because the copies stand in for them, and their barrels with them:
+# `exclude` only filters the entry list, so `index.ts` re-exporting the matrix module would pull
+# the original straight back in. The barrel is five re-export lines and the copy covers what it
+# would have said.
 if ! npx tsc -p tsconfig.gen.json; then
   echo "FAIL: the parity matrix output does not compile under tsc --strict." >&2
   echo "      Generated code that does not typecheck is not usable output, however it behaves" >&2
@@ -1668,10 +1702,11 @@ size_fail=0
 # table. Measured rather than guessed, because a budget raised to make a number fit is worth
 # nothing: on the original 62 columns arktype emits 223 bytes per column, up from 213, and those
 # ten bytes are the bigint bound and the array element walk, both of them constraints that were
-# missing. The two new columns cost about 750 bytes each, three times the average, because a
-# nullable capped array is the longest thing this generator emits and it is emitted three times,
-# once per mode. So the mixed average moved to 248 without any generator emitting more for the
-# same input, which is the same effect recorded above for the CHECK columns.
+# missing. The two new columns cost 920 bytes each, four times the average, because a
+# nullable capped array is the longest thing this generator emits and it is emitted once per mode.
+# So the mixed average moved to 244 without any generator emitting more for the same input, which
+# is the same effect recorded above for the CHECK columns. The three figures reconcile:
+# 13827 + 1840 = 15667 bytes, and the 1840 includes the 37-byte barrel line for the new module.
 report_size src/gen/pg/zod      zod      420  || size_fail=1
 report_size src/gen/pg/valibot  valibot  540  || size_fail=1
 report_size src/gen/pg/arktype  arktype  280  || size_fail=1
