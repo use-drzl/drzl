@@ -2278,17 +2278,23 @@ echo "    every @drzl dependency resolves on npm"
 # workflow still passes, the packages still publish, and the only difference is that npm stops
 # showing where the tarball was built and `npm audit signatures` stops being able to answer.
 #
-# Measured 2026-08-03, over every version of every package: all attested except
-# @drzl/generator-json-schema@0.2.0 and @drzl/generator-typebox@0.0.0, which are the two first
-# publishes done by hand. That is not a workflow defect. npm trusted publishing has nothing to
-# authenticate against for a name that has never existed, so a package's very first version cannot
-# be published by CI at all, and cannot carry provenance. Every version published by CI since has
-# one.
+# Measured 2026-08-03, over every version of every package: 203 published, 201 attested. The two
+# without are @drzl/generator-json-schema@0.2.0 and @drzl/generator-typebox@0.0.0, and both are a
+# package's very first version. That is not a workflow defect and it is not fixable: npm trusted
+# publishing authenticates against a package that already exists, so the first version of a new
+# name has to be published by hand and cannot carry provenance. Every version published by CI
+# since has one.
 #
-# So this asks about the version tagged `latest`, not about the version in this working tree,
-# which during a release has not been published yet. A package whose only version is that
-# hand-made first one will fail here, and that is the correct answer: what npm is serving really
-# is unattested. Publishing the next version through CI clears it.
+# This asks about the version tagged `latest`, not about the version in this working tree, which
+# during a release has not been published yet.
+#
+# It deliberately skips a package whose `latest` is its only published version, and that
+# exemption is load-bearing rather than tidiness. `pnpm verify:packed` runs as a step in
+# release.yml *before* `changeset publish`, so a gate that failed on a hand-published first
+# version would abort the job before the publish step, and the CI publish that is the only way to
+# attest that package could never run. The repo would be one new package away from a release
+# deadlock, and it has added a new package twice in the last two releases. A second unattested
+# version is a real finding and still fails: by then CI has published at least once.
 # ---------------------------------------------------------------------------------------------
 echo "==> published packages carry a provenance attestation"
 unattested=0
@@ -2302,14 +2308,27 @@ for pkg in packages/*/package.json; do
     continue
   fi
   predicate=$(npm view "$name" dist.attestations.provenance.predicateType 2>/dev/null || true)
-  if [ -z "$predicate" ]; then
-    echo "    FAIL: $name@$version is on npm with no provenance attestation." >&2
-    echo "          Check that release.yml still sets NPM_CONFIG_PROVENANCE and still grants" >&2
-    echo "          id-token: write, and that the publish ran from CI rather than by hand." >&2
-    unattested=1
-  else
+  if [ -n "$predicate" ]; then
     echo "    $name@$version  $predicate"
+    continue
   fi
+  # `npm view <pkg> versions --json` answers with a bare string when there is exactly one, and an
+  # array otherwise, so the count cannot be taken from the shape of the output alone.
+  versions_json=$(npm view "$name" versions --json 2>/dev/null || echo 'null')
+  published=$(node -e "
+    const v = JSON.parse(process.argv[1]);
+    process.stdout.write(String(v === null ? 0 : Array.isArray(v) ? v.length : 1));
+  " "$versions_json")
+  if [ "$published" -le 1 ]; then
+    echo "    $name@$version is a first publish, which had to be made by hand and so carries no"
+    echo "        attestation. The next release attests it; failing here would prevent that release."
+    continue
+  fi
+  echo "    FAIL: $name@$version is on npm with no provenance attestation, and it is not this" >&2
+  echo "          package's first version ($published published), so it should have come from" >&2
+  echo "          CI. Check that release.yml still sets NPM_CONFIG_PROVENANCE and still grants" >&2
+  echo "          id-token: write, and that the publish ran from CI rather than by hand." >&2
+  unattested=1
 done
 [ "$unattested" = 0 ] || exit 1
 cd "$APP"
