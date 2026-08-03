@@ -96,8 +96,11 @@ describe('the built validation-core entry', () => {
     const dir = await build('validation-core');
     const esm = await fs.readFile(path.join(dir, 'index.js'), 'utf8');
     const cjs = await fs.readFile(path.join(dir, 'index.cjs'), 'utf8');
+    // Both, and in the same form: esbuild leaves an external `import()` alone in a CJS bundle
+    // rather than lowering it to `require`, which is what lets a CommonJS consumer reach an
+    // ESM-only prettier at all.
     expect(esm).toMatch(/import\("prettier"\)/);
-    expect(cjs).toMatch(/require\("prettier"\)/);
+    expect(cjs).toMatch(/import\("prettier"\)/);
   });
 
   it('returns the code unchanged when prettier is genuinely not installed', async () => {

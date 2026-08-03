@@ -48,6 +48,28 @@ if [ "$count" -eq 0 ]; then
   exit 1
 fi
 
+# What each package weighs on the wire, which is the only number a user pays.
+#
+# Three of these shipped at 2.8 MB packed and 11 MB unpacked, because `await import('prettier')`
+# is a specifier tsup can resolve and esbuild inlined the whole formatter behind it. Installing
+# @drzl/cli pulled in roughly 32 MB of duplicated prettier parsers. Nothing in the workspace could
+# see it: the source was right, the tests passed, and only the artefact was wrong.
+#
+# The ceiling is per tarball and deliberately far above the real figures, which are tens of
+# kilobytes. It is a tripwire for a dependency that got bundled, not a byte budget. Raising it is
+# not how you fix a build that started inlining one.
+TARBALL_CEILING=1000000
+size_over=0
+for tgz in "$TARS"/*.tgz; do
+  bytes=$(wc -c < "$tgz")
+  if [ "$bytes" -gt "$TARBALL_CEILING" ]; then
+    echo "FAIL: $(basename "$tgz") is $bytes bytes packed, over the ${TARBALL_CEILING} ceiling." >&2
+    echo "      Something is being bundled that should be external." >&2
+    size_over=1
+  fi
+done
+[ "$size_over" = 0 ] || exit 1
+
 echo "==> installing them into an empty project"
 # A real foreign key, because the oRPC generator derives relation endpoints from one and a
 # schema without any would exercise none of that path.
@@ -102,8 +124,13 @@ node -e "
 # and npm's flat layout is the harsher test of whether `dependencies` are actually declared.
 # valibot, arktype and @orpc/server are peers of the generators, so the generated tree cannot
 # typecheck without them present, exactly as in a consumer's project.
+#
+# prettier is here because it is now an *optional* peer of @drzl/validation-core rather than
+# something bundled into it, and npm does not install optional peers. Naming it is what a
+# consumer who wants formatted output does, and it makes this run cover the peer resolving from
+# a real install. The stage further down removes it again to cover the other case.
 npm install --no-audit --no-fund --loglevel=error \
-  "$TARS"/*.tgz drizzle-orm zod valibot arktype @orpc/server typescript tsx >/dev/null
+  "$TARS"/*.tgz drizzle-orm zod valibot arktype @orpc/server typescript tsx prettier >/dev/null
 
 if [ ! -e node_modules/.bin/drzl ]; then
   echo "FAIL: the drzl bin did not resolve after a real install." >&2
@@ -154,7 +181,12 @@ fi
 rm -f load-probe.mjs
 
 # Exit code alone is not enough: a generator that writes an empty barrel still exits 0.
-grep -q 'export \* from "./users.zod.js";' "$BARREL" || {
+#
+# Either quote, because the quote is the formatter's and not the generator's: the generator emits
+# single quotes and prettier's defaults rewrite them. Pinning the double-quoted form made this
+# read as an assertion about the `.js` extension while actually asserting that prettier had run,
+# and it failed with "the barrel does not emit a .js specifier" over a barrel that plainly did.
+grep -qE "export \* from ['\"]\./users\.zod\.js['\"];" "$BARREL" || {
   echo "FAIL: the barrel does not emit a .js specifier. Generated output will not resolve" >&2
   echo "      under moduleResolution node16 or nodenext. Barrel was:" >&2
   cat "$BARREL" >&2
@@ -261,6 +293,62 @@ EOF
   fi
   echo "    $dialect ok"
 done
+
+# ---------------------------------------------------------------------------------------------
+# The consumer who has no formatter at all.
+#
+# prettier used to be bundled into three packages, 11 MB each, so formatting could not fail to be
+# available. It is an optional peer now, which makes "no formatter installed" an ordinary and
+# supported state rather than a broken install. The whole run happens after every file has been
+# rendered, so an unhandled rejection there would lose a completed generation at the last step.
+#
+# Hidden rather than uninstalled, because npm would take the tarballs with it.
+# ---------------------------------------------------------------------------------------------
+echo "==> generating with no formatter installed"
+mv node_modules/prettier node_modules/.prettier-hidden
+cat > drzl.config.ts <<'CONFIG'
+export default {
+  schema: './src/db/schema.ts',
+  outDir: './src/unformatted/api',
+  generators: [
+    { kind: 'zod', path: './src/unformatted/zod' },
+    { kind: 'service', path: './src/unformatted/services' },
+    { kind: 'orpc' },
+  ],
+};
+CONFIG
+if ! npx drzl generate >/dev/null; then
+  mv node_modules/.prettier-hidden node_modules/prettier
+  echo "FAIL: drzl generate does not survive prettier being absent. It is an optional peer," >&2
+  echo "      so this is a normal install, and the failure would come after every file was" >&2
+  echo "      already rendered." >&2
+  exit 1
+fi
+mv node_modules/.prettier-hidden node_modules/prettier
+
+# Unformatted has to still mean complete and valid. Single quotes are what the generator emits
+# before a formatter sees it, so this also confirms nothing formatted the file behind our backs
+# and made the check vacuous.
+grep -q "export \* from './users.zod.js';" src/unformatted/zod/index.ts || {
+  echo "FAIL: the unformatted barrel is not what the generator emits. Was:" >&2
+  cat src/unformatted/zod/index.ts >&2
+  exit 1
+}
+cat > tsconfig.unformatted.json <<'EOF'
+{
+  "compilerOptions": {
+    "strict": true, "noEmit": true, "target": "es2022",
+    "module": "nodenext", "moduleResolution": "nodenext", "skipLibCheck": true
+  },
+  "include": ["src/unformatted/**/*.ts", "src/db/**/*.ts"]
+}
+EOF
+if ! npx tsc -p tsconfig.unformatted.json; then
+  echo "FAIL: output emitted without a formatter does not typecheck. Formatting is cosmetic," >&2
+  echo "      so anything broken here was broken before prettier tidied it." >&2
+  exit 1
+fi
+echo "    unformatted output is complete and typechecks"
 
 # ---------------------------------------------------------------------------------------------
 # Every config the documentation tells a reader to write.

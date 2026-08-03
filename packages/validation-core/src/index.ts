@@ -221,6 +221,19 @@ export function selectColumns(table: Table): Column[] {
   return table.columns;
 }
 
+/**
+ * Pretty-print emitted code with whatever formatter the consumer already has.
+ *
+ * Both formatters are optional peers, reached at call time and never bundled. Prettier used to be
+ * bundled, because tsup resolves the specifier below statically and esbuild then inlined all of
+ * it: 11 MB per package across the three that had a copy of this function, roughly 32 MB for
+ * anyone installing @drzl/cli. It is `--external` in every build script that can reach it, and
+ * no-bundled-formatter.spec.ts builds those scripts and checks.
+ *
+ * Neither absence is an error. A consumer with no formatter gets the code as rendered, which is
+ * valid TypeScript that merely looks worse, and losing generated files at the last step would be
+ * a far worse trade than losing their whitespace.
+ */
 export async function formatCode(code: string, filePath: string, fmt?: FormatOptions) {
   if (fmt && fmt.enabled === false) return code;
   const engine = fmt?.engine ?? 'auto';
@@ -239,6 +252,13 @@ export async function formatCode(code: string, filePath: string, fmt?: FormatOpt
       if (biome?.formatContent) {
         const res = await biome.formatContent(code, { filePath });
         return (res && (res.content || res.formatted)) ?? code;
+      }
+      // Biome has shipped this entry point under both names. The second was only ever tried by
+      // the oRPC generator's private copy of this function, and is kept here so that folding the
+      // copies together takes nothing away from it.
+      if (biome?.format) {
+        const res = await biome.format(code, { filePath });
+        return res ?? code;
       }
     }
   } catch {}

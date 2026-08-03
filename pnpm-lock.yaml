@@ -290,6 +290,9 @@ importers:
       '@drzl/analyzer':
         specifier: workspace:^
         version: link:../analyzer
+      prettier:
+        specifier: '>=3'
+        version: 3.9.6
     devDependencies:
       tsup:
         specifier: ^8.5.1

@@ -52,4 +52,7 @@ export default defineConfig({
 
 Notes
 
-- `format.engine: 'auto'` tries Prettier, then Biome.
+- `format.engine: 'auto'` tries Prettier, then Biome. Both are your own: neither is bundled, and
+  DRZL uses whichever it finds in your project, with your config. With neither installed the
+  generated files are written exactly as rendered, which is the same valid TypeScript with worse
+  whitespace. Add `prettier` as a dev dependency if you want it formatted.
