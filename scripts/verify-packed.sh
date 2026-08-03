@@ -1083,10 +1083,11 @@ const CROSS_ALLOWED: Record<string, string> = {
   'pg/c_bigint_b': 'ArkType cannot bound a bigint in its string DSL',
   'mysql/m_bigint_b': 'as pg/c_bigint_b',
   'sqlite/s_blob_bigint': 'as pg/c_bigint_b',
-  // zod and valibot count code points for a character limit; TypeBox and ArkType state a length
-  // declaratively with no predicate to hook, so they keep the UTF-16 form and stay approximate for
-  // astral text. A capability difference between the libraries, not a defect in one generator.
-  'pg/c_char': 'zod and valibot count code points; TypeBox and ArkType count UTF-16 units',
+  // No `c_char` entry. There was one, reading "zod and valibot count code points; TypeBox and
+  // ArkType count UTF-16 units", and it had been dead since arktype and typebox were changed to
+  // count code points as well. All four now emit a `[...v].length` predicate and agree on every
+  // probe including astral text, so there is nothing to waive. It survived because the waiver was
+  // marked used by the column merely existing; see the note at the crossAllowed call site.
 };
 
 const usedCrossWaivers = new Set<string>();
@@ -1241,22 +1242,29 @@ for (const d of DIALECTS) {
     const oShape = OFFICIAL.zod.select(d.table as never).shape;
     const disagreements: string[] = [];
     for (const k of Object.keys(oShape)) {
-      if (crossAllowed(d.name, k)) continue;
       const fields: Record<string, any> = {};
       for (const lib of d.libs) fields[lib] = safeField(LIBS[lib], loaded[lib].SelectmatrixSchema, k);
+      const found: string[] = [];
       const absent = Object.entries(fields).filter(([, f]) => !f).map(([n]) => n);
       if (absent.length) {
-        disagreements.push(`        ${k}: missing from ${absent.join(', ')}`);
-        continue;
-      }
-      for (const [label, x] of POOL) {
-        const verdicts = d.libs.map((n) => [n, safeOk(LIBS[n], fields[n], x)] as const);
-        const yes = verdicts.filter(([, r]) => r).map(([n]) => n);
-        const no = verdicts.filter(([, r]) => !r).map(([n]) => n);
-        if (yes.length && no.length) {
-          disagreements.push(`        ${k} on ${label}: ${yes.join('/')} accept, ${no.join('/')} reject`);
+        found.push(`        ${k}: missing from ${absent.join(', ')}`);
+      } else {
+        for (const [label, x] of POOL) {
+          const verdicts = d.libs.map((n) => [n, safeOk(LIBS[n], fields[n], x)] as const);
+          const yes = verdicts.filter(([, r]) => r).map(([n]) => n);
+          const no = verdicts.filter(([, r]) => !r).map(([n]) => n);
+          if (yes.length && no.length) {
+            found.push(`        ${k} on ${label}: ${yes.join('/')} accept, ${no.join('/')} reject`);
+          }
         }
       }
+      if (!found.length) continue;
+      // The waiver is consulted only once there is something for it to suppress. Asking first
+      // marked the key used because the column exists in the fixture, which made the dead-waiver
+      // check below true of `ALLOWED` and false of `CROSS_ALLOWED`: a waiver naming a real column
+      // the four generators agree about sat there indefinitely, and `pg/c_char` was one.
+      if (crossAllowed(d.name, k)) continue;
+      disagreements.push(...found);
     }
     if (disagreements.length) {
       console.log(`    the four ${d.name} generators disagree with each other:`);
