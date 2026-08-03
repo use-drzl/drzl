@@ -1,6 +1,6 @@
 /**
- * Every entry point a published package names has to load, in both module formats, from a plain
- * Node process running against `dist`.
+ * Every entry point a published package names loads, in both module formats, from a plain Node
+ * process running against `dist`.
  *
  * `@drzl/validation-core`'s CommonJS bundle emitted unformatted output for its entire life.
  * `formatCode` reached prettier through `createRequire(import.meta.url)`, which esbuild lowers to
@@ -15,17 +15,24 @@
  * format that loads and exports a different shape is the same defect one step later.
  *
  * The CommonJS twin is checked even where no `exports` map names it, because tsup emits it under
- * `--format esm,cjs` and `files: ["dist"]` publishes it. A file that ships is a file a consumer
- * can reach.
+ * `--format esm,cjs` and `files: ["dist"]` publishes it.
  *
  * The CLI's own entry is a bin: it calls `program.parseAsync(process.argv)` at module scope, so
  * importing it runs the program. It is exercised the way a consumer reaches it instead, by being
  * run, which is the only form in which a CommonJS bundle that cannot start would show up.
  *
+ * **What this does and does not prove.** The child inherits the Node running the tests, which in
+ * this repo is 22.13 or newer, because pnpm 11 declares that floor and the workspace cannot be
+ * installed below it. From Node 22.12 onwards `require()` of an ES module is allowed, and that is
+ * what carries ten of these thirteen entries. It is not what the packages advertise: every
+ * manifest says `engines.node: ">=18.17.0"`. So a green run here means the bundles load on the
+ * Node this repo develops on, and says nothing about the floor the packages claim. The gap is
+ * measured rather than left to a comment, at the bottom of this file.
+ *
  * This asserts on the build, so the build has to have happened. `pnpm build` first.
  */
 import { describe, it, expect } from 'vitest';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -251,5 +258,79 @@ describe.each(cases)('$name $entry.subpath', ({ dir, entry }) => {
     }
     // Both sides at once, so a diff names the entry rather than reporting two unrelated failures.
     expect(result.cjs.exports).toEqual(result.esm.exports);
+  });
+});
+
+/**
+ * The same CommonJS files, on the Node the packages say they run on.
+ *
+ * `engines.node` is `">=18.17.0"` in all twelve manifests. `require()` of an ES module did not
+ * exist before Node 22.12, and ten of these thirteen entries need it, so on the advertised floor
+ * they throw `ERR_REQUIRE_ESM`. The block above cannot see that, because the Node running the
+ * tests is 22.13 or newer: pnpm 11 declares that floor and the workspace cannot be installed
+ * below it.
+ *
+ * `--no-experimental-require-module` turns the newer behaviour off, which is the closest a modern
+ * Node gets to the old one for this question.
+ *
+ * The cause is one line repeated: every failing bundle does `require("@drzl/<sibling>")`, and
+ * every DRZL package is `"type": "module"` with an ESM `main`, so the CommonJS build of one
+ * package can only reach another through an ESM file. The three that survive are exactly the
+ * three whose CommonJS bundle requires no `@drzl` sibling at all.
+ *
+ * This pins the measurement rather than endorsing it. It fails if the set grows, which is a new
+ * package inheriting the defect, and it fails if the set shrinks, which is the defect being fixed
+ * and this table needing to say so. It is not a passing grade for the CommonJS builds.
+ *
+ * Measured 2026-08-03 on Node 22.22.0.
+ */
+const ON_THE_ADVERTISED_ENGINE_FLOOR: Record<string, 'loads' | 'ERR_REQUIRE_ESM'> = {
+  'analyzer .': 'loads',
+  'cli .': 'ERR_REQUIRE_ESM',
+  'cli ./config': 'ERR_REQUIRE_ESM',
+  'generator-arktype .': 'ERR_REQUIRE_ESM',
+  'generator-json-schema .': 'ERR_REQUIRE_ESM',
+  'generator-orpc .': 'ERR_REQUIRE_ESM',
+  'generator-service .': 'ERR_REQUIRE_ESM',
+  'generator-typebox .': 'ERR_REQUIRE_ESM',
+  'generator-valibot .': 'ERR_REQUIRE_ESM',
+  'generator-zod .': 'ERR_REQUIRE_ESM',
+  'template-orpc-service .': 'ERR_REQUIRE_ESM',
+  'template-standard .': 'loads',
+  'validation-core .': 'loads',
+};
+
+const NO_REQUIRE_ESM = '--no-experimental-require-module';
+/** Node below 22.12 has no such flag and refuses to start, and on those versions the block above
+ *  measures this anyway, because there `require()` of an ES module is simply not available. */
+const flagAccepted = (() => {
+  try {
+    execFileSync(process.execPath, [NO_REQUIRE_ESM, '-e', ''], { stdio: 'pipe', timeout: 30_000 });
+    return true;
+  } catch {
+    return false;
+  }
+})();
+
+describe.runIf(flagAccepted)('the CommonJS builds, on Node without require(esm)', () => {
+  it('still fail exactly where they are known to fail, and nowhere else', () => {
+    const measured: Record<string, string> = {};
+    for (const { dir, entry } of cases) {
+      const abs = path.join(packagesDir, dir, entry.cjs);
+      // `-e` with the path interpolated as a JSON literal, so nothing has to be escaped by hand.
+      // The error code is printed rather than thrown, so a bin that starts and then exits on its
+      // own argv cannot be mistaken for a load failure.
+      const src = `try { require(${JSON.stringify(abs)}); } catch (e) { process.stderr.write('DRZL_LOAD_ERROR:' + (e.code || e.name)); }`;
+      // spawnSync rather than execFileSync: the child reports the load failure on stderr and then
+      // exits 0, so execFileSync would return without ever handing the stderr over.
+      const run = spawnSync(process.execPath, [NO_REQUIRE_ESM, '-e', src], {
+        cwd: probeDir,
+        encoding: 'utf8',
+        timeout: 60_000,
+      });
+      const marker = String(run.stderr ?? '').match(/DRZL_LOAD_ERROR:(\w+)/);
+      measured[`${dir} ${entry.subpath}`] = marker ? marker[1] : 'loads';
+    }
+    expect(measured).toEqual(ON_THE_ADVERTISED_ENGINE_FLOOR);
   });
 });
