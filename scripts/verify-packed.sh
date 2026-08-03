@@ -1444,9 +1444,15 @@ echo "==> typechecking the parity matrix output"
 #
 # The carve-out is by column, so the other 38 pg and 28 mysql columns are still compiled: the two
 # modules are copied with exactly those field lines dropped, and the copy is what this stage
-# checks. `assert-removed` below fails if a different number of lines goes, so the carve-out
-# cannot quietly widen to cover a real defect.
-mkdir -p src/gen-tsc
+# checks.
+#
+# Two things have to stay true of an exclusion, and only the first of them used to be checked:
+# that it still covers what it says, and that it is still needed at all. The inline line count
+# below is the first. The probes are the second, and they are the reason this is not a waiver that
+# outlives its defect: each carved column is put back on its own, and the result has to still fail
+# to compile. Simulating the generator fix, by making those three columns emit `"string"`, used to
+# leave them silently un-typechecked for ever with the stage printing that everything compiles.
+mkdir -p src/gen-tsc src/carve-probe
 node - <<'CARVE'
 import fs from 'node:fs';
 const CARVED = { pg: ['c_numeric', 'c_decimal'], mysql: ['m_decimal'] };
@@ -1466,6 +1472,17 @@ for (const [dialect, cols] of Object.entries(CARVED)) {
     process.exit(1);
   }
   fs.writeFileSync(`src/gen-tsc/${dialect}-matrix.arktype.ts`, kept.join('\n'));
+  // One probe per carved column: the compiled copy with that column, and only that column, put
+  // back. Somewhere outside the include above, so the stage's own run does not compile them.
+  for (const col of cols) {
+    const one = new RegExp(`^\\s*"${col}\\??":`);
+    const withCol = lines.filter((l) => !drop.test(l) || one.test(l));
+    if (withCol.length !== kept.length + MODES) {
+      console.error(`FAIL: restoring ${col} into the ${dialect} copy did not put back ${MODES} lines.`);
+      process.exit(1);
+    }
+    fs.writeFileSync(`src/carve-probe/${dialect}-${col}.ts`, withCol.join('\n'));
+  }
 }
 CARVE
 cat > tsconfig.gen.json <<'EOF'
@@ -1488,8 +1505,10 @@ cat > tsconfig.gen.json <<'EOF'
 EOF
 # The originals are excluded because the copies stand in for them, and their barrels with them:
 # `exclude` only filters the entry list, so `index.ts` re-exporting the matrix module would pull
-# the original straight back in. The barrel is five re-export lines and the copy covers what it
-# would have said.
+# the original straight back in. Those barrels are four re-export lines on pg and three on mysql,
+# and the copies cover the modules they name. What is given up with them is narrow and worth
+# saying: the barrel is no longer the thing that pulls its modules in here, so a barrel line
+# naming a module that does not exist would not be caught by this stage.
 if ! npx tsc -p tsconfig.gen.json; then
   echo "FAIL: the parity matrix output does not compile under tsc --strict." >&2
   echo "      Generated code that does not typecheck is not usable output, however it behaves" >&2
@@ -1497,6 +1516,30 @@ if ! npx tsc -p tsconfig.gen.json; then
   exit 1
 fi
 echo "    every generator's matrix output compiles under --strict, module nodenext"
+
+# The other direction: does each carved column still earn its carve?
+#
+# A count of removed lines says the exclusion still matches the emitted shape. It says nothing
+# about whether the defect is still there, so the day the generator stops putting a regex in the
+# type expression, these columns would stay out of the typecheck for ever and this stage would go
+# on printing that everything compiles. That is the same stale-waiver shape as the cross-generator
+# list further up, which had exactly this hole in the opposite direction.
+#
+# Compiled one at a time on purpose. TypeScript's instantiation budget is global to a compilation,
+# so a single run over all three probes would report only the first to exhaust it and the other two
+# would look resolved.
+carve_dead=0
+for probe in src/carve-probe/*.ts; do
+  if npx tsc --strict --noEmit --target es2022 --module nodenext --moduleResolution nodenext \
+      --skipLibCheck "$probe" >/dev/null 2>&1; then
+    echo "FAIL: $probe compiles, so that column no longer needs carving out of the typecheck." >&2
+    echo "      Delete it from CARVED above rather than leaving a column excluded for a defect" >&2
+    echo "      that has been fixed." >&2
+    carve_dead=1
+  fi
+done
+[ "$carve_dead" = 0 ] || exit 1
+echo "    each carved column still fails on its own, so the carve-out is still earning it"
 
 cat > src/json-schema-valid.ts <<'JSON_SCHEMA_VALID'
 /**
@@ -1702,11 +1745,12 @@ size_fail=0
 # table. Measured rather than guessed, because a budget raised to make a number fit is worth
 # nothing: on the original 62 columns arktype emits 223 bytes per column, up from 213, and those
 # ten bytes are the bigint bound and the array element walk, both of them constraints that were
-# missing. The two new columns cost 920 bytes each, four times the average, because a
-# nullable capped array is the longest thing this generator emits and it is emitted once per mode.
-# So the mixed average moved to 244 without any generator emitting more for the same input, which
-# is the same effect recorded above for the CHECK columns. The three figures reconcile:
-# 13827 + 1840 = 15667 bytes, and the 1840 includes the 37-byte barrel line for the new module.
+# missing. The two new columns cost 1803 bytes of module, about 900 each, four times the average,
+# because a nullable capped array is the longest thing this generator emits and it is emitted once
+# per mode. So the mixed average moved to 244 without any generator emitting more for the same
+# input, which is the same effect recorded above for the CHECK columns. The figures reconcile:
+# 13827 without the table, plus 1803 for the module and the 37-byte barrel line naming it,
+# is the 15667 this script prints.
 report_size src/gen/pg/zod      zod      420  || size_fail=1
 report_size src/gen/pg/valibot  valibot  540  || size_fail=1
 report_size src/gen/pg/arktype  arktype  280  || size_fail=1
