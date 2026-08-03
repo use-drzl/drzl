@@ -9,8 +9,9 @@
 # that omitted a required file, a build that silently emitted nothing, a generated import specifier
 # that did not resolve under the consumer's compiler.
 #
-# So this packs all ten packages, installs them into an empty project, runs the README's headline
-# command, and typechecks the emitted tree under every moduleResolution TypeScript still supports.
+# So this packs every publishable package, checks each tarball holds what its manifest promises,
+# installs them into an empty project, runs the README's headline command, and typechecks the
+# emitted tree under every moduleResolution TypeScript still supports.
 # The last part is the point: DRZL emits `.js` specifiers precisely so the output compiles under
 # node16 and nodenext, and nothing else in CI would notice if that regressed.
 #
@@ -100,6 +101,131 @@ for tgz in "$TARS"/*.tgz; do
   fi
 done
 [ "$size_over" = 0 ] || exit 1
+
+# ---------------------------------------------------------------------------------------------
+# What is inside each tarball, against what its own manifest promises is there.
+#
+# `files` is a list of directories, not of entry points, so the two are only ever connected by
+# hand. A `types` field naming a file the build never emitted, or an `exports` subpath pointing
+# somewhere outside `dist`, both pack cleanly and fail only later: in a consumer's editor, which
+# just goes quiet, or at their first import. Nothing in the workspace can see either, because in a
+# working tree every one of those paths has `src` sitting next to `dist` to fall back on.
+#
+# The manifest is read out of the tarball rather than off disk, because the tarball's copy is the
+# one npm serves and it is not the same file: pnpm rewrites `workspace:` ranges into it on the way
+# past.
+# ---------------------------------------------------------------------------------------------
+echo "==> what each tarball contains"
+cat > "$WORK/inspect-tarballs.mjs" <<'INSPECT'
+import { execFileSync } from 'node:child_process';
+import fs from 'node:fs';
+import path from 'node:path';
+
+const dir = process.argv[2];
+const strip = (p) => String(p).replace(/^\.\//, '');
+
+/**
+ * Things a consumer has no use for, and which reach a tarball only by a `files` entry that is too
+ * wide or by a build writing outside `dist`. Sources are the expensive one: they are the bulk of
+ * a package by size and they let a consumer's bundler resolve past the built entry into
+ * unpublished code.
+ */
+const BANNED = [
+  [/^src\//, 'source'],
+  [/^(test|tests|__tests__)\//, 'tests'],
+  [/^node_modules\//, 'an installed dependency tree'],
+  [/(^|\/)tsconfig[^/]*\.json$/, 'compiler configuration'],
+  [/\.tsbuildinfo$/, 'an incremental build cache'],
+  [/(^|\/)(vitest|eslint|tsup|prettier)\.config\./, 'tooling configuration'],
+  [/\.(spec|test)\.[cm]?[jt]sx?$/, 'a test file'],
+  [/^\.(npmrc|env)/, 'local machine configuration'],
+];
+
+let bad = 0;
+const tarballs = fs.readdirSync(dir).filter((f) => f.endsWith('.tgz')).sort();
+if (!tarballs.length) {
+  console.error('FAIL: no tarballs to inspect.');
+  process.exit(1);
+}
+
+for (const file of tarballs) {
+  const tgz = path.join(dir, file);
+  const listed = execFileSync('tar', ['-tzf', tgz], { encoding: 'utf8' })
+    .split('\n')
+    .map(strip)
+    .filter((l) => l && !l.endsWith('/'));
+  // Every path in an npm tarball is under `package/`; the manifest's paths are relative to it.
+  const shipped = new Set(listed.map((l) => l.replace(/^package\//, '')));
+  const raw = execFileSync('tar', ['-xzOf', tgz, 'package/package.json'], { encoding: 'utf8' });
+  const pkg = JSON.parse(raw);
+
+  const problems = [];
+
+  // Every path the manifest names, wherever it names it. `exports` is walked to any depth rather
+  // than read at a fixed one, because conditions nest and a subpath added later would otherwise
+  // be checked by nothing.
+  const referenced = new Map();
+  const note = (where, value) => {
+    if (typeof value === 'string' && value) referenced.set(strip(value), where);
+  };
+  note('main', pkg.main);
+  note('types', pkg.types);
+  note('module', pkg.module);
+  for (const [name, target] of Object.entries(pkg.bin ?? {})) note(`bin.${name}`, target);
+  const walk = (node, at) => {
+    if (typeof node === 'string') return note(at, node);
+    if (node && typeof node === 'object') {
+      for (const [k, v] of Object.entries(node)) walk(v, `${at}[${k}]`);
+    }
+  };
+  walk(pkg.exports, 'exports');
+
+  for (const [target, where] of referenced) {
+    if (!shipped.has(target)) {
+      problems.push(`${where} names ${target}, which is not in the tarball`);
+    }
+  }
+
+  // Every ESM entry's CommonJS twin. The builds all pass --format esm,cjs and `files: ["dist"]`
+  // publishes the result, so the twin is part of the artefact whether or not a condition names
+  // it, and @drzl/validation-core's twin was broken for its whole life with nothing looking at it.
+  for (const [target, where] of referenced) {
+    if (!target.endsWith('.js')) continue;
+    const twin = target.replace(/\.js$/, '.cjs');
+    if (!shipped.has(twin)) {
+      problems.push(`${where} ships ${target} but no ${twin} beside it`);
+    }
+  }
+
+  for (const entry of shipped) {
+    for (const [pattern, what] of BANNED) {
+      if (pattern.test(entry)) problems.push(`ships ${entry}, which is ${what}`);
+    }
+  }
+
+  // A `workspace:` range that survived packing installs for nobody. pnpm rewrites them on the way
+  // into the tarball, so one surviving here means this artefact was not produced by `pnpm pack`.
+  if (/"workspace:/.test(raw)) {
+    problems.push('its manifest still carries a workspace: range, which npm cannot resolve');
+  }
+
+  if (problems.length) {
+    bad++;
+    console.error(`FAIL: ${pkg.name}`);
+    for (const p of problems) console.error(`      ${p}`);
+  } else {
+    console.log(`    ${pkg.name.padEnd(30)} ${shipped.size} files, every entry point present`);
+  }
+}
+
+if (bad) {
+  console.error(`      ${bad} tarball(s) do not contain what their manifest promises.`);
+  process.exit(1);
+}
+INSPECT
+if ! node "$WORK/inspect-tarballs.mjs" "$TARS"; then
+  exit 1
+fi
 
 echo "==> installing them into an empty project"
 # A real foreign key, because the oRPC generator derives relation endpoints from one and a
@@ -2142,6 +2268,50 @@ for pkg in packages/*/package.json; do
 done
 [ "$missing" = 0 ] || exit 1
 echo "    every @drzl dependency resolves on npm"
+
+# ---------------------------------------------------------------------------------------------
+# Does what npm actually serves carry a provenance attestation?
+#
+# The release workflow sets NPM_CONFIG_PROVENANCE and grants `id-token: write`, and both of those
+# are statements of intent. The attestation is the result, it is produced by a different machine,
+# and nothing looked at it. Losing it is silent in exactly the way this whole file exists for: the
+# workflow still passes, the packages still publish, and the only difference is that npm stops
+# showing where the tarball was built and `npm audit signatures` stops being able to answer.
+#
+# Measured 2026-08-03, over every version of every package: all attested except
+# @drzl/generator-json-schema@0.2.0 and @drzl/generator-typebox@0.0.0, which are the two first
+# publishes done by hand. That is not a workflow defect. npm trusted publishing has nothing to
+# authenticate against for a name that has never existed, so a package's very first version cannot
+# be published by CI at all, and cannot carry provenance. Every version published by CI since has
+# one.
+#
+# So this asks about the version tagged `latest`, not about the version in this working tree,
+# which during a release has not been published yet. A package whose only version is that
+# hand-made first one will fail here, and that is the correct answer: what npm is serving really
+# is unattested. Publishing the next version through CI clears it.
+# ---------------------------------------------------------------------------------------------
+echo "==> published packages carry a provenance attestation"
+unattested=0
+for pkg in packages/*/package.json; do
+  name=$(node -p "const p=require('./$pkg'); p.private ? '' : p.name")
+  [ -z "$name" ] && continue
+  # The stage above already fails the run if the registry is unreachable, so a failure here is a
+  # package that has never been published rather than a network problem.
+  if ! version=$(npm view "$name" version 2>/dev/null); then
+    echo "    $name has no published version yet, so there is nothing to attest"
+    continue
+  fi
+  predicate=$(npm view "$name" dist.attestations.provenance.predicateType 2>/dev/null || true)
+  if [ -z "$predicate" ]; then
+    echo "    FAIL: $name@$version is on npm with no provenance attestation." >&2
+    echo "          Check that release.yml still sets NPM_CONFIG_PROVENANCE and still grants" >&2
+    echo "          id-token: write, and that the publish ran from CI rather than by hand." >&2
+    unattested=1
+  else
+    echo "    $name@$version  $predicate"
+  fi
+done
+[ "$unattested" = 0 ] || exit 1
 cd "$APP"
 
 echo "OK: $count packages packed, installed into an empty project, generated, and the output"
@@ -2149,4 +2319,6 @@ echo "    typechecks under bundler, node16 and nodenext, and validates at least 
 echo "    the first-party drizzle-orm validator modules across three dialects and three modes,"
 echo "    checked against a real Postgres, a real SQLite and, where MYSQL_URL is set, a real"
 echo "    MySQL, with applyDefaults compared against what the database writes, and analyzed with"
-echo "    no column left unnamed on either drizzle-orm major."
+echo "    no column left unnamed on either drizzle-orm major. Every tarball holds the files its"
+echo "    manifest names and nothing from the working tree, and every package npm is serving"
+echo "    carries a provenance attestation."
