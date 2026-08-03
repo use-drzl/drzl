@@ -1,5 +1,5 @@
 ---
-'@drzl/generator-arktype': patch
+'@drzl/generator-arktype': minor
 ---
 
 Bound bigint columns in the arktype output, which accepted values no int64 can hold
@@ -25,4 +25,5 @@ import and takes whatever imported it down.
 **What changes for you.** Generated arktype schemas for `bigint`, `bigserial` and SQLite
 `blob({ mode: 'bigint' })` columns now reject a bigint outside the int64 range. If you were
 relying on a value larger than the column can store passing validation, it will now be refused,
-which is the behaviour the other four generators already had.
+which is the behaviour the zod, valibot and typebox generators already had, and the behaviour of
+`drizzle-orm/arktype` itself.

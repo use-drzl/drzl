@@ -120,29 +120,89 @@ describe('a bound ArkType could only state wrongly', () => {
 
 describe('a bigint column carrying an applied default', () => {
   /**
-   * Asserted on the source rather than by running it, which this file otherwise never does.
+   * The bound is dropped on a field that carries an applied default, because a defaultable
+   * definition is only valid as an object property: `type("(bigint | null) = null").narrow(...)`
+   * throws at import. Remove the guard in the generator and this test fails by not loading.
    *
-   * The module cannot be loaded today, for a reason that predates the bound and is not fixed
-   * here: `applyDefaults` renders the default with `JSON.stringify`, so a bigint column emits
-   * `bigint = 7` and ArkType refuses it with "Default for n must be a bigint (was a number)". A
-   * bigint-valued default fails even earlier, in the generator, with "Do not know how to
-   * serialize a BigInt". Both are reported separately.
+   * It is checked by loading rather than by reading the source, because the source cannot show
+   * the part that matters: the module loads, and its insert schema is unbounded while select and
+   * update are bounded. An earlier version of this test asserted on the text and claimed no such
+   * module could load at all, which was wrong and unfalsifiable in that form.
    *
-   * What is checked here is only that this change does not add a second reason it cannot load:
-   * `type("bigint = 7").narrow(...)` would throw "Defaultable definitions ... are only valid as
-   * properties", which is what the guard at the call site exists to avoid.
+   * `null` is the only default value that reaches this state. `.default(7)` on a bigint is
+   * refused by ArkType as "Default for n must be a bigint", and a bigint-valued default crashes
+   * the generator on `JSON.stringify`. Both are applyDefaults defects tracked separately, and
+   * fixing them, or moving the default onto the Type where `.default()` keeps the narrow, should
+   * turn the first expectation below into `false` and this comment into history.
    */
-  it('keeps the bound off the defaulted field, which cannot carry a narrow', async () => {
-    const { source } = await schemasFor([col('n', { hasDefault: true, defaultValue: 7 as never })], {
-      applyDefaults: true,
+  it('loads, and is unbounded on insert alone, which is the cost of the guard', async () => {
+    const { load } = await schemasFor(
+      [col('n', { nullable: true, hasDefault: true, defaultValue: null as never })],
+      { applyDefaults: true }
+    );
+    const mod = await load();
+    expect(ok(mod.InserttSchema, 2n ** 70n), 'insert: the bound the guard drops').toBe(true);
+    expect(ok(mod.SelecttSchema, 2n ** 70n), 'select: bounded as usual').toBe(false);
+    expect(ok(mod.UpdatetSchema, 2n ** 70n), 'update: bounded as usual').toBe(false);
+    expect(ok(mod.InserttSchema, 1n), 'insert still accepts a valid value').toBe(true);
+  });
+});
+
+/**
+ * Array columns, where the constraint describes the element and the column's nullability
+ * describes the whole list.
+ *
+ * These are one family with the character caps rather than a bigint concern, and they are here
+ * because a bigint array is how the defect was found. The generator used to derive the element by
+ * stripping a trailing `[]` off the rendered type string, which is correct only when nothing else
+ * is wrapped around it. A nullable array renders as `(bigint[] | null)`, so the whole union became
+ * the "element" and `.array()` wrapped that: `[[1n]]` and `[null]` were accepted, `null` and
+ * `[1n]` were refused, and for bigint the emitted TypeScript did not compile, because `>=` cannot
+ * be applied to `bigint[]`. The same shape was silently wrong for a capped string array on master,
+ * where it compiled and only misvalidated.
+ */
+describe('an array column', () => {
+  const cases: [string, Column][] = [
+    ['bigint, not null', col('n', { arrayDimensions: 1 })],
+    ['bigint, nullable', col('n', { arrayDimensions: 1, nullable: true })],
+  ];
+  for (const [label, column] of cases) {
+    it(`${label}: bounds the element and lets the column's own nullability stand`, async () => {
+      const mod = await (await schemasFor([column])).load();
+      const s = mod.SelecttSchema;
+      expect(ok(s, [1n]), 'a list of valid elements').toBe(true);
+      expect(ok(s, []), 'an empty list').toBe(true);
+      expect(ok(s, [2n ** 70n]), 'an element above the maximum').toBe(false);
+      expect(ok(s, [[1n]]), 'a list of lists, one dimension too many').toBe(false);
+      expect(ok(s, [null]), 'a null element').toBe(false);
+      expect(ok(s, 1n), 'a bare element where a list belongs').toBe(false);
+      expect(ok(s, null), `null itself`).toBe(column.nullable === true);
     });
-    const insert = source.match(/InserttSchema = type\(\{([\s\S]*?)\n\}\)/)?.[1];
-    expect(insert, `no insert schema in:\n${source}`).toBeTruthy();
-    expect(insert).toContain('= 7');
-    expect(insert).not.toContain('narrow');
-    // Select carries no default, so the bound is on it as usual. This is the positive control:
-    // without it, a generator that emitted no bound at all would pass the two lines above.
-    const select = source.match(/SelecttSchema = type\(\{([\s\S]*?)\n\}\)/)?.[1];
-    expect(select).toContain('narrow');
+  }
+
+  it('a nullable capped-string array bounds the element too', async () => {
+    // The pre-existing instance of the same defect, which compiled and so was never noticed.
+    const column = {
+      ...col('n', { arrayDimensions: 1, nullable: true }),
+      tsType: 'string',
+      dbType: 'TEXT',
+      maxLength: 5,
+      min: undefined,
+      max: undefined,
+    } as Column;
+    const mod = await (await schemasFor([column])).load();
+    const s = mod.SelecttSchema;
+    expect(ok(s, ['ab']), 'a list of short strings').toBe(true);
+    expect(ok(s, null), 'null, which the column allows').toBe(true);
+    expect(ok(s, ['abcdef']), 'an element over the cap').toBe(false);
+    expect(ok(s, [['ab']]), 'a list of lists').toBe(false);
+  });
+
+  it('bounds the element of a two-dimensional array at the right depth', async () => {
+    const mod = await (await schemasFor([col('n', { arrayDimensions: 2 })])).load();
+    const s = mod.SelecttSchema;
+    expect(ok(s, [[1n]])).toBe(true);
+    expect(ok(s, [[2n ** 70n]])).toBe(false);
+    expect(ok(s, [1n]), 'one dimension too few').toBe(false);
   });
 });

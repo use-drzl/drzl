@@ -710,6 +710,25 @@ export const defaulted = pgTable('defaulted', {
   d_enum: moodEnum().default('sad'),
 });
 
+/**
+ * Nullable arrays, which every array in `matrix` being `notNull` meant nothing had ever emitted.
+ *
+ * A nullable array renders differently enough to break code that assumed `T[]`: the arktype
+ * generator recovered an array's element by stripping a trailing `[]`, and `(T[] | null)` has
+ * none, so the whole union became the element and `.array()` wrapped it. That output refused
+ * `null` and `['ab']`, accepted `[['ab']]`, and for the bigint one did not compile at all. A
+ * capped or bounded element is what makes the shape reachable: an unconstrained column emits a
+ * plain DSL string and never goes near that code.
+ *
+ * Its own table rather than two more columns on `matrix`, because the arktype output for a
+ * 40-column table of narrowed fields is already at the edge of TS2589, and two more tipped it
+ * over. That defect is reported; provoking it here would only hide these columns behind it.
+ */
+export const arrays = pgTable('arrays', {
+  a_varchar_arr_null: varchar({ length: 10 }).array(),
+  a_bigint_arr_null: bigint({ mode: 'bigint' }).array(),
+});
+
 export const checked = pgTable('checked', {
   k_min: integer(),
   k_max: integer(),
@@ -1305,8 +1324,12 @@ PARITY_HARNESS
 # ajv and ajv-formats are the JSON Schema generator's own declared devDependency ranges, so the
 # packed artefact is read by the same validator its unit tests claim it is checked against. They
 # are not dependencies of anything DRZL publishes: JSON Schema output is data with no runtime.
+#
+# typescript, because this tree's generated output is now compiled as well as executed. It was
+# only ever run, and a nullable bigint array reached a released generator emitting `>=` against a
+# `bigint[]`, which no amount of running it can notice.
 npm install --no-audit --no-fund --loglevel=error \
-  "$TARS"/*.tgz drizzle-orm@1.0.0-rc.4 zod valibot arktype @sinclair/typebox tsx \
+  "$TARS"/*.tgz drizzle-orm@1.0.0-rc.4 zod valibot arktype @sinclair/typebox tsx typescript \
   ajv@^8.17.1 ajv-formats@^3.0.1 >/dev/null
 
 for dialect in pg mysql sqlite; do
@@ -1380,6 +1403,66 @@ CONFIG
     done
   fi
 done
+
+# ---------------------------------------------------------------------------------------------
+# Does the parity matrix output compile?
+#
+# The typecheck stage far above runs on a two-table users/posts schema with no arrays, no bigint
+# and no capped column, so the only generated code this script ever put through `tsc` was its
+# simplest. The 40-column matrix, which exists precisely to hold the awkward types, was generated,
+# executed and then thrown away without a compiler ever looking at it.
+#
+# What that hid: the arktype generator emitted `type("(bigint[] | null)").narrow((v, ctx) => ...
+# v >= -9223372036854775808n ...)` for a nullable bigint array, which is TS2365, `>=` cannot be
+# applied to `bigint[]`. Every runtime check in this file passed it, because a narrow that throws
+# is caught and read as a rejection, and rejection was the answer for most probe values anyway.
+# ---------------------------------------------------------------------------------------------
+echo "==> typechecking the parity matrix output"
+cat > tsconfig.gen.json <<'EOF'
+{
+  "compilerOptions": {
+    "strict": true, "noEmit": true, "target": "es2022",
+    "module": "nodenext", "moduleResolution": "nodenext", "skipLibCheck": true
+  },
+  "include": ["src/gen/**/*.ts", "src/schema.ts", "src/schema-mysql.ts", "src/schema-sqlite.ts"],
+  "exclude": [
+    "src/gen/pg/arktype/matrix.arktype.ts",
+    "src/gen/mysql/arktype/matrix.arktype.ts",
+    "src/gen/pg/arktype/index.ts",
+    "src/gen/mysql/arktype/index.ts"
+  ]
+}
+EOF
+# Four exclusions, named rather than silent, for one reported defect that predates this branch.
+#
+# The arktype output for the pg and mysql matrix tables each fail on their own with TS2589, "Type
+# instantiation is excessively deep and possibly infinite", at the `type({...})` call wrapping the
+# whole table. The sqlite one, 14 columns, is fine. What is known about it, each measured rather
+# than assumed:
+#
+#   - It is not this branch's doing. Rewriting the emitted pg file back to the exact form the
+#     generator produced before the bigint bound and before the array fix reproduces it at the
+#     identical position.
+#   - It is not the per-field `.narrow().narrow()` chain. Collapsing all fifteen double-narrow
+#     chains in the mysql file into single ones does not clear it.
+#   - It is the number of narrowed fields in one object literal, and the budget is global to the
+#     compilation: check the three arktype trees together and only the first file to exhaust it is
+#     reported, which is why this looked at first like a mysql-only problem.
+#
+# The barrels are excluded with them because `exclude` only filters the entry list: `index.ts`
+# re-exports the matrix module and would pull it back in.
+#
+# Nothing had ever compiled this output, and nothing had ever generated arktype for MySQL at all
+# until this branch widened the parity dialects, which is why a defect older than the branch
+# surfaced with it. Fixing it means changing how the generator emits a whole-table object, which
+# is a separate piece of work from anything here.
+if ! npx tsc -p tsconfig.gen.json; then
+  echo "FAIL: the parity matrix output does not compile under tsc --strict." >&2
+  echo "      Generated code that does not typecheck is not usable output, however it behaves" >&2
+  echo "      at runtime." >&2
+  exit 1
+fi
+echo "    every generator's matrix output compiles under --strict, module nodenext"
 
 cat > src/json-schema-valid.ts <<'JSON_SCHEMA_VALID'
 /**
@@ -1580,9 +1663,18 @@ size_fail=0
 # Raised once, when the fixture gained thirteen columns that each carry a CHECK. That is the
 # densest output the generators produce, so the per-column average rose without any generator
 # emitting more for the same input.
+#
+# Raised again for arktype only, 240 to 280, when the fixture gained the two-column `arrays`
+# table. Measured rather than guessed, because a budget raised to make a number fit is worth
+# nothing: on the original 62 columns arktype emits 223 bytes per column, up from 213, and those
+# ten bytes are the bigint bound and the array element walk, both of them constraints that were
+# missing. The two new columns cost about 750 bytes each, three times the average, because a
+# nullable capped array is the longest thing this generator emits and it is emitted three times,
+# once per mode. So the mixed average moved to 248 without any generator emitting more for the
+# same input, which is the same effect recorded above for the CHECK columns.
 report_size src/gen/pg/zod      zod      420  || size_fail=1
 report_size src/gen/pg/valibot  valibot  540  || size_fail=1
-report_size src/gen/pg/arktype  arktype  240  || size_fail=1
+report_size src/gen/pg/arktype  arktype  280  || size_fail=1
 report_size src/gen/pg/typebox  typebox  430  || size_fail=1
 [ "$size_fail" = 0 ] || exit 1
 

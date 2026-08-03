@@ -267,8 +267,17 @@ function renderObjectShape(
       const dsl = atField(c, mode, coerceDates, checks, sets, applyDefaults, cardinalities);
       // A defaultable definition is only valid as an object property: `type("bigint = 7")` throws
       // "Defaultable definitions like 'number = 0' are only valid as properties in an object or
-      // tuple" at import. So a bound is not moved onto a field that carries an applied default,
-      // where it would trade a missing constraint for a module nothing can load.
+      // tuple" at import. So a bound is not moved onto a field carrying an applied default, where
+      // it would trade a missing constraint for a module nothing can load.
+      //
+      // That leaves a hole rather than closing one, and it is observable. `.default(null)` on a
+      // nullable bigint emits `"(bigint | null) = null"`, which loads, so its *insert* schema is
+      // unbounded while select and update are bounded. It is the only value for which the hole
+      // shows: `.default(7)` on a bigint is refused as "Default for n must be a bigint", and a
+      // bigint-valued default crashes this generator on `JSON.stringify` before reaching here.
+      // Closing it means moving the default off the DSL and onto the Type, where
+      // `.default(null)` does work and does keep the narrow. That is a change to the whole
+      // applyDefaults path, which has two further defects of its own, and is tracked separately.
       const defaulted = mode === 'insert' && applyDefaults && c.defaultValue !== undefined;
       const caps = atCapNarrows(c) + (defaulted ? '' : atBigintNarrow(c, checks));
       if (!caps) return `  ${JSON.stringify(c.name)}: ${JSON.stringify(dsl)},`;
@@ -278,12 +287,12 @@ function renderObjectShape(
       const optional = dsl.endsWith('?');
       const inner = optional ? dsl.slice(0, -1) : dsl;
       const key = JSON.stringify(optional ? `${c.name}?` : c.name);
-      // The cap describes the element, so for an array column the narrow goes on the element and
-      // `.array()` wraps it. Narrowing the array instead would ask how many characters a list has.
-      const dims = c.arrayDimensions ?? 0;
-      const element = dims ? inner.replace(/(\[\])+$/, '').replace(/^\((.*)\)$/, '$1') : inner;
-      const wrap = '.array()'.repeat(dims);
-      return `  ${key}: type(${JSON.stringify(element)})${caps}${wrap},`;
+      // The whole rendered type, unpicked no further. This used to strip the array brackets off
+      // to narrow the element and then call `.array()` to put them back, which was correct only
+      // for a bare `T[]`: a nullable array renders `(T[] | null)` and the union became the
+      // element, and a two-dimensional array came out three deep. The dimensions belong to the
+      // DSL, which already gets them right, and `atNarrow` walks into them instead.
+      return `  ${key}: type(${JSON.stringify(inner)})${caps},`;
     })
     .join('\n');
 }
@@ -333,12 +342,40 @@ function atRowNarrows(rows: RowCheck[], cols: Column[]): string {
  * Null and absent both pass, matching SQL, where a check involving NULL is satisfied.
  */
 /**
- * Column caps as narrows: characters for `varchar(n)`, bytes for MySQL's TEXT family.
+ * One field-level narrow, whose predicate reaches the element of an array column.
  *
- * Neither is expressible in the string DSL. `string <= n` counts UTF-16 code units, which is a
- * third measurement, agreeing with neither. Both databases count `varchar(n)` in characters and
- * MySQL counts `tinytext` in bytes, so both are written out here rather than approximated.
+ * Every constraint this file puts on a field describes a *value*: how many characters it has, what
+ * range it lies in. For an array column that is a statement about each element, while the column's
+ * own nullability is a statement about the list. The two used to be separated by string surgery:
+ * the rendered type had a trailing `[]` stripped off to recover the element, the narrow went on
+ * that, and `.array()` put the list back.
+ *
+ * It only ever worked when nothing else was wrapped around the brackets. A nullable array renders
+ * as `(bigint[] | null)`, so the whole union became the "element" and `.array()` wrapped it: the
+ * schema then refused `null` and `[1n]`, accepted `[[1n]]` and `[null]`, and for a bigint would
+ * not even compile, since `>=` cannot be applied to `bigint[]`. A two-dimensional array came out a
+ * dimension too deep for the same reason.
+ *
+ * So the narrow stays on the whole value, where the DSL string is already correct about
+ * dimensions, nullability and any cardinality bound, and the predicate walks in one `.every` per
+ * dimension instead. `.every` on an empty list is true, which is right: a list with no elements
+ * breaks no constraint on elements. Null passes at every level, matching SQL, where a comparison
+ * involving NULL leaves the check satisfied.
+ *
+ * A narrow is not reached at all unless the base type already matched, so the `.every` is only
+ * ever called on something ArkType has confirmed is an array.
  */
+function atNarrow(c: Column, predicate: (v: string) => string, message: string): string {
+  const dims = c.arrayDimensions ?? 0;
+  // `v` for the value itself, so a non-array column emits exactly what it always did.
+  const name = (i: number) => (i === 0 ? 'v' : `e${i}`);
+  let body = predicate(name(dims));
+  for (let i = dims; i > 0; i--) {
+    body = `${name(i - 1)}.every((${name(i)}) => ${name(i)} == null || ${body})`;
+  }
+  return `.narrow((v, ctx) => v == null || ${body} || ctx.mustBe(${JSON.stringify(message)}))`;
+}
+
 /**
  * A bigint column's range as a narrow, because the string DSL cannot state one.
  *
@@ -359,37 +396,49 @@ function atBigintNarrow(c: Column, checks: ColumnCheck[]): string {
   // does not parse throws at import and takes everything importing it with it. A bound this
   // cannot render is left off rather than rendered wrongly.
   const literal = (v: string) => (/^-?\d+$/.test(v) ? `${v}n` : undefined);
-  const parts: string[] = [];
+  const parts: ((v: string) => string)[] = [];
   if (equals !== undefined) {
     const e = literal(equals);
     if (!e) return '';
-    parts.push(`v === ${e}`);
+    parts.push((v) => `${v} === ${e}`);
   } else {
     for (const b of [lower, upper]) {
       if (!b) continue;
       const l = literal(b.value);
       if (!l) return '';
-      parts.push(`v ${b.op} ${l}`);
+      parts.push((v) => `${v} ${b.op} ${l}`);
     }
   }
   if (!parts.length) return '';
-  const msg = JSON.stringify(
-    equals !== undefined ? `exactly ${equals}` : `between ${lower?.value ?? 'any'} and ${upper?.value ?? 'any'}`
+  return atNarrow(
+    c,
+    (v) => `(${parts.map((p) => p(v)).join(' && ')})`,
+    equals !== undefined
+      ? `exactly ${equals}`
+      : `between ${lower?.value ?? 'any'} and ${upper?.value ?? 'any'}`
   );
-  return `.narrow((v, ctx) => v == null || (${parts.join(' && ')}) || ctx.mustBe(${msg}))`;
 }
 
+/**
+ * Column caps as narrows: characters for `varchar(n)`, bytes for MySQL's TEXT family.
+ *
+ * Neither is expressible in the string DSL. `string <= n` counts UTF-16 code units, which is a
+ * third measurement, agreeing with neither. Both databases count `varchar(n)` in characters and
+ * MySQL counts `tinytext` in bytes, so both are written out here rather than approximated.
+ */
 function atCapNarrows(c: Column): string {
   if (c.tsType !== 'string' || c.shape) return '';
   const out: string[] = [];
   if (c.maxLength) {
-    const msg = JSON.stringify(`at most ${c.maxLength} characters`);
-    out.push(`.narrow((v, ctx) => v == null || [...v].length <= ${c.maxLength} || ctx.mustBe(${msg}))`);
+    out.push(atNarrow(c, (v) => `[...${v}].length <= ${c.maxLength}`, `at most ${c.maxLength} characters`));
   }
   if (c.maxBytes) {
-    const msg = JSON.stringify(`at most ${c.maxBytes} bytes`);
     out.push(
-      `.narrow((v, ctx) => v == null || new TextEncoder().encode(v).length <= ${c.maxBytes} || ctx.mustBe(${msg}))`
+      atNarrow(
+        c,
+        (v) => `new TextEncoder().encode(${v}).length <= ${c.maxBytes}`,
+        `at most ${c.maxBytes} bytes`
+      )
     );
   }
   return out.join('');
