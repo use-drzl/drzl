@@ -3146,13 +3146,19 @@ export const notes = app.table('notes', {
 OLD_SCHEMA
 
 # The one thing a Postgres fixture cannot describe: MySQL's text family, whose cap is a property
-# of the type rather than a declared length, and the only source of `maxBytes` in the whole
-# analysis.
+# of the type rather than a declared length.
 #
-# Hand written rather than taken from the parity MySQL fixture, which cannot be imported under
-# 0.45.2 at all: 0.4x's mysql-core has no `blob` export. That fact was briefly used here to
-# claim no fixture could cover `maxBytes`, which was false, and this file is what refutes it.
-# Four columns and a varchar key, all of which import on both majors.
+# It is one of two sources of `maxBytes`, not the only one, which is what this sentence said
+# before. MYSQL_TEXT_CAPS (packages/analyzer/src/index.ts:242) is eight entries, four text and
+# four blob. Measured on 1.0.0-rc.4: a `blob` column comes back with maxBytes 65535 and a
+# `tinyblob` with 255.
+#
+# The text half is the half a shared fixture can carry. Measured on 0.45.2: text, tinytext,
+# mediumtext and longtext are functions on its mysql-core, and blob, tinyblob, mediumblob and
+# longblob are all undefined, which is also why the parity MySQL fixture cannot be imported
+# under that major at all. That last fact was briefly used here to claim no fixture could cover
+# `maxBytes`, which was false, and this file is what refutes it. Four columns and a varchar key,
+# all of which import on both majors.
 cat > src/mysql-text.ts <<'MYSQL_TEXT'
 import { mysqlTable, varchar, text, tinytext, mediumtext, longtext } from 'drizzle-orm/mysql-core';
 
@@ -3322,20 +3328,6 @@ const ALLOWED: Record<string, string> = {
   // this exact column: drizzle-zod 0.8.3 on 0.45.2 accepts [['a']] and rejects ['a'], and
   // drizzle-orm/zod on 1.0.0-rc.4 does the opposite. v1 also infers `string[]`, not `string[][]`.
   'rows.grid.arrayDimensions': "v1 spells 2D `.array('[][]')`; chaining `.array()` stays at 1",
-  // v1's `MySqlText` carries `length` equal to the type's cap, 65535 for `text` and 255 for
-  // `tinytext`; 0.4x leaves it undefined, and the analyzer reads the column's declared length
-  // the same way on both. Upstream, not a reading of it: measured on the raw column objects.
-  //
-  // What really applies is a byte budget, which both majors emit, so nothing is accepted on one
-  // side and refused on the other: the extra character cap is the same number as the byte cap
-  // and a code point is never fewer than one byte. It is visible in the JSON Schema output,
-  // which has no byte check to fall back on, so on 0.4x these columns carry no cap at all
-  // there. That gap is filed already, from the round that found `maxBytes` unread by that
-  // generator.
-  'mtext.t_text.maxLength': "v1's MySqlText states `length`, 0.4x's does not",
-  'mtext.t_tiny.maxLength': 'as mtext.t_text.maxLength',
-  'mtext.t_medium.maxLength': 'as mtext.t_text.maxLength',
-  'mtext.t_long.maxLength': 'as mtext.t_text.maxLength',
 };
 
 /**
@@ -3358,10 +3350,10 @@ const DEFECTS: Record<string, string> = {
   // A label, and nothing more, on this fixture. `dbType` is read in exactly one place outside the
   // analyzer, `isIntegerColumn`, which prefers the `integer` flag and only falls back to
   // `dbType === 'INTEGER'`. Measured by changing it rather than by reading the output: setting all
-  // sixteen of these to the value v1 reports, in the analysis of the 0.4x tree, and regenerating
-  // with the zod and JSON Schema generators produces 20 byte-identical files. Reading the diff of
-  // the two majors' output instead would have been wrong here, since `c_real` sits in this group
-  // and in the float group below, and its output does change.
+  // seventeen of these to the value v1 reports, in the analysis of the 0.4x tree, and regenerating
+  // all three fixtures with the zod and JSON Schema generators produces 29 byte-identical files.
+  // Reading the diff of the two majors' output instead would have been wrong here, since `c_real`
+  // sits in this group and in the float group below, and its output does change.
   'rows.small.dbType': 'label only: PgSmallInt is named INTEGER on 0.4x',
   'rows.name.dbType': 'as rows.small.dbType, PgVarchar as TEXT',
   'rows.code.dbType': 'as rows.small.dbType, PgChar as TEXT',
@@ -3391,8 +3383,8 @@ const DEFECTS: Record<string, string> = {
   // The `integer` half of each of these is the flag arriving with the bounds, and on its own it
   // changes nothing: setting `integer: false` on all five without adding the bounds regenerates
   // byte identical, because `isIntegerColumn` reaches the same answer from `dbType` and the
-  // absent bounds. Of the 49 fields in this map, those 5 and the 16 labels above are the ones
-  // with no measured effect on generated output; the other 28, on 13 columns, all have one.
+  // absent bounds. Of the 54 fields in this map, those 5 and the 17 labels above are the ones
+  // with no measured effect on generated output; the other 32, on 17 columns, all have one.
   'rows.ratio.min': 'no float bound on 0.4x, which official drizzle-zod does emit there',
   'rows.ratio.max': 'as rows.ratio.min',
   'rows.ratio.integer': 'as rows.ratio.min; the flag comes with the bounds',
@@ -3447,6 +3439,49 @@ const DEFECTS: Record<string, string> = {
   'matrix.c_vector.tsType': 'unnamed on 0.4x: no PgVector arm in the class-name path',
   'matrix.c_vector.dbType': 'as matrix.c_vector.tsType',
   'matrix.c_vector.shape': 'as matrix.c_vector.tsType',
+
+  // ---- MySQL's text family carries no character cap on 0.4x ----------------------------------
+  // v1's `MySqlText` states `length` equal to the type's cap, 255 for `tinytext` and 65535 for
+  // `text`; 0.4x's leaves it undefined. The analyzer reads the declared length the same way on
+  // both, at packages/analyzer/src/index.ts:907, with no dialect gate and no cap table, so the
+  // difference is in the column object rather than in the reading of it.
+  //
+  // That is why this sat in ALLOWED for a round, and it is the wrong home, because the majors'
+  // own validators do not differ here. drizzle-zod 0.8.3 on drizzle-orm 0.45.2 emits `max_length`
+  // 255 / 65535 / 16777215 / 4294967295 on all four, off the text subtype (`column.textType`)
+  // rather than off `length`, which is the same place DRZL's own 0.4x path gets `maxBytes` from.
+  // So DRZL on 0.4x is looser than official on 0.4x, the one direction this map exists to
+  // record. Same evidence as the float group above.
+  //
+  // Measured on the emitted files, since ALLOWED also claimed nothing was accepted on one side
+  // and refused on the other. All five generators emit different source, and one differs in
+  // verdict:
+  //
+  //   zod, valibot, arktype, typebox   v1 gains a code-point check of the same number as the
+  //                                    byte check both majors emit. It cannot bind: over
+  //                                    1200036 (value, cap) pairs the byte check never passed
+  //                                    while the character check failed, and the two emitted zod
+  //                                    schemas agreed on 624 of 624 verdicts.
+  //   json-schema                      no byte check to fall back on. v1 carries `maxLength` and
+  //                                    0.4x carries no cap of any kind, so a 256 character
+  //                                    `t_tiny` is accepted by the 0.4x document and refused by
+  //                                    the v1 one. Official drizzle-zod refuses it on 0.4x too.
+  //
+  // Two defects meet in that last line. `maxBytes` is right on both majors; the JSON Schema
+  // generator ignores it entirely, which is what leaves the 0.4x document with no cap at all,
+  // and that gap is filed already from the round that measured it. The number 0.4x's `maxBytes`
+  // carries is the number v1's `maxLength` carries on all four columns, so closing it would put
+  // the same cap on both sides; the description would still differ and these four entries stay.
+  //
+  // Recorded alongside, since it means the v1 side is not the obviously correct one either:
+  // v1's `length` on a MySqlText is a byte budget worn as a character length, which is what
+  // packages/analyzer/src/index.ts:95 says `maxLength` cannot express. On v1's JSON Schema it is
+  // the only cap and it is counted in characters, so a 64 emoji `t_tiny` is 256 bytes, over the
+  // type's budget, and that document accepts it. Measured under ajv.
+  'mtext.t_text.maxLength': 'no character cap on 0.4x, which official drizzle-zod does emit there',
+  'mtext.t_tiny.maxLength': 'as mtext.t_text.maxLength',
+  'mtext.t_medium.maxLength': 'as mtext.t_text.maxLength',
+  'mtext.t_long.maxLength': 'as mtext.t_text.maxLength',
 };
 
 const a = JSON.parse(readFileSync(process.env.OLD_JSON!, 'utf8'));
