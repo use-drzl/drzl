@@ -710,6 +710,25 @@ export const defaulted = pgTable('defaulted', {
   d_enum: moodEnum().default('sad'),
 });
 
+/**
+ * Nullable arrays, which every array in `matrix` being `notNull` meant nothing had ever emitted.
+ *
+ * A nullable array renders differently enough to break code that assumed `T[]`: the arktype
+ * generator recovered an array's element by stripping a trailing `[]`, and `(T[] | null)` has
+ * none, so the whole union became the element and `.array()` wrapped it. That output refused
+ * `null` and `['ab']`, accepted `[['ab']]`, and for the bigint one did not compile at all. A
+ * capped or bounded element is what makes the shape reachable: an unconstrained column emits a
+ * plain DSL string and never goes near that code.
+ *
+ * Its own table rather than two more columns on `matrix`, because the arktype output for a
+ * 40-column table of narrowed fields is already at the edge of TS2589, and two more tipped it
+ * over. That defect is reported; provoking it here would only hide these columns behind it.
+ */
+export const arrays = pgTable('arrays', {
+  a_varchar_arr_null: varchar({ length: 10 }).array(),
+  a_bigint_arr_null: bigint({ mode: 'bigint' }).array(),
+});
+
 export const checked = pgTable('checked', {
   k_min: integer(),
   k_max: integer(),
@@ -924,9 +943,15 @@ const POOL: [string, unknown][] = [
   ['5 emoji', '\u{1F44D}\u{1F44D}\u{1F44D}\u{1F44D}\u{1F44D}'],
   ["'not-a-uuid'", 'not-a-uuid'], ['uuid', '3f2504e0-4f89-11d3-9a0c-0305e82c3301'],
   ["'zzz'", 'zzz'], ["'a'", 'a'], ["'happy'", 'happy'],
+  // A member of the `varchar({ enum: ['x', 'y'] })` fixture column. Without it the pool held no
+  // value that column accepts, so both sides rejected all of it and the comparison agreed while
+  // measuring nothing. The vacuity check below is what found it.
+  ["'x'", 'x'],
   ['0', 0], ['1', 1], ['1.5', 1.5], ['-1', -1], ['200', 200], ['40000', 40000],
   ['9000000', 9000000], ['2147483648', 2147483648], ['9007199254740993', 9007199254740993],
-  ['1900', 1900], ['2500', 2500], ['NaN', NaN], ['Infinity', Infinity],
+  // 1900 and 2500 sit either side of MySQL's YEAR range and nothing sat inside it, so `m_year`
+  // was the same vacuous agreement as the enum above: rejected by both, proving nothing.
+  ['1900', 1900], ['2000', 2000], ['2500', 2500], ['NaN', NaN], ['Infinity', Infinity],
   ['1n', 1n], ['2n**70n', 2n ** 70n], ['true', true], ['false', false],
   ['Date', new Date('2020-01-01T00:00:00Z')], ["'2020-01-01'", '2020-01-01'],
   ["'2020-01-01T00:00:00Z'", '2020-01-01T00:00:00Z'], ["'12:00:00'", '12:00:00'],
@@ -981,61 +1006,113 @@ const safeField = (lib: Lib, s: any, k: string) => {
  * Divergences that are deliberate and reasoned. Anything not named here is a finding, so a new
  * disagreement fails this script rather than quietly widening the list.
  *
- * Keyed `<library>/<column>`; a bare column name applies to every library.
+ * Keyed `<dialect>/<library>/<column>`; `<dialect>/<column>` applies to every library on that
+ * dialect. The dialect is part of the key because this file compared all four libraries on
+ * Postgres alone for most of its life, and a waiver keyed on a column name would have started
+ * covering a same-named column on MySQL or SQLite the moment those dialects were widened. The
+ * fixtures use distinct `c_`/`m_`/`s_` prefixes, which makes the dialect redundant today and
+ * load-bearing the day someone adds a column without one.
  */
 const ALLOWED: Record<string, string> = {
   // Binary payloads are typed as Uint8Array rather than Buffer. A Buffer is a Uint8Array, so
   // nothing official accepts is turned away. The wider check needs no `@types/node`, survives a
   // runtime where `Buffer` is undefined, and makes bytea and blob validate the same way.
-  c_bytea: 'Uint8Array accepted where official demands a Buffer',
-  s_blob_buf: 'as c_bytea',
+  'pg/c_bytea': 'Uint8Array accepted where official demands a Buffer',
+  'sqlite/s_blob_buf': 'as pg/c_bytea',
   // `coerceDates` defaults to coercing on insert and update, which is a documented DRZL option
   // and is what `coerceDates: 'none'` turns off to match official exactly. Only strings and
   // numbers are coerced: null, booleans and arrays are rejected, which `z.coerce.date()` accepts.
-  c_date_d: 'coerceDates accepts a date string or epoch number on write',
-  c_ts_d: 'as c_date_d',
-  m_date: 'as c_date_d',
-  m_datetime: 'as c_date_d',
-  m_ts: 'as c_date_d',
-  s_int_ts: 'as c_date_d',
-  s_int_ts_ms: 'as c_date_d',
+  'pg/c_date_d': 'coerceDates accepts a date string or epoch number on write',
+  'pg/c_ts_d': 'as pg/c_date_d',
+  'mysql/m_date': 'as pg/c_date_d',
+  'mysql/m_datetime': 'as pg/c_date_d',
+  'mysql/m_ts': 'as pg/c_date_d',
+  'sqlite/s_int_ts': 'as pg/c_date_d',
+  'sqlite/s_int_ts_ms': 'as pg/c_date_d',
   // Official emits `Type.String({ format: 'uuid' })`, and TypeBox fails a format it has no entry
   // for rather than ignoring it, so that schema rejects every valid uuid in any project that has
   // not populated `FormatRegistry` first. This generator emits a pattern, which needs no setup.
-  'typebox/c_uuid': 'official uses an unregistered `format`, which rejects every uuid',
+  'pg/typebox/c_uuid': 'official uses an unregistered `format`, which rejects every uuid',
   // A character limit counts *characters*; official counts `.length`, which is UTF-16 units, so
   // it refuses three emoji in a `char(4)` the database accepts. Measured against Postgres.
-  c_char: 'character limit counts code points; official counts UTF-16 units',
-  m_char: 'as c_char',
+  'pg/c_char': 'character limit counts code points; official counts UTF-16 units',
+  'mysql/m_char': 'as pg/c_char',
   // Stricter than official, and verified against Postgres itself through PGlite: a `numeric`
   // column is a string, and a bare string schema accepts 'hello' where the database rejects it.
   // Official accepts all of these; the database does not.
-  c_numeric: 'numeric format enforced; official accepts any string, Postgres does not',
-  c_decimal: 'as c_numeric',
-  m_decimal: 'as c_numeric',
+  'pg/c_numeric': 'numeric format enforced; official accepts any string, Postgres does not',
+  'pg/c_decimal': 'as pg/c_numeric',
+  'mysql/m_decimal': 'as pg/c_numeric',
   // Stricter than official, in DRZL's favour.
-  'valibot/c_json': 'DRZL rejects Infinity and non-plain objects; official accepts both',
-  'valibot/c_jsonb': 'as valibot/c_json',
-  'valibot/c_jsonb_typed': 'as valibot/c_json',
-  'valibot/c_point': 'v.strictTuple rejects a third element; official v.tuple ignores extras',
-  'valibot/c_geometry': 'as valibot/c_point',
-  // ArkType states a bigint range through a narrow predicate built with its builder API. This
-  // generator emits one string per field, and the string DSL's comparators take numeric literals.
-  'arktype/c_bigint_b': 'ArkType cannot bound a bigint in its string DSL',
-  'arktype/s_blob_bigint': 'as arktype/c_bigint_b',
+  'pg/valibot/c_json': 'DRZL rejects Infinity and non-plain objects; official accepts both',
+  'pg/valibot/c_jsonb': 'as pg/valibot/c_json',
+  'pg/valibot/c_jsonb_typed': 'as pg/valibot/c_json',
+  'mysql/valibot/m_json': 'as pg/valibot/c_json',
+  'sqlite/valibot/s_text_json': 'as pg/valibot/c_json',
+  'sqlite/valibot/s_blob_json': 'as pg/valibot/c_json',
+  // A `blob()` with no mode is Drizzle's json mode, not its buffer mode, so this is the same
+  // column shape as s_blob_json and gets the same reasoning. `s_blob_buf` above is the buffer one.
+  'sqlite/valibot/s_blob': 'as pg/valibot/c_json; a bare blob() is Drizzle json mode',
+  'pg/valibot/c_point': 'v.strictTuple rejects a third element; official v.tuple ignores extras',
+  'pg/valibot/c_geometry': 'as pg/valibot/c_point',
+  // Official emits `Type.RegExp`, whose check runs `RegExp.prototype.test` against the raw value,
+  // and `test` stringifies what it is given: `[]` becomes '' and matches `^[01]*$`. So official
+  // accepts an empty array for a binary column. This generator emits a `string` carrying a
+  // `pattern`, which refuses a non-string before the pattern is consulted. Postgres masks the
+  // same hole on `c_bit` only because that column has a `minLength` an array cannot satisfy.
+  'mysql/typebox/m_binary': 'official Type.RegExp accepts a non-string whose string form matches',
+  'mysql/typebox/m_varbinary': 'as mysql/typebox/m_binary',
+  // No arktype bigint entry. There were three, reading "ArkType cannot bound a bigint in its
+  // string DSL", and only half of that was true: the DSL cannot state the bound, but a narrow can,
+  // and this generator already used narrows for every character cap. It was the one place in this
+  // whole gate where DRZL was looser than the first-party module, waived on all three dialects.
+  // The generator now bounds bigint columns and all four agree.
 };
 
-const allowed = (lib: string, col: string) => ALLOWED[`${lib}/${col}`] ?? ALLOWED[col];
+const usedWaivers = new Set<string>();
+const allowed = (dialect: string, lib: string, col: string) => {
+  for (const key of [`${dialect}/${lib}/${col}`, `${dialect}/${col}`]) {
+    if (ALLOWED[key]) {
+      usedWaivers.add(key);
+      return ALLOWED[key];
+    }
+  }
+  return undefined;
+};
 
-/** Cross-generator gaps that follow from what each library can express, not from a defect. */
-const CROSS_ALLOWED = (k: string) =>
-  k.startsWith('c_json') ||
-  k.startsWith('c_jsonb') ||
-  /bigint_b|blob_bigint/.test(k) ||
-  // zod and valibot count code points for a character limit; TypeBox and ArkType state a length
-  // declaratively with no predicate to hook, so they keep the UTF-16 form and stay approximate for
-  // astral text. A capability difference between the libraries, not a defect in one generator.
-  k === 'c_char';
+/**
+ * Cross-generator gaps that follow from what each library can express, not from a defect in one
+ * generator. Keyed `<dialect>/<column>` and carrying its reason, for the same reason ALLOWED is.
+ */
+const CROSS_ALLOWED: Record<string, string> = {
+  // ArkType's string DSL has no recursive JSON value, so this generator emits
+  // `number | object | string | boolean | null`, which takes NaN, Infinity and any object at all.
+  // The other three build a real JSON value check. A capability difference between the libraries:
+  // official `drizzle-orm/arktype` produces the same widening, which is why this shows up here and
+  // not against official.
+  'pg/c_json': "arktype's string DSL cannot state a recursive JSON value",
+  'pg/c_jsonb': 'as pg/c_json',
+  'pg/c_jsonb_typed': 'as pg/c_json',
+  'mysql/m_json': 'as pg/c_json',
+  'sqlite/s_text_json': 'as pg/c_json',
+  'sqlite/s_blob_json': 'as pg/c_json',
+  'sqlite/s_blob': 'as pg/c_json; a bare blob() is Drizzle json mode',
+  // No bigint entry either, for the reason given in ALLOWED: arktype now bounds a bigint with a
+  // narrow, so the four generators agree about `c_bigint_b`, `m_bigint_b` and `s_blob_bigint`.
+  // No `c_char` entry. There was one, reading "zod and valibot count code points; TypeBox and
+  // ArkType count UTF-16 units", and it had been dead since arktype and typebox were changed to
+  // count code points as well. All four now emit a `[...v].length` predicate and agree on every
+  // probe including astral text, so there is nothing to waive. It survived because the waiver was
+  // marked used by the column merely existing; see the note at the crossAllowed call site.
+};
+
+const usedCrossWaivers = new Set<string>();
+const crossAllowed = (dialect: string, col: string) => {
+  const key = `${dialect}/${col}`;
+  if (!CROSS_ALLOWED[key]) return false;
+  usedCrossWaivers.add(key);
+  return true;
+};
 
 const DIALECTS = [
   {
@@ -1052,14 +1129,24 @@ const DIALECTS = [
   {
     name: 'mysql',
     table: myTable,
-    libs: ['zod'],
-    mods: { zod: () => import('./gen/mysql/zod/matrix.zod.js') } as Record<string, () => Promise<any>>,
+    libs: ['zod', 'valibot', 'arktype', 'typebox'],
+    mods: {
+      zod: () => import('./gen/mysql/zod/matrix.zod.js'),
+      valibot: () => import('./gen/mysql/valibot/matrix.valibot.js'),
+      arktype: () => import('./gen/mysql/arktype/matrix.arktype.js'),
+      typebox: () => import('./gen/mysql/typebox/matrix.typebox.js'),
+    } as Record<string, () => Promise<any>>,
   },
   {
     name: 'sqlite',
     table: sqTable,
-    libs: ['zod'],
-    mods: { zod: () => import('./gen/sqlite/zod/matrix.zod.js') } as Record<string, () => Promise<any>>,
+    libs: ['zod', 'valibot', 'arktype', 'typebox'],
+    mods: {
+      zod: () => import('./gen/sqlite/zod/matrix.zod.js'),
+      valibot: () => import('./gen/sqlite/valibot/matrix.valibot.js'),
+      arktype: () => import('./gen/sqlite/arktype/matrix.arktype.js'),
+      typebox: () => import('./gen/sqlite/typebox/matrix.typebox.js'),
+    } as Record<string, () => Promise<any>>,
   },
 ];
 
@@ -1088,30 +1175,58 @@ for (const d of DIALECTS) {
       const oShape = OFFICIAL.zod[mode](d.table as never).shape;
       const rows: string[] = [];
       let waived = 0;
+      // Columns where both sides yielded a field and the pool was actually pushed through them.
+      // Printing the shape's column count says how many columns *exist*, which is not the same
+      // number and stayed reassuring in a run that compared none of them.
+      let compared = 0;
 
       for (const k of Object.keys(oShape)) {
         const o = safeField(lib, official, k);
         const m = safeField(lib, mine, k);
-        if (!o && !m) continue;
+        if (!o && !m) {
+          // Never a skip. Both sides absent means this column was measured by nothing, and
+          // `safeField` returns undefined for a lookup that threw as well as for one that was
+          // missing, so the quiet version of this branch reported parity on an exception.
+          rows.push(`        ${k}: neither official nor DRZL yielded a field, so nothing was compared`);
+          continue;
+        }
         if (!m) {
-          if (allowed(libName, k)) { waived++; continue; }
+          if (allowed(d.name, libName, k)) { waived++; continue; }
           rows.push(`        ${k}: official has it, DRZL omits it`);
           continue;
         }
         if (!o) {
-          if (allowed(libName, k)) { waived++; continue; }
+          if (allowed(d.name, libName, k)) { waived++; continue; }
           rows.push(`        ${k}: DRZL has it, official omits it`);
           continue;
         }
+        compared++;
         const looser: string[] = [];
         const tighter: string[] = [];
+        let officialTook = false;
+        let drzlTook = false;
         for (const [label, x] of POOL) {
           const a = safeOk(lib, o, x);
           const b = safeOk(lib, m, x);
+          officialTook ||= a;
+          drzlTook ||= b;
           if (a !== b) (b ? looser : tighter).push(label);
         }
+        // A column both sides reject every probe for agrees perfectly and proves nothing: the two
+        // schemas could be a correct one and a broken one and this loop could not tell them apart.
+        // It is not hypothetical. `c_varchar_enum` accepts only 'x' or 'y' and `m_year` only
+        // 1901..2155, and the pool held no member of either, so two columns had been sitting in
+        // this comparison contributing a confident nothing. Deliberately outside the waiver check
+        // below: a waiver says a difference is fine, not that a column need not be measured.
+        if (!officialTook && !drzlTook) {
+          rows.push(
+            `        ${k}: neither side accepts any pool value, so this column proves nothing.` +
+              `\n          Add a value this column accepts to POOL.`
+          );
+          continue;
+        }
         if (!looser.length && !tighter.length) continue;
-        if (allowed(libName, k)) { waived++; continue; }
+        if (allowed(d.name, libName, k)) { waived++; continue; }
         rows.push(
           `        ${k}:` +
             (looser.length ? `\n          DRZL accepts, official rejects: ${looser.join(', ')}` : '') +
@@ -1119,9 +1234,16 @@ for (const d of DIALECTS) {
         );
       }
 
+      // A run that compared no column at all would otherwise print `parity` and pass. That is the
+      // shape of failure this file has been bitten by most: the stage was green because it had
+      // measured nothing, not because there was nothing to find.
+      if (compared === 0) {
+        rows.push('        no column was compared on both sides, so this pairing measured nothing');
+      }
+
       console.log(
         `    ${d.name.padEnd(7)} ${libName.padEnd(8)} ${mode.padEnd(7)} ` +
-          `${Object.keys(oShape).length} cols  ${rows.length ? 'DIFFERS' : 'parity'}` +
+          `${compared}/${Object.keys(oShape).length} cols compared  ${rows.length ? 'DIFFERS' : 'parity'}` +
           `${waived ? ` (${waived} waived)` : ''}`
       );
       if (rows.length) {
@@ -1131,43 +1253,69 @@ for (const d of DIALECTS) {
     }
   }
 
-  // Pass 2, on the dialect that has all four generators.
+  // Pass 2, on every dialect that has all four generators, which is now all three.
   if (d.libs.length === 4) {
     const oShape = OFFICIAL.zod.select(d.table as never).shape;
     const disagreements: string[] = [];
     for (const k of Object.keys(oShape)) {
-      if (CROSS_ALLOWED(k)) continue;
       const fields: Record<string, any> = {};
       for (const lib of d.libs) fields[lib] = safeField(LIBS[lib], loaded[lib].SelectmatrixSchema, k);
+      const found: string[] = [];
       const absent = Object.entries(fields).filter(([, f]) => !f).map(([n]) => n);
       if (absent.length) {
-        disagreements.push(`        ${k}: missing from ${absent.join(', ')}`);
-        continue;
-      }
-      for (const [label, x] of POOL) {
-        const verdicts = d.libs.map((n) => [n, safeOk(LIBS[n], fields[n], x)] as const);
-        const yes = verdicts.filter(([, r]) => r).map(([n]) => n);
-        const no = verdicts.filter(([, r]) => !r).map(([n]) => n);
-        if (yes.length && no.length) {
-          disagreements.push(`        ${k} on ${label}: ${yes.join('/')} accept, ${no.join('/')} reject`);
+        found.push(`        ${k}: missing from ${absent.join(', ')}`);
+      } else {
+        for (const [label, x] of POOL) {
+          const verdicts = d.libs.map((n) => [n, safeOk(LIBS[n], fields[n], x)] as const);
+          const yes = verdicts.filter(([, r]) => r).map(([n]) => n);
+          const no = verdicts.filter(([, r]) => !r).map(([n]) => n);
+          if (yes.length && no.length) {
+            found.push(`        ${k} on ${label}: ${yes.join('/')} accept, ${no.join('/')} reject`);
+          }
         }
       }
+      if (!found.length) continue;
+      // The waiver is consulted only once there is something for it to suppress. Asking first
+      // marked the key used because the column exists in the fixture, which made the dead-waiver
+      // check below true of `ALLOWED` and false of `CROSS_ALLOWED`: a waiver naming a real column
+      // the four generators agree about sat there indefinitely, and `pg/c_char` was one.
+      if (crossAllowed(d.name, k)) continue;
+      disagreements.push(...found);
     }
     if (disagreements.length) {
-      console.log('    the four generators disagree with each other:');
+      console.log(`    the four ${d.name} generators disagree with each other:`);
       console.log(disagreements.join('\n'));
       findings += disagreements.length;
     } else {
-      console.log('    all four generators agree with each other on every column and value');
+      console.log(`    all four ${d.name} generators agree with each other on every column and value`);
     }
   }
+}
+
+// A waiver that suppresses nothing is not harmless. It is a sentence claiming a divergence exists
+// and is fine, sitting next to the divergences that really do, and the next person to widen this
+// file reads it as covered ground. Every key above has to earn its place on this run or be
+// deleted, which is also the only thing standing between this list and being used as a way to
+// make a failure go away.
+const deadWaivers = [
+  ...Object.keys(ALLOWED).filter((k) => !usedWaivers.has(k)).map((k) => `ALLOWED[${k}]`),
+  ...Object.keys(CROSS_ALLOWED).filter((k) => !usedCrossWaivers.has(k)).map((k) => `CROSS_ALLOWED[${k}]`),
+];
+if (deadWaivers.length) {
+  console.error('FAIL: these waivers suppressed nothing on this run, so they describe a');
+  console.error('      divergence that no longer happens. Delete them rather than keeping a');
+  console.error('      reason for something nobody can observe:');
+  for (const k of deadWaivers) console.error(`      ${k}`);
 }
 
 if (findings) {
   console.error(`FAIL: ${findings} parity finding(s). A generated schema looser than the`);
   console.error('      first-party module accepts rows the database will reject.');
-  process.exit(1);
 }
+
+// Counted separately and exited on together, so one run reports both rather than hiding the
+// second behind the first. A dead waiver is not a looser schema and must not be described as one.
+if (findings || deadWaivers.length) process.exit(1);
 PARITY_HARNESS
 
 # drizzle-orm is pinned: the parity target is a specific release, and a floating one would turn
@@ -1176,15 +1324,25 @@ PARITY_HARNESS
 # ajv and ajv-formats are the JSON Schema generator's own declared devDependency ranges, so the
 # packed artefact is read by the same validator its unit tests claim it is checked against. They
 # are not dependencies of anything DRZL publishes: JSON Schema output is data with no runtime.
+#
+# typescript, because this tree's generated output is now compiled as well as executed. It was
+# only ever run, and a nullable bigint array reached a released generator emitting `>=` against a
+# `bigint[]`, which no amount of running it can notice.
 npm install --no-audit --no-fund --loglevel=error \
-  "$TARS"/*.tgz drizzle-orm@1.0.0-rc.4 zod valibot arktype @sinclair/typebox tsx \
+  "$TARS"/*.tgz drizzle-orm@1.0.0-rc.4 zod valibot arktype @sinclair/typebox tsx typescript \
   ajv@^8.17.1 ajv-formats@^3.0.1 >/dev/null
 
 for dialect in pg mysql sqlite; do
   case "$dialect" in
+    # All four libraries on every dialect. It was four on Postgres and one everywhere else, so
+    # valibot, arktype and typebox had never been compared with anything on MySQL or SQLite:
+    # eighteen combinations with no differential coverage at all. The official modules take any
+    # Drizzle table regardless of dialect, so there was never a structural reason for it. Widening
+    # this also turns pass 2, the cross-generator check, on for MySQL and SQLite, which is where it
+    # found the arktype json column disagreeing with its three siblings.
     pg)     schema=src/schema.ts;        libs="zod valibot arktype typebox" ;;
-    mysql)  schema=src/schema-mysql.ts;  libs="zod" ;;
-    sqlite) schema=src/schema-sqlite.ts; libs="zod" ;;
+    mysql)  schema=src/schema-mysql.ts;  libs="zod valibot arktype typebox" ;;
+    sqlite) schema=src/schema-sqlite.ts; libs="zod valibot arktype typebox" ;;
   esac
   gens=""
   for lib in $libs; do gens="$gens    { kind: '$lib', path: 'src/gen/$dialect/$lib' },"$'\n'; done
@@ -1245,6 +1403,192 @@ CONFIG
     done
   fi
 done
+
+# ---------------------------------------------------------------------------------------------
+# Does the parity matrix output compile?
+#
+# The typecheck stage far above runs on a two-table users/posts schema with no arrays, no bigint
+# and no capped column, so the only generated code this script ever put through `tsc` was its
+# simplest. The 40-column matrix, which exists precisely to hold the awkward types, was generated,
+# executed and then thrown away without a compiler ever looking at it.
+#
+# What that hid: the arktype generator emitted `type("(bigint[] | null)").narrow((v, ctx) => ...
+# v >= -9223372036854775808n ...)` for a nullable bigint array, which is TS2365, `>=` cannot be
+# applied to `bigint[]`. Every runtime check in this file passed it, because a narrow that throws
+# is caught and read as a rejection, and rejection was the answer for most probe values anyway.
+# ---------------------------------------------------------------------------------------------
+echo "==> typechecking the parity matrix output"
+# Three columns are carved out of this stage, not two modules, for one defect that predates the
+# branch. Each claim below was measured, after two earlier attempts at this comment asserted
+# mechanisms that turned out not to exist.
+#
+# `c_numeric` and `c_decimal` on Postgres, and `m_decimal` on MySQL, each fail TS2589 on their own,
+# in a file holding nothing else. The arktype generator states a numeric format as a bare regex
+# literal inside the type expression, and that literal is around 200 characters that ArkType parses
+# in the type system. It is the one emitted construct expensive enough to exhaust the instantiation
+# budget by itself.
+#
+# What it is *not*, each checked rather than assumed:
+#
+#   - Not this branch's doing. Rewriting the emitted pg file back to the exact form the generator
+#     produced before the bigint bound and before the array fix reproduces it at the same position.
+#   - Not the narrows. Stripping every `.narrow(...)` from the pg matrix, leaving the same 40
+#     fields, fails identically at (7,40).
+#   - Not the number of fields. Every one of the 40 pg fields compiles alone except those two, and
+#     the first 10 compile together with or without their narrows.
+#   - Not the table size. sqlite's matrix is clean because it has no numeric-format column, not
+#     because it has 14 columns: SQLite `numeric` carries no format and emits a plain `"string"`.
+#
+# So the repair is to stop putting a 200-character regex in the type expression, not to change how
+# a whole-table object is emitted. That is reported separately and not done here.
+#
+# The carve-out is by column, so the other 38 pg and 28 mysql columns are still compiled: the two
+# modules are copied with exactly those field lines dropped, and the copy is what this stage
+# checks.
+#
+# Two things have to stay true of an exclusion, and only the first of them used to be checked:
+# that it still covers what it says, and that it is still needed at all. The inline line count
+# below is the first. The probes are the second, and they are the reason this is not a waiver that
+# outlives its defect: each carved column is put back on its own, and the result has to still fail
+# to compile. Simulating the generator fix, by making those three columns emit `"string"`, used to
+# leave them silently un-typechecked for ever with the stage printing that everything compiles.
+mkdir -p src/gen-tsc src/carve-probe
+node - <<'CARVE'
+import fs from 'node:fs';
+const CARVED = { pg: ['c_numeric', 'c_decimal'], mysql: ['m_decimal'] };
+const MODES = 3;
+const excludes = [];
+let probes = 0;
+for (const [dialect, cols] of Object.entries(CARVED)) {
+  const from = `src/gen/${dialect}/arktype/matrix.arktype.ts`;
+  const lines = fs.readFileSync(from, 'utf8').split('\n');
+  const drop = new RegExp(`^\\s*"(${cols.join('|')})\\??":`);
+  const kept = lines.filter((l) => !drop.test(l));
+  const removed = lines.length - kept.length;
+  if (removed !== cols.length * MODES) {
+    console.error(
+      `FAIL: carving ${cols.join(', ')} out of ${from} removed ${removed} lines, not ` +
+        `${cols.length * MODES}. The emitted shape changed, so this exclusion no longer covers ` +
+        `what it says it covers and may now be hiding a real error.`
+    );
+    process.exit(1);
+  }
+  fs.writeFileSync(`src/gen-tsc/${dialect}-matrix.arktype.ts`, kept.join('\n'));
+  // One probe per carved column: the compiled copy with that column, and only that column, put
+  // back. Somewhere outside the include below, so the stage's own run does not compile them.
+  for (const col of cols) {
+    const one = new RegExp(`^\\s*"${col}\\??":`);
+    const withCol = lines.filter((l) => !drop.test(l) || one.test(l));
+    if (withCol.length !== kept.length + MODES) {
+      console.error(`FAIL: restoring ${col} into the ${dialect} copy did not put back ${MODES} lines.`);
+      process.exit(1);
+    }
+    fs.writeFileSync(`src/carve-probe/${dialect}-${col}.ts`, withCol.join('\n'));
+    probes++;
+  }
+  // The exclusions come from the same map as the copies, rather than being written out beside it.
+  // Hardcoding them meant the two could disagree, and in exactly one direction: emptying CARVED
+  // wrote no stand-in copies while the exclude list went on hiding both original modules, so 40
+  // Postgres and 29 MySQL columns were dropped from the typecheck entirely and the stage still
+  // said everything compiled. Derived, an empty CARVED excludes nothing and the originals are
+  // compiled directly, which fails loudly if the defect is still there.
+  excludes.push(
+    `src/gen/${dialect}/arktype/matrix.arktype.ts`,
+    // The barrel with it: `exclude` only filters the entry list, so an `index.ts` re-exporting the
+    // matrix module would pull the original straight back in.
+    `src/gen/${dialect}/arktype/index.ts`
+  );
+}
+fs.writeFileSync('carve-manifest.txt', String(probes));
+fs.writeFileSync(
+  'tsconfig.gen.json',
+  JSON.stringify(
+    {
+      compilerOptions: {
+        strict: true,
+        noEmit: true,
+        target: 'es2022',
+        module: 'nodenext',
+        moduleResolution: 'nodenext',
+        skipLibCheck: true,
+      },
+      include: [
+        'src/gen/**/*.ts',
+        'src/gen-tsc/**/*.ts',
+        'src/schema.ts',
+        'src/schema-mysql.ts',
+        'src/schema-sqlite.ts',
+      ],
+      exclude: excludes,
+    },
+    null,
+    2
+  )
+);
+CARVE
+# The originals are excluded because the copies stand in for them, and their barrels with them.
+# Those barrels are four re-export lines on pg and three on mysql, and the copies cover the modules
+# they name. What is given up is narrow and worth saying: the barrel is no longer the thing that
+# pulls its modules in here, so a barrel line naming a module that does not exist would not be
+# caught by this stage.
+if ! npx tsc -p tsconfig.gen.json; then
+  echo "FAIL: the parity matrix output does not compile under tsc --strict." >&2
+  echo "      Generated code that does not typecheck is not usable output, however it behaves" >&2
+  echo "      at runtime." >&2
+  exit 1
+fi
+echo "    every generator's matrix output compiles under --strict, module nodenext"
+
+# The other direction: does each carved column still earn its carve?
+#
+# A count of removed lines says the exclusion still matches the emitted shape. It says nothing
+# about whether the defect is still there, so the day the generator stops putting a regex in the
+# type expression, these columns would stay out of the typecheck for ever and this stage would go
+# on printing that everything compiles. That is the same stale-waiver shape as the cross-generator
+# list further up, which had exactly this hole in the opposite direction.
+#
+# Compiled one at a time because the question is per column and a compilation answers per run. A
+# combined run over all three probes gives one exit code for the union of them, which is nonzero
+# while any single column still fails, so the one that had been fixed would be masked by the two
+# that had not. That is the whole point of the check, so it cannot be run in a form that cannot
+# express the answer. It is not about errors going unreported: this compiler names all three.
+#
+# The number of probes is asserted against what the carve script wrote, and each probe's output has
+# to actually contain TS2589. Both because "no news is good news" is how this check would otherwise
+# read an empty directory and an unrelated compile error alike: an unexpanded glob makes tsc fail
+# on a path that does not exist, and any nonzero exit used to count as proof the carve was earning
+# its place, so a genuinely broken column carved out of the main compile was certified by the
+# guard meant to police it.
+expected_probes=$(cat carve-manifest.txt)
+actual_probes=$(find src/carve-probe -name '*.ts' | wc -l)
+if [ "$actual_probes" != "$expected_probes" ]; then
+  echo "FAIL: $actual_probes carve probe(s) on disk, $expected_probes expected from CARVED." >&2
+  echo "      This check cannot report on a column it never compiled." >&2
+  exit 1
+fi
+carve_dead=0
+for probe in $(find src/carve-probe -name '*.ts' | sort); do
+  out=$(npx tsc --strict --noEmit --target es2022 --module nodenext --moduleResolution nodenext \
+      --skipLibCheck "$probe" 2>&1 || true)
+  case "$out" in
+    *"error TS2589"*) ;;
+    '')
+      echo "FAIL: $probe compiles, so that column no longer needs carving out of the typecheck." >&2
+      echo "      Delete it from CARVED above rather than leaving a column excluded for a defect" >&2
+      echo "      that has been fixed." >&2
+      carve_dead=1
+      ;;
+    *)
+      echo "FAIL: $probe fails, but not with the TS2589 this carve-out exists for:" >&2
+      echo "$out" | head -5 >&2
+      echo "      That error is being hidden from the main typecheck by an exclusion written for" >&2
+      echo "      a different defect. Fix it, or carve it out deliberately and say so." >&2
+      carve_dead=1
+      ;;
+  esac
+done
+[ "$carve_dead" = 0 ] || exit 1
+echo "    all $expected_probes carved column(s) still fail with TS2589, so the carve-out is earning it"
 
 cat > src/json-schema-valid.ts <<'JSON_SCHEMA_VALID'
 /**
@@ -1445,9 +1789,20 @@ size_fail=0
 # Raised once, when the fixture gained thirteen columns that each carry a CHECK. That is the
 # densest output the generators produce, so the per-column average rose without any generator
 # emitting more for the same input.
+#
+# Raised again for arktype only, 240 to 280, when the fixture gained the two-column `arrays`
+# table. Measured rather than guessed, because a budget raised to make a number fit is worth
+# nothing: on the original 62 columns arktype emits 223 bytes per column, up from 213, and those
+# ten bytes are the bigint bound and the array element walk, both of them constraints that were
+# missing. The two new columns cost 1803 bytes of module, about 900 each, four times the average,
+# because a nullable capped array is the longest thing this generator emits and it is emitted once
+# per mode. So the mixed average moved to 244 without any generator emitting more for the same
+# input, which is the same effect recorded above for the CHECK columns. The figures reconcile:
+# 13827 without the table, plus 1803 for the module and the 37-byte barrel line naming it,
+# is the 15667 this script prints.
 report_size src/gen/pg/zod      zod      420  || size_fail=1
 report_size src/gen/pg/valibot  valibot  540  || size_fail=1
-report_size src/gen/pg/arktype  arktype  240  || size_fail=1
+report_size src/gen/pg/arktype  arktype  280  || size_fail=1
 report_size src/gen/pg/typebox  typebox  430  || size_fail=1
 [ "$size_fail" = 0 ] || exit 1
 
@@ -3091,7 +3446,8 @@ cd "$APP"
 
 echo "OK: $count packages packed, installed into an empty project, generated, and the output"
 echo "    typechecks under bundler, node16 and nodenext, and validates at least as strictly as"
-echo "    the first-party drizzle-orm validator modules across three dialects and three modes,"
+echo "    all four first-party drizzle-orm validator modules on each of three dialects and three"
+echo "    modes, with the four generators cross-checked against each other on every dialect,"
 echo "    checked against a real Postgres, a real SQLite and, where MYSQL_URL is set, a real"
 echo "    MySQL, with applyDefaults compared against what the database writes, and analyzed with"
 echo "    no column left unnamed on either drizzle-orm major. The JSON Schema output compiles"
