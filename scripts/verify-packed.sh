@@ -1457,6 +1457,8 @@ node - <<'CARVE'
 import fs from 'node:fs';
 const CARVED = { pg: ['c_numeric', 'c_decimal'], mysql: ['m_decimal'] };
 const MODES = 3;
+const excludes = [];
+let probes = 0;
 for (const [dialect, cols] of Object.entries(CARVED)) {
   const from = `src/gen/${dialect}/arktype/matrix.arktype.ts`;
   const lines = fs.readFileSync(from, 'utf8').split('\n');
@@ -1473,7 +1475,7 @@ for (const [dialect, cols] of Object.entries(CARVED)) {
   }
   fs.writeFileSync(`src/gen-tsc/${dialect}-matrix.arktype.ts`, kept.join('\n'));
   // One probe per carved column: the compiled copy with that column, and only that column, put
-  // back. Somewhere outside the include above, so the stage's own run does not compile them.
+  // back. Somewhere outside the include below, so the stage's own run does not compile them.
   for (const col of cols) {
     const one = new RegExp(`^\\s*"${col}\\??":`);
     const withCol = lines.filter((l) => !drop.test(l) || one.test(l));
@@ -1482,33 +1484,53 @@ for (const [dialect, cols] of Object.entries(CARVED)) {
       process.exit(1);
     }
     fs.writeFileSync(`src/carve-probe/${dialect}-${col}.ts`, withCol.join('\n'));
+    probes++;
   }
+  // The exclusions come from the same map as the copies, rather than being written out beside it.
+  // Hardcoding them meant the two could disagree, and in exactly one direction: emptying CARVED
+  // wrote no stand-in copies while the exclude list went on hiding both original modules, so 40
+  // Postgres and 29 MySQL columns were dropped from the typecheck entirely and the stage still
+  // said everything compiled. Derived, an empty CARVED excludes nothing and the originals are
+  // compiled directly, which fails loudly if the defect is still there.
+  excludes.push(
+    `src/gen/${dialect}/arktype/matrix.arktype.ts`,
+    // The barrel with it: `exclude` only filters the entry list, so an `index.ts` re-exporting the
+    // matrix module would pull the original straight back in.
+    `src/gen/${dialect}/arktype/index.ts`
+  );
 }
+fs.writeFileSync('carve-manifest.txt', String(probes));
+fs.writeFileSync(
+  'tsconfig.gen.json',
+  JSON.stringify(
+    {
+      compilerOptions: {
+        strict: true,
+        noEmit: true,
+        target: 'es2022',
+        module: 'nodenext',
+        moduleResolution: 'nodenext',
+        skipLibCheck: true,
+      },
+      include: [
+        'src/gen/**/*.ts',
+        'src/gen-tsc/**/*.ts',
+        'src/schema.ts',
+        'src/schema-mysql.ts',
+        'src/schema-sqlite.ts',
+      ],
+      exclude: excludes,
+    },
+    null,
+    2
+  )
+);
 CARVE
-cat > tsconfig.gen.json <<'EOF'
-{
-  "compilerOptions": {
-    "strict": true, "noEmit": true, "target": "es2022",
-    "module": "nodenext", "moduleResolution": "nodenext", "skipLibCheck": true
-  },
-  "include": [
-    "src/gen/**/*.ts", "src/gen-tsc/**/*.ts",
-    "src/schema.ts", "src/schema-mysql.ts", "src/schema-sqlite.ts"
-  ],
-  "exclude": [
-    "src/gen/pg/arktype/matrix.arktype.ts",
-    "src/gen/mysql/arktype/matrix.arktype.ts",
-    "src/gen/pg/arktype/index.ts",
-    "src/gen/mysql/arktype/index.ts"
-  ]
-}
-EOF
-# The originals are excluded because the copies stand in for them, and their barrels with them:
-# `exclude` only filters the entry list, so `index.ts` re-exporting the matrix module would pull
-# the original straight back in. Those barrels are four re-export lines on pg and three on mysql,
-# and the copies cover the modules they name. What is given up with them is narrow and worth
-# saying: the barrel is no longer the thing that pulls its modules in here, so a barrel line
-# naming a module that does not exist would not be caught by this stage.
+# The originals are excluded because the copies stand in for them, and their barrels with them.
+# Those barrels are four re-export lines on pg and three on mysql, and the copies cover the modules
+# they name. What is given up is narrow and worth saying: the barrel is no longer the thing that
+# pulls its modules in here, so a barrel line naming a module that does not exist would not be
+# caught by this stage.
 if ! npx tsc -p tsconfig.gen.json; then
   echo "FAIL: the parity matrix output does not compile under tsc --strict." >&2
   echo "      Generated code that does not typecheck is not usable output, however it behaves" >&2
@@ -1525,21 +1547,48 @@ echo "    every generator's matrix output compiles under --strict, module nodene
 # on printing that everything compiles. That is the same stale-waiver shape as the cross-generator
 # list further up, which had exactly this hole in the opposite direction.
 #
-# Compiled one at a time on purpose. TypeScript's instantiation budget is global to a compilation,
-# so a single run over all three probes would report only the first to exhaust it and the other two
-# would look resolved.
+# Compiled one at a time because the question is per column and a compilation answers per run. A
+# combined run over all three probes gives one exit code for the union of them, which is nonzero
+# while any single column still fails, so the one that had been fixed would be masked by the two
+# that had not. That is the whole point of the check, so it cannot be run in a form that cannot
+# express the answer. It is not about errors going unreported: this compiler names all three.
+#
+# The number of probes is asserted against what the carve script wrote, and each probe's output has
+# to actually contain TS2589. Both because "no news is good news" is how this check would otherwise
+# read an empty directory and an unrelated compile error alike: an unexpanded glob makes tsc fail
+# on a path that does not exist, and any nonzero exit used to count as proof the carve was earning
+# its place, so a genuinely broken column carved out of the main compile was certified by the
+# guard meant to police it.
+expected_probes=$(cat carve-manifest.txt)
+actual_probes=$(find src/carve-probe -name '*.ts' | wc -l)
+if [ "$actual_probes" != "$expected_probes" ]; then
+  echo "FAIL: $actual_probes carve probe(s) on disk, $expected_probes expected from CARVED." >&2
+  echo "      This check cannot report on a column it never compiled." >&2
+  exit 1
+fi
 carve_dead=0
-for probe in src/carve-probe/*.ts; do
-  if npx tsc --strict --noEmit --target es2022 --module nodenext --moduleResolution nodenext \
-      --skipLibCheck "$probe" >/dev/null 2>&1; then
-    echo "FAIL: $probe compiles, so that column no longer needs carving out of the typecheck." >&2
-    echo "      Delete it from CARVED above rather than leaving a column excluded for a defect" >&2
-    echo "      that has been fixed." >&2
-    carve_dead=1
-  fi
+for probe in $(find src/carve-probe -name '*.ts' | sort); do
+  out=$(npx tsc --strict --noEmit --target es2022 --module nodenext --moduleResolution nodenext \
+      --skipLibCheck "$probe" 2>&1 || true)
+  case "$out" in
+    *"error TS2589"*) ;;
+    '')
+      echo "FAIL: $probe compiles, so that column no longer needs carving out of the typecheck." >&2
+      echo "      Delete it from CARVED above rather than leaving a column excluded for a defect" >&2
+      echo "      that has been fixed." >&2
+      carve_dead=1
+      ;;
+    *)
+      echo "FAIL: $probe fails, but not with the TS2589 this carve-out exists for:" >&2
+      echo "$out" | head -5 >&2
+      echo "      That error is being hidden from the main typecheck by an exclusion written for" >&2
+      echo "      a different defect. Fix it, or carve it out deliberately and say so." >&2
+      carve_dead=1
+      ;;
+  esac
 done
 [ "$carve_dead" = 0 ] || exit 1
-echo "    each carved column still fails on its own, so the carve-out is still earning it"
+echo "    all $expected_probes carved column(s) still fail with TS2589, so the carve-out is earning it"
 
 cat > src/json-schema-valid.ts <<'JSON_SCHEMA_VALID'
 /**
