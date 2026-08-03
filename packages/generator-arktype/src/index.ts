@@ -178,8 +178,10 @@ function atTypeForColumn(
       return atRange(isIntegerColumn(c) ? 'number.integer' : 'number', lower, upper);
     }
     case 'bigint':
-      // ArkType compares bigints against bigint literals, and a 64 bit bound cannot be written
-      // as a number without rounding, so the range is left unstated rather than stated wrongly.
+      // Bare here on purpose. The string DSL cannot carry this bound at all:
+      // `bigint >= -9223372036854775808n` is a parse error, "Comparator >= must be followed by a
+      // corresponding literal", and writing the bound as a number instead rounds it. The range
+      // goes on as a narrow, the same builder the character caps use. See `atBigintNarrow`.
       return 'bigint';
     case 'boolean':
       return 'boolean';
@@ -263,7 +265,12 @@ function renderObjectShape(
   return cols
     .map((c) => {
       const dsl = atField(c, mode, coerceDates, checks, sets, applyDefaults, cardinalities);
-      const caps = atCapNarrows(c);
+      // A defaultable definition is only valid as an object property: `type("bigint = 7")` throws
+      // "Defaultable definitions like 'number = 0' are only valid as properties in an object or
+      // tuple" at import. So a bound is not moved onto a field that carries an applied default,
+      // where it would trade a missing constraint for a module nothing can load.
+      const defaulted = mode === 'insert' && applyDefaults && c.defaultValue !== undefined;
+      const caps = atCapNarrows(c) + (defaulted ? '' : atBigintNarrow(c, checks));
       if (!caps) return `  ${JSON.stringify(c.name)}: ${JSON.stringify(dsl)},`;
       // A Type instance rather than a DSL string, because neither cap is expressible in the DSL:
       // `string <= n` counts UTF-16 code units, which agrees with neither database. ArkType marks
@@ -332,6 +339,46 @@ function atRowNarrows(rows: RowCheck[], cols: Column[]): string {
  * third measurement, agreeing with neither. Both databases count `varchar(n)` in characters and
  * MySQL counts `tinytext` in bytes, so both are written out here rather than approximated.
  */
+/**
+ * A bigint column's range as a narrow, because the string DSL cannot state one.
+ *
+ * `type('bigint >= -9223372036854775808n')` throws "Comparator >= must be followed by a
+ * corresponding literal", and the same bound written as a number rounds: 9223372036854775807
+ * is not representable as a double. So this generator emitted a bare `bigint` and accepted
+ * `2n ** 70n`, which every other generator rejects and which no int64 column can hold. That is
+ * the one direction this project says generated output must never take, looser than the
+ * first-party validator, and the packed gate had it waived on all three dialects.
+ *
+ * A narrow can hold it, exactly as the character caps do. Null passes, matching SQL and matching
+ * the cap narrows, so the guard belongs here rather than in a wrapping union.
+ */
+function atBigintNarrow(c: Column, checks: ColumnCheck[]): string {
+  if (c.tsType !== 'bigint' || c.shape) return '';
+  const { lower, upper, equals } = atNarrowRange(c, checks);
+  // A bigint literal has to be an integer: `1.5n` is a syntax error, and an emitted module that
+  // does not parse throws at import and takes everything importing it with it. A bound this
+  // cannot render is left off rather than rendered wrongly.
+  const literal = (v: string) => (/^-?\d+$/.test(v) ? `${v}n` : undefined);
+  const parts: string[] = [];
+  if (equals !== undefined) {
+    const e = literal(equals);
+    if (!e) return '';
+    parts.push(`v === ${e}`);
+  } else {
+    for (const b of [lower, upper]) {
+      if (!b) continue;
+      const l = literal(b.value);
+      if (!l) return '';
+      parts.push(`v ${b.op} ${l}`);
+    }
+  }
+  if (!parts.length) return '';
+  const msg = JSON.stringify(
+    equals !== undefined ? `exactly ${equals}` : `between ${lower?.value ?? 'any'} and ${upper?.value ?? 'any'}`
+  );
+  return `.narrow((v, ctx) => v == null || (${parts.join(' && ')}) || ctx.mustBe(${msg}))`;
+}
+
 function atCapNarrows(c: Column): string {
   if (c.tsType !== 'string' || c.shape) return '';
   const out: string[] = [];

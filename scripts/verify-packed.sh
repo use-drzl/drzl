@@ -1043,12 +1043,11 @@ const ALLOWED: Record<string, string> = {
   // same hole on `c_bit` only because that column has a `minLength` an array cannot satisfy.
   'mysql/typebox/m_binary': 'official Type.RegExp accepts a non-string whose string form matches',
   'mysql/typebox/m_varbinary': 'as mysql/typebox/m_binary',
-  // ArkType states a bigint range through a narrow predicate built with its builder API. This
-  // generator emits one string per field, and the string DSL's comparators take numeric literals:
-  // `type('bigint >= -9223372036854775808n')` is a parse error, not a wider schema.
-  'pg/arktype/c_bigint_b': 'ArkType cannot bound a bigint in its string DSL',
-  'sqlite/arktype/s_blob_bigint': 'as pg/arktype/c_bigint_b',
-  'mysql/arktype/m_bigint_b': 'as pg/arktype/c_bigint_b',
+  // No arktype bigint entry. There were three, reading "ArkType cannot bound a bigint in its
+  // string DSL", and only half of that was true: the DSL cannot state the bound, but a narrow can,
+  // and this generator already used narrows for every character cap. It was the one place in this
+  // whole gate where DRZL was looser than the first-party module, waived on all three dialects.
+  // The generator now bounds bigint columns and all four agree.
 };
 
 const usedWaivers = new Set<string>();
@@ -1079,10 +1078,8 @@ const CROSS_ALLOWED: Record<string, string> = {
   'sqlite/s_text_json': 'as pg/c_json',
   'sqlite/s_blob_json': 'as pg/c_json',
   'sqlite/s_blob': 'as pg/c_json; a bare blob() is Drizzle json mode',
-  // As `pg/arktype/c_bigint_b` above: the three others bound the bigint, arktype cannot.
-  'pg/c_bigint_b': 'ArkType cannot bound a bigint in its string DSL',
-  'mysql/m_bigint_b': 'as pg/c_bigint_b',
-  'sqlite/s_blob_bigint': 'as pg/c_bigint_b',
+  // No bigint entry either, for the reason given in ALLOWED: arktype now bounds a bigint with a
+  // narrow, so the four generators agree about `c_bigint_b`, `m_bigint_b` and `s_blob_bigint`.
   // No `c_char` entry. There was one, reading "zod and valibot count code points; TypeBox and
   // ArkType count UTF-16 units", and it had been dead since arktype and typebox were changed to
   // count code points as well. All four now emit a `[...v].length` predicate and agree on every
