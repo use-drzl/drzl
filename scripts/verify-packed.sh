@@ -3524,8 +3524,22 @@ for (const t of tables) {
 // check that used to sit here for CHECK expressions alone, and it is here because the specific
 // one was not enough: `unique`, `foreignKeys` and every column's `references` were `[]` or
 // absent across the whole fixture, and this stage called them facts that agree across the
-// majors. Anything added to the description from now on is held to the same rule, without
-// anybody having to remember to add it to a list.
+// majors.
+//
+// It holds every field the analyzer *assigns*, including the ones it assigns `undefined` to on
+// every column, because the field names come from what it produced rather than from what
+// survived serialisation. It cannot hold a field that is spread in conditionally and never
+// fires, which is this analyzer's usual style for an optional one, so exactly two sit outside
+// it today and both were measured rather than assumed:
+//
+//   maxBytes   src/index.ts:1302, set only on MySQL's text and blob families. No fixture this
+//              stage can carry will produce one: the MySQL parity fixture cannot be imported
+//              under 0.45.2 at all, since 0.4x's mysql-core has no `blob` export.
+//   readOnly   src/index.ts:1414, set for a materialized view. Adding one covers it on the v1
+//              side alone: `pgMaterializedView` answers a `drizzle:Columns` lookup on
+//              1.0.0-rc.4 and returns undefined on 0.45.2, so the analyzer does not see a 0.4x
+//              materialized view as a relation at all, and this stage would report the table as
+//              present on v1 only. Covering `readOnly` here means dealing with that first.
 const REQUIRED = [
   'rows', 'parents', 'children', 'pairs', 'notes', 'matrix', 'arrays', 'defaulted', 'checked',
 ];
@@ -3534,6 +3548,13 @@ if (missing.length) {
   diffs.push(`these tables are missing from one side or both: ${missing.join(', ')}`);
 }
 if (!compared) diffs.push('no column was described on both sides, so nothing was compared');
+// Kept specific as well as general. The rule below is satisfied by any table carrying a CHECK,
+// and `checked` is the table whose entire purpose is to carry them. The two say the same thing
+// only for as long as it is the only such table, and the general rule alone would let this one
+// stop parsing them while something else went on carrying one.
+if (!(a.tables.checked?.checks ?? []).length) {
+  diffs.push('the checked table parsed no CHECK expressions, so nothing was compared');
+}
 for (const [field, sawValue] of seen) {
   const noun = field.startsWith('table:') ? 'table' : 'column';
   if (sawValue) continue;
