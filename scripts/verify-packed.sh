@@ -1372,8 +1372,14 @@ if (!components?.schemas) {
       problems.push(`components.schemas.${name} carries a $schema, which 3.1 reads as a dialect switch`);
     }
     try {
-      doc.compile(schema as never);
+      const validate = doc.compile(schema as never) as unknown as (x: unknown) => boolean;
       docCompiled++;
+      // The same refusal probe the per-table schemas get. `componentsDocument` strips `$schema` and
+      // `$id` and copies the rest, so an entry that constrains nothing here means the copy lost
+      // more than the two keys it is supposed to lose.
+      if (validate({ drzl_not_a_column: 1 })) {
+        problems.push(`components.schemas.${name} accepts a key that is not a column`);
+      }
     } catch (err) {
       problems.push(`components.schemas.${name} does not compile: ${(err as Error).message}`);
     }
@@ -1609,7 +1615,12 @@ export const CHECK_PROBES: Record<string, unknown[]> = {
  *
  * Every probe above sets one column, and `CHECK (k_pair_a < k_pair_b)` is satisfied whenever
  * either side is NULL, so nothing above can tell a generator that enforces the comparison from one
- * that ignores it. Nothing did, for as long as the row-check support has existed.
+ * that ignores it.
+ *
+ * The zod generator's own unit tests do catch a deleted row refinement, by reading the emitted
+ * source. No packed or database-backed stage could: deleting all three row refinements and running
+ * the pre-existing checks-truth stage against the result exits 0. So what these probes add is the
+ * behavioural half, measured against Postgres rather than against a string.
  */
 export const ROW_PAIR_PROBES: { row: Record<string, unknown>; satisfied: boolean }[] = [
   { row: { k_pair_a: 1, k_pair_b: 5 }, satisfied: true },
@@ -1814,28 +1825,45 @@ for (const [col, sub] of Object.entries(props)) {
   validators[col] = ajv.compile(sub as never) as never;
 }
 
-/** Does Postgres accept this value for this column? Each probe rolls back, so nothing persists. */
-async function dbAccepts(col: string, value: unknown): Promise<boolean> {
+/**
+ * Does Postgres accept this value for this column? Each probe rolls back, so nothing persists.
+ *
+ * The refusal and the message behind it are both kept. The message decides nothing, but a column
+ * that accepts nothing at all has to be explained before it can be set aside, and this reads any
+ * failure as a refusal: it cannot tell "the database refused this value" from "the driver never
+ * sent this value". Printing what Postgres actually said is what lets a reader check the recorded
+ * reason instead of taking it on trust.
+ */
+type DbVerdict = { accepted: true } | { accepted: false; error: string };
+async function dbAccepts(col: string, value: unknown): Promise<DbVerdict> {
   try {
     await db.exec('BEGIN');
     await db.query(`INSERT INTO matrix (${col}) VALUES ($1)`, [value as never]);
     await db.exec('ROLLBACK');
-    return true;
-  } catch {
+    return { accepted: true };
+  } catch (err) {
     try {
       await db.exec('ROLLBACK');
     } catch {
       /* already rolled back */
     }
-    return false;
+    return { accepted: false, error: String((err as Error)?.message ?? err).split('\n')[0] };
   }
 }
 
-const zodOk = (col: string, value: unknown) => {
+/**
+ * The reference's verdict, or the fact that it has none.
+ *
+ * A thrown reference is not a rejection. The gate fires only where zod agrees with Postgres, so a
+ * `false` written into that slot by a `catch` can move an over-strict finding into the tolerated
+ * bucket and silence the gate. Neither an error nor an absence is a value here either.
+ */
+type RefVerdict = { answered: true; ok: boolean } | { answered: false; error: string };
+const zodVerdict = (col: string, value: unknown): RefVerdict => {
   try {
-    return zodShape[col].safeParse(value).success;
-  } catch {
-    return false;
+    return { answered: true, ok: zodShape[col].safeParse(value).success };
+  } catch (err) {
+    return { answered: false, error: String((err as Error)?.message ?? err).split('\n')[0] };
   }
 };
 
@@ -1868,36 +1896,104 @@ if (unexercised.length) {
 
 type Row = { col: string; label: string; db: boolean; json: boolean; zod: boolean };
 const rows: Row[] = [];
+/**
+ * The distinct *kinds* of refusal Postgres gave per column, kept as evidence for the set below.
+ *
+ * The quoted value is stripped out, because Postgres embeds it and a set keyed on the raw message
+ * is one entry per probe, which is a wall of text rather than evidence. What is left is the shape
+ * of the complaint, and that is the part that distinguishes the three exempt columns: `c_enum_arr`
+ * answers `malformed array literal` to the number 0 and to `['happy']` alike, which is the driver
+ * flattening both into a bare string before Postgres ever parses them, while `c_line` answers
+ * `invalid input syntax for type line`, which is Postgres reading exactly what was sent.
+ */
+const kindOf = (message: string) => message.replace(/"[^"]*"/g, '"..."');
+const refusalMessages: Record<string, Set<string>> = {};
+const unanswered: string[] = [];
 for (const col of cols) {
   for (const { label, value } of pool) {
-    rows.push({
-      col,
-      label,
-      db: await dbAccepts(col, value),
-      json: validators[col](value),
-      zod: zodOk(col, value),
-    });
+    const verdict = await dbAccepts(col, value);
+    if (!verdict.accepted) (refusalMessages[col] ??= new Set()).add(kindOf(verdict.error));
+    const ref = zodVerdict(col, value);
+    if (!ref.answered) {
+      unanswered.push(`${col} on ${label}: ${ref.error}`);
+      continue;
+    }
+    rows.push({ col, label, db: verdict.accepted, json: validators[col](value), zod: ref.ok });
   }
 }
 
+if (unanswered.length) {
+  console.error('\n    FAIL: the zod reference threw rather than answering, so the gate has no filter:');
+  for (const u of unanswered.slice(0, 20)) console.error(`      ${u}`);
+  console.error('\n    This gate fires only where zod agrees with Postgres. A thrown reference read as');
+  console.error('    a rejection would move an over-strict finding into the tolerated bucket.');
+  await db.close();
+  process.exit(1);
+}
+
 /**
- * A column Postgres accepts nothing for cannot be measured, and saying so is not the same as
- * waiving a disagreement.
+ * The columns Postgres has no verdict to give about, each with the reason it has none.
  *
- * `bytea` is the case that forced this. Its JSON form is base64 text which the consumer decodes
- * before Drizzle ever sees it, so the database is never shown that string, and a bound parameter
- * for a `bytea` column takes bytes and nothing else: every probe is refused, including the exact
- * base64 of a `Uint8Array` the same column accepts unencoded. Agreement would require a schema that
- * accepts nothing at all, so there is no verdict to be had.
+ * A column the database accepts nothing for cannot be compared: agreement would require a schema
+ * that accepts nothing either. That is a real state rather than a waiver, but it is only honest
+ * while every member is understood, because `dbAccepts` reads any failure as a refusal and cannot
+ * tell a database verdict from a driver that never sent the value. The three below are three
+ * different reasons, and only the first was worked out when this stage was written.
  *
- * Derived from a measurement rather than from a named list, so it disappears by itself the moment
- * the database has an opinion, and a second column that becomes unmeasurable is printed rather than
- * hidden. Every column ending up here is a broken fixture and fails.
+ * An earlier version derived the set and printed it. Review forced thirty-nine of the forty
+ * columns into it and the stage printed thirty-nine lines and exited 0, then replaced one excluded
+ * column's subschema with an object that accepts anything and the stage stayed green. So the set is
+ * asserted, both ways: a fourth member fails, and a member that stops belonging fails too, because
+ * the moment the database can answer for one of these the exemption is stale and has to go.
  */
+const NO_VERDICT: Record<string, string> = {
+  c_bytea:
+    'the JSON form is base64 text the consumer decodes before Drizzle sees it, so Postgres is ' +
+    'never shown the string the schema describes. A bound bytea parameter takes bytes and refuses ' +
+    'every string, including the exact base64 of a Uint8Array the same column accepts unencoded.',
+  c_enum_arr:
+    'PGlite cannot bind a JavaScript array to a user-defined enum array, so Postgres is asked ' +
+    'about `happy` rather than `{happy}`. Its answer is about a value the probe never sent. ' +
+    '`c_text_arr` binds fine and `c_enum` binds fine, so this is the pair, not either half.',
+  c_line:
+    'the shared pool holds no `line` literal. Postgres does accept `{1,2,3}` here, so adding one ' +
+    'would make the column measurable; the row would land in the tolerated bucket, since the zod ' +
+    'output emits a tuple and refuses the string too.',
+};
+
 const unanswerable = cols.filter((c) => !rows.some((r) => r.col === c && r.db));
-if (unanswerable.length === cols.length) {
-  console.error('    FAIL: Postgres accepted no probe for any column, so nothing was measured.');
-  console.error('          That is a broken fixture, not a generator finding.');
+const unexplained = unanswerable.filter((c) => !(c in NO_VERDICT));
+const stale = Object.keys(NO_VERDICT).filter((c) => !unanswerable.includes(c));
+if (unexplained.length || stale.length) {
+  console.error('\n    FAIL: the set of columns Postgres has no verdict about is not the expected one.');
+  for (const c of unexplained) {
+    const asked = rows.filter((r) => r.col === c).length;
+    console.error(`      ${c} accepted none of its ${asked} probes and no reason is recorded for it.`);
+    for (const m of refusalMessages[c] ?? []) console.error(`        Postgres said: ${m}`);
+  }
+  for (const c of stale) {
+    console.error(`      ${c} is listed as having no verdict, and Postgres now accepts something for it.`);
+    console.error('        The entry is stale: delete it and let the column be compared like the rest.');
+  }
+  console.error('\n    Setting a column aside is only honest while its reason is written down. Work out');
+  console.error('    whether the database is refusing the value or the driver never sent it, then say so');
+  console.error('    in NO_VERDICT, or fix the fixture so the question can be asked.');
+  await db.close();
+  process.exit(1);
+}
+
+/**
+ * A column the database cannot judge still has to be constrained by something.
+ *
+ * Otherwise the exemption is a place to hide an empty schema: review replaced one excluded column's
+ * subschema with `{ description: '...' }`, which accepts every value there is, and nothing noticed.
+ */
+const inert = unanswerable.filter((c) => pool.every(({ value }) => validators[c](value)));
+if (inert.length) {
+  console.error('\n    FAIL: a column set aside for having no database verdict constrains nothing either:');
+  for (const c of inert) console.error(`      ${c} accepts all ${pool.length} probes`);
+  console.error('\n    Nothing can check these against the database, so an inert schema here is invisible');
+  console.error('    everywhere else too.');
   await db.close();
   process.exit(1);
 }
@@ -1914,7 +2010,9 @@ console.log(`    ${rows.length} JSON probes against a real Postgres (${cols.leng
 console.log(`    ${converted.none} probe(s) per column have no JSON form and were not asked (NaN, Infinity)`);
 for (const c of unanswerable) {
   const asked = rows.filter((r) => r.col === c).length;
-  console.log(`    ${c} not measurable: Postgres accepted 0 of ${asked} JSON probes for it`);
+  const said = [...(refusalMessages[c] ?? [])];
+  console.log(`    ${c} has no database verdict: Postgres accepted 0 of ${asked} JSON probes,`);
+  for (const m of said) console.log(`      saying "${m}"`);
 }
 console.log(`    agree with the database: ${agrees} of ${measured.length}; ${shared.length} differ where zod differs too`);
 console.log(`    the schema refused ${refusals} of ${measured.length} probes`);
