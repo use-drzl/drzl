@@ -3059,9 +3059,10 @@ npm install --no-audit --no-fund --loglevel=error \
 # rather than about two schemas that happen to differ. Every type here exists in both.
 cat > src/schema.ts <<'OLD_SCHEMA'
 import {
-  pgTable, pgEnum, text, integer, smallint, bigint, varchar, char, timestamp, date,
-  boolean, numeric, doublePrecision, uuid, json, jsonb,
+  pgTable, pgSchema, pgEnum, text, integer, smallint, bigint, varchar, char, timestamp, date,
+  boolean, numeric, doublePrecision, uuid, json, jsonb, index, unique, foreignKey, primaryKey,
 } from 'drizzle-orm/pg-core';
+import { sql } from 'drizzle-orm';
 
 export const mood = pgEnum('mood', ['sad', 'ok', 'happy']);
 
@@ -3086,6 +3087,61 @@ export const rows = pgTable('rows', {
   scores: integer('scores').array().notNull(),
   moods: mood('moods').array().notNull(),
   grid: text('grid').array().array().notNull(),
+});
+
+/**
+ * Everything the analyzer says about a table rather than about a column, so that comparing those
+ * facts is a comparison rather than an agreement between empty arrays.
+ *
+ * Before these three tables the fixture carried no unique constraint, no foreign key, no
+ * generated column and no `references`, and the stage compared `[]` with `[]` for each of them
+ * while reporting that they agreed. The guard further down now refuses any field it only ever
+ * saw empty, so the next one added here cannot repeat it.
+ *
+ * `alt_ref` is renamed on purpose: Drizzle reports index, unique and foreign key members by
+ * database column name, and the analyzer translates those back to the TypeScript names the rest
+ * of its output uses. A fixture whose two names are identical cannot tell the two apart.
+ */
+export const parents = pgTable('parents', {
+  id: integer('id').primaryKey(),
+  label: text('label').notNull(),
+});
+
+export const children = pgTable(
+  'children',
+  {
+    id: integer('id').primaryKey(),
+    parentId: integer('parent_id')
+      .references(() => parents.id)
+      .notNull(),
+    altRef: integer('alt_ref').notNull(),
+    b: integer('b').notNull(),
+    span: integer('span').generatedAlwaysAs(sql`alt_ref + b`),
+    seenAt: timestamp('seen_at').notNull().default(sql`now()`),
+  },
+  (t) => [
+    unique('children_alt_b_uq').on(t.altRef, t.b),
+    index('children_b_idx').on(t.b),
+    foreignKey({ columns: [t.altRef], foreignColumns: [parents.id], name: 'children_alt_fk' }),
+  ]
+);
+
+export const pairs = pgTable(
+  'pairs',
+  {
+    left: integer('left').notNull(),
+    right: integer('right').notNull(),
+  },
+  (t) => [primaryKey({ columns: [t.left, t.right] })]
+);
+
+// A table outside the public schema, which is the only way `schema` is anything but undefined.
+// The analyzer reads it off `drizzle:Schema`, and both majors still put it there.
+export const app = pgSchema('app');
+
+export const notes = app.table('notes', {
+  id: integer('id').primaryKey(),
+  body: text('body').notNull(),
 });
 OLD_SCHEMA
 
@@ -3151,11 +3207,18 @@ async function main() {
   // also the point of this line, which is to report the version of the tree this ran in rather
   // than the version somebody believes it installed.
   const pkg = JSON.parse(readFileSync('node_modules/drizzle-orm/package.json', 'utf8'));
-  const out: { drizzle: string; tables: Record<string, unknown>; columns: Record<string, unknown> } = {
-    drizzle: pkg.version,
-    tables: {},
-    columns: {},
-  };
+  const out: {
+    drizzle: string;
+    tables: Record<string, unknown>;
+    columns: Record<string, unknown>;
+    fields: { table: string[]; column: string[] };
+  } = { drizzle: pkg.version, tables: {}, columns: {}, fields: { table: [], column: [] } };
+  // The field names the analyzer produced, collected before this is serialised. A field it sets
+  // to `undefined` on every column, as it does with `references` until something references
+  // something, is gone by the time the JSON is read, and a comparison cannot notice a field it
+  // cannot see. This is what lets the guard downstream tell "always empty" from "not a field".
+  const table = new Set<string>();
+  const column = new Set<string>();
   for (const file of process.argv.slice(2)) {
     const a = await new SchemaAnalyzer(file).analyze({});
     // A fixture this drizzle cannot import analyzes to zero tables and one issue, and would
@@ -3178,9 +3241,14 @@ async function main() {
       }
       const { columns, ...rest } = t;
       out.tables[t.name] = rest;
-      for (const c of columns) out.columns[`${t.name}.${c.name}`] = c;
+      for (const k of Object.keys(rest)) table.add(k);
+      for (const c of columns) {
+        out.columns[`${t.name}.${c.name}`] = c;
+        for (const k of Object.keys(c)) column.add(k);
+      }
     }
   }
+  out.fields = { table: [...table].sort(), column: [...column].sort() };
   console.log(JSON.stringify(out, null, 1));
 }
 DESCRIBE
@@ -3216,11 +3284,15 @@ import { readFileSync } from 'node:fs';
  * check below is separate rather than folded in. Measured, in both directions, because the
  * sentence that used to stand here was false: deleting the analyzer's `PgEnumColumn` arm does
  * *not* go unnoticed here, since v1 reads its enums through `describeV1Column` and keeps saying
- * `string` while 0.4x starts saying `unknown`, which is ten differences on this fixture. It
- * takes deleting the v1 path as well to make five enum columns read `unknown` on both sides,
- * and that is the state where this comparison goes quiet and only the absolute check fires.
- * The old sentence read as measured because it was: against a run comparing 0.45.2 with itself,
- * where every mutation stays silent.
+ * `string` while 0.4x starts saying `unknown`, which is ten differences on this fixture.
+ *
+ * The state where it does go quiet takes deleting the v1 path as well. With `describeV1Column`
+ * returning null on top of that deletion, five enum columns read `unknown` on both sides and
+ * this comparison says nothing about any of them; that mutation is not silent overall, since
+ * dropping the v1 path also drops v1's `arrayDimensions` and leaves two differences on the two
+ * enum *array* columns, but the enum defect itself is invisible here and the check below names
+ * all five. The old sentence read as measured because it was: against a run comparing 0.45.2
+ * with itself, where every mutation stays silent.
  */
 const ALLOWED: Record<string, string> = {
   // `.array().array()` is two dimensions in 0.4x and one in v1, and DRZL repeats each major
@@ -3251,9 +3323,11 @@ const DEFECTS: Record<string, string> = {
   //
   // A label, and nothing more, on this fixture. `dbType` is read in exactly one place outside the
   // analyzer, `isIntegerColumn`, which prefers the `integer` flag and only falls back to
-  // `dbType === 'INTEGER'`. Measured rather than reasoned: generating both fixtures under both
-  // majors with the zod and the JSON Schema generators, not one of the sixteen columns below
-  // appears in a changed line, while the fourteen columns in the groups after it all do.
+  // `dbType === 'INTEGER'`. Measured by changing it rather than by reading the output: setting all
+  // sixteen of these to the value v1 reports, in the analysis of the 0.4x tree, and regenerating
+  // with the zod and JSON Schema generators produces 20 byte-identical files. Reading the diff of
+  // the two majors' output instead would have been wrong here, since `c_real` sits in this group
+  // and in the float group below, and its output does change.
   'rows.small.dbType': 'label only: PgSmallInt is named INTEGER on 0.4x',
   'rows.name.dbType': 'as rows.small.dbType, PgVarchar as TEXT',
   'rows.code.dbType': 'as rows.small.dbType, PgChar as TEXT',
@@ -3278,6 +3352,12 @@ const DEFECTS: Record<string, string> = {
   // for 0.45.2, emits the same two bounds this fixture's 0.4x side is missing. Measured: it
   // rejects 8388608 for `real` and 140737488355328 for `double precision`, exactly as
   // drizzle-orm/zod does on 1.0.0-rc.4.
+  //
+  // The `integer` half of each of these is the flag arriving with the bounds, and on its own it
+  // changes nothing: setting `integer: false` on all five without adding the bounds regenerates
+  // byte identical, because `isIntegerColumn` reaches the same answer from `dbType` and the
+  // absent bounds. Of the 49 fields in this map, those 5 and the 16 labels above are the ones
+  // with no measured effect on generated output; the other 28, on 13 columns, all have one.
   'rows.ratio.min': 'no float bound on 0.4x, which official drizzle-zod does emit there',
   'rows.ratio.max': 'as rows.ratio.min',
   'rows.ratio.integer': 'as rows.ratio.min; the flag comes with the bounds',
@@ -3353,11 +3433,50 @@ const used = new Set<string>();
 const diffs: string[] = [];
 const suppressed: Array<{ key: string; defect: boolean }> = [];
 
-const compare = (label: string, l: Record<string, unknown>, r: Record<string, unknown>) => {
+/**
+ * Fields this fixture can never fill in, so the guard below would name them every run.
+ *
+ * Each is a promise that nothing can populate the field, not that nobody has bothered, and it
+ * dies the moment something does.
+ */
+const EMPTY_OK: Record<string, string> = {
+  'table:meta': 'the analyzer writes `meta: {}` at one site and never puts anything in it',
+  'column:defaultExpression': 'the analyzer writes `defaultExpression: undefined` and never sets it',
+};
+const emptyOkUsed = new Set<string>();
+
+// Whether a value says anything at all. Two sides agreeing on `[]`, `{}`, `false` or nothing at
+// all is not a comparison of that field, it is a comparison of its absence.
+const meaningful = (v: unknown) =>
+  !(
+    v === undefined ||
+    v === null ||
+    v === false ||
+    v === '' ||
+    (Array.isArray(v) && v.length === 0) ||
+    (typeof v === 'object' && !Array.isArray(v) && Object.keys(v as object).length === 0)
+  );
+// Seeded from the field names each side reported producing, so a field that is `undefined`
+// everywhere and therefore absent from the JSON is still held to the rule below.
+const seen = new Map<string, boolean>();
+for (const side of [a, b]) {
+  if (!side.fields?.table?.length || !side.fields?.column?.length) {
+    console.error('    FAIL: a description arrived without the field names it produced, so the');
+    console.error('          guard below would have had nothing to check and would have passed.');
+    process.exit(1);
+  }
+  for (const kind of ['table', 'column'] as const) {
+    for (const f of side.fields[kind]) seen.set(`${kind}:${f}`, false);
+  }
+}
+
+const compare = (kind: string, label: string, l: Record<string, unknown>, r: Record<string, unknown>) => {
   // The union of both sides' keys, so a field only one major produces is a difference rather
   // than something the loop never looks at. Reading `Object.keys(l)` alone is how a v1-only
   // field would go unexamined forever.
   for (const f of new Set([...Object.keys(l), ...Object.keys(r)])) {
+    const field = `${kind}:${f}`;
+    seen.set(field, (seen.get(field) ?? false) || meaningful(l[f]) || meaningful(r[f]));
     const lv = JSON.stringify(l[f]);
     const rv = JSON.stringify(r[f]);
     if (lv === rv) continue;
@@ -3381,7 +3500,7 @@ for (const n of names) {
     continue;
   }
   compared++;
-  compare(n, l, r);
+  compare('column', n, l, r);
 }
 
 // Everything the analyzer says about the table rather than about one column: its primary key,
@@ -3395,21 +3514,38 @@ for (const t of tables) {
     diffs.push(`table ${t}: present on ${l ? '0.4x' : 'v1'} only`);
     continue;
   }
-  compare(`table:${t}`, l, r);
+  compare('table', `table:${t}`, l, r);
 }
 
-// A comparison that compared nothing must fail rather than print a reassuring number. Both
-// fixtures have to have loaded on both sides, and the CHECK expressions have to be there: they
-// are the only table-level fact this fixture carries that could differ, so a run without them
-// compares a handful of empty arrays and says nothing about CHECK parsing at all.
-const REQUIRED = ['rows', 'matrix', 'arrays', 'defaulted', 'checked'];
+// A comparison that compared nothing must fail rather than print a reassuring number.
+//
+// Both fixtures have to have loaded on both sides, and every field either of them produces has
+// to have carried a real value somewhere. The second half is the general form of a specific
+// check that used to sit here for CHECK expressions alone, and it is here because the specific
+// one was not enough: `unique`, `foreignKeys` and every column's `references` were `[]` or
+// absent across the whole fixture, and this stage called them facts that agree across the
+// majors. Anything added to the description from now on is held to the same rule, without
+// anybody having to remember to add it to a list.
+const REQUIRED = [
+  'rows', 'parents', 'children', 'pairs', 'notes', 'matrix', 'arrays', 'defaulted', 'checked',
+];
 const missing = REQUIRED.filter((t) => !a.tables[t] || !b.tables[t]);
 if (missing.length) {
   diffs.push(`these tables are missing from one side or both: ${missing.join(', ')}`);
 }
 if (!compared) diffs.push('no column was described on both sides, so nothing was compared');
-const checks = (a.tables.checked?.checks ?? []).length;
-if (!checks) diffs.push('the checked table parsed no CHECK expressions, so nothing was compared');
+for (const [field, sawValue] of seen) {
+  const noun = field.startsWith('table:') ? 'table' : 'column';
+  if (sawValue) continue;
+  if (EMPTY_OK[field]) {
+    emptyOkUsed.add(field);
+    continue;
+  }
+  diffs.push(
+    `${field} was empty on both sides of every ${noun}, so comparing it proves nothing. ` +
+      'Give the fixture one that carries a value.'
+  );
+}
 
 const defects = suppressed.filter((s) => s.defect);
 const columnsWithDefects = [...new Set(defects.map((s) => s.key.replace(/\.[^.]+$/, '')))];
@@ -3432,6 +3568,10 @@ if (columnsWithDefects.length) {
 const dead = [
   ...Object.keys(ALLOWED).filter((k) => !used.has(k)).map((k) => `ALLOWED[${k}]`),
   ...Object.keys(DEFECTS).filter((k) => !used.has(k)).map((k) => `DEFECTS[${k}]`),
+  // An EMPTY_OK entry is used by the field staying empty. One that is no longer needed means
+  // the field now carries a value somewhere, which is the good outcome and still has to be
+  // recorded by deleting the entry.
+  ...Object.keys(EMPTY_OK).filter((k) => !emptyOkUsed.has(k)).map((k) => `EMPTY_OK[${k}]`),
 ];
 if (dead.length) {
   console.error('    FAIL: these entries suppressed nothing on this run. If the analyzer was');
@@ -3777,8 +3917,8 @@ echo "    modes, with the four generators cross-checked against each other on ev
 echo "    checked against a real Postgres, a real SQLite and, where MYSQL_URL is set, a real"
 echo "    MySQL, with applyDefaults compared against what the database writes, and described the"
 echo "    same way by the analyzer under both drizzle-orm majors, bar the differences that stage"
-echo "    names one at a time. The JSON Schema output compiles under ajv in strict mode, agrees"
-echo "    with Postgres wherever the zod output does, and speaks"
-echo "    as a fifth voice on every CHECK. Every tarball holds the files its manifest names and"
-echo "    nothing from the working tree, and every package npm is serving carries a provenance"
-echo "    attestation."
+echo "    names one at a time, three of which are columns 0.4x leaves unnamed. The JSON Schema"
+echo "    output compiles under ajv in strict mode, agrees with Postgres wherever the zod output"
+echo "    does, and speaks as a fifth voice on every CHECK. Every tarball holds the files its"
+echo "    manifest names and nothing from the working tree, and every package npm is serving"
+echo "    carries a provenance attestation."
