@@ -54,7 +54,33 @@ const term = (dir: string) => dir.replace(/^(generator|template)-/, '');
  *  and "json-schema" are the same string and a term cannot hide behind punctuation. */
 const normalise = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, '-');
 
-const terms = publishable.map((p) => term(p.dir));
+/**
+ * Whether a term appears in some text as whole words rather than as a substring.
+ *
+ * Both sides are already hyphen-joined by `normalise`, so wrapping each in hyphens turns "does
+ * this text contain these words in this order" into one `includes`. Without the wrapping, "cli"
+ * matches "client" and every description of the oRPC generator that mentions a typed client
+ * would read as a copy-paste from the CLI package.
+ */
+const mentions = (text: string, t: string) => `-${text}-`.includes(`-${t}-`);
+
+/**
+ * Terms that are ordinary words in this domain, and so cannot be evidence of anything.
+ *
+ * Whole-word matching is not enough on its own here, because some of these directory names are
+ * also words a correct description needs. "Standard Schema" is the name of the specification the
+ * generators target and is already used in packages/generator-orpc/src/index.ts and its README,
+ * so it would convict @drzl/generator-zod of copying @drzl/template-standard. "Service" is what
+ * the service generator emits and what an oRPC router calls. "CLI" and "analyzer" are ordinary
+ * nouns any of these packages may need.
+ *
+ * Everything left is a proper noun that belongs to exactly one package: arktype, json-schema,
+ * orpc, typebox, valibot, zod, orpc-service, validation-core. Those are the ones a copied
+ * description carries over, which is the case this check exists for.
+ */
+const TOO_GENERIC_TO_CONVICT = new Set(['analyzer', 'cli', 'service', 'standard']);
+
+const terms = publishable.map((p) => term(p.dir)).filter((t) => !TOO_GENERIC_TO_CONVICT.has(t));
 
 it('found every publishable package', () => {
   // Without this the table below could quietly go empty and every assertion would pass on
@@ -122,7 +148,7 @@ describe.each(publishable)('$manifest.name', ({ dir, manifest }) => {
     // `orpc` is inside `orpc-service`, and the template is entitled to say the word.
     const foreign = terms.filter((t) => t !== own && !own.includes(t));
     const text = normalise([manifest.description ?? '', ...(manifest.keywords ?? [])].join(' '));
-    expect(foreign.filter((t) => text.includes(t))).toEqual([]);
+    expect(foreign.filter((t) => mentions(text, t))).toEqual([]);
   });
 });
 
