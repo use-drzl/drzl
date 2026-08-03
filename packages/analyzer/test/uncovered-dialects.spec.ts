@@ -108,6 +108,9 @@ describe('SingleStore, against a real singlestoreTable', () => {
     expect(ts('dt')).toBe('Date');
     expect(ts('ts')).toBe('Date');
     expect(ts('tm')).toBe('string');
+    // `float` and `double` are both real JS numbers, unlike `decimal` below.
+    expect(ts('fl')).toBe('number');
+    expect(ts('dbl')).toBe('number');
     expect(byName.get('payload')?.shape).toEqual({ kind: 'json' });
   });
 
@@ -184,11 +187,13 @@ describe('SingleStore, against a real singlestoreTable', () => {
     //
     // 0.4x gives every member of the family the same class, `SingleStoreText`, so the SQL type
     // is the only thing that separates them, exactly as it is on MySQL.
+    // All four members the fixture carries, so the whole family is covered rather than a
+    // sample of it. MySQL's caps for the same four are 255, 65535, 16777215 and 4294967295.
     const { byName } = await columnsOf('real-singlestore', SINGLESTORE_SOURCE);
-    expect(byName.get('tiny')?.maxBytes).toBeUndefined();
-    expect(byName.get('tiny')?.maxLength).toBeUndefined();
-    expect(byName.get('long')?.maxBytes).toBeUndefined();
-    expect(byName.get('body')?.maxBytes).toBeUndefined();
+    for (const n of ['tiny', 'body', 'medium', 'long']) {
+      expect(byName.get(n)?.maxBytes, `${n} carries a byte cap`).toBeUndefined();
+      expect(byName.get(n)?.maxLength, `${n} carries a length cap`).toBeUndefined();
+    }
   });
 
   it('DEFECT: types a vector column as any, so its validator refuses nothing', async () => {
@@ -350,12 +355,40 @@ describe('Gel, against a real gelTable', () => {
     expect(byName.get('tags')).toMatchObject({ tsType: 'string', arrayDimensions: 1 });
   });
 
-  it('DEFECT: seven holes in total, not one', async () => {
-    // The boolean below plus the six temporal columns above. Asserted as a count so that a
-    // partial fix cannot leave this file looking green while some of the family is still wrong.
+  it('DEFECT: seven holes in total, and a partial fix must not look green', async () => {
+    // The boolean plus the six temporal columns, each pinned to the type DRZL returns today
+    // and commented with the type drizzle declares. Keyed by column rather than counted, so
+    // fixing any single one fails this test naming that column.
+    //
+    // The first version of this test was `wrong.filter((n) => byName.has(n))`, which reads
+    // only whether the fixture still defines those seven columns and never looks at a type at
+    // all. Its comment claimed it was the thing stopping a partial fix from looking green.
+    // Measured: applying the full gel fix, a boolean case plus all six temporal arms, failed
+    // three tests in this file and left that one passing. A vacuous assertion, an expectation
+    // traced to the fixture's own column list instead of to ground truth, and a comment
+    // promising a property the code did not provide, in six lines.
+    const TODAY: Record<string, string> = {
+      flag: 'unknown', // boolean.d.ts             data: boolean
+      ts: 'string', //    timestamp.d.ts           data: LocalDateTime
+      ld: 'string', //    localdate.d.ts           data: LocalDate
+      lt: 'string', //    localtime.d.ts           data: LocalTime
+      dd: 'string', //    date-duration.d.ts       data: DateDuration
+      rd: 'string', //    relative-duration.d.ts   data: RelativeDuration
+      d: 'string', //     duration.d.ts            data: Duration
+    };
     const { byName } = await columnsOf('real-gel', GEL_SOURCE);
-    const wrong = ['flag', 'ts', 'ld', 'lt', 'dd', 'rd', 'd'];
-    expect(wrong.filter((n) => byName.has(n))).toHaveLength(7);
+    const actual = Object.fromEntries(
+      Object.keys(TODAY).map((n) => [n, byName.get(n)?.tsType])
+    );
+    expect(actual).toEqual(TODAY);
+
+    // And "seven" is the whole count, not just seven of an unknown number: no column outside
+    // that list comes back `unknown` either.
+    const named = new Set(Object.keys(TODAY));
+    const otherUnknowns = [...byName.values()]
+      .filter((c) => !named.has(c.name) && c.tsType === 'unknown')
+      .map((c) => c.name);
+    expect(otherUnknowns).toEqual([]);
   });
 
   it('DEFECT: types a boolean column as unknown, so its validator refuses nothing', async () => {
