@@ -3158,7 +3158,24 @@ async function main() {
   };
   for (const file of process.argv.slice(2)) {
     const a = await new SchemaAnalyzer(file).analyze({});
+    // A fixture this drizzle cannot import analyzes to zero tables and one issue, and would
+    // otherwise leave nothing behind but a smaller number in the count. Not hypothetical: the
+    // MySQL parity fixture cannot be imported under 0.45.2 at all, because 0.4x's mysql-core
+    // has no `blob` export.
+    const failed = a.issues.filter((i) => i.code === 'DRZL_ANL_IMPORT');
+    if (failed.length) {
+      console.error(`FAIL: ${file} could not be imported under drizzle-orm ${pkg.version}:`);
+      for (const i of failed) console.error(`      ${i.message}`);
+      process.exit(1);
+    }
     for (const t of a.tables) {
+      // Two fixture files exporting a table of the same name would silently keep one table's
+      // facts and both tables' columns under the same prefix, comparing a mixture of the two.
+      if (out.tables[t.name]) {
+        console.error(`FAIL: two schema files both export a table called ${t.name}, so this`);
+        console.error('      description would mix them. Rename one.');
+        process.exit(1);
+      }
       const { columns, ...rest } = t;
       out.tables[t.name] = rest;
       for (const c of columns) out.columns[`${t.name}.${c.name}`] = c;
