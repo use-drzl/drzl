@@ -2288,49 +2288,119 @@ echo "    every @drzl dependency resolves on npm"
 # This asks about the version tagged `latest`, not about the version in this working tree, which
 # during a release has not been published yet.
 #
-# It deliberately skips a package whose `latest` is its only published version, and that
-# exemption is load-bearing rather than tidiness. `pnpm verify:packed` runs as a step in
-# release.yml *before* `changeset publish`, so a gate that failed on a hand-published first
-# version would abort the job before the publish step, and the CI publish that is the only way to
-# attest that package could never run. The repo would be one new package away from a release
-# deadlock, and it has added a new package twice in the last two releases. A second unattested
-# version is a real finding and still fails: by then CI has published at least once.
+# The one exemption is load-bearing rather than tidiness. `pnpm verify:packed` runs as a step in
+# release.yml *before* `changeset publish`, so a gate that failed on a package CI has never
+# published would abort the job before the publish step, and the CI publish that is the only way
+# to attest that package could never run. The repo would be one new package away from a release
+# deadlock, and it added one in each of the last two releases.
+#
+# So the exemption is stated as what it actually needs to be: skip when *no* version of the
+# package carries an attestation, which is exactly "CI has never published this". Counting
+# versions instead is close but not the same thing, and the difference is a live deadlock shape:
+# a package hand-published twice before CI takes over has two versions and no attestation, and
+# the documented remediation for a broken release here is a hand publish, so it is the obvious
+# way to arm it.
+#
+# The stronger form also detects more. `drizzle` has 33 versions and none attested, so CI has
+# never published it and there is nothing to regress. `eslint-plugin-drizzle` has 251 versions of
+# which 239 are attested and `latest` is not, which is a provenance setup that used to work and
+# has stopped. Only the second is this gate's business, and a version count cannot tell them
+# apart.
+#
+# Every error is a hard failure. An earlier draft skipped when the version lookup failed, which
+# printed "this is a first publish" over a network error and exited 0.
 # ---------------------------------------------------------------------------------------------
 echo "==> published packages carry a provenance attestation"
-unattested=0
-for pkg in packages/*/package.json; do
-  name=$(node -p "const p=require('./$pkg'); p.private ? '' : p.name")
-  [ -z "$name" ] && continue
-  # The stage above already fails the run if the registry is unreachable, so a failure here is a
-  # package that has never been published rather than a network problem.
-  if ! version=$(npm view "$name" version 2>/dev/null); then
-    echo "    $name has no published version yet, so there is nothing to attest"
-    continue
-  fi
-  predicate=$(npm view "$name" dist.attestations.provenance.predicateType 2>/dev/null || true)
-  if [ -n "$predicate" ]; then
-    echo "    $name@$version  $predicate"
-    continue
-  fi
-  # `npm view <pkg> versions --json` answers with a bare string when there is exactly one, and an
-  # array otherwise, so the count cannot be taken from the shape of the output alone.
-  versions_json=$(npm view "$name" versions --json 2>/dev/null || echo 'null')
-  published=$(node -e "
-    const v = JSON.parse(process.argv[1]);
-    process.stdout.write(String(v === null ? 0 : Array.isArray(v) ? v.length : 1));
-  " "$versions_json")
-  if [ "$published" -le 1 ]; then
-    echo "    $name@$version is a first publish, which had to be made by hand and so carries no"
-    echo "        attestation. The next release attests it; failing here would prevent that release."
-    continue
-  fi
-  echo "    FAIL: $name@$version is on npm with no provenance attestation, and it is not this" >&2
-  echo "          package's first version ($published published), so it should have come from" >&2
-  echo "          CI. Check that release.yml still sets NPM_CONFIG_PROVENANCE and still grants" >&2
-  echo "          id-token: write, and that the publish ran from CI rather than by hand." >&2
-  unattested=1
-done
-[ "$unattested" = 0 ] || exit 1
+names=$(node -e "
+  const fs = require('fs');
+  const out = [];
+  for (const dir of fs.readdirSync('packages')) {
+    const file = 'packages/' + dir + '/package.json';
+    if (!fs.existsSync(file)) continue;
+    const p = JSON.parse(fs.readFileSync(file, 'utf8'));
+    if (!p.private) out.push(p.name);
+  }
+  process.stdout.write(out.join(' '));
+")
+cat > "$WORK/check-provenance.mjs" <<'PROVENANCE'
+/**
+ * One abbreviated packument per package, which is the only response that carries every version's
+ * `dist.attestations` in a single request. `npm view` cannot answer this: a range resolves to one
+ * version, so asking it per version would be one request per version, and one of the fixtures
+ * this is reasoned about has 251 of them.
+ */
+const [registry, ...names] = process.argv.slice(2);
+const base = registry.replace(/\/$/, '');
+// The abbreviated document, roughly a third the size of the full one, and it carries `dist`.
+const ACCEPT = 'application/vnd.npm.install-v1+json';
+
+let bad = 0;
+let notFound = 0;
+for (const name of names) {
+  let doc;
+  try {
+    const res = await fetch(`${base}/${name.replace('/', '%2f')}`, { headers: { accept: ACCEPT } });
+    if (res.status === 404) {
+      notFound++;
+      console.log(`    ${name} has no published version yet, so there is nothing to attest`);
+      continue;
+    }
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    doc = await res.json();
+  } catch (err) {
+    // Never a skip. A registry that cannot be read is an unanswered question, not a pass.
+    console.error(`    FAIL: could not read ${name} from ${base}: ${err.message}`);
+    bad++;
+    continue;
+  }
+
+  const latest = doc['dist-tags']?.latest;
+  const versions = Object.keys(doc.versions ?? {});
+  if (!latest || !doc.versions?.[latest]) {
+    console.error(`    FAIL: ${name} has no version tagged latest, which npm should never serve.`);
+    bad++;
+    continue;
+  }
+
+  const attested = versions.filter((v) => doc.versions[v].dist?.attestations);
+  const predicate = doc.versions[latest].dist?.attestations?.provenance?.predicateType;
+  if (predicate) {
+    console.log(`    ${name}@${latest}  ${predicate}`);
+    continue;
+  }
+  if (attested.length === 0) {
+    console.log(
+      `    ${name}@${latest} has no attestation, and neither does any of its ` +
+        `${versions.length} version(s), so CI has never published it. npm trusted publishing ` +
+        `cannot authenticate a name that has never existed, so the first publish is made by ` +
+        `hand. Failing here would abort the release that would attest it.`
+    );
+    continue;
+  }
+  console.error(
+    `    FAIL: ${name}@${latest} carries no provenance attestation, but ${attested.length} of ` +
+      `its ${versions.length} versions do, so this package's provenance used to work and has ` +
+      `stopped. Check that release.yml still sets NPM_CONFIG_PROVENANCE and still grants ` +
+      `id-token: write, and that this version was published by CI rather than by hand.`
+  );
+  bad++;
+}
+
+// A registry pointed somewhere wrong answers 404 for everything, and every package would then
+// take the "not published yet" line and the stage would pass having measured nothing. One
+// unpublished package is ordinary; all of them is a broken registry.
+if (names.length > 1 && notFound === names.length) {
+  console.error(`    FAIL: ${base} answered 404 for all ${names.length} packages. That is a`);
+  console.error('          registry pointed at the wrong place, not a workspace that has never');
+  console.error('          published anything. Check `npm config get registry` and .npmrc.');
+  bad++;
+}
+
+if (bad) process.exit(1);
+PROVENANCE
+if ! node "$WORK/check-provenance.mjs" "$(npm config get registry)" $names; then
+  exit 1
+fi
 cd "$APP"
 
 echo "OK: $count packages packed, installed into an empty project, generated, and the output"
