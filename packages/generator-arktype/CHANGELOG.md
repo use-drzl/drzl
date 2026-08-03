@@ -1,5 +1,63 @@
 # @drzl/generator-arktype
 
+## 3.11.0
+
+### Minor Changes
+
+- 04e06a2: Bound bigint columns in the arktype output, which accepted values no int64 can hold
+
+  A `bigint({ mode: 'bigint' })` column emitted the bare ArkType type `bigint` and nothing else, so
+  the generated schema accepted `2n ** 70n`. zod, valibot and typebox all bound the same column, and
+  so does `drizzle-orm/arktype`, which made this the one place where DRZL's output was _looser_ than
+  the first-party validator rather than stricter. On Postgres, MySQL and SQLite alike, a row this
+  schema passed could be one the database refuses.
+
+  The reason it was left unstated was half right. ArkType's string DSL genuinely cannot carry the
+  bound: `type('bigint >= -9223372036854775808n')` throws "Comparator >= must be followed by a
+  corresponding literal", and the same bound written as a number rounds, since 9223372036854775807
+  is not representable as a double. But `.narrow` can carry it, and this generator already used
+  `.narrow` for every `varchar(n)` character cap and every MySQL byte cap. Bigint columns now use
+  the same mechanism, and a `CHECK` folds into the bound exactly as it does for a number column.
+
+  Null still passes, matching SQL and matching the existing cap narrows. An array column bounds its
+  element rather than the array. A bound that could only be rendered as a syntax error, such as a
+  fractional one, is left off rather than emitted, because a module ArkType cannot parse throws at
+  import and takes whatever imported it down.
+
+  **What changes for you.** Generated arktype schemas for `bigint`, `bigserial` and SQLite
+  `blob({ mode: 'bigint' })` columns now reject a bigint outside the int64 range. If you were
+  relying on a value larger than the column can store passing validation, it will now be refused,
+  which is the behaviour the zod, valibot and typebox generators already had, and the behaviour of
+  `drizzle-orm/arktype` itself.
+
+### Patch Changes
+
+- 9e75c84: Apply a column's constraint to the element of a nullable array, not to the array
+
+  A constraint on an array column describes each element: `varchar({ length: 5 }).array()` caps every
+  entry at five characters. This generator recovered the element by stripping a trailing `[]` off the
+  rendered type, which is only correct when nothing else is wrapped around the brackets. A nullable
+  array renders as `(string[] | null)`, which has no trailing `[]`, so the whole union was treated as
+  the element and `.array()` wrapped that.
+
+  The result, for `varchar({ length: 5 }).array()` with no `.notNull()`:
+
+  | value      | before   | after    |
+  | ---------- | -------- | -------- |
+  | `null`     | rejected | accepted |
+  | `['ab']`   | rejected | accepted |
+  | `[['ab']]` | accepted | rejected |
+
+  A two-dimensional array came out a dimension too deep for the same reason. Both now agree with
+  `drizzle-orm/arktype` and with DRZL's own zod, valibot and typebox output on every probe.
+
+  The constraint now stays on the value, where the type expression is already right about
+  dimensions and nullability, and the predicate walks in one `.every` per dimension instead. An
+  empty list satisfies a constraint on elements, and a null passes at every level, matching SQL.
+
+  **What changes for you.** If you have a nullable array column with a length cap, its generated
+  arktype schema was refusing valid rows and accepting nested ones. Both stop.
+
 ## 3.10.1
 
 ### Patch Changes
