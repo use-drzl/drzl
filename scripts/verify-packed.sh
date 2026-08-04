@@ -888,6 +888,277 @@ export const checked = sqliteTable('checked', {
 ]);
 PARITY_SQLITE
 
+# The value pool and the per-library accessors, in a file of their own because two trees push the
+# same values now: this one, pinned to drizzle-orm v1, and the 0.4x tree near the end of this
+# script. Copied rather than shared through a path, since the two trees have separate
+# node_modules and one of them is CommonJS.
+#
+# Written once so the two passes cannot drift. A pool value added for one major has to be answered
+# by the other, and the point of the 0.4x pass is that a difference between the two is a defect
+# rather than a difference in what was asked.
+cat > "$WORK/parity-pool.ts" <<'PARITY_POOL'
+import * as v from 'valibot';
+import { type } from 'arktype';
+import { Value } from '@sinclair/typebox/value';
+
+export const POOL: [string, unknown][] = [
+  ['null', null], ['undefined', undefined], ['""', ''], ["'hello'", 'hello'],
+  ['300-char', 'x'.repeat(300)], ['70k-char', 'x'.repeat(70000)], ['5-char', 'xxxxx'],
+  // Astral-plane characters, which tell a code-point count from a UTF-16 `.length`. Without them
+  // the pool cannot see the difference, which is exactly how the `varchar(n)` bug survived.
+  ['3 emoji', '\u{1F44D}\u{1F44D}\u{1F44D}'],
+  ['5 emoji', '\u{1F44D}\u{1F44D}\u{1F44D}\u{1F44D}\u{1F44D}'],
+  // Astral-plane characters, where a code-point count and a UTF-16 `.length` disagree.
+  // Postgres counts characters for `varchar(n)`, so a 3-emoji string fits in a varchar(5)
+  // that every library's `.max(5)` refuses.
+  ['3 emoji', '\u{1F44D}\u{1F44D}\u{1F44D}'],
+  ['5 emoji', '\u{1F44D}\u{1F44D}\u{1F44D}\u{1F44D}\u{1F44D}'],
+  ["'not-a-uuid'", 'not-a-uuid'], ['uuid', '3f2504e0-4f89-11d3-9a0c-0305e82c3301'],
+  ["'zzz'", 'zzz'], ["'a'", 'a'], ["'happy'", 'happy'],
+  // A member of the `varchar({ enum: ['x', 'y'] })` fixture column. Without it the pool held no
+  // value that column accepts, so both sides rejected all of it and the comparison agreed while
+  // measuring nothing. The vacuity check in each pass is what found it.
+  ["'x'", 'x'],
+  ['0', 0], ['1', 1], ['1.5', 1.5], ['-1', -1], ['200', 200], ['40000', 40000],
+  ['9000000', 9000000], ['2147483648', 2147483648], ['9007199254740993', 9007199254740993],
+  // 1900 and 2500 sit either side of MySQL's YEAR range and nothing sat inside it, so `m_year`
+  // was the same vacuous agreement as the enum above: rejected by both, proving nothing.
+  ['1900', 1900], ['2000', 2000], ['2500', 2500], ['NaN', NaN], ['Infinity', Infinity],
+  ['1n', 1n], ['2n**70n', 2n ** 70n], ['true', true], ['false', false],
+  ['Date', new Date('2020-01-01T00:00:00Z')], ["'2020-01-01'", '2020-01-01'],
+  ["'2020-01-01T00:00:00Z'", '2020-01-01T00:00:00Z'], ["'12:00:00'", '12:00:00'],
+  ["'25:99:99'", '25:99:99'],
+  ['{}', {}], ["{a:'s'}", { a: 's' }], ['[]', []], ["['a']", ['a']], ['[1,2]', [1, 2]],
+  ["['happy']", ['happy']], ['[1,2,3]', [1, 2, 3]],
+  // An array holding a value past its element's cap. Every array probe above holds something
+  // short, so dropping an element's constraint looked identical to keeping it: two generators
+  // stopped capping array elements and nothing here could tell.
+  ['["11-char"]', ['x'.repeat(11)]], ['["3 emoji"]', ['\u{1F44D}\u{1F44D}\u{1F44D}']],
+  // Two strings that separate a byte budget from a UTF-16 count, and the rule for when one exists.
+  //
+  // A probe separates a cap of N bytes from a cap of N UTF-16 units only if it is over N bytes and
+  // not over N units. UTF-8 spends at most 3 bytes per UTF-16 unit, exhaustively: 1 byte for
+  // U+0000..U+007F and 2 for U+0080..U+07FF, both one unit; 3 for U+0800..U+FFFF, one unit; 4 for
+  // U+10000..U+10FFFF, which is two units and so 2 bytes per unit; and a lone surrogate encodes as
+  // U+FFFD, 3 bytes for one unit. Checked over every code point rather than argued: the maximum
+  // ratio is 3. So a separating probe needs more than N/3 units, and it has to be built out of
+  // three-byte characters to be anywhere near that.
+  //
+  // 100 emoji is 200 units and 400 bytes, which separates 255. 22000 CJK is 22000 units and 66000
+  // bytes, which separates 65535. Those are `tinytext` and `text`. `mediumtext` needs 5592406
+  // units, a 10.7 MiB string that is far too heavy to push through every column of every pairing,
+  // and the byte-cap stage in the 0.4x tree measures that one on its own instead. `longtext` needs
+  // 1431655766 units against a maximum JS string of 536870888 on this V8, measured by bisection,
+  // so no probe for it can exist at all.
+  //
+  // The sentence this replaced said a string long enough to cross those caps in bytes crosses them
+  // in units too. That was generalised from the emoji, where bytes are twice units, and it is false
+  // for every three-byte BMP character. It left two filed fields under a green line.
+  //
+  // A real MySQL 8 on a utf8mb4 client settles which count is the database's: `tinytext` refuses
+  // the emoji string ("Data too long"), and `varchar(255)` takes it and reports `length` 400 with
+  // `char_length` 100. So TINYTEXT's 255 is bytes and VARCHAR's 255 is characters, in one table.
+  ['100 emoji', '\u{1F44D}'.repeat(100)],
+  ['22000 cjk', '\u4E00'.repeat(22000)],
+  ['Buffer', Buffer.from('ab')], ['Uint8Array', new Uint8Array([1, 2])],
+  ["'999.999.999.999'", '999.999.999.999'], ["'10.0.0.1'", '10.0.0.1'],
+  ['{x:1,y:2}', { x: 1, y: 2 }], ["'12.5'", '12.5'], ["'0101'", '0101'], ["'010'", '010'],
+];
+
+export type Lib = { field: (s: any, k: string) => any; ok: (f: any, x: unknown) => boolean };
+
+export const LIBS: Record<string, Lib> = {
+  zod: { field: (s, k) => s.shape[k], ok: (f, x) => f.safeParse(x).success },
+  valibot: { field: (s, k) => s.entries[k], ok: (f, x) => v.safeParse(f, x).success },
+  arktype: { field: (s, k) => s.get(k), ok: (f, x) => !(f(x) instanceof type.errors) },
+  typebox: { field: (s, k) => s.properties[k], ok: (f, x) => Value.Check(f, x) },
+};
+
+/**
+ * What one schema said about one value. `threw` is not a verdict and neither pass may treat it as
+ * one.
+ *
+ * This used to be a `catch { return false }`, which scored an exception as a rejection. Every one
+ * of them comes from the same place, and the set is provable rather than sampled: official's
+ * TypeBox module emits `{ type: 'RegExp', source, maxLength }` for a few columns, and TypeBox's
+ * `maxLength` check reads `value.length` with no type guard, so `null` and `undefined` crash it
+ * instead of failing it. Enumerated on both majors, the set of crashing columns and the set of
+ * `type: 'RegExp'` columns are the same set, nine pairings on v1 and three on 0.4x:
+ *
+ *   v1     pg/c_bit, mysql/m_binary, mysql/m_varbinary, in all three modes
+ *   0.4x   pg/c_bit alone, because that module emits a bare string for the binary columns
+ *
+ * So it is one upstream defect present on both majors rather than a difference between them. Zero
+ * crashes come from arktype, which the sentence that used to stand here named, and zero from
+ * anything DRZL emits on either major.
+ *
+ * Scoring those as rejections is not harmless: they fed the `looser` counts the ledger entries are
+ * asserted against, so a swallowed crash was being reported as evidence.
+ */
+export type Verdict = 'accept' | 'reject' | 'threw';
+
+export const probe = (lib: Lib, f: any, x: unknown): Verdict => {
+  try {
+    return lib.ok(f, x) ? 'accept' : 'reject';
+  } catch {
+    return 'threw';
+  }
+};
+
+/**
+ * A real Postgres, asked directly whether a column takes a value, and whether it takes that column
+ * being left out of the insert altogether.
+ *
+ * Here because of the hole a crash left. A probe official crashes on cannot be compared, and it
+ * used to be dropped, so DRZL's verdict on it was measured by nothing: making the v1 typebox
+ * Insert and Update schemas for `c_bit` accept `null` on a `bit(3) NOT NULL` column left that
+ * whole run byte identical to green. Pinning DRZL's verdict closes the hole; this is what settles
+ * whether the pinned verdict is the right one, on the dialect that has an engine in this process.
+ *
+ * The DDL comes from the fixture's own column object rather than being written down here, so a
+ * column that changes type changes what the database is asked about it.
+ *
+ * **A value and an absence are different questions and are asked differently.** A value is bound
+ * as a parameter. An absence is a statement that never names the column, which is what an absent
+ * field is; binding a JS `undefined` in its place asks the value question instead, because the
+ * driver turns it into a NULL on the way to the server: a bound `undefined` comes back 23502, the
+ * same answer as `null`. That was measured when this was written and is **not** re-measured on
+ * every run, because the harness never binds `undefined`. It omits the column instead, which is the
+ * question it wants asked. Both passes used to declare that no database could be handed an absence
+ * at all, which was that one measurement about the driver written up as a fact about databases.
+ *
+ * Three tables per column, differing only in the constraint and the default. Each answer is read
+ * only once its own control holds:
+ *
+ *   `probe_nn_N`    `c T not null`                 the subject
+ *   `probe_null_N`  `c T`                          has to take a NULL and to take an omission
+ *   `probe_def_N`   `c T not null default <lit>`   has to take an omission and still refuse a NULL
+ *
+ * Without the nullable twin, a refusal could as easily be a missing relation and would be scored as
+ * a verdict about the value. Without the twin carrying a default, an omission and a NULL could not
+ * be told apart at all: on `bit(3) not null` they give the same SQLSTATE, so the run would be
+ * reporting the NULL answer under the absence's name. Measured, not supposed:
+ *
+ *   an insert into a table that does not exist        42P01
+ *   NULL into bit(3) not null                         23502
+ *   the column omitted, bit(3) not null               23502
+ *   a bit string of the wrong width                   22026
+ *   NULL into the nullable twin                       accepted
+ *   the column omitted on the nullable twin           accepted
+ *   the column omitted on the twin with a default     accepted, and the default is what is stored
+ *   NULL into the twin with a default                 23502
+ *
+ * So a refusal carries its SQLSTATE rather than being a boolean, "refused by the constraint" is a
+ * different answer from "refused by the type", and "refused because nothing supplied it" is a
+ * different answer from both, on the same column type.
+ *
+ * The default is not written down either. The first pool value the type accepts is read back
+ * through `quote_literal(c::text)` and cast to the column's own type, so a column no pool value
+ * fits reports that it has no twin carrying a default rather than quietly losing the control.
+ *
+ * `engine` is the engine's own answer to `select version()`. A caller that declares a probe
+ * unarbitrable for want of an engine then has something independent of its own branch to check
+ * that reason against.
+ */
+export type DbProbe = { key: string; sqlType: string; label: string; absent: boolean; value: unknown };
+export type DbAnswer = { verdict: 'accept' | 'refuse'; code: string; control: string };
+export type DbReply = { engine: string; answers: Map<string, DbAnswer> };
+
+export const askPostgres = async (probes: DbProbe[]): Promise<DbReply> => {
+  const { PGlite } = await import('@electric-sql/pglite');
+  const db = new PGlite();
+  const answers = new Map<string, DbAnswer>();
+  let engine = 'unknown';
+  try {
+    const version = (await db.query<{ version: string }>('select version()')).rows[0]?.version ?? '';
+    engine = /^PostgreSQL\b/.test(version) ? 'pg' : `not a Postgres: ${version.split(' ')[0] || 'unnamed'}`;
+    const send = async (sql: string, params: unknown[]): Promise<{ verdict: 'accept' | 'refuse'; code: string }> => {
+      try {
+        await db.query(sql, params);
+        return { verdict: 'accept', code: '' };
+      } catch (e: unknown) {
+        // A refusal with no SQLSTATE did not come from Postgres, so it is not reported as one.
+        const code = (e as { code?: unknown } | null)?.code;
+        return { verdict: 'refuse', code: typeof code === 'string' && code ? code : 'no SQLSTATE' };
+      }
+    };
+    const withValue = (table: string, value: unknown) => send(`insert into ${table} (c, k) values ($1, 1)`, [value]);
+    // The column is not named at all, which is the whole reason `k` is there: an insert has to
+    // still be an insert once `c` is left out of it.
+    const omitting = (table: string) => send(`insert into ${table} (k) values (1)`, []);
+
+    const tables = new Map<string, { nn: string; nullable: string; dflt: string; noDflt: string }>();
+    for (const p of probes) {
+      if (tables.has(p.key)) continue;
+      const n = tables.size;
+      const t = { nn: `probe_nn_${n}`, nullable: `probe_null_${n}`, dflt: `probe_def_${n}`, noDflt: '' };
+      await db.exec(
+        `create table ${t.nn} (c ${p.sqlType} not null, k int); create table ${t.nullable} (c ${p.sqlType}, k int)`
+      );
+      let lit: string | null = null;
+      for (const [, x] of POOL) {
+        if (x === null || x === undefined) continue;
+        if ((await send(`insert into ${t.nullable} (c, k) values ($1, 0)`, [x])).verdict !== 'accept') continue;
+        const q = await db.query<{ q: string | null }>(`select quote_literal(c::text) as q from ${t.nullable} where k = 0`);
+        lit = q.rows[0]?.q ?? null;
+        await db.exec(`delete from ${t.nullable}`);
+        break;
+      }
+      if (lit === null) {
+        t.noDflt =
+          `no pool value is a ${p.sqlType}, so no twin carrying a default could be built and an ` +
+          'omission cannot be told apart from a NULL here';
+      } else {
+        const built = await send(`create table ${t.dflt} (c ${p.sqlType} not null default ${lit}::${p.sqlType}, k int)`, []);
+        if (built.verdict !== 'accept') {
+          t.noDflt =
+            `${p.sqlType} would not take ${lit} as a default (${built.code}), so an omission cannot ` +
+            'be told apart from a NULL here';
+        }
+      }
+      tables.set(p.key, t);
+    }
+    for (const p of probes) {
+      const t = tables.get(p.key)!;
+      if (p.absent) {
+        const twinOmit = await omitting(t.nullable);
+        const dfltOmit = t.noDflt ? null : await omitting(t.dflt);
+        const dfltNull = t.noDflt ? null : await withValue(t.dflt, null);
+        const got = await omitting(t.nn);
+        answers.set(`${p.key}/${p.label}`, {
+          verdict: got.verdict,
+          code: got.code,
+          control: twinOmit.verdict !== 'accept'
+            ? `the nullable twin of ${p.sqlType} refused an insert that never names the column (${twinOmit.code}), so this table cannot isolate the constraint`
+            : t.noDflt
+              ? t.noDflt
+              : dfltOmit!.verdict !== 'accept'
+                ? `the twin of ${p.sqlType} carrying a default refused the same omission (${dfltOmit!.code}), so an omission is not reaching a default here`
+                : dfltNull!.verdict !== 'refuse'
+                  ? `the twin of ${p.sqlType} carrying a default took an explicit NULL, so this run cannot tell an omission apart from a NULL`
+                  : '',
+        });
+        continue;
+      }
+      const control = await withValue(t.nullable, null);
+      const got = await withValue(t.nn, p.value);
+      answers.set(`${p.key}/${p.label}`, {
+        verdict: got.verdict,
+        code: got.code,
+        control:
+          control.verdict === 'accept'
+            ? ''
+            : `the nullable twin of ${p.sqlType} refused a NULL (${control.code}), so this table cannot isolate the constraint`,
+      });
+    }
+  } finally {
+    await db.close();
+  }
+  return { engine, answers };
+};
+PARITY_POOL
+cp "$WORK/parity-pool.ts" src/pool.ts
+
 cat > src/parity.ts <<'PARITY_HARNESS'
 /**
  * Differential parity for DRZL's validator generators.
@@ -899,6 +1170,10 @@ cat > src/parity.ts <<'PARITY_HARNESS'
  *
  * Pass 2 cross-checks DRZL's own four generators against each other, which catches a generator
  * drifting from its siblings on something all four should agree about.
+ *
+ * Both passes here measure drizzle-orm v1, which is what this tree pins. The same comparison
+ * against the first-party modules for 0.45.2 runs near the end of this script, in the 0.4x tree,
+ * and reads its pool of values out of the same `pool.ts` this file does.
  *
  * All four are compared against official. `drizzle-orm/typebox` targets the newer `typebox`
  * package and throws `Class extends value undefined` on import against the released one, but
@@ -921,60 +1196,16 @@ import {
   createInsertSchema as tInsert,
   createUpdateSchema as tUpdate,
 } from 'drizzle-orm/typebox-legacy';
-import * as v from 'valibot';
-import { type } from 'arktype';
-import { Value } from '@sinclair/typebox/value';
+// The pool and the accessors come from a file the 0.4x pass reads as well, so both majors are
+// asked the same question with the same values.
+import { readFileSync } from 'node:fs';
+import { constants } from 'node:buffer';
+import { getTableConfig } from 'drizzle-orm/pg-core';
+import { POOL, LIBS, probe, askPostgres, type DbProbe, type Lib, type Verdict } from './pool.js';
 
 import { matrix as pgTable } from './schema.js';
 import { matrix as myTable } from './schema-mysql.js';
 import { matrix as sqTable } from './schema-sqlite.js';
-
-const POOL: [string, unknown][] = [
-  ['null', null], ['undefined', undefined], ['""', ''], ["'hello'", 'hello'],
-  ['300-char', 'x'.repeat(300)], ['70k-char', 'x'.repeat(70000)], ['5-char', 'xxxxx'],
-  // Astral-plane characters, which tell a code-point count from a UTF-16 `.length`. Without them
-  // the pool cannot see the difference, which is exactly how the `varchar(n)` bug survived.
-  ['3 emoji', '\u{1F44D}\u{1F44D}\u{1F44D}'],
-  ['5 emoji', '\u{1F44D}\u{1F44D}\u{1F44D}\u{1F44D}\u{1F44D}'],
-  // Astral-plane characters, where a code-point count and a UTF-16 `.length` disagree.
-  // Postgres counts characters for `varchar(n)`, so a 3-emoji string fits in a varchar(5)
-  // that every library's `.max(5)` refuses.
-  ['3 emoji', '\u{1F44D}\u{1F44D}\u{1F44D}'],
-  ['5 emoji', '\u{1F44D}\u{1F44D}\u{1F44D}\u{1F44D}\u{1F44D}'],
-  ["'not-a-uuid'", 'not-a-uuid'], ['uuid', '3f2504e0-4f89-11d3-9a0c-0305e82c3301'],
-  ["'zzz'", 'zzz'], ["'a'", 'a'], ["'happy'", 'happy'],
-  // A member of the `varchar({ enum: ['x', 'y'] })` fixture column. Without it the pool held no
-  // value that column accepts, so both sides rejected all of it and the comparison agreed while
-  // measuring nothing. The vacuity check below is what found it.
-  ["'x'", 'x'],
-  ['0', 0], ['1', 1], ['1.5', 1.5], ['-1', -1], ['200', 200], ['40000', 40000],
-  ['9000000', 9000000], ['2147483648', 2147483648], ['9007199254740993', 9007199254740993],
-  // 1900 and 2500 sit either side of MySQL's YEAR range and nothing sat inside it, so `m_year`
-  // was the same vacuous agreement as the enum above: rejected by both, proving nothing.
-  ['1900', 1900], ['2000', 2000], ['2500', 2500], ['NaN', NaN], ['Infinity', Infinity],
-  ['1n', 1n], ['2n**70n', 2n ** 70n], ['true', true], ['false', false],
-  ['Date', new Date('2020-01-01T00:00:00Z')], ["'2020-01-01'", '2020-01-01'],
-  ["'2020-01-01T00:00:00Z'", '2020-01-01T00:00:00Z'], ["'12:00:00'", '12:00:00'],
-  ["'25:99:99'", '25:99:99'],
-  ['{}', {}], ["{a:'s'}", { a: 's' }], ['[]', []], ["['a']", ['a']], ['[1,2]', [1, 2]],
-  ["['happy']", ['happy']], ['[1,2,3]', [1, 2, 3]],
-  // An array holding a value past its element's cap. Every array probe above holds something
-  // short, so dropping an element's constraint looked identical to keeping it: two generators
-  // stopped capping array elements and nothing here could tell.
-  ['["11-char"]', ['x'.repeat(11)]], ['["3 emoji"]', ['\u{1F44D}\u{1F44D}\u{1F44D}']],
-  ['Buffer', Buffer.from('ab')], ['Uint8Array', new Uint8Array([1, 2])],
-  ["'999.999.999.999'", '999.999.999.999'], ["'10.0.0.1'", '10.0.0.1'],
-  ['{x:1,y:2}', { x: 1, y: 2 }], ["'12.5'", '12.5'], ["'0101'", '0101'], ["'010'", '010'],
-];
-
-type Lib = { field: (s: any, k: string) => any; ok: (f: any, x: unknown) => boolean };
-
-const LIBS: Record<string, Lib> = {
-  zod: { field: (s, k) => s.shape[k], ok: (f, x) => f.safeParse(x).success },
-  valibot: { field: (s, k) => s.entries[k], ok: (f, x) => v.safeParse(f, x).success },
-  arktype: { field: (s, k) => s.get(k), ok: (f, x) => !(f(x) instanceof type.errors) },
-  typebox: { field: (s, k) => s.properties[k], ok: (f, x) => Value.Check(f, x) },
-};
 
 const OFFICIAL: Record<string, Record<string, (t: any) => any>> = {
   zod: { select: createSelectSchema, insert: createInsertSchema, update: createUpdateSchema },
@@ -987,19 +1218,186 @@ const OFFICIAL: Record<string, Record<string, (t: any) => any>> = {
   typebox: { select: tSelect, insert: tInsert, update: tUpdate },
 };
 
-const safeOk = (lib: Lib, f: any, x: unknown) => {
-  try {
-    return lib.ok(f, x);
-  } catch {
-    return false;
-  }
-};
 const safeField = (lib: Lib, s: any, k: string) => {
   try {
     return lib.field(s, k);
   } catch {
     return undefined;
   }
+};
+
+/**
+ * Probes where one side crashes instead of answering, which is not a verdict and is not compared
+ * as one. Declared exactly, and asserted in both directions like every other list here: an
+ * undeclared crash fails this script, and a declared one that no longer happens fails it too.
+ *
+ * A crash used to end the story for that value: it was dropped from the comparison, so nothing
+ * measured DRZL on it at all. That made a crashing official module a licence for DRZL to do
+ * anything. Demonstrated rather than feared: making the typebox Insert and Update schemas for
+ * `c_bit` accept `null`, on a `bit(3).notNull()` column, left this whole run byte identical to
+ * green. Doing it to the Select arm as well is caught at once, by the cross-generator pass below
+ * printing `c_bit on null: typebox accept, zod/valibot/arktype reject`, and that is the whole of
+ * the old coverage: that pass reads `SelectmatrixSchema` and nothing else.
+ *
+ * So two more fields, and both are asserted:
+ *
+ *   `drzl`     what DRZL answers on the crashed value, keyed `<mode-or-*>/<value>`. Every crashed
+ *              probe has to be claimed by exactly one declaration and match it, and every
+ *              declaration has to claim at least one probe. This is the part that fails when
+ *              DRZL's answer moves.
+ *   `arbiter`  who settles that DRZL's answer is the right one, keyed by value, and computed by
+ *              the run rather than believed: a real Postgres through PGlite wherever one runs for
+ *              that dialect, and the reason it cannot be otherwise. A value the database refuses
+ *              and DRZL accepts is a finding unless a waiver names the column dialect-wide, as
+ *              `<dialect>/<column>`. A library-scoped waiver such as `pg/typebox/c_uuid` does not
+ *              suppress it, which is the fail-closed direction: the database's answer does not
+ *              depend on which library was asked, so a waiver about one library is not a reason to
+ *              accept a row the server will reject.
+ *
+ * Keyed `<dialect>/<library>/<column>`.
+ */
+type Crash = {
+  side: string;
+  modes: string[];
+  values: string[];
+  why: string;
+  /** What DRZL answers where official crashed, keyed `<mode-or-*>/<value>`. */
+  drzl: Record<string, string>;
+  /** What settles that answer, keyed by value. Computed by the run and compared with this. */
+  arbiter: Record<string, string>;
+};
+const THREW: Record<string, Crash> = {
+  // Three columns, one cause, and the set is derived rather than collected: official's TypeBox
+  // module emits `{ type: 'RegExp', maxLength }` for exactly these three on this major, and
+  // TypeBox's length check reads `value.length` with no type guard. Enumerating the `type: RegExp`
+  // columns and the crashing columns across all three dialects and all three modes gives the same
+  // nine pairings. `drizzle-typebox 0.3.3` on 0.45.2 has the same defect on `c_bit`, and emits a
+  // bare string for the two binary columns, so the 0.4x pass declares one site and not three.
+  // Nothing DRZL emits crashes on any probe, on either major.
+  'pg/typebox/c_bit': {
+    side: 'official',
+    modes: ['select', 'insert', 'update'],
+    values: ['null', 'undefined'],
+    why: 'official Type.RegExp with maxLength reads .length of a null value',
+    drzl: { '*/null': 'reject', '*/undefined': 'reject' },
+    arbiter: {
+      // A real Postgres, built from this column's own `getSQLType()`, refuses a NULL into
+      // `bit(3) not null` with a not-null violation, and its nullable twin takes one.
+      null: 'postgres refuses it (SQLSTATE 23502)',
+      // An absence is handed to a database by leaving the column out of the insert, so this is
+      // asked rather than declared unaskable. What used to stand here said no database could be
+      // handed an absence, on the evidence that a bound `undefined` comes back 23502; that is a
+      // fact about the driver's parameter binding, and it was written up as one about databases.
+      // Measured on this column's own `bit(3) not null`: the insert that never names `c` is
+      // refused 23502, while the same omission against a twin of the same type carrying a default
+      // is accepted and stores the default, and that twin still refuses an explicit NULL. Three
+      // questions, three answers, and this entry is the answer to the middle one.
+      undefined: 'postgres refuses the column omitted from the insert (SQLSTATE 23502)',
+    },
+  },
+  'mysql/typebox/m_binary': {
+    side: 'official',
+    modes: ['select', 'insert', 'update'],
+    values: ['null', 'undefined'],
+    why: 'as pg/typebox/c_bit',
+    drzl: { '*/null': 'reject', '*/undefined': 'reject' },
+    arbiter: {
+      // PGlite is a Postgres and cannot answer for a MySQL column, and there is no MySQL that runs
+      // in this process. Asked out of band, a real MySQL 8.4.11 refuses a NULL into
+      // `binary(4) not null` and into `varbinary(16) not null` with ERROR 1048 "Column cannot be
+      // null", while the same insert carrying values stores 4 and 2 bytes. That is not this run's
+      // evidence, so it is not this run's claim, and the pinned verdict is what gates here.
+      //
+      // The absence is unarbitrated for the same reason and not for a different one: there is a
+      // way to ask it, which is to leave the column out of the insert, and no MySQL here to ask.
+      // The reason is checked against the engine's own `select version()` rather than only being
+      // computed by the branch that produces it.
+      null: 'no in-process mysql engine',
+      undefined: 'no in-process mysql engine',
+    },
+  },
+  'mysql/typebox/m_varbinary': {
+    side: 'official',
+    modes: ['select', 'insert', 'update'],
+    values: ['null', 'undefined'],
+    why: 'as pg/typebox/c_bit',
+    drzl: { '*/null': 'reject', '*/undefined': 'reject' },
+    arbiter: {
+      null: 'no in-process mysql engine',
+      undefined: 'no in-process mysql engine',
+    },
+  },
+};
+// `at` is every `<side>/<mode>/<value>` that crashed, so the printed figure is a count rather than
+// a cross product that happens to equal one while the pattern is a rectangle.
+const threwSeen = new Map<string, { sides: Set<string>; modes: Set<string>; values: Set<string>; at: Set<string> }>();
+// DRZL's own verdict on a value official crashed on, keyed by crash site then `<mode>/<value>`.
+// The comparison cannot use it, which is not the same thing as nobody looking at it.
+const crashVerdict = new Map<string, Map<string, string>>();
+const recordCrashVerdict = (key: string, mode: string, label: string, verdict: Verdict) => {
+  const seen = crashVerdict.get(key) ?? new Map<string, string>();
+  seen.set(`${mode}/${label}`, verdict);
+  crashVerdict.set(key, seen);
+};
+const recordThrow = (key: string, side: string, mode: string, value: string) => {
+  const seen =
+    threwSeen.get(key) ?? { sides: new Set<string>(), modes: new Set<string>(), values: new Set<string>(), at: new Set<string>() };
+  seen.sides.add(side);
+  seen.modes.add(mode);
+  seen.values.add(value);
+  seen.at.add(`${side}/${mode}/${value}`);
+  threwSeen.set(key, seen);
+};
+
+/**
+ * A waiver pins the exact divergence it covers, not a shape.
+ *
+ * `divergence` is keyed `<modes>/<libraries>`, `*` for all of them, and each value is the exact
+ * signature measured for those pairings: `L: <labels DRZL accepts and official refuses> | T: <the
+ * other way>`, in pool order. Three signatures are a property rather than a list, so they cannot be
+ * written down wrongly: `every probe official rejects` says DRZL took the whole pool, and the two
+ * `has it, omits it` strings say one side produced no field at all. All three are what the run
+ * produces in those states, and no waiver declares any of them today, since no waived column on
+ * this major is untyped or missing on one side. They are the shape a future one would take, not a
+ * claim about the current list.
+ *
+ * Until this existed a waiver asserted only that it suppressed something, and a real regression
+ * walked through it: stripping every length cap from `m_tinytext` in all four generated modules
+ * left this pass green, because the column still differed, just on different values. The 0.4x
+ * stage named the identical break. Two gates side by side, one absorbing regressions and one not,
+ * is worse than the churn of pinning both.
+ *
+ * The churn is the trade and it is the right way round. A pool value that any waived column treats
+ * differently from official re-opens that waiver, because the alternative is a waiver quietly
+ * covering a divergence nobody has looked at.
+ */
+type Waiver = {
+  /** The libraries this waiver covers, asserted exactly against what it suppressed. */
+  libs: string[];
+  /** The modes it covers, asserted the same way. */
+  modes: string[];
+  /** Why the divergence is deliberate. */
+  why: string;
+  /** The exact divergence, keyed `<modes>/<libraries>`. */
+  divergence: Record<string, string>;
+};
+
+const LIB_NAMES = ['zod', 'valibot', 'arktype', 'typebox'];
+const MODE_NAMES = ['select', 'insert', 'update'];
+const WRITE = ['insert', 'update'];
+
+const ALL_PROBES = 'every probe official rejects';
+
+/**
+ * Does a declaration key such as `select,insert/zod` cover the pairing `select/zod`? A declaration
+ * that covers no pairing, and two that cover the same one, both fail rather than being resolved by
+ * precedence.
+ */
+const pairingMatches = (decl: string, pairing: string) => {
+  const [dModes, dLibs] = decl.split('/');
+  const [mode, lib] = pairing.split('/');
+  const covers = (spec: string, x: string) => spec === '*' || spec.split(',').includes(x);
+  return covers(dModes, mode) && covers(dLibs, lib);
 };
 
 /**
@@ -1013,55 +1411,134 @@ const safeField = (lib: Lib, s: any, k: string) => {
  * fixtures use distinct `c_`/`m_`/`s_` prefixes, which makes the dialect redundant today and
  * load-bearing the day someone adds a column without one.
  */
-const ALLOWED: Record<string, string> = {
+const ALLOWED: Record<string, Waiver> = {
   // Binary payloads are typed as Uint8Array rather than Buffer. A Buffer is a Uint8Array, so
   // nothing official accepts is turned away. The wider check needs no `@types/node`, survives a
   // runtime where `Buffer` is undefined, and makes bytea and blob validate the same way.
-  'pg/c_bytea': 'Uint8Array accepted where official demands a Buffer',
-  'sqlite/s_blob_buf': 'as pg/c_bytea',
+  'pg/c_bytea': { libs: LIB_NAMES, modes: MODE_NAMES, why: 'Uint8Array accepted where official demands a Buffer', divergence: { '*/*': `L: Uint8Array | T: ` } },
+  'sqlite/s_blob_buf': { libs: LIB_NAMES, modes: MODE_NAMES, why: 'as pg/c_bytea', divergence: { '*/*': `L: Uint8Array | T: ` } },
   // `coerceDates` defaults to coercing on insert and update, which is a documented DRZL option
   // and is what `coerceDates: 'none'` turns off to match official exactly. Only strings and
   // numbers are coerced: null, booleans and arrays are rejected, which `z.coerce.date()` accepts.
-  'pg/c_date_d': 'coerceDates accepts a date string or epoch number on write',
-  'pg/c_ts_d': 'as pg/c_date_d',
-  'mysql/m_date': 'as pg/c_date_d',
-  'mysql/m_datetime': 'as pg/c_date_d',
-  'mysql/m_ts': 'as pg/c_date_d',
-  'sqlite/s_int_ts': 'as pg/c_date_d',
-  'sqlite/s_int_ts_ms': 'as pg/c_date_d',
+  'pg/c_date_d': {
+    libs: LIB_NAMES,
+    modes: WRITE,
+    why: 'coerceDates accepts a date string or epoch number on write',
+    divergence: {
+      '*/zod': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', '12.5', '0101', '010' | T: `,
+      '*/valibot,arktype,typebox': `L: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010' | T: `,
+    },
+  },
+  'pg/c_ts_d': {
+    libs: LIB_NAMES,
+    modes: WRITE,
+    why: 'as pg/c_date_d',
+    divergence: {
+      '*/zod': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', '12.5', '0101', '010' | T: `,
+      '*/valibot,arktype,typebox': `L: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010' | T: `,
+    },
+  },
+  'mysql/m_date': {
+    libs: LIB_NAMES,
+    modes: WRITE,
+    why: 'as pg/c_date_d',
+    divergence: {
+      '*/zod': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', '12.5', '0101', '010' | T: `,
+      '*/valibot,arktype,typebox': `L: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010' | T: `,
+    },
+  },
+  'mysql/m_datetime': {
+    libs: LIB_NAMES,
+    modes: WRITE,
+    why: 'as pg/c_date_d',
+    divergence: {
+      '*/zod': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', '12.5', '0101', '010' | T: `,
+      '*/valibot,arktype,typebox': `L: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010' | T: `,
+    },
+  },
+  'mysql/m_ts': {
+    libs: LIB_NAMES,
+    modes: WRITE,
+    why: 'as pg/c_date_d',
+    divergence: {
+      '*/zod': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', '12.5', '0101', '010' | T: `,
+      '*/valibot,arktype,typebox': `L: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010' | T: `,
+    },
+  },
+  'sqlite/s_int_ts': {
+    libs: LIB_NAMES,
+    modes: WRITE,
+    why: 'as pg/c_date_d',
+    divergence: {
+      '*/zod': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', '12.5', '0101', '010' | T: `,
+      '*/valibot,arktype,typebox': `L: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010' | T: `,
+    },
+  },
+  'sqlite/s_int_ts_ms': {
+    libs: LIB_NAMES,
+    modes: WRITE,
+    why: 'as pg/c_date_d',
+    divergence: {
+      '*/zod': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', '12.5', '0101', '010' | T: `,
+      '*/valibot,arktype,typebox': `L: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010' | T: `,
+    },
+  },
   // Official emits `Type.String({ format: 'uuid' })`, and TypeBox fails a format it has no entry
   // for rather than ignoring it, so that schema rejects every valid uuid in any project that has
   // not populated `FormatRegistry` first. This generator emits a pattern, which needs no setup.
-  'pg/typebox/c_uuid': 'official uses an unregistered `format`, which rejects every uuid',
+  'pg/typebox/c_uuid': { libs: ['typebox'], modes: MODE_NAMES, why: 'official uses an unregistered `format`, which rejects every uuid', divergence: { '*/*': `L: uuid | T: ` } },
   // A character limit counts *characters*; official counts `.length`, which is UTF-16 units, so
-  // it refuses three emoji in a `char(4)` the database accepts. Measured against Postgres.
-  'pg/c_char': 'character limit counts code points; official counts UTF-16 units',
-  'mysql/m_char': 'as pg/c_char',
+  // it refuses three emoji in a `char(4)` the database accepts. Measured against Postgres: three
+  // emoji insert into a `char(4)` and read back as four code points, which are seven UTF-16 units.
+  'pg/c_char': { libs: LIB_NAMES, modes: MODE_NAMES, why: 'character limit counts code points; official counts UTF-16 units', divergence: { '*/*': `L: 3 emoji, 3 emoji | T: ` } },
+  'mysql/m_char': { libs: LIB_NAMES, modes: MODE_NAMES, why: 'as pg/c_char', divergence: { '*/*': `L: 3 emoji, 3 emoji | T: ` } },
+  // MySQL's TEXT family is capped in bytes and official caps it in UTF-16 units, so official takes
+  // a 100 emoji string that is 200 units and 400 bytes into a `tinytext` whose budget is 255. DRZL
+  // emits the byte check and refuses it. A real MySQL 8 on a utf8mb4 client is the authority and
+  // agrees with DRZL: that insert fails with "Data too long", while the same string goes into a
+  // `varchar(255)` and reports `length` 400 with `char_length` 100.
+  //
+  // Which columns the pool reaches is arithmetic, not luck. A separating probe is over the cap in
+  // bytes and not over it in UTF-16 units, and UTF-8 spends at most 3 bytes per unit, so it needs
+  // more than cap/3 units. That is 86 for `tinytext` and 21846 for `text` and `blob`, all three in
+  // the pool, against 5592406 for `mediumtext` and 1431655766 for `longtext`, which are not.
+  //
+  // Which of them anything measures is not stated here at all any more, because both previous
+  // attempts at that sentence were false and the second was written by the fix for the first. It is
+  // computed per column and asserted in CAP_COVERAGE further down this file, so a claim about
+  // coverage fails when it stops being true instead of being re-read as true.
+  'mysql/m_tinytext': { libs: LIB_NAMES, modes: MODE_NAMES, why: 'MySQL caps TEXT in bytes; official caps it in UTF-16 units, and takes 400 bytes into a 255 byte column', divergence: { '*/*': `L:  | T: 100 emoji` } },
+  'mysql/m_text': { libs: LIB_NAMES, modes: MODE_NAMES, why: 'as mysql/m_tinytext, 66000 bytes against a 65535 byte budget', divergence: { '*/*': `L:  | T: 22000 cjk` } },
+  // The blob half of the same table, which only this pass reaches: 0.4x's mysql-core has no `blob`
+  // export at all, so the 0.4x fixture drops the column. MySQL 8.4 answers the same way for it as
+  // for `text`: both refuse the 22000 CJK string with "Data too long", and `mediumtext` in the same
+  // table takes it and stores 66000 bytes, which is what shows the probe is measuring the cap.
+  'mysql/m_blob': { libs: LIB_NAMES, modes: MODE_NAMES, why: 'as mysql/m_tinytext, on a BLOB whose budget is also 65535 bytes', divergence: { '*/*': `L:  | T: 22000 cjk` } },
   // Stricter than official, and verified against Postgres itself through PGlite: a `numeric`
   // column is a string, and a bare string schema accepts 'hello' where the database rejects it.
   // Official accepts all of these; the database does not.
-  'pg/c_numeric': 'numeric format enforced; official accepts any string, Postgres does not',
-  'pg/c_decimal': 'as pg/c_numeric',
-  'mysql/m_decimal': 'as pg/c_numeric',
+  'pg/c_numeric': { libs: LIB_NAMES, modes: MODE_NAMES, why: 'numeric format enforced; official accepts any string, Postgres does not', divergence: { '*/*': `L:  | T: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1'` } },
+  'pg/c_decimal': { libs: LIB_NAMES, modes: MODE_NAMES, why: 'as pg/c_numeric', divergence: { '*/*': `L:  | T: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1'` } },
+  'mysql/m_decimal': { libs: LIB_NAMES, modes: MODE_NAMES, why: 'as pg/c_numeric', divergence: { '*/*': `L:  | T: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1'` } },
   // Stricter than official, in DRZL's favour.
-  'pg/valibot/c_json': 'DRZL rejects Infinity and non-plain objects; official accepts both',
-  'pg/valibot/c_jsonb': 'as pg/valibot/c_json',
-  'pg/valibot/c_jsonb_typed': 'as pg/valibot/c_json',
-  'mysql/valibot/m_json': 'as pg/valibot/c_json',
-  'sqlite/valibot/s_text_json': 'as pg/valibot/c_json',
-  'sqlite/valibot/s_blob_json': 'as pg/valibot/c_json',
+  'pg/valibot/c_json': { libs: ['valibot'], modes: MODE_NAMES, why: 'DRZL rejects Infinity and non-plain objects; official accepts both', divergence: { '*/*': `L:  | T: Infinity, Date, Buffer, Uint8Array` } },
+  'pg/valibot/c_jsonb': { libs: ['valibot'], modes: MODE_NAMES, why: 'as pg/valibot/c_json', divergence: { '*/*': `L:  | T: Infinity, Date, Buffer, Uint8Array` } },
+  'pg/valibot/c_jsonb_typed': { libs: ['valibot'], modes: MODE_NAMES, why: 'as pg/valibot/c_json', divergence: { '*/*': `L:  | T: Infinity, Date, Buffer, Uint8Array` } },
+  'mysql/valibot/m_json': { libs: ['valibot'], modes: MODE_NAMES, why: 'as pg/valibot/c_json', divergence: { '*/*': `L:  | T: Infinity, Date, Buffer, Uint8Array` } },
+  'sqlite/valibot/s_text_json': { libs: ['valibot'], modes: MODE_NAMES, why: 'as pg/valibot/c_json', divergence: { '*/*': `L:  | T: Infinity, Date, Buffer, Uint8Array` } },
+  'sqlite/valibot/s_blob_json': { libs: ['valibot'], modes: MODE_NAMES, why: 'as pg/valibot/c_json', divergence: { '*/*': `L:  | T: Infinity, Date, Buffer, Uint8Array` } },
   // A `blob()` with no mode is Drizzle's json mode, not its buffer mode, so this is the same
   // column shape as s_blob_json and gets the same reasoning. `s_blob_buf` above is the buffer one.
-  'sqlite/valibot/s_blob': 'as pg/valibot/c_json; a bare blob() is Drizzle json mode',
-  'pg/valibot/c_point': 'v.strictTuple rejects a third element; official v.tuple ignores extras',
-  'pg/valibot/c_geometry': 'as pg/valibot/c_point',
+  'sqlite/valibot/s_blob': { libs: ['valibot'], modes: MODE_NAMES, why: 'as pg/valibot/c_json; a bare blob() is Drizzle json mode', divergence: { '*/*': `L:  | T: Infinity, Date, Buffer, Uint8Array` } },
+  'pg/valibot/c_point': { libs: ['valibot'], modes: MODE_NAMES, why: 'v.strictTuple rejects a third element; official v.tuple ignores extras', divergence: { '*/*': `L:  | T: [1,2,3]` } },
+  'pg/valibot/c_geometry': { libs: ['valibot'], modes: MODE_NAMES, why: 'as pg/valibot/c_point', divergence: { '*/*': `L:  | T: [1,2,3]` } },
   // Official emits `Type.RegExp`, whose check runs `RegExp.prototype.test` against the raw value,
   // and `test` stringifies what it is given: `[]` becomes '' and matches `^[01]*$`. So official
   // accepts an empty array for a binary column. This generator emits a `string` carrying a
   // `pattern`, which refuses a non-string before the pattern is consulted. Postgres masks the
   // same hole on `c_bit` only because that column has a `minLength` an array cannot satisfy.
-  'mysql/typebox/m_binary': 'official Type.RegExp accepts a non-string whose string form matches',
-  'mysql/typebox/m_varbinary': 'as mysql/typebox/m_binary',
+  'mysql/typebox/m_binary': { libs: ['typebox'], modes: MODE_NAMES, why: 'official Type.RegExp accepts a non-string whose string form matches', divergence: { '*/*': `L:  | T: []` } },
+  'mysql/typebox/m_varbinary': { libs: ['typebox'], modes: MODE_NAMES, why: 'as mysql/typebox/m_binary', divergence: { '*/*': `L:  | T: []` } },
   // No arktype bigint entry. There were three, reading "ArkType cannot bound a bigint in its
   // string DSL", and only half of that was true: the DSL cannot state the bound, but a narrow can,
   // and this generator already used narrows for every character cap. It was the one place in this
@@ -1070,12 +1547,17 @@ const ALLOWED: Record<string, string> = {
 };
 
 const usedWaivers = new Set<string>();
-const allowed = (dialect: string, lib: string, col: string) => {
+// What each waiver actually suppressed, keyed waiver then `<mode>/<library>`, so the declaration
+// above can be compared with the run rather than merely counted.
+const waived = new Map<string, Map<string, string>>();
+const allowed = (dialect: string, lib: string, col: string, mode: string, signature: string) => {
   for (const key of [`${dialect}/${lib}/${col}`, `${dialect}/${col}`]) {
-    if (ALLOWED[key]) {
-      usedWaivers.add(key);
-      return ALLOWED[key];
-    }
+    if (!ALLOWED[key]) continue;
+    usedWaivers.add(key);
+    const seen = waived.get(key) ?? new Map<string, string>();
+    seen.set(`${mode}/${lib}`, signature);
+    waived.set(key, seen);
+    return ALLOWED[key].why;
   }
   return undefined;
 };
@@ -1084,19 +1566,24 @@ const allowed = (dialect: string, lib: string, col: string) => {
  * Cross-generator gaps that follow from what each library can express, not from a defect in one
  * generator. Keyed `<dialect>/<column>` and carrying its reason, for the same reason ALLOWED is.
  */
-const CROSS_ALLOWED: Record<string, string> = {
+const CROSS_ALLOWED: Record<string, { why: string; divergence: string }> = {
   // ArkType's string DSL has no recursive JSON value, so this generator emits
   // `number | object | string | boolean | null`, which takes NaN, Infinity and any object at all.
   // The other three build a real JSON value check. A capability difference between the libraries:
   // official `drizzle-orm/arktype` produces the same widening, which is why this shows up here and
   // not against official.
-  'pg/c_json': "arktype's string DSL cannot state a recursive JSON value",
-  'pg/c_jsonb': 'as pg/c_json',
-  'pg/c_jsonb_typed': 'as pg/c_json',
-  'mysql/m_json': 'as pg/c_json',
-  'sqlite/s_text_json': 'as pg/c_json',
-  'sqlite/s_blob_json': 'as pg/c_json',
-  'sqlite/s_blob': 'as pg/c_json; a bare blob() is Drizzle json mode',
+  //
+  // The signature is what each of these actually suppresses, and it is identical on all seven:
+  // five values, arktype alone accepting each. Before it was here, `crossAllowed` discarded every
+  // row for its column whatever the rows said, so making DRZL's typebox `c_jsonb` reject `{}` was
+  // absorbed and the stage still printed that all four generators agree on every column and value.
+  'pg/c_json': { why: "arktype's string DSL cannot state a recursive JSON value", divergence: `NaN: arktype accept, zod/valibot/typebox reject; Infinity: arktype accept, zod/valibot/typebox reject; Date: arktype accept, zod/valibot/typebox reject; Buffer: arktype accept, zod/valibot/typebox reject; Uint8Array: arktype accept, zod/valibot/typebox reject` },
+  'pg/c_jsonb': { why: 'as pg/c_json', divergence: `NaN: arktype accept, zod/valibot/typebox reject; Infinity: arktype accept, zod/valibot/typebox reject; Date: arktype accept, zod/valibot/typebox reject; Buffer: arktype accept, zod/valibot/typebox reject; Uint8Array: arktype accept, zod/valibot/typebox reject` },
+  'pg/c_jsonb_typed': { why: 'as pg/c_json', divergence: `NaN: arktype accept, zod/valibot/typebox reject; Infinity: arktype accept, zod/valibot/typebox reject; Date: arktype accept, zod/valibot/typebox reject; Buffer: arktype accept, zod/valibot/typebox reject; Uint8Array: arktype accept, zod/valibot/typebox reject` },
+  'mysql/m_json': { why: 'as pg/c_json', divergence: `NaN: arktype accept, zod/valibot/typebox reject; Infinity: arktype accept, zod/valibot/typebox reject; Date: arktype accept, zod/valibot/typebox reject; Buffer: arktype accept, zod/valibot/typebox reject; Uint8Array: arktype accept, zod/valibot/typebox reject` },
+  'sqlite/s_text_json': { why: 'as pg/c_json', divergence: `NaN: arktype accept, zod/valibot/typebox reject; Infinity: arktype accept, zod/valibot/typebox reject; Date: arktype accept, zod/valibot/typebox reject; Buffer: arktype accept, zod/valibot/typebox reject; Uint8Array: arktype accept, zod/valibot/typebox reject` },
+  'sqlite/s_blob_json': { why: 'as pg/c_json', divergence: `NaN: arktype accept, zod/valibot/typebox reject; Infinity: arktype accept, zod/valibot/typebox reject; Date: arktype accept, zod/valibot/typebox reject; Buffer: arktype accept, zod/valibot/typebox reject; Uint8Array: arktype accept, zod/valibot/typebox reject` },
+  'sqlite/s_blob': { why: 'as pg/c_json; a bare blob() is Drizzle json mode', divergence: `NaN: arktype accept, zod/valibot/typebox reject; Infinity: arktype accept, zod/valibot/typebox reject; Date: arktype accept, zod/valibot/typebox reject; Buffer: arktype accept, zod/valibot/typebox reject; Uint8Array: arktype accept, zod/valibot/typebox reject` },
   // No bigint entry either, for the reason given in ALLOWED: arktype now bounds a bigint with a
   // narrow, so the four generators agree about `c_bigint_b`, `m_bigint_b` and `s_blob_bigint`.
   // No `c_char` entry. There was one, reading "zod and valibot count code points; TypeBox and
@@ -1107,10 +1594,15 @@ const CROSS_ALLOWED: Record<string, string> = {
 };
 
 const usedCrossWaivers = new Set<string>();
-const crossAllowed = (dialect: string, col: string) => {
+// What each cross-generator waiver actually discarded, so the declaration can be compared with the
+// run. `crossAllowed` used to return a boolean and the caller threw the rows away unread.
+const crossWaived = new Map<string, string>();
+const crossAllowed = (dialect: string, col: string, rows: string[]) => {
   const key = `${dialect}/${col}`;
   if (!CROSS_ALLOWED[key]) return false;
   usedCrossWaivers.add(key);
+  // The column name is stripped so the signature reads as the difference rather than as the row.
+  crossWaived.set(key, rows.map((r) => r.trim().replace(`${col} on `, '')).join('; '));
   return true;
 };
 
@@ -1153,6 +1645,35 @@ const DIALECTS = [
 const PREFIX = { select: 'Select', insert: 'Insert', update: 'Update' } as const;
 let findings = 0;
 
+/**
+ * Every column of every fixture, in every library and every mode: 40 Postgres, 29 MySQL and 14
+ * SQLite columns, times four libraries, times three modes.
+ *
+ * Written out rather than derived from the arrays above, which would make it true by construction
+ * and say nothing. The 0.4x stage has carried this since it was written; this pass had only the
+ * per-pairing guard, which cannot see a whole dialect quietly dropping out.
+ */
+const EXPECTED_COMPARISONS = (40 + 29 + 14) * 4 * 3;
+let totalCompared = 0;
+
+/**
+ * Which drizzle-orm this tree actually resolved.
+ *
+ * Off disk rather than through `require.resolve`, whose `exports` map has no `./package.json`
+ * entry. Asserted before a column is touched, for the reason the 0.4x stage asserts its own: the
+ * cross-major diff compared 0.45.2 with 0.45.2 for a day and was green throughout, because the
+ * version was believed rather than read. This pass pins v1 in its install line and had no check at
+ * all, so the same install-line typo would have made it a second 0.4x pass measuring nothing new.
+ */
+const drizzleVersion = JSON.parse(readFileSync('node_modules/drizzle-orm/package.json', 'utf8')).version;
+if (typeof drizzleVersion !== 'string' || drizzleVersion.split('.')[0] !== '1') {
+  console.error(`FAIL: this tree resolves drizzle-orm ${JSON.stringify(drizzleVersion)}, not the v1 line.`);
+  console.error('      The 0.4x parity stage near the end of this script measures the other major,');
+  console.error('      and two passes over the same one would compare it twice and pass.');
+  process.exit(1);
+}
+console.log(`    drizzle-orm ${drizzleVersion}, with its own zod, valibot, arktype and typebox-legacy modules`);
+
 for (const d of DIALECTS) {
   const loaded: Record<string, any> = {};
   for (const lib of d.libs) loaded[lib] = await d.mods[lib]();
@@ -1174,7 +1695,7 @@ for (const d of DIALECTS) {
       // same set, and zod is the one whose shape is trivially enumerable.
       const oShape = OFFICIAL.zod[mode](d.table as never).shape;
       const rows: string[] = [];
-      let waived = 0;
+      let waivedCount = 0;
       // Columns where both sides yielded a field and the pool was actually pushed through them.
       // Printing the shape's column count says how many columns *exist*, which is not the same
       // number and stayed reassuring in a run that compared none of them.
@@ -1191,12 +1712,12 @@ for (const d of DIALECTS) {
           continue;
         }
         if (!m) {
-          if (allowed(d.name, libName, k)) { waived++; continue; }
+          if (allowed(d.name, libName, k, mode, 'official has it, DRZL omits it')) { waivedCount++; continue; }
           rows.push(`        ${k}: official has it, DRZL omits it`);
           continue;
         }
         if (!o) {
-          if (allowed(d.name, libName, k)) { waived++; continue; }
+          if (allowed(d.name, libName, k, mode, 'DRZL has it, official omits it')) { waivedCount++; continue; }
           rows.push(`        ${k}: DRZL has it, official omits it`);
           continue;
         }
@@ -1205,12 +1726,28 @@ for (const d of DIALECTS) {
         const tighter: string[] = [];
         let officialTook = false;
         let drzlTook = false;
+        // Whether DRZL took the whole pool, which is what the derived signature rests on.
+        let drzlAll = true;
         for (const [label, x] of POOL) {
-          const a = safeOk(lib, o, x);
-          const b = safeOk(lib, m, x);
-          officialTook ||= a;
-          drzlTook ||= b;
-          if (a !== b) (b ? looser : tighter).push(label);
+          const a: Verdict = probe(lib, o, x);
+          const b: Verdict = probe(lib, m, x);
+          // A crash is not a verdict, so this value is not compared for this column. It is
+          // recorded and held to the THREW list above instead, which is what keeps it from being
+          // an absence that reads as agreement.
+          if (a === 'threw' || b === 'threw') {
+            if (a === 'threw') recordThrow(`${d.name}/${libName}/${k}`, 'official', mode, label);
+            if (b === 'threw') recordThrow(`${d.name}/${libName}/${k}`, 'drzl', mode, label);
+            // Not compared, and not unmeasured either: DRZL's answer is pinned against the crash
+            // entry below and arbitrated against a real database wherever one runs for this
+            // dialect. Dropping it here and doing nothing else is what let a null-accepting insert
+            // schema on a NOT NULL column sit under a green line.
+            recordCrashVerdict(`${d.name}/${libName}/${k}`, mode, label, b);
+            continue;
+          }
+          officialTook ||= a === 'accept';
+          drzlTook ||= b === 'accept';
+          if (b !== 'accept') drzlAll = false;
+          if (a !== b) (b === 'accept' ? looser : tighter).push(label);
         }
         // A column both sides reject every probe for agrees perfectly and proves nothing: the two
         // schemas could be a correct one and a broken one and this loop could not tell them apart.
@@ -1226,7 +1763,8 @@ for (const d of DIALECTS) {
           continue;
         }
         if (!looser.length && !tighter.length) continue;
-        if (allowed(d.name, libName, k)) { waived++; continue; }
+        const signature = drzlAll ? ALL_PROBES : `L: ${looser.join(', ')} | T: ${tighter.join(', ')}`;
+        if (allowed(d.name, libName, k, mode, signature)) { waivedCount++; continue; }
         rows.push(
           `        ${k}:` +
             (looser.length ? `\n          DRZL accepts, official rejects: ${looser.join(', ')}` : '') +
@@ -1234,6 +1772,7 @@ for (const d of DIALECTS) {
         );
       }
 
+      totalCompared += compared;
       // A run that compared no column at all would otherwise print `parity` and pass. That is the
       // shape of failure this file has been bitten by most: the stage was green because it had
       // measured nothing, not because there was nothing to find.
@@ -1244,7 +1783,7 @@ for (const d of DIALECTS) {
       console.log(
         `    ${d.name.padEnd(7)} ${libName.padEnd(8)} ${mode.padEnd(7)} ` +
           `${compared}/${Object.keys(oShape).length} cols compared  ${rows.length ? 'DIFFERS' : 'parity'}` +
-          `${waived ? ` (${waived} waived)` : ''}`
+          `${waivedCount ? ` (${waivedCount} waived)` : ''}`
       );
       if (rows.length) {
         console.log(rows.join('\n'));
@@ -1266,9 +1805,14 @@ for (const d of DIALECTS) {
         found.push(`        ${k}: missing from ${absent.join(', ')}`);
       } else {
         for (const [label, x] of POOL) {
-          const verdicts = d.libs.map((n) => [n, safeOk(LIBS[n], fields[n], x)] as const);
-          const yes = verdicts.filter(([, r]) => r).map(([n]) => n);
-          const no = verdicts.filter(([, r]) => !r).map(([n]) => n);
+          const verdicts = d.libs.map((n) => [n, probe(LIBS[n], fields[n], x)] as const);
+          // A generator that crashed is not one that rejected. Recorded on the DRZL side, where
+          // nothing is declared, so any crash out of DRZL's own output fails this script.
+          for (const [n, r] of verdicts) {
+            if (r === 'threw') recordThrow(`${d.name}/${n}/${k}`, 'drzl', 'select', label);
+          }
+          const yes = verdicts.filter(([, r]) => r === 'accept').map(([n]) => n);
+          const no = verdicts.filter(([, r]) => r === 'reject').map(([n]) => n);
           if (yes.length && no.length) {
             found.push(`        ${k} on ${label}: ${yes.join('/')} accept, ${no.join('/')} reject`);
           }
@@ -1279,18 +1823,221 @@ for (const d of DIALECTS) {
       // marked the key used because the column exists in the fixture, which made the dead-waiver
       // check below true of `ALLOWED` and false of `CROSS_ALLOWED`: a waiver naming a real column
       // the four generators agree about sat there indefinitely, and `pg/c_char` was one.
-      if (crossAllowed(d.name, k)) continue;
+      if (crossAllowed(d.name, k, found)) continue;
       disagreements.push(...found);
     }
+    // Printed rather than implied, because the line below used to claim universal agreement while
+    // seven columns disagreed on five values each and were being discarded unread.
+    const crossCols = [...crossWaived.keys()].filter((key) => key.startsWith(`${d.name}/`)).length;
+    const crossHere = [...crossWaived.entries()]
+      .filter(([key]) => key.startsWith(`${d.name}/`))
+      .reduce((n, [, sig]) => n + sig.split('; ').length, 0);
     if (disagreements.length) {
       console.log(`    the four ${d.name} generators disagree with each other:`);
       console.log(disagreements.join('\n'));
       findings += disagreements.length;
     } else {
-      console.log(`    all four ${d.name} generators agree with each other on every column and value`);
+      console.log(
+        `    all four ${d.name} generators agree with each other on every column and value, bar ` +
+          `the ${crossHere} documented difference(s) on ${crossCols} column(s)`
+      );
     }
   }
 }
+
+/**
+ * The MySQL byte caps, bracketed rather than stepped past.
+ *
+ * Same stage as the 0.4x tree carries, and it is here because that one does not cover this pass:
+ * it probes `src/gen-0-4x/mysql/*` against `drizzle-zod@0.8.3`, which is a different object twice
+ * over. The v1 modules emit a character cap the 0.4x ones do not, and they are compared against
+ * `drizzle-orm/zod`. A sentence in ALLOWED above used to say the 0.4x stage covered `mediumtext`
+ * for this pass; it never did, and `m_mediumtext` was a live divergence sitting under a green
+ * parity line the whole time.
+ *
+ * Two probes per column, not one. One string over the cap only ever proves the cap is below it, so
+ * the single probe this replaced pinned `tinytext` to the interval [36, 257] rather than to 255:
+ * 36 is the largest pool string under the cap and 257 is where a probe built out of three-byte
+ * characters lands. Measured rather than reasoned, by moving the emitted cap and re-running: 257
+ * and 36 both left this pass byte identical to green, 258 and 35 both failed it. The same
+ * construction left `text` free over [400, 65537] and `mediumtext` over about 16.7 million values.
+ *
+ * The pair brackets it. `floor(cap/3)` three-byte characters plus `cap mod 3` ASCII ones is exactly
+ * `cap` bytes and roughly a third of that in UTF-16 units, so DRZL has to take it; one more ASCII
+ * character is exactly `cap + 1` bytes, so DRZL has to refuse it. Together they pin the byte cap to
+ * a single value, and both stay far under any character cap, so neither is answering a question
+ * about characters.
+ *
+ * A real MySQL 8.4.11 on a utf8mb4 client agrees with both halves, which is what makes them the
+ * right expectations rather than today's behaviour written down: for `tinytext`, `text`, `blob` and
+ * `mediumtext` alike, the at-cap string inserts and `octet_length` reads back exactly the cap,
+ * while the one-byte-longer string fails with ERROR 1406 "Data too long".
+ *
+ * `longtext` has no probe at all, and CAP_COVERAGE below is where that is asserted rather than
+ * described.
+ *
+ * `m_blob` is here and not on the 0.4x side because 0.45.2's mysql-core has no `blob` export, so
+ * that fixture cannot carry the column.
+ */
+// Read off the runtime rather than written down, so a V8 with a different limit is described
+// correctly instead of being asserted about.
+const MAX_JS_STRING = constants.MAX_STRING_LENGTH;
+const TEXT_CAPS: Record<string, number> = {
+  m_tinytext: 255,
+  m_text: 65535,
+  m_mediumtext: 16777215,
+  m_longtext: 4294967295,
+  m_blob: 65535,
+};
+
+/**
+ * Where each MySQL text column's byte cap is actually measured.
+ *
+ * Computed by this run and compared with the declaration in both directions, because a sentence
+ * about who measures what is exactly the kind that goes quietly false. Two of them already have on
+ * this branch, and the second was introduced by the fix for the first: one said the 0.4x stage
+ * measured `mediumtext` for this pass, and its replacement said both pool-unreachable columns were
+ * measured by the byte-cap stage. `m_longtext` is measured by nothing at all, and deleting every
+ * one of its caps from all four generated modules in all three modes leaves both passes byte
+ * identical to green.
+ *
+ * The two things that measure a cap do not measure the same amount of it, and the printed line used
+ * to give each of them one word, so `the pool and the byte-cap stage` read as two measurements of
+ * the cap when only one of them is. They are named apart now:
+ *
+ *   `separated`  the pool holds a string this column's byte cap refuses and its UTF-16 count does
+ *                not, which is the only kind of string the parity comparison above can tell the two
+ *                counts apart with. It does not pin the cap: moving `m_tinytext`'s emitted cap to
+ *                254 or to 256 produces no failure from the pool at all, and its reach on that
+ *                column starts at 400, where the 100-emoji probe stops being refused.
+ *   `bracketed`  the pair below was built and pushed through, at the cap and one byte over, which
+ *                does pin the cap to a single value.
+ */
+const CAP_COVERAGE: Record<string, string> = {
+  m_tinytext: 'bracketed and separated',
+  m_text: 'bracketed and separated',
+  m_blob: 'bracketed and separated',
+  m_mediumtext: 'bracketed only',
+  m_longtext: 'neither',
+};
+
+const capProblems: string[] = [];
+const capMeasured: string[] = [];
+const capUnreachable: string[] = [];
+{
+  const mysql = DIALECTS.find((d) => d.name === 'mysql');
+  if (!mysql) {
+    capProblems.push('the MySQL dialect is not in this pass, so no byte cap was measured');
+  } else {
+    const loaded: Record<string, any> = {};
+    for (const lib of mysql.libs) loaded[lib] = await mysql.mods[lib]();
+    for (const [col, cap] of Object.entries(TEXT_CAPS)) {
+      const wide = Math.floor(cap / 3);
+      const rest = cap - wide * 3;
+      const units = wide + rest;
+      if (units + 1 > MAX_JS_STRING) {
+        capUnreachable.push(`${col} (a probe needs ${units + 1} units, over this V8's ${MAX_JS_STRING})`);
+        // UTF-8 spends at most 3 bytes per UTF-16 unit, checked over every code point, so no JS
+        // string here can carry more than this many bytes. When that is under the cap the cap
+        // cannot be exceeded at all, which is a stronger statement than this construction being
+        // too long, and it is the one `longtext` is in. Anything else means a different
+        // construction might reach the column and this list is hiding it.
+        if (MAX_JS_STRING * 3 >= cap) {
+          capProblems.push(
+            `${col} is listed as unprobeable, but a JS string here can carry ${MAX_JS_STRING * 3} ` +
+              `bytes, which is over its ${cap} byte cap. Some construction reaches it and this one does not.`
+          );
+        }
+        continue;
+      }
+      const atCap = '\u4E00'.repeat(wide) + 'x'.repeat(rest);
+      const overCap = `${atCap}x`;
+      for (const mode of ['select', 'insert', 'update'] as const) {
+        for (const libName of mysql.libs) {
+          const lib = LIBS[libName];
+          const o = safeField(lib, OFFICIAL[libName][mode](mysql.table as never), col);
+          const m = safeField(lib, loaded[libName][`${PREFIX[mode]}matrixSchema`], col);
+          if (!o || !m) {
+            capProblems.push(`${col} has no field on ${mode}/${libName}, so no cap was measured`);
+            continue;
+          }
+          const at = { o: probe(lib, o, atCap), m: probe(lib, m, atCap) };
+          const over = { o: probe(lib, o, overCap), m: probe(lib, m, overCap) };
+          capMeasured.push(`${col}/${mode}/${libName}/at`, `${col}/${mode}/${libName}/over`);
+          // Today's state and the only one that is not a finding, on both halves. Official counts
+          // UTF-16 units, so it takes both. DRZL counts bytes, so the cap is where MySQL puts it:
+          // `cap` bytes in, `cap + 1` bytes out.
+          if (at.o === 'accept' && at.m === 'accept' && over.o === 'accept' && over.m === 'reject') continue;
+          capProblems.push(
+            `${col} on ${mode}/${libName}: at ${cap} bytes (${units} units) official ${at.o}, ` +
+              `DRZL ${at.m}; at ${cap + 1} bytes (${units + 1} units) official ${over.o}, ` +
+              `DRZL ${over.m}. Expected both accepted and DRZL alone refusing the second, which is ` +
+              'where MySQL 8.4.11 puts the boundary.'
+          );
+        }
+      }
+    }
+  }
+}
+if (!capMeasured.length) capProblems.push('no MySQL text column had its byte cap measured');
+
+// The coverage claim, computed rather than asserted in a comment nobody re-runs.
+const poolSeparates = (cap: number) =>
+  POOL.some(([, x]) => typeof x === 'string' && Buffer.byteLength(x, 'utf8') > cap && x.length <= cap);
+const coverageSeen: string[] = [];
+for (const [col, cap] of Object.entries(TEXT_CAPS)) {
+  const byPool = poolSeparates(cap);
+  const byStage = capMeasured.some((probed) => probed.startsWith(`${col}/`));
+  const got = byPool && byStage
+    ? 'bracketed and separated'
+    : byPool
+      ? 'separated only'
+      : byStage
+        ? 'bracketed only'
+        : 'neither';
+  coverageSeen.push(`${col} ${got}`);
+  if (CAP_COVERAGE[col] === got) continue;
+  capProblems.push(
+    `${col} is declared '${CAP_COVERAGE[col] ?? 'nothing, being absent from CAP_COVERAGE'}'` +
+      `, and this run measured '${got}'`
+  );
+}
+for (const col of Object.keys(CAP_COVERAGE)) {
+  if (col in TEXT_CAPS) continue;
+  capProblems.push(`CAP_COVERAGE names ${col}, which has no cap in TEXT_CAPS, so it describes nothing`);
+}
+
+console.log(
+  `    ${capMeasured.length} byte-cap probe(s) bracketing ${Object.keys(TEXT_CAPS).length - capUnreachable.length} ` +
+    `MySQL text column(s); ${capUnreachable.length} cannot be probed at all: ${capUnreachable.join(', ')}`
+);
+console.log(
+  "    byte caps: 'bracketed' is probed at the cap and one byte over, which pins DRZL's cap to one" +
+    " value; 'separated' is the pool holding a string the cap refuses on bytes and takes on" +
+    ' characters, which tells the two counts apart without pinning the cap'
+);
+console.log(`    ${coverageSeen.join('; ')}`);
+if (capProblems.length) {
+  console.error('FAIL: a MySQL text column no longer separates a byte budget from a character');
+  console.error('      count the way it is documented to:');
+  for (const c of capProblems) console.error(`      ${c}`);
+}
+
+if (totalCompared !== EXPECTED_COMPARISONS) {
+  const direction = totalCompared < EXPECTED_COMPARISONS ? 'fewer' : 'more';
+  console.error(`FAIL: ${totalCompared} column comparisons, expected ${EXPECTED_COMPARISONS}.`);
+  console.error(`      This run compared ${direction} columns than EXPECTED_COMPARISONS says.`);
+  if (totalCompared < EXPECTED_COMPARISONS) {
+    console.error('      A parity pass that measures fewer columns than it did yesterday is the');
+    console.error('      failure this file has been bitten by most, so this is a stop. Find what');
+    console.error('      stopped being compared before touching the constant.');
+  } else {
+    console.error('      A fixture grew. That is fine and it is not automatic: measure the new');
+    console.error('      columns, put any difference in ALLOWED with its reason, and then update');
+    console.error('      EXPECTED_COMPARISONS in this file to match.');
+  }
+}
+console.log(`    ${totalCompared} column comparisons`);
 
 // A waiver that suppresses nothing is not harmless. It is a sentence claiming a divergence exists
 // and is fine, sitting next to the divergences that really do, and the next person to widen this
@@ -1301,6 +2048,260 @@ const deadWaivers = [
   ...Object.keys(ALLOWED).filter((k) => !usedWaivers.has(k)).map((k) => `ALLOWED[${k}]`),
   ...Object.keys(CROSS_ALLOWED).filter((k) => !usedCrossWaivers.has(k)).map((k) => `CROSS_ALLOWED[${k}]`),
 ];
+
+// The exact divergence each waiver covers, compared with what it actually suppressed. Every
+// pairing has to be claimed by exactly one declaration and match it character for character, and
+// every declaration has to claim at least one pairing. This is what "suppressed something" cannot
+// say: stripping the length caps off `m_tinytext` still suppresses something, just something else.
+const waiverProblems: string[] = [];
+for (const [key, seen] of waived) {
+  const entry = ALLOWED[key];
+  // Which pairings carry the divergence, not only what it looks like. A signature alone is
+  // satisfied by any non-empty subset: deleting the `m_tinytext` byte cap on insert and update
+  // and leaving select alone left this pass green, four pairings matching where twelve should,
+  // while a MySQL TINYTEXT insert schema took 400 bytes the server refuses.
+  const gotLibs = [...new Set([...seen.keys()].map((x) => x.split('/')[1]))].sort().join(',');
+  const gotModes = [...new Set([...seen.keys()].map((x) => x.split('/')[0]))].sort().join(',');
+  const wantLibs = [...entry.libs].sort().join(',');
+  const wantModes = [...entry.modes].sort().join(',');
+  if (gotLibs !== wantLibs) waiverProblems.push(`ALLOWED[${key}] declares libs ${wantLibs}, measured ${gotLibs}`);
+  if (gotModes !== wantModes) waiverProblems.push(`ALLOWED[${key}] declares modes ${wantModes}, measured ${gotModes}`);
+  const wantPairings = entry.libs.length * entry.modes.length;
+  if (seen.size !== wantPairings) {
+    waiverProblems.push(
+      `ALLOWED[${key}] declares ${wantPairings} pairings, measured ${seen.size}: ` +
+        [...seen.keys()].sort().join(', ')
+    );
+  }
+  const claimed = new Set<string>();
+  for (const [pairing, sig] of seen) {
+    const hits = Object.keys(entry.divergence).filter((d) => pairingMatches(d, pairing));
+    if (hits.length !== 1) {
+      waiverProblems.push(
+        `ALLOWED[${key}] has ${hits.length} declarations for ${pairing}, needs exactly one. ` +
+          `Measured there: ${sig}`
+      );
+      continue;
+    }
+    claimed.add(hits[0]);
+    const want = entry.divergence[hits[0]];
+    if (want === sig) continue;
+    waiverProblems.push(
+      `ALLOWED[${key}] on ${pairing} declares\n        ${want}\n      and measured\n        ${sig}`
+    );
+  }
+  for (const d of Object.keys(entry.divergence)) {
+    if (!claimed.has(d)) waiverProblems.push(`ALLOWED[${key}] declaration '${d}' matched no pairing`);
+  }
+}
+if (waiverProblems.length) {
+  console.error('FAIL: a waiver no longer covers the divergence it was written for. Re-measure it');
+  console.error('      and update the signature, or delete it. A waiver that says only "something');
+  console.error('      differs here" absorbs the next regression on the same column:');
+  for (const w of waiverProblems) console.error(`      ${w}`);
+}
+
+// The crashes, held to the same rule from both ends. An undeclared one is a difference nobody
+// looked at; a declared one that stopped happening is a sentence about something nobody can see.
+// The cross-generator waivers, held to their signatures the same way. Identical mechanism, and it
+// is here because the deferral that left it out last round turned out to be exploitable in exactly
+// the way the previous one was.
+const crossProblems: string[] = [];
+for (const [key, sig] of crossWaived) {
+  const want = CROSS_ALLOWED[key].divergence;
+  if (want === sig) continue;
+  crossProblems.push(`CROSS_ALLOWED[${key}] declares\n        ${want}\n      and measured\n        ${sig}`);
+}
+if (crossProblems.length) {
+  console.error('FAIL: a cross-generator waiver no longer covers what it was written for:');
+  for (const c of crossProblems) console.error(`      ${c}`);
+}
+
+const throwProblems: string[] = [];
+for (const [key, seen] of threwSeen) {
+  const e = THREW[key];
+  if (!e) {
+    throwProblems.push(
+      `${key}: ${[...seen.sides].join('/')} crashed on ${[...seen.values].sort().join(', ')} ` +
+        `in ${[...seen.modes].sort().join(', ')}, and is in no list`
+    );
+    continue;
+  }
+  const got = { side: [...seen.sides].sort().join(','), modes: [...seen.modes].sort().join(','), values: [...seen.values].sort().join(',') };
+  const want = { side: e.side, modes: [...e.modes].sort().join(','), values: [...e.values].sort().join(',') };
+  for (const f of ['side', 'modes', 'values'] as const) {
+    if (got[f] !== want[f]) throwProblems.push(`THREW[${key}] declares ${f} ${want[f]}, measured ${got[f]}`);
+  }
+}
+for (const key of Object.keys(THREW)) {
+  if (!threwSeen.has(key)) throwProblems.push(`THREW[${key}] saw no crash on this run`);
+}
+
+/**
+ * What DRZL answered where official could not, held to the declaration in both directions.
+ *
+ * Without this a crashing official validator is a licence for DRZL to do anything on that value.
+ * `pg/typebox/c_bit` is `bit({ dimensions: 3 }).notNull()`, and its Insert and Update schemas were
+ * made to accept `null` with this pass staying byte identical to green.
+ */
+const declMatches = (decl: string, mode: string, label: string) => {
+  const cut = decl.indexOf('/');
+  return (decl.slice(0, cut) === '*' || decl.slice(0, cut) === mode) && decl.slice(cut + 1) === label;
+};
+for (const [key, seen] of crashVerdict) {
+  const e = THREW[key];
+  // An undeclared crash is already a failure above; reporting the same site twice adds nothing.
+  if (!e) continue;
+  const want = e.modes.length * e.values.length;
+  if (seen.size !== want) {
+    throwProblems.push(
+      `THREW[${key}] declares ${want} crashed probe(s), measured ${seen.size}: ${[...seen.keys()].sort().join(', ')}`
+    );
+  }
+  const claimed = new Set<string>();
+  for (const [at, verdict] of seen) {
+    const cut = at.indexOf('/');
+    const hits = Object.keys(e.drzl).filter((decl) => declMatches(decl, at.slice(0, cut), at.slice(cut + 1)));
+    if (hits.length !== 1) {
+      throwProblems.push(`THREW[${key}].drzl has ${hits.length} declarations for ${at}, needs exactly one. Measured there: ${verdict}`);
+      continue;
+    }
+    claimed.add(hits[0]);
+    if (e.drzl[hits[0]] === verdict) continue;
+    throwProblems.push(`THREW[${key}].drzl declares ${e.drzl[hits[0]]} on ${at}, measured ${verdict}`);
+  }
+  for (const decl of Object.keys(e.drzl)) {
+    if (!claimed.has(decl)) throwProblems.push(`THREW[${key}].drzl declaration '${decl}' matched no crashed probe`);
+  }
+}
+
+/**
+ * And who says those answers are the right ones.
+ *
+ * A pinned verdict stops DRZL's behaviour moving unseen; it does not say the pinned value is
+ * correct. A real Postgres does, for everything it can be asked: the table is built from the
+ * fixture column's own `getSQLType()`, and its nullable twin has to take a NULL before the NOT NULL
+ * twin's refusal counts as anything.
+ *
+ * An absence is asked as an absence, by leaving the column out of the insert, and not by binding a
+ * NULL where it would have gone. It used to be classified unarbitrable on the ground that no
+ * database can be handed one, which is false: `pool.ts` has the three-way measurement, and the
+ * consequence of the false ground was that the `undefined` probe on every crash site went
+ * unarbitrated for a reason that named the wrong obstacle.
+ *
+ * One reason for not arbitrating survives, and it is now checked against something outside the
+ * branch that produces it: PGlite is a Postgres, so it cannot answer for the MySQL columns. The
+ * engine reports its own name through `select version()`, so a run where this process did hold an
+ * engine for that dialect fails here instead of printing the excuse. That is the one thing this
+ * block could not previously do: the reason string and the gate were one expression, so the string
+ * was computed and the reason was not checked at all.
+ */
+const arbiterProblems: string[] = [];
+{
+  const pgColumns = getTableConfig(pgTable as never).columns as { name: string; getSQLType: () => string }[];
+  const wanted: { key: string; label: string; value: unknown; dialect: string; column: string }[] = [];
+  for (const [key, e] of Object.entries(THREW)) {
+    const [dialect, , column] = key.split('/');
+    const declared = Object.keys(e.arbiter).sort().join(',');
+    const values = [...e.values].sort().join(',');
+    if (declared !== values) {
+      arbiterProblems.push(`THREW[${key}].arbiter covers ${declared || 'nothing'}, and the crash values are ${values}`);
+    }
+    for (const label of e.values) {
+      const found = POOL.find(([l]) => l === label);
+      if (!found) {
+        arbiterProblems.push(`THREW[${key}] names the value ${label}, which is not in POOL, so nothing can be asked about it`);
+        continue;
+      }
+      wanted.push({ key, label, value: found[1], dialect, column });
+    }
+  }
+  const probes: DbProbe[] = [];
+  for (const w of wanted) {
+    if (w.dialect !== 'pg') continue;
+    const col = pgColumns.find((c) => c.name === w.column);
+    if (!col) {
+      arbiterProblems.push(`THREW[${w.key}] names a column the Postgres fixture does not have, so no DDL can be built for it`);
+      continue;
+    }
+    // The pool's `undefined` is an absence, and it is carried to the database as one rather than
+    // bound as a value. `absent` is what picks the statement that never names the column.
+    probes.push({ key: w.key, sqlType: col.getSQLType(), label: w.label, absent: w.value === undefined, value: w.value });
+  }
+  const { engine, answers } = await askPostgres(probes);
+  // A run where the database answered nothing would otherwise leave every site reading as
+  // deliberately unarbitrated.
+  if (!probes.length) arbiterProblems.push('no crash site reached a database on this run, so nothing was arbitrated');
+  if (engine !== 'pg') {
+    arbiterProblems.push(`the in-process engine answers 'select version()' with ${engine}, and every answer below is read as a Postgres one`);
+  }
+  let arbitrated = 0;
+  for (const w of wanted) {
+    const e = THREW[w.key];
+    const verdicts = [...new Set(
+      [...(crashVerdict.get(w.key) ?? new Map<string, string>())]
+        .filter(([at]) => at.slice(at.indexOf('/') + 1) === w.label)
+        .map(([, v]) => v)
+    )].sort();
+    let got: string;
+    if (w.dialect !== 'pg') {
+      got = `no in-process ${w.dialect} engine`;
+      // Asserted rather than only computed. The engine names itself, so the excuse is checked
+      // against something outside the branch that writes it: wiring a MySQL in here and leaving
+      // this declaration alone fails the run instead of reading as deliberate.
+      if (engine === w.dialect) {
+        arbiterProblems.push(
+          `${w.key}/${w.label} is declared unarbitrable for want of a ${w.dialect} engine, and the ` +
+            `engine in this process names itself ${engine}`
+        );
+      }
+    } else {
+      const a = answers.get(`${w.key}/${w.label}`);
+      if (!a) {
+        arbiterProblems.push(`${w.key}/${w.label} was sent to the database and came back with no answer`);
+        continue;
+      }
+      if (a.control) {
+        arbiterProblems.push(`${w.key}/${w.label}: ${a.control}`);
+        continue;
+      }
+      arbitrated++;
+      const asked = w.value === undefined ? 'the column omitted from the insert' : 'it';
+      got = a.verdict === 'accept' ? `postgres accepts ${asked}` : `postgres refuses ${asked} (SQLSTATE ${a.code})`;
+      // The one rule the declaration cannot talk its way out of. A value the database refuses and
+      // DRZL takes is a schema admitting a row the server will not. `ALLOWED` is read dialect-wide
+      // here and a library-scoped waiver does not reach it, which is the fail-closed direction.
+      if (a.verdict === 'refuse' && verdicts.includes('accept') && !ALLOWED[`${w.dialect}/${w.column}`]) {
+        arbiterProblems.push(
+          `${w.key}/${w.label}: postgres refuses ${asked} and DRZL accepts it, and no waiver names ` +
+            `${w.dialect}/${w.column}`
+        );
+      }
+    }
+    if (e.arbiter[w.label] === got) continue;
+    arbiterProblems.push(`THREW[${w.key}].arbiter declares '${e.arbiter[w.label]}' for ${w.label}, and this run got '${got}'`);
+  }
+  console.log(
+    `    ${arbitrated} crash probe(s) arbitrated against a real Postgres, of ` +
+      `${wanted.length} across ${Object.keys(THREW).length} crash site(s)`
+  );
+}
+if (arbiterProblems.length) {
+  console.error('FAIL: a crash site is no longer settled the way it is declared to be. A value');
+  console.error('      official crashes on is still a value DRZL answers, and something has to');
+  console.error('      say whether that answer is right:');
+  for (const a of arbiterProblems) console.error(`      ${a}`);
+}
+console.log(
+  `    ${[...threwSeen.values()].reduce((n, s) => n + s.at.size, 0)} probe(s) crashed ` +
+    `instead of returning a verdict, on ${threwSeen.size} column(s) against ` +
+    `${Object.keys(THREW).length} declared, with DRZL's own verdict on each pinned above`
+);
+if (throwProblems.length) {
+  console.error('FAIL: a probe crashed where the list above does not say one does. A crash is not');
+  console.error('      a verdict and must not be compared as one:');
+  for (const t of throwProblems) console.error(`      ${t}`);
+}
 if (deadWaivers.length) {
   console.error('FAIL: these waivers suppressed nothing on this run, so they describe a');
   console.error('      divergence that no longer happens. Delete them rather than keeping a');
@@ -1315,7 +2316,18 @@ if (findings) {
 
 // Counted separately and exited on together, so one run reports both rather than hiding the
 // second behind the first. A dead waiver is not a looser schema and must not be described as one.
-if (findings || deadWaivers.length) process.exit(1);
+if (
+  findings ||
+  deadWaivers.length ||
+  throwProblems.length ||
+  arbiterProblems.length ||
+  waiverProblems.length ||
+  crossProblems.length ||
+  capProblems.length ||
+  totalCompared !== EXPECTED_COMPARISONS
+) {
+  process.exit(1);
+}
 PARITY_HARNESS
 
 # drizzle-orm is pinned: the parity target is a specific release, and a floating one would turn
@@ -1328,9 +2340,14 @@ PARITY_HARNESS
 # typescript, because this tree's generated output is now compiled as well as executed. It was
 # only ever run, and a nullable bigint array reached a released generator emitting `>=` against a
 # `bigint[]`, which no amount of running it can notice.
+#
+# @electric-sql/pglite arrives here rather than further down because the parity pass now needs a
+# real Postgres of its own: where the official validator crashes on a value there is nothing left
+# to compare DRZL against, and a database is what settles whether DRZL's answer is right. The
+# ground-truth stage in this same tree used to install it on its own line and now inherits it.
 npm install --no-audit --no-fund --loglevel=error \
   "$TARS"/*.tgz drizzle-orm@1.0.0-rc.4 zod valibot arktype @sinclair/typebox tsx typescript \
-  ajv@^8.17.1 ajv-formats@^3.0.1 >/dev/null
+  ajv@^8.17.1 ajv-formats@^3.0.1 @electric-sql/pglite >/dev/null
 
 for dialect in pg mysql sqlite; do
   case "$dialect" in
@@ -2090,7 +3107,9 @@ if (drzlOnly.length) {
 await db.close();
 GROUND_TRUTH
 
-npm install --no-audit --no-fund --loglevel=error @electric-sql/pglite >/dev/null
+# @electric-sql/pglite is installed with the rest of this tree, far above, because the parity pass
+# needs a Postgres too now. It had its own install line here, which was a second install of the
+# same package into the same tree.
 if ! npx tsx src/ground-truth.ts; then
   echo "FAIL: a generated schema disagrees with Postgres itself." >&2
   exit 1
@@ -3335,10 +4354,12 @@ const ALLOWED: Record<string, string> = {
  *
  * Every one of these is the analyzer describing a column correctly under one major and not the
  * other, so they are exactly what this stage was built to surface. They are named rather than
- * fixed because fixing one means changing what the analyzer emits for 0.4x, and the gate that
- * would show such a change is right does not exist yet: the parity comparison, which is the one
- * thing here that checks DRZL against the first-party validators column by column, installs
- * drizzle-orm@1.0.0-rc.4 and measures v1 alone.
+ * fixed here because this stage is a diff, and a diff cannot say which side is right.
+ *
+ * The gate that can is the 0.4x parity stage further down, which measures DRZL's emitted
+ * validators against the first-party modules for 0.45.2 the way the stage near the top of this
+ * file does for v1. It carries eight of these columns in its own DEFECTS map, so a fix has to
+ * clear an entry there as well as here.
  */
 const DEFECTS: Record<string, string> = {
   // ---- 0.4x names the SQL type coarsely, and once v1 does ------------------------------------
@@ -3863,6 +4884,1547 @@ if ! npx tsx check-old.ts; then
   echo "FAIL: the analyzer loses column types on drizzle-orm 0.4x." >&2
   exit 1
 fi
+
+# ---------------------------------------------------------------------------------------------
+# The same differential parity as the stage near the top of this file, on the other major.
+#
+# That stage installs drizzle-orm@1.0.0-rc.4 and measures v1 alone, so its 36 parity lines said
+# nothing about 0.45.2, which is what `npm install drizzle-orm` still serves. The comparison above
+# is relative: it can see the two majors disagreeing about a column, and cannot see either of them
+# being wrong. This one is absolute on 0.4x, against the first-party validators for that major.
+#
+# Those are four separate packages rather than submodules of drizzle-orm, and each is pinned for
+# the reason drizzle-orm is: the target is a specific release, and a floating one turns an upstream
+# change into a mysterious failure here rather than a deliberate re-measurement. They were chosen
+# by installing them and running them, not from a compatibility table:
+#
+#   drizzle-zod 0.8.3, drizzle-valibot 0.4.2, drizzle-arktype 0.1.3, drizzle-typebox 0.3.3
+#
+# All four declare `drizzle-orm >=0.36.0`, all four import against 0.45.2, and all four build
+# select, insert and update schemas for all three dialects here. None had to be skipped.
+#
+# The json-schema generator takes no part, for the same reason it takes none in the v1 pass: there
+# is no official JSON Schema module to compare it against. That is stated in the stage output
+# rather than left to a reader of this comment, because a generator the stage quietly does not
+# reach is indistinguishable from one that passes.
+# ---------------------------------------------------------------------------------------------
+echo "==> differential parity against the official 0.4x validators"
+# @electric-sql/pglite for the same reason the v1 tree has it: where the official validator crashes
+# on a value there is nothing left to compare DRZL against, and a real Postgres is what says
+# whether DRZL's answer to that value is the right one. It ships a CommonJS build, which this tree
+# needs and the v1 one does not.
+npm install --no-audit --no-fund --loglevel=error \
+  drizzle-zod@0.8.3 drizzle-valibot@0.4.2 drizzle-arktype@0.1.3 drizzle-typebox@0.3.3 \
+  valibot arktype @sinclair/typebox @electric-sql/pglite >/dev/null
+
+cp "$WORK/parity-pool.ts" src/pool.ts
+
+# The MySQL and SQLite fixtures the v1 pass measures, read out of that tree rather than re-typed,
+# so widening one fixture widens both comparisons. `src/matrix.ts` is already here: the stage above
+# derived it from the Postgres one.
+#
+# MySQL loses one column on the way in. 0.4x's mysql-core has no `blob` export, so a fixture
+# carrying it cannot be imported at all, and that is the only missing one: `tinytext`, `mediumtext`
+# and `longtext` are all functions there, and every other type this fixture names resolves.
+# Measured by importing the module and asking, not by reading a changelog.
+#
+# SQLite loses nothing. Every type its fixture names, including all four blob modes, exists on
+# 0.45.2.
+#
+# Both edits are checked for having changed what they claim to change, because a `sed` that matches
+# nothing is the quiet way to end up comparing the wrong file, and a `cp` of a fixture that has
+# since grown a 0.4x-only import would fail much further down as an import error nobody expects.
+for f in schema-mysql schema-sqlite; do
+  [ -f "$PARITY/src/$f.ts" ] || {
+    echo "FAIL: $PARITY/src/$f.ts is not where this stage expects it, so there is nothing to" >&2
+    echo "      measure against the official 0.4x validators." >&2
+    exit 1
+  }
+done
+sed -e 's/ blob,//' -e '/m_blob/d' "$PARITY/src/schema-mysql.ts" > src/matrix-mysql.ts
+if cmp -s "$PARITY/src/schema-mysql.ts" src/matrix-mysql.ts; then
+  echo "FAIL: nothing was removed from the MySQL parity fixture, so either blob is gone from it" >&2
+  echo "      (in which case delete the edit above and use the file as it is) or the edit no" >&2
+  echo "      longer matches what it is meant to remove." >&2
+  exit 1
+fi
+if grep -q 'blob' src/matrix-mysql.ts; then
+  echo "FAIL: blob survived the edit above, so this fixture cannot be imported under 0.4x." >&2
+  exit 1
+fi
+cp "$PARITY/src/schema-sqlite.ts" src/matrix-sqlite.ts
+
+for dialect in pg mysql sqlite; do
+  case "$dialect" in
+    pg)     schema=src/matrix.ts ;;
+    mysql)  schema=src/matrix-mysql.ts ;;
+    sqlite) schema=src/matrix-sqlite.ts ;;
+  esac
+  gens=""
+  for lib in zod valibot arktype typebox; do
+    gens="$gens    { kind: '$lib', path: 'src/gen-0-4x/$dialect/$lib' },"$'\n'
+  done
+  cat > "drzl.0-4x.$dialect.config.ts" <<CONFIG
+import { defineConfig } from '@drzl/cli/config';
+
+export default defineConfig({
+  schema: '$schema',
+  outDir: 'src/gen-0-4x/$dialect',
+  generators: [
+$gens  ],
+});
+CONFIG
+  npx drzl generate --config "drzl.0-4x.$dialect.config.ts" >/dev/null
+  for lib in zod valibot arktype typebox; do
+    if [ ! -e "src/gen-0-4x/$dialect/$lib/matrix.$lib.ts" ]; then
+      echo "FAIL: the $lib generator produced no file for the $dialect 0.4x parity matrix." >&2
+      exit 1
+    fi
+  done
+done
+
+cat > parity-0-4x.ts <<'PARITY_0_4X'
+/**
+ * Differential parity for DRZL's validator generators on drizzle-orm 0.4x.
+ *
+ * Same method as `src/parity.ts` in the v1 tree and the same pool of values, imported from the
+ * same file: build a schema for every column of every table in three dialects and all three
+ * modes, with DRZL and with the official first-party module, then push the pool through both and
+ * compare verdicts. Reading the emitted source cannot do this, because a schema that validates
+ * and one that merely parses look identical as text.
+ *
+ * The ledger is the part that makes this runnable rather than permanently red. Two maps:
+ *
+ *   ALLOWED  DRZL and the official 0.4x module really do differ here, deliberately.
+ *   DEFECTS  DRZL is wrong or looser on 0.4x. Filed rather than fixed, and reported every run.
+ *
+ * Both are asserted exactly and in both directions. A difference in neither map fails the stage; an
+ * entry that suppresses nothing fails it; and an entry whose libraries, modes, pairing count or
+ * exact divergence no longer match what was measured fails it with the observed signature printed.
+ * That last direction is the one that matters. A list checked only for additions turns into a
+ * record of things that used to be wrong, and a fix then regresses with the gate still green.
+ *
+ * `divergence` is what makes an entry pin a specific difference rather than a shape. Three
+ * sabotages walked through the shape-only version, and all three are named now, each verified by
+ * running the stage against the edited output:
+ *
+ *   c_char capped at 400 code points instead of 4
+ *   c_char's length check deleted, so a char(4) schema takes a 70,000 character string
+ *   m_tinytext tightened from 255 bytes to 3, so it refuses 'hello' into a TINYTEXT column
+ *
+ * None of them changes the libraries, the modes, the pairing count or which way the disagreement
+ * runs. All of them change which probes differ, which is the only thing that cannot be preserved
+ * by a change to the column's behaviour.
+ *
+ * `c_char` was the example this docstring used to call an exception. It is not one, and the
+ * numbers are worth keeping because they show what a partial fix looks like. Recomputed against
+ * the real official field: it differs on 7 pool values today, on 5 if DRZL counted UTF-16 units,
+ * and on none if DRZL demanded exactly 4 code points. Every one of those is a different signature,
+ * so all three states are distinguishable now, where before only the third was.
+ *
+ * A ragged defect, one that reached zod on select and valibot on insert alone, is declarable:
+ * `divergence` keys are `<modes>/<libraries>` and can name a single pairing. The pairing count
+ * would still have to be stated, and a sentence here used to say such a defect would have to be
+ * split into two entries, which the key format does not allow.
+ */
+import { readFileSync } from 'node:fs';
+import { constants } from 'node:buffer';
+import { getTableConfig } from 'drizzle-orm/pg-core';
+import { SchemaAnalyzer } from '@drzl/analyzer';
+import { POOL, LIBS, probe, askPostgres, type DbProbe, type Lib, type Verdict } from './src/pool.js';
+
+import {
+  createSelectSchema as zSelect,
+  createInsertSchema as zInsert,
+  createUpdateSchema as zUpdate,
+} from 'drizzle-zod';
+import {
+  createSelectSchema as vSelect,
+  createInsertSchema as vInsert,
+  createUpdateSchema as vUpdate,
+} from 'drizzle-valibot';
+import {
+  createSelectSchema as aSelect,
+  createInsertSchema as aInsert,
+  createUpdateSchema as aUpdate,
+} from 'drizzle-arktype';
+import {
+  createSelectSchema as tSelect,
+  createInsertSchema as tInsert,
+  createUpdateSchema as tUpdate,
+} from 'drizzle-typebox';
+
+import { matrix as pgTable } from './src/matrix.js';
+import { matrix as myTable } from './src/matrix-mysql.js';
+import { matrix as sqTable } from './src/matrix-sqlite.js';
+
+const OFFICIAL: Record<string, Record<string, (t: any) => any>> = {
+  zod: { select: zSelect, insert: zInsert, update: zUpdate },
+  valibot: { select: vSelect, insert: vInsert, update: vUpdate },
+  arktype: { select: aSelect, insert: aInsert, update: aUpdate },
+  typebox: { select: tSelect, insert: tInsert, update: tUpdate },
+};
+
+type Entry = {
+  /** The libraries this difference shows up in, asserted exactly against what was measured. */
+  libs: string[];
+  /** The modes it shows up in, asserted the same way. */
+  modes: string[];
+  /**
+   * The exact divergence this entry covers, keyed `<modes>/<libraries>` with `*` for all of them.
+   *
+   * A signature is `L: <labels DRZL accepts and official refuses> | T: <the other way>`, in pool
+   * order, and it has to match what the run measured character for character. The literal
+   * `every probe official rejects` says the same thing as a proof instead of a list: DRZL accepted
+   * every probe, so the divergence is exactly official's rejections and cannot be written down
+   * wrongly.
+   *
+   * This replaced a `direction` field, which named only which way the disagreement ran. That
+   * closed a reversal and nothing else, and three sabotages walked through it: capping `c_char` at
+   * 400 code points instead of 4, deleting its length check entirely so a `char(4)` schema takes a
+   * 70,000 character string, and tightening `m_tinytext` from 255 bytes to 3. All three keep the
+   * libraries, the modes, the pairing count and the direction, and all three are named now,
+   * because all three change which probes differ.
+   *
+   * It is brittle against a pool change, deliberately. Adding a value that any waived column
+   * treats differently from official has to re-open that waiver, because the alternative is a
+   * waiver silently covering a divergence nobody has looked at, which is how two filed `maxLength`
+   * fields spent a round under a green line.
+   */
+  divergence: Record<string, string>;
+  /** What DRZL emits on 0.4x. */
+  drzl: string;
+  /** What the official 0.4x module emits for the same column. */
+  official: string;
+  /** Which filed defect this is, or why it is not one. */
+  filed: string;
+};
+
+/**
+ * A signature that states the divergence as a property instead of a list. DRZL accepted every
+ * probe, so the set of differing probes is exactly the set official rejects, and there is nothing
+ * to write down wrongly. Six columns are in that state and each would otherwise carry a list of
+ * around 56 labels, which is a list nobody would read.
+ */
+const ALL_PROBES = 'every probe official rejects';
+
+/**
+ * Does a declaration key such as `select,insert/zod,typebox` cover the pairing `select/zod`?
+ * `*` on either side means all of them. Kept deliberately dumb: a declaration that covers no
+ * pairing, or two that cover the same one, both fail rather than being resolved by precedence.
+ */
+const pairingMatches = (decl: string, pairing: string) => {
+  const [dModes, dLibs] = decl.split('/');
+  const [mode, lib] = pairing.split('/');
+  const covers = (spec: string, x: string) => spec === '*' || spec.split(',').includes(x);
+  return covers(dModes, mode) && covers(dLibs, lib);
+};
+
+const LIB_NAMES = ['zod', 'valibot', 'arktype', 'typebox'];
+const MODE_NAMES = ['select', 'insert', 'update'];
+// Insert and update. A divergence that only exists on write is a different claim from one that
+// exists on read, and coerceDates is the reason the distinction is load-bearing here.
+const WRITE = ['insert', 'update'];
+
+/**
+ * Divergences from the official 0.4x module that are deliberate and reasoned.
+ *
+ * Every one of these also holds against the v1 module, and the v1 pass carries the same reasoning
+ * in its own ALLOWED map, except where noted on `c_char`.
+ */
+const ALLOWED: Record<string, Entry> = {
+  // Two independent differences meet on this column, and only the first of them is in the v1 pass.
+  //
+  //   code points   a character limit counts characters; official counts `.length`, which is
+  //                 UTF-16 units, so it refuses three emoji in a char(4) the database accepts.
+  //   exact length  drizzle-zod 0.8.3 emits `length_equals 4`, on all three modes. Official v1
+  //                 emits a maximum and no minimum, which is what DRZL emits on both majors, so
+  //                 only the 0.4x module can see this at all.
+  //
+  // The exact-length half is upstream being stricter than the database on write, measured against
+  // Postgres through PGlite rather than argued: `insert into t (c) values ('ab')` into a `char(4)`
+  // is accepted and reads back as `'ab  '`, four characters. So official 0.4x refuses a legal
+  // insert, and DRZL's select schema is the loose one, since a row from that column is always
+  // four characters wide.
+  'pg/c_char': {
+    libs: LIB_NAMES,
+    modes: MODE_NAMES,
+    divergence: { '*/*': `L: "", 3 emoji, 3 emoji, 'zzz', 'a', 'x', '010' | T: ` },
+    drzl: 'a string of at most 4 code points',
+    official: 'a string of exactly 4 UTF-16 units',
+    filed: 'not a defect: two deliberate differences, see the note above',
+  },
+  'mysql/m_char': {
+    libs: LIB_NAMES,
+    modes: MODE_NAMES,
+    divergence: { '*/*': `L: "", 3 emoji, 3 emoji, 'zzz', 'a', 'x', '010' | T: ` },
+    drzl: 'as pg/c_char',
+    official: 'as pg/c_char',
+    filed: 'as pg/c_char',
+  },
+  // MySQL caps the TEXT family in bytes; official caps it in UTF-16 units. A real MySQL 8 on a
+  // utf8mb4 client is the authority and puts DRZL on the right side of it: a 100 emoji string is
+  // 200 units and 400 bytes, `insert into caps (t) values (?)` into a `tinytext` fails with "Data
+  // too long", and the same string goes into a `varchar(255)` and reports `length` 400 with
+  // `char_length` 100. So one table has a byte budget and a character count side by side.
+  //
+  // Until the pool carried that string, all four MySQL text columns reported parity on both
+  // majors while `mtext.t_text.maxLength` and its three siblings were filed against them. The
+  // green line was not agreement, it was a pool with nothing in it that could tell the two counts
+  // apart: every other string here is ascii, where they coincide, or too short to reach a cap.
+  //
+  // Which of the four columns this reaches is a property of the pool and is settled by arithmetic
+  // rather than by trying strings. A separating probe must be over the cap in bytes and not over it
+  // in UTF-16 units, and UTF-8 spends at most 3 bytes per unit, so it needs more than cap/3 units:
+  // 86 for `tinytext` and 21846 for `text`, both carried in the pool, 5592406 for `mediumtext`,
+  // which is a 10.7 MiB string measured by the byte-cap stage below instead of by every pairing,
+  // and 1431655766 for `longtext`, which is more than V8 will let a string be.
+  'mysql/m_tinytext': {
+    libs: LIB_NAMES,
+    modes: MODE_NAMES,
+    divergence: { '*/*': `L:  | T: 100 emoji` },
+    drzl: 'a string of at most 255 UTF-8 bytes, which is the column budget',
+    official: 'a string of at most 255 UTF-16 units, so it takes 400 bytes into a 255 byte column',
+    filed: 'not a defect: DRZL is stricter, and MySQL itself refuses what official accepts',
+  },
+  // The same thing on `text`, reached by the 22000 CJK probe rather than the emoji one: 66000
+  // bytes over 22000 units against a 65535 byte budget. Filed as `mtext.t_text.maxLength`, and it
+  // sat under a green parity line on both majors until that probe existed.
+  'mysql/m_text': {
+    libs: LIB_NAMES,
+    modes: MODE_NAMES,
+    divergence: { '*/*': `L:  | T: 22000 cjk` },
+    drzl: 'a string of at most 65535 UTF-8 bytes, which is the column budget',
+    official: 'a string of at most 65535 UTF-16 units, so it takes 66000 bytes into a 65535 byte column',
+    filed: 'not a defect: as mysql/m_tinytext',
+  },
+  // `coerceDates` defaults to coercing on insert and update, which is a documented DRZL option and
+  // is what `coerceDates: 'none'` turns off to match official exactly. Only strings and numbers
+  // are coerced: null, booleans and arrays are still rejected.
+  'pg/c_date_d': {
+    libs: LIB_NAMES,
+    modes: WRITE,
+    divergence: {
+      '*/zod': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', '12.5', '0101', '010' | T: `,
+      '*/valibot,arktype,typebox': `L: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010' | T: `,
+    },
+    drzl: 'a Date, or a string or number coerced to one',
+    official: 'a Date only',
+    filed: 'not a defect: coerceDates',
+  },
+  'pg/c_ts_d': { libs: LIB_NAMES, modes: WRITE, divergence: { '*/zod': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', '12.5', '0101', '010' | T: `, '*/valibot,arktype,typebox': `L: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010' | T: `,     }, drzl: 'as pg/c_date_d', official: 'as pg/c_date_d', filed: 'as pg/c_date_d' },
+  'mysql/m_date': { libs: LIB_NAMES, modes: WRITE, divergence: { '*/zod': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', '12.5', '0101', '010' | T: `, '*/valibot,arktype,typebox': `L: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010' | T: `,     }, drzl: 'as pg/c_date_d', official: 'as pg/c_date_d', filed: 'as pg/c_date_d' },
+  'mysql/m_datetime': { libs: LIB_NAMES, modes: WRITE, divergence: { '*/zod': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', '12.5', '0101', '010' | T: `, '*/valibot,arktype,typebox': `L: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010' | T: `,     }, drzl: 'as pg/c_date_d', official: 'as pg/c_date_d', filed: 'as pg/c_date_d' },
+  'mysql/m_ts': { libs: LIB_NAMES, modes: WRITE, divergence: { '*/zod': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', '12.5', '0101', '010' | T: `, '*/valibot,arktype,typebox': `L: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010' | T: `,     }, drzl: 'as pg/c_date_d', official: 'as pg/c_date_d', filed: 'as pg/c_date_d' },
+  'sqlite/s_int_ts': { libs: LIB_NAMES, modes: WRITE, divergence: { '*/zod': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', '12.5', '0101', '010' | T: `, '*/valibot,arktype,typebox': `L: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010' | T: `,     }, drzl: 'as pg/c_date_d', official: 'as pg/c_date_d', filed: 'as pg/c_date_d' },
+  // TypeBox fails a format it has no entry for rather than ignoring it, so official's schema
+  // rejects every valid uuid in any project that has not populated `FormatRegistry` first.
+  'pg/c_uuid': {
+    libs: ['typebox'],
+    modes: MODE_NAMES,
+    divergence: { '*/*': `L: uuid | T: ` },
+    drzl: 'a string carrying a uuid pattern, which needs no setup',
+    official: "Type.String({ format: 'uuid' }), which rejects every uuid until FormatRegistry is populated",
+    filed: 'not a defect: DRZL is the usable one',
+  },
+  // Stricter than official, in DRZL's favour, on every json column of every dialect.
+  'pg/c_json': {
+    libs: ['valibot'],
+    modes: MODE_NAMES,
+    divergence: { '*/*': `L:  | T: Infinity, Date, Buffer, Uint8Array` },
+    drzl: 'a JSON value: no Infinity, no Date, no Buffer',
+    official: 'v.any(), which takes all three',
+    filed: 'not a defect: DRZL is stricter',
+  },
+  'pg/c_jsonb': { libs: ['valibot'], modes: MODE_NAMES, divergence: { '*/*': `L:  | T: Infinity, Date, Buffer, Uint8Array` }, drzl: 'as pg/c_json', official: 'as pg/c_json', filed: 'as pg/c_json' },
+  'pg/c_jsonb_typed': { libs: ['valibot'], modes: MODE_NAMES, divergence: { '*/*': `L:  | T: Infinity, Date, Buffer, Uint8Array` }, drzl: 'as pg/c_json', official: 'as pg/c_json', filed: 'as pg/c_json' },
+  'mysql/m_json': { libs: ['valibot'], modes: MODE_NAMES, divergence: { '*/*': `L:  | T: Infinity, Date, Buffer, Uint8Array` }, drzl: 'as pg/c_json', official: 'as pg/c_json', filed: 'as pg/c_json' },
+  'sqlite/s_text_json': { libs: ['valibot'], modes: MODE_NAMES, divergence: { '*/*': `L:  | T: Infinity, Date, Buffer, Uint8Array` }, drzl: 'as pg/c_json', official: 'as pg/c_json', filed: 'as pg/c_json' },
+  'sqlite/s_blob_json': { libs: ['valibot'], modes: MODE_NAMES, divergence: { '*/*': `L:  | T: Infinity, Date, Buffer, Uint8Array` }, drzl: 'as pg/c_json', official: 'as pg/c_json', filed: 'as pg/c_json' },
+};
+
+/**
+ * Where DRZL is wrong or looser than the official module on 0.4x.
+ *
+ * `filed: 'AC: ...'` names the fields the cross-major stage above already carries for the same
+ * column. The two sets do not line up one to one and were never going to: that map records the
+ * analyzer describing a column differently per major, and this one records the emitted validator
+ * behaving differently from the first-party one. Eight of these columns were already filed there.
+ * The other fourteen are new, and they are new mostly because the cross-major fixture is Postgres
+ * plus four MySQL text columns, so no MySQL float, no MySQL binary, no MySQL year and no SQLite
+ * column of any kind had ever been described under both majors.
+ *
+ * Two kinds of filed defect are not in this map, and they are not there for different reasons.
+ *
+ * Invisible, because official is equally loose. `matrix.c_numeric.format` and its two siblings are
+ * the numeric pattern being attached on the v1 arm only, so on 0.4x DRZL emits a bare string for
+ * `c_numeric` and `c_decimal` and takes 'hello' back. Official drizzle-zod 0.8.3 emits a bare
+ * string there too, so the two agree and this comparison reports nothing however it is probed. The
+ * cross-major diff is what sees that one.
+ *
+ * Visible, and pointing the other way. `mtext.t_*.maxLength` is four filed fields on the MySQL text
+ * family, and this comparison reports parity for all four, because the difference it would show is
+ * DRZL being the stricter and correct one. Where each of the four is actually measured, since a
+ * green `parity` line over a filed field is the thing a ledger is supposed to make impossible and
+ * an earlier version of this paragraph claimed all four were in ALLOWED when two were not:
+ *
+ *   t_tiny     ALLOWED[mysql/m_tinytext], from the 100 emoji probe, and the byte-cap stage
+ *   t_text     ALLOWED[mysql/m_text], from the 22000 CJK probe, and the byte-cap stage
+ *   t_medium   the byte-cap stage alone. Its separating string is 10.7 MiB, too heavy for a pool.
+ *   t_long     nothing. Its separating string would need more units than V8 will put in a string,
+ *              and the byte-cap stage prints it by name as unprobeable rather than omitting it.
+ *
+ * So one of the four is genuinely uncovered, it is uncovered for a reason that is arithmetic
+ * rather than effort, and the run says so out loud.
+ */
+const DEFECTS: Record<string, Entry> = {
+  // ---- a float carries no bounds on 0.4x -----------------------------------------------------
+  // v1 reads `number float` and `number double` and bounds them at the range each width
+  // represents exactly; 0.4x reaches the same columns through the class name and bounds nothing.
+  'pg/c_real': {
+    libs: LIB_NAMES,
+    modes: MODE_NAMES,
+    divergence: {
+      '*/zod,typebox': `L: 9000000, 2147483648, 9007199254740993 | T: `,
+      '*/valibot,arktype': `L: 9000000, 2147483648, 9007199254740993, Infinity | T: `,
+    },
+    drzl: 'an unbounded number',
+    official: 'a number within +/-8388607',
+    filed: 'AC: matrix.c_real.min, .max, .integer',
+  },
+  'pg/c_double': {
+    libs: LIB_NAMES,
+    modes: MODE_NAMES,
+    divergence: {
+      '*/zod,typebox': `L: 9007199254740993 | T: `,
+      '*/valibot,arktype': `L: 9007199254740993, Infinity | T: `,
+    },
+    drzl: 'an unbounded number',
+    official: 'a number within +/-140737488355327',
+    filed: 'AC: matrix.c_double.min, .max, .integer',
+  },
+  'pg/c_numeric_n': {
+    libs: LIB_NAMES,
+    modes: MODE_NAMES,
+    divergence: {
+      '*/zod,typebox': `L: 9007199254740993 | T: `,
+      '*/valibot,arktype': `L: 9007199254740993, Infinity | T: `,
+    },
+    drzl: 'an unbounded number',
+    official: 'a number within the safe-integer range',
+    filed: 'AC: matrix.c_numeric_n.min, .max, .integer',
+  },
+  'mysql/m_real': {
+    libs: LIB_NAMES,
+    modes: MODE_NAMES,
+    divergence: {
+      '*/zod,typebox': `L: 9007199254740993 | T: `,
+      '*/valibot,arktype': `L: 9007199254740993, Infinity | T: `,
+    },
+    drzl: 'an unbounded number',
+    official: 'a number within +/-140737488355327',
+    filed: 'new: the same float defect, on a dialect the cross-major fixture cannot reach',
+  },
+  'mysql/m_double': {
+    libs: LIB_NAMES,
+    modes: MODE_NAMES,
+    divergence: {
+      '*/zod,typebox': `L: 9007199254740993 | T: `,
+      '*/valibot,arktype': `L: 9007199254740993, Infinity | T: `,
+    },
+    drzl: 'an unbounded number',
+    official: 'a number within +/-140737488355327',
+    filed: 'new: as mysql/m_real',
+  },
+  'mysql/m_float': {
+    libs: LIB_NAMES,
+    modes: MODE_NAMES,
+    divergence: {
+      '*/zod,typebox': `L: 9000000, 2147483648, 9007199254740993 | T: `,
+      '*/valibot,arktype': `L: 9000000, 2147483648, 9007199254740993, Infinity | T: `,
+    },
+    drzl: 'an unbounded number',
+    official: 'a number within +/-8388607',
+    filed: 'new: as mysql/m_real',
+  },
+  'sqlite/s_real': {
+    libs: LIB_NAMES,
+    modes: MODE_NAMES,
+    divergence: {
+      '*/zod,typebox': `L: 9007199254740993 | T: `,
+      '*/valibot,arktype': `L: 9007199254740993, Infinity | T: `,
+    },
+    drzl: 'an unbounded number',
+    official: 'a number within +/-140737488355327',
+    filed: 'new: as mysql/m_real, on SQLite',
+  },
+
+  // ---- point and line are typed as strings on 0.4x -------------------------------------------
+  // Not looseness but a wrong type: `PgPointTuple` and `PgLineTuple` hand back [x, y] and
+  // [a, b, c], and the class-name path answers `string`, so a select schema built on 0.4x rejects
+  // every row the driver returns. That shows up here as the one direction a wrong type takes:
+  // DRZL accepts 24 strings official refuses, and refuses the tuple official takes.
+  'pg/c_point': {
+    libs: LIB_NAMES,
+    modes: MODE_NAMES,
+    divergence: {
+      '*/zod,arktype,typebox': `L: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010' | T: [1,2]`,
+      '*/valibot': `L: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010' | T: [1,2], [1,2,3]`,
+    },
+    drzl: 'a string',
+    official: 'a tuple [number, number]',
+    filed: 'AC: matrix.c_point.tsType, .dbType, .shape',
+  },
+  'pg/c_line': {
+    libs: LIB_NAMES,
+    modes: MODE_NAMES,
+    divergence: { '*/*': `L: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010' | T: [1,2,3]` },
+    drzl: 'a string',
+    official: 'a tuple [number, number, number]',
+    filed: 'AC: matrix.c_line.tsType, .dbType, .shape',
+  },
+
+  // ---- columns the class-name path cannot name at all ----------------------------------------
+  // No arm for the class, so the column comes back `unknown` and every generator emits a validator
+  // that accepts anything. The three Postgres ones are also named in check-old.ts, as an absolute
+  // check rather than a relative one. The three SQLite ones are new here: `SQLiteBlobBuffer` and
+  // the millisecond timestamp mode have no arm either, and no SQLite fixture had ever been
+  // analyzed under 0.4x.
+  //
+  // A bare `blob()` is not the same column on the two majors, measured on the column object:
+  // 0.45.2 builds a `SQLiteBlobBuffer` and 1.0.0-rc.4 builds a `SQLiteBlobJson`. So `s_blob` and
+  // `s_blob_buf` are both buffer columns here, which is why official demands a Buffer for both.
+  'pg/c_geometry': {
+    libs: LIB_NAMES,
+    modes: MODE_NAMES,
+    divergence: { '*/*': `every probe official rejects` },
+    drzl: 'unknown, which accepts every value in the pool',
+    official: 'a tuple [number, number]',
+    filed: 'AC: matrix.c_geometry.tsType, .dbType, .shape, and check-old.ts KNOWN_UNNAMED',
+  },
+  'pg/c_bit': {
+    libs: LIB_NAMES,
+    modes: MODE_NAMES,
+    divergence: { '*/*': `every probe official rejects` },
+    drzl: 'unknown, which accepts every value in the pool',
+    official: 'a string of at most 3 characters matching ^[01]*$',
+    filed: 'AC: matrix.c_bit.tsType, .dbType, .shape, and check-old.ts KNOWN_UNNAMED',
+  },
+  'pg/c_vector': {
+    libs: LIB_NAMES,
+    modes: MODE_NAMES,
+    divergence: { '*/*': `every probe official rejects` },
+    drzl: 'unknown, which accepts every value in the pool',
+    official: 'an array of exactly 3 numbers',
+    filed: 'AC: matrix.c_vector.tsType, .dbType, .shape, and check-old.ts KNOWN_UNNAMED',
+  },
+  'sqlite/s_blob': {
+    libs: LIB_NAMES,
+    modes: MODE_NAMES,
+    divergence: { '*/*': `every probe official rejects` },
+    drzl: 'unknown, which accepts every value in the pool',
+    official: 'a Buffer',
+    filed: 'new: no SQLiteBlobBuffer arm in the class-name path',
+  },
+  'sqlite/s_blob_buf': {
+    libs: LIB_NAMES,
+    modes: MODE_NAMES,
+    divergence: { '*/*': `every probe official rejects` },
+    drzl: 'unknown, which accepts every value in the pool',
+    official: 'a Buffer',
+    filed: 'new: as sqlite/s_blob',
+  },
+  'sqlite/s_int_ts_ms': {
+    libs: LIB_NAMES,
+    modes: MODE_NAMES,
+    divergence: { '*/*': `every probe official rejects` },
+    drzl: 'unknown, which accepts every value in the pool',
+    official: 'a Date',
+    filed: 'new: integer({ mode: timestamp_ms }) is unnamed on 0.4x',
+  },
+
+  // ---- a wrong type on MySQL -----------------------------------------------------------------
+  // Both are the class-name path answering with the wrong JavaScript type rather than with
+  // nothing. `MySqlDecimal` is a string on both majors and DRZL calls it a number here; `binary`
+  // and `varbinary` are strings on both majors and DRZL calls them Uint8Array. Each shows up as
+  // DRZL refusing everything official takes and taking things official refuses.
+  'mysql/m_decimal': {
+    libs: LIB_NAMES,
+    modes: MODE_NAMES,
+    divergence: {
+      'insert/arktype': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 9007199254740993, 1900, 2000, 2500, Infinity | T: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010'`,
+      'insert/typebox': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 9007199254740993, 1900, 2000, 2500 | T: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010'`,
+      'insert/valibot': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 9007199254740993, 1900, 2000, 2500, Infinity | T: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010'`,
+      'insert/zod': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 9007199254740993, 1900, 2000, 2500 | T: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010'`,
+      'select/arktype': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 9007199254740993, 1900, 2000, 2500, Infinity | T: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010'`,
+      'select/typebox': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 9007199254740993, 1900, 2000, 2500 | T: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010'`,
+      'select/valibot': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 9007199254740993, 1900, 2000, 2500, Infinity | T: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010'`,
+      'select/zod': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 9007199254740993, 1900, 2000, 2500 | T: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010'`,
+      'update/arktype': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 9007199254740993, 1900, 2000, 2500, NaN, Infinity | T: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010'`,
+      'update/typebox': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 9007199254740993, 1900, 2000, 2500 | T: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010'`,
+      'update/valibot': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 9007199254740993, 1900, 2000, 2500, Infinity | T: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010'`,
+      'update/zod': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 9007199254740993, 1900, 2000, 2500 | T: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010'`,
+    },
+    drzl: 'a number',
+    official: 'a string',
+    filed: 'new: DRZL emits a string on v1, so the two majors disagree as well',
+  },
+  // The two official majors do not agree about this column, so `official: a string` is only half
+  // the picture and a reader needs the rest before acting on it. Measured on the column object and
+  // on both modules:
+  //
+  //                        0.4x                       v1
+  //   drizzle-orm          dataType 'string'          dataType 'string binary'
+  //   official validator   any string                 ^[01]*$ capped at the declared length
+  //   DRZL                 z.instanceof(Uint8Array)   the same capped string official v1 emits
+  //
+  // That settles which side is wrong without appealing to self-consistency: DRZL's 0.4x answer
+  // contradicts drizzle-orm's own declared `dataType` on the major it is measured on. Both
+  // wrong-direction repairs are already gated, so neither can be taken by accident: emitting
+  // `Uint8Array` on v1 breaks the v1 pass, and emitting `^[01]*$` on 0.4x breaks this one, since
+  // official 0.4x accepts 'zzz'.
+  'mysql/m_binary': {
+    libs: LIB_NAMES,
+    modes: MODE_NAMES,
+    divergence: { '*/*': `L: Buffer, Uint8Array | T: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010'` },
+    drzl: 'a Uint8Array',
+    official: "a bare string on 0.4x, where official v1 emits ^[01]*$ capped at 4",
+    filed: "new: drizzle-orm declares dataType 'string' on both majors",
+  },
+  'mysql/m_varbinary': {
+    libs: LIB_NAMES,
+    modes: MODE_NAMES,
+    divergence: { '*/*': `L: Buffer, Uint8Array | T: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010'` },
+    drzl: 'a Uint8Array',
+    official: "a bare string on 0.4x, where official v1 emits ^[01]*$ capped at 16",
+    filed: 'new: as mysql/m_binary',
+  },
+
+  // ---- an integer range is missing or wrong on 0.4x ------------------------------------------
+  // `sqlite/s_int` is three libraries rather than four, and the missing one is not an omission:
+  // zod's `.int()` refuses a number outside the safe-integer range on its own, so zod reaches
+  // official's answer for 9007199254740993 without the bound DRZL failed to emit. The other three
+  // have no such rule and take it.
+  'mysql/m_serial': {
+    libs: LIB_NAMES,
+    modes: MODE_NAMES,
+    divergence: {
+      '*/zod': `L: -1 | T: `,
+      '*/valibot,arktype,typebox': `L: -1, 9007199254740993 | T: `,
+    },
+    drzl: 'an unbounded integer, so it takes -1 for an auto-increment column',
+    official: 'an integer within 0..9007199254740991',
+    filed: 'new',
+  },
+  'mysql/m_year': {
+    libs: LIB_NAMES,
+    modes: MODE_NAMES,
+    divergence: {
+      '*/zod': `L: 0, 1, -1, 200, 40000, 9000000, 2147483648, 1900, 2500 | T: `,
+      '*/valibot,arktype,typebox': `L: 0, 1, -1, 200, 40000, 9000000, 2147483648, 9007199254740993, 1900, 2500 | T: `,
+    },
+    drzl: 'an unbounded integer',
+    official: 'an integer within 1901..2155',
+    filed: 'new',
+  },
+  'sqlite/s_int': {
+    libs: ['valibot', 'arktype', 'typebox'],
+    modes: MODE_NAMES,
+    divergence: { '*/*': `L: 9007199254740993 | T: ` },
+    drzl: 'an integer within the signed 64-bit range',
+    official: 'an integer within the safe-integer range',
+    filed: 'new',
+  },
+  'sqlite/s_blob_bigint': {
+    libs: LIB_NAMES,
+    modes: MODE_NAMES,
+    divergence: { '*/*': `L: 2n**70n | T: ` },
+    drzl: 'an unbounded bigint',
+    official: 'a bigint within the signed 64-bit range',
+    filed: 'new',
+  },
+};
+
+// A field lookup that throws yields nothing, and nothing is not read as agreement anywhere below:
+// every branch that reaches an absent field pushes a finding row. Measured on this run, it throws
+// zero times, so the catch is a guard rather than a path anything travels. Verdicts go through
+// `probe` in pool.ts, which does not treat a crash as a rejection.
+const safeField = (lib: Lib, s: any, k: string) => {
+  try {
+    return lib.field(s, k);
+  } catch {
+    return undefined;
+  }
+};
+
+/**
+ * Probes where one side crashes instead of answering. Declared exactly and asserted in both
+ * directions, keyed `<dialect>/<library>/<column>`.
+ *
+ * A crash is not a verdict, so the value it happened on is not compared for that column. It is
+ * recorded here instead, which is what stops a swallowed exception from being scored as the other
+ * side's answer.
+ *
+ * Not comparing it is not the same as not measuring it, and for a while it was: the value was
+ * dropped and nothing looked at DRZL's answer, which made a crashing official module a licence for
+ * DRZL to do anything on that value. So two more fields, both asserted:
+ *
+ *   `drzl`     what DRZL answers on the crashed value, keyed `<mode-or-*>/<value>`. Every crashed
+ *              probe has to be claimed by exactly one declaration and match it, and every
+ *              declaration has to claim at least one probe.
+ *   `arbiter`  what settles that DRZL's answer is the right one, keyed by value, computed by the
+ *              run rather than believed. A real Postgres through PGlite wherever one runs for that
+ *              dialect; and where none does, the reason, also computed.
+ *
+ * On this major `c_bit` is one of the six columns the analyzer cannot name, so DRZL takes every
+ * value including a NULL for a NOT NULL column, and takes the column being left out of the insert
+ * as well. That is the filed defect DEFECTS[pg/c_bit] carries, and the arbitration prints a line
+ * per probe saying so: the database refuses it, DRZL accepts it, and the map naming the column is
+ * what keeps that from being a hard failure here too. Until this round it did not print anything.
+ * The claim that it "says so out loud rather than passing over it" stood over a branch guarded by
+ * `!DEFECTS[...]`, so the entry that made the sentence worth writing was also what stopped it from
+ * ever running, and the run printed a count and nothing else.
+ */
+type Crash = {
+  side: string;
+  modes: string[];
+  values: string[];
+  why: string;
+  /** What DRZL answers where official crashed, keyed `<mode-or-*>/<value>`. */
+  drzl: Record<string, string>;
+  /** What settles that answer, keyed by value. Computed by the run and compared with this. */
+  arbiter: Record<string, string>;
+};
+const THREW: Record<string, Crash> = {
+  // Official emits `{ type: 'RegExp', source: '^[01]+$', maxLength: 3 }`, and TypeBox's length
+  // check reads `value.length` with no type guard, so `null` and `undefined` crash it rather than
+  // failing it. `drizzle-orm/typebox-legacy` on 1.0.0-rc.4 does the same, so this is an upstream
+  // defect on both majors rather than a difference between them.
+  //
+  // One site here and three in the v1 pass, and the difference is upstream rather than arbitrary:
+  // the crashing columns are exactly the columns official emits as `type: 'RegExp'`, enumerated on
+  // both majors, and this module emits a bare string for `m_binary` and `m_varbinary` where the v1
+  // one emits a capped pattern. Nothing DRZL emits crashes on any probe, on either major.
+  'pg/typebox/c_bit': {
+    side: 'official',
+    modes: ['select', 'insert', 'update'],
+    values: ['null', 'undefined'],
+    why: 'official Type.RegExp with maxLength reads .length of a null value',
+    // Every probe, because the analyzer names no type for this column on 0.4x. The other three
+    // libraries report the same thing through the ALL_PROBES signature in DEFECTS[pg/c_bit]; this
+    // is the fourth, which the comparison cannot reach.
+    drzl: { '*/null': 'accept', '*/undefined': 'accept' },
+    arbiter: {
+      // A real Postgres, built from this column's own `getSQLType()`, refuses a NULL into
+      // `bit(3) not null` with a not-null violation, and its nullable twin takes one.
+      null: 'postgres refuses it (SQLSTATE 23502)',
+      // An absence is handed to a database by leaving the column out of the insert. What stood
+      // here said no database could be handed one, on the evidence that a bound `undefined` comes
+      // back 23502; that measures the driver's parameter binding and was written up as a fact
+      // about databases. `pool.ts` asks it as an omission instead, and the twin carrying a default
+      // is what keeps that from being the NULL answer under another name.
+      undefined: 'postgres refuses the column omitted from the insert (SQLSTATE 23502)',
+    },
+  },
+};
+
+/**
+ * Columns the analyzer cannot name at all on 0.4x, in the two fixtures nothing else checks.
+ *
+ * The comparison above is differential and can only see DRZL and official disagreeing. This is
+ * absolute, and it is what still fires when they agree about something wrong, which is the state
+ * `m_enum` is in below. `check-old.ts` in the stage above does the same job for the Postgres and
+ * MySQL-text fixtures; it cannot cover these two, because it runs before this stage writes them.
+ * One home per fixture, so a fix has exactly one entry to remove.
+ *
+ * Asserted both ways: an unnamed column that is not here fails, and an entry here whose column is
+ * named now fails too.
+ */
+const UNNAMED: Record<string, string> = {
+  // No SQLiteBlobBuffer arm in the class-name path, and a bare `blob()` really is a buffer column
+  // on 0.45.2. Both also carry a DEFECTS entry above, which is the relative half of the finding.
+  'sqlite/matrix.s_blob': 'no SQLiteBlobBuffer arm in the class-name path',
+  'sqlite/matrix.s_blob_buf': 'as sqlite/matrix.s_blob',
+  'sqlite/matrix.s_int_ts_ms': 'integer({ mode: timestamp_ms }) has no arm; only mode timestamp does',
+  // The one the comparison cannot see, and the reason this absolute check earns its place. The
+  // analyzer names no type for a 0.4x mysqlEnum and prints "so its validator will accept any
+  // value", and that sentence is false: every generator reads `enumValues` off the column
+  // regardless of `tsType`, and the 0.4x zod output for this column is `z.enum(['a','b','c'])`.
+  // So the emitted validator is right, the comparison above reports parity, and nothing but this
+  // line records that the analyzer still cannot describe the column. Filed as addendum Z.
+  'mysql/matrix.m_enum': 'no MySqlEnumColumn arm; the generators recover the values from enumValues',
+};
+
+const DIALECTS = [
+  {
+    name: 'pg',
+    table: pgTable,
+    mods: {
+      zod: () => import('./src/gen-0-4x/pg/zod/matrix.zod.js'),
+      valibot: () => import('./src/gen-0-4x/pg/valibot/matrix.valibot.js'),
+      arktype: () => import('./src/gen-0-4x/pg/arktype/matrix.arktype.js'),
+      typebox: () => import('./src/gen-0-4x/pg/typebox/matrix.typebox.js'),
+    } as Record<string, () => Promise<any>>,
+  },
+  {
+    name: 'mysql',
+    table: myTable,
+    mods: {
+      zod: () => import('./src/gen-0-4x/mysql/zod/matrix.zod.js'),
+      valibot: () => import('./src/gen-0-4x/mysql/valibot/matrix.valibot.js'),
+      arktype: () => import('./src/gen-0-4x/mysql/arktype/matrix.arktype.js'),
+      typebox: () => import('./src/gen-0-4x/mysql/typebox/matrix.typebox.js'),
+    } as Record<string, () => Promise<any>>,
+  },
+  {
+    name: 'sqlite',
+    table: sqTable,
+    mods: {
+      zod: () => import('./src/gen-0-4x/sqlite/zod/matrix.zod.js'),
+      valibot: () => import('./src/gen-0-4x/sqlite/valibot/matrix.valibot.js'),
+      arktype: () => import('./src/gen-0-4x/sqlite/arktype/matrix.arktype.js'),
+      typebox: () => import('./src/gen-0-4x/sqlite/typebox/matrix.typebox.js'),
+    } as Record<string, () => Promise<any>>,
+  },
+];
+
+const PREFIX: Record<string, string> = { select: 'Select', insert: 'Insert', update: 'Update' };
+
+/**
+ * Every column of every fixture, in every library and every mode: 39 Postgres, 28 MySQL and 14
+ * SQLite columns, times four libraries, times three modes.
+ *
+ * Written out rather than derived from the arrays above, which would make it true by construction
+ * and say nothing. It is the check that this stage cannot pass by comparing nothing, and it is not
+ * a hypothetical failure: the cross-major stage this one sits beside spent a day comparing 0.45.2
+ * against 0.45.2 and was green throughout. A fixture that grows a column fails here and has to be
+ * re-measured, which is the intended cost.
+ */
+const EXPECTED_COMPARISONS = (39 + 28 + 14) * 4 * 3;
+
+// Read off disk rather than through `require.resolve`, whose `exports` map has no `./package.json`
+// entry for drizzle-orm. Reading it is also the point: this reports the version of the tree the
+// run happened in rather than the version somebody believes was installed.
+const version = (pkg: string): string => {
+  const v = JSON.parse(readFileSync(`node_modules/${pkg}/package.json`, 'utf8')).version;
+  if (typeof v !== 'string' || !v) {
+    console.error(`    FAIL: ${pkg} reports no version, so this stage cannot say what it measured.`);
+    process.exit(1);
+  }
+  return v;
+};
+
+// `npm init -y` leaves this project CommonJS, where tsx refuses a top-level await.
+main().catch((e) => {
+  console.error(e);
+  process.exit(1);
+});
+
+async function main() {
+  const drizzle = version('drizzle-orm');
+  if (drizzle.split('.')[0] !== '0') {
+    console.error(`    FAIL: this tree resolves drizzle-orm ${drizzle}, which is not the 0.4x line.`);
+    console.error('          This stage exists because the parity pass near the top of this file');
+    console.error('          measures v1 alone. Run against v1 it would measure it twice and pass.');
+    process.exit(1);
+  }
+  const officials = LIB_NAMES.map((lib) => {
+    const pkg = `drizzle-${lib}`;
+    const v = version(pkg);
+    // The 1.0.0 line of each of these targets drizzle-orm v1. Installed here it would either fail
+    // to import or compare against the wrong major's rules, and either way the pin above moved
+    // without anyone deciding to.
+    if (v.split('.')[0] !== '0') {
+      console.error(`    FAIL: ${pkg}@${v} is the v1 line, not the companion for drizzle-orm 0.4x.`);
+      process.exit(1);
+    }
+    return `${pkg} ${v}`;
+  });
+  console.log(`    drizzle-orm ${drizzle} against ${officials.join(', ')}`);
+
+  type Seen = {
+    libs: Set<string>;
+    modes: Set<string>;
+    signatures: Map<string, string>;
+    pairings: number;
+    detail: string[];
+  };
+  const observed = new Map<string, Seen>();
+  // `at` is every `<mode>/<value>` that actually crashed, so the printed figure is a count of
+  // crashes rather than `modes.size * values.size`, which is the same number only while the
+  // pattern is a rectangle. It is one today, and the assertion is on the sets either way.
+  const crashed = new Map<string, { sides: Set<string>; modes: Set<string>; values: Set<string>; at: Set<string> }>();
+  // DRZL's own verdict on a value official crashed on, keyed by crash site then `<mode>/<value>`.
+  // The comparison cannot use it, which is not the same thing as nobody looking at it.
+  const crashVerdict = new Map<string, Map<string, string>>();
+  const recordCrashVerdict = (key: string, mode: string, label: string, verdict: Verdict) => {
+    const seen = crashVerdict.get(key) ?? new Map<string, string>();
+    seen.set(`${mode}/${label}`, verdict);
+    crashVerdict.set(key, seen);
+  };
+  const recordCrash = (key: string, side: string, mode: string, value: string) => {
+    const seen =
+      crashed.get(key) ??
+      { sides: new Set<string>(), modes: new Set<string>(), values: new Set<string>(), at: new Set<string>() };
+    seen.sides.add(side);
+    seen.modes.add(mode);
+    seen.values.add(value);
+    seen.at.add(`${side}/${mode}/${value}`);
+    crashed.set(key, seen);
+  };
+  const findings: string[] = [];
+  let totalCompared = 0;
+  let pairings = 0;
+
+  for (const d of DIALECTS) {
+    const loaded: Record<string, any> = {};
+    for (const lib of LIB_NAMES) loaded[lib] = await d.mods[lib]();
+
+    for (const mode of MODE_NAMES) {
+      // Column names come from the official zod schema regardless of library: every module emits
+      // the same set, and zod is the one whose shape is trivially enumerable. Built once per mode
+      // rather than once per library, which was four builds of the same object.
+      const oShape = OFFICIAL.zod[mode](d.table as never).shape;
+      for (const libName of LIB_NAMES) {
+        pairings++;
+        const lib = LIBS[libName];
+        const official = OFFICIAL[libName][mode](d.table as never);
+        const mine = loaded[libName][`${PREFIX[mode]}matrixSchema`];
+        if (!mine) {
+          findings.push(`${d.name}/${libName}/${mode}: no ${PREFIX[mode]}matrixSchema exported`);
+          continue;
+        }
+        const rows: string[] = [];
+        let compared = 0;
+        let ledgered = 0;
+
+        for (const k of Object.keys(oShape)) {
+          const o = safeField(lib, official, k);
+          const m = safeField(lib, mine, k);
+          if (!o && !m) {
+            // Never a skip. Both sides absent means this column was measured by nothing, and
+            // `safeField` returns undefined for a lookup that threw as well as for one that was
+            // missing, so the quiet version of this branch reports parity on an exception.
+            rows.push(`${k}: neither official nor DRZL yielded a field, so nothing was compared`);
+            continue;
+          }
+          if (!m) { rows.push(`${k}: official has it, DRZL omits it`); continue; }
+          if (!o) { rows.push(`${k}: DRZL has it, official omits it`); continue; }
+          compared++;
+          const looser: string[] = [];
+          const tighter: string[] = [];
+          let officialTook = false;
+          let drzlTook = false;
+          // Whether DRZL took the whole pool, which is what the derived signature rests on.
+          let drzlAll = true;
+          for (const [label, x] of POOL) {
+            const a: Verdict = probe(lib, o, x);
+            const b: Verdict = probe(lib, m, x);
+            // A crash is not a verdict, so this value is not compared for this column. It goes to
+            // the THREW list instead, which is asserted from both ends, so it can neither be
+            // scored as the other side's answer nor vanish.
+            if (a === 'threw' || b === 'threw') {
+              if (a === 'threw') recordCrash(`${d.name}/${libName}/${k}`, 'official', mode, label);
+              if (b === 'threw') recordCrash(`${d.name}/${libName}/${k}`, 'drzl', mode, label);
+              // Not compared, and not unmeasured either: DRZL's answer is pinned against the crash
+              // entry and arbitrated against a real database wherever one runs for this dialect.
+              // Dropping it here and doing nothing else is what let a null-accepting insert schema
+              // on a NOT NULL column sit under a green line on the other pass.
+              recordCrashVerdict(`${d.name}/${libName}/${k}`, mode, label, b);
+              continue;
+            }
+            officialTook ||= a === 'accept';
+            drzlTook ||= b === 'accept';
+            if (b !== 'accept') drzlAll = false;
+            if (a !== b) (b === 'accept' ? looser : tighter).push(label);
+          }
+          // A column both sides reject every probe for agrees perfectly and proves nothing: the
+          // two schemas could be a correct one and a broken one and this loop could not tell them
+          // apart. Deliberately outside the ledger below, which says a difference is expected, not
+          // that a column need not be measured.
+          if (!officialTook && !drzlTook) {
+            rows.push(
+              `${k}: neither side accepts any pool value, so this column proves nothing.` +
+                ' Add a value this column accepts to POOL.'
+            );
+            continue;
+          }
+          if (!looser.length && !tighter.length) continue;
+
+          const key = `${d.name}/${k}`;
+          const seen: Seen =
+            observed.get(key) ??
+            { libs: new Set(), modes: new Set(), signatures: new Map(), pairings: 0, detail: [] };
+          seen.libs.add(libName);
+          seen.modes.add(mode);
+          seen.pairings++;
+          seen.signatures.set(
+            `${mode}/${libName}`,
+            drzlAll ? ALL_PROBES : `L: ${looser.join(', ')} | T: ${tighter.join(', ')}`
+          );
+          seen.detail.push(`${mode}/${libName} ${looser.length} looser ${tighter.length} tighter`);
+          observed.set(key, seen);
+          if (ALLOWED[key] || DEFECTS[key]) { ledgered++; continue; }
+          rows.push(
+            `${k}:` +
+              (looser.length ? `\n          DRZL accepts, official rejects: ${looser.join(', ')}` : '') +
+              (tighter.length ? `\n          DRZL rejects, official accepts: ${tighter.join(', ')}` : '')
+          );
+        }
+
+        // A run that compared no column at all would otherwise print `parity` and pass.
+        if (compared === 0) {
+          rows.push('no column was compared on both sides, so this pairing measured nothing');
+        }
+        totalCompared += compared;
+        console.log(
+          `    ${d.name.padEnd(7)} ${libName.padEnd(8)} ${mode.padEnd(7)} ` +
+            `${compared}/${Object.keys(oShape).length} cols compared  ` +
+            `${rows.length ? 'DIFFERS' : 'parity'}${ledgered ? ` (${ledgered} in the ledger)` : ''}`
+        );
+        if (rows.length) {
+          for (const r of rows) console.log(`        ${r}`);
+          findings.push(...rows.map((r) => `${d.name}/${libName}/${mode} ${r}`));
+        }
+      }
+    }
+  }
+
+  const filedAlready = Object.values(DEFECTS).filter((e) => e.filed.startsWith('AC:')).length;
+  console.log(`    ${totalCompared} column comparisons across ${pairings} pairings`);
+  console.log(
+    `    ${Object.keys(ALLOWED).length} documented divergence(s); ` +
+      `${Object.keys(DEFECTS).length} known-defect column(s), ${filedAlready} already filed and ` +
+      `${Object.keys(DEFECTS).length - filedAlready} first seen by this stage`
+  );
+  for (const [k, e] of Object.entries(DEFECTS)) {
+    console.log(`      ${k}: DRZL emits ${e.drzl}, official emits ${e.official} [${e.filed}]`);
+  }
+  console.log(
+    '    the json-schema generator is not in this comparison: there is no official 0.4x JSON' +
+      ' Schema module to compare it against'
+  );
+
+  // Both directions. An entry that suppressed nothing describes something nobody can observe, and
+  // an entry whose libraries or modes have moved is describing a different defect from the one
+  // that is there now.
+  const ledgerProblems: string[] = [];
+  for (const [map, name] of [[ALLOWED, 'ALLOWED'], [DEFECTS, 'DEFECTS']] as const) {
+    for (const [key, entry] of Object.entries(map)) {
+      const seen = observed.get(key);
+      if (!seen) {
+        ledgerProblems.push(`${name}[${key}] suppressed nothing on this run`);
+        continue;
+      }
+      const gotLibs = [...seen.libs].sort().join(',');
+      const gotModes = [...seen.modes].sort().join(',');
+      const wantLibs = [...entry.libs].sort().join(',');
+      const wantModes = [...entry.modes].sort().join(',');
+      if (gotLibs !== wantLibs) {
+        ledgerProblems.push(`${name}[${key}] declares libs ${wantLibs}, measured ${gotLibs}`);
+      }
+      if (gotModes !== wantModes) {
+        ledgerProblems.push(`${name}[${key}] declares modes ${wantModes}, measured ${gotModes}`);
+      }
+      const wantPairings = entry.libs.length * entry.modes.length;
+      if (seen.pairings !== wantPairings) {
+        ledgerProblems.push(
+          `${name}[${key}] declares ${wantPairings} pairings, measured ${seen.pairings}: ` +
+            seen.detail.join('; ')
+        );
+      }
+      // The exact divergence, both ways. Every pairing has to be claimed by exactly one
+      // declaration, and its signature has to match; every declaration has to claim at least one.
+      const claimed = new Set<string>();
+      for (const [pairing, sig] of seen.signatures) {
+        const hits = Object.keys(entry.divergence).filter((d) => pairingMatches(d, pairing));
+        if (hits.length !== 1) {
+          ledgerProblems.push(
+            `${name}[${key}] has ${hits.length} declarations for ${pairing}, needs exactly one. ` +
+              `Measured there: ${sig}`
+          );
+          continue;
+        }
+        claimed.add(hits[0]);
+        const want = entry.divergence[hits[0]];
+        if (want === sig) continue;
+        if (want === ALL_PROBES) {
+          ledgerProblems.push(
+            `${name}[${key}] declares that DRZL accepts every probe on ${pairing}, and it does ` +
+              `not. Measured: ${sig}`
+          );
+          continue;
+        }
+        ledgerProblems.push(
+          `${name}[${key}] on ${pairing} declares\n        ${want}\n      and measured\n        ${sig}`
+        );
+      }
+      for (const d of Object.keys(entry.divergence)) {
+        if (!claimed.has(d)) ledgerProblems.push(`${name}[${key}] declaration '${d}' matched no pairing`);
+      }
+    }
+  }
+  const unledgered = [...observed.keys()].filter((k) => !ALLOWED[k] && !DEFECTS[k]);
+
+  /**
+   * The MySQL text caps, bracketed rather than stepped past.
+   *
+   * Two probes per column, not one. One string over the cap only ever proves the cap is below it,
+   * so the single probe this replaced pinned `tinytext` to the interval [36, 257] rather than to
+   * 255: 36 is the largest pool string under the cap and 257 is where a probe built out of
+   * three-byte characters lands. Measured rather than reasoned, by moving the emitted cap and
+   * re-running: 257 and 36 both left the run byte identical to green, 258 and 35 both failed it.
+   * The same construction left `text` free over [400, 65537] and `mediumtext` over about 16.7
+   * million values.
+   *
+   * The pair brackets it. `floor(cap/3)` three-byte characters plus `cap mod 3` ASCII ones is
+   * exactly `cap` bytes and roughly a third of that in UTF-16 units, so DRZL has to take it; one
+   * more ASCII character is exactly `cap + 1` bytes, so DRZL has to refuse it. Both stay far under
+   * any character cap, so neither is answering a question about characters, and together they pin
+   * the byte cap to a single value.
+   *
+   * A real MySQL 8.4.11 on a utf8mb4 client agrees with both halves, which is what makes them the
+   * right expectations rather than today's behaviour written down: for `tinytext`, `text` and
+   * `mediumtext` alike, the at-cap string inserts and `octet_length` reads back exactly the cap,
+   * while the one-byte-longer string fails with ERROR 1406 "Data too long".
+   *
+   * Both strings are derived from each column's own cap rather than written down, so a cap that
+   * moves moves the pair with it.
+   */
+  // Read off the runtime rather than written down, so a V8 with a different limit is described
+  // correctly instead of being asserted about.
+  const MAX_JS_STRING = constants.MAX_STRING_LENGTH;
+  const TEXT_CAPS: Record<string, number> = {
+    m_tinytext: 255,
+    m_text: 65535,
+    m_mediumtext: 16777215,
+    m_longtext: 4294967295,
+  };
+
+  /**
+   * Where each MySQL text column's byte cap is actually measured.
+   *
+   * Computed by this run and compared with the declaration in both directions, because a sentence
+   * about who measures what is exactly the kind that goes quietly false. Two of them already have
+   * on this branch, and the second was introduced by the fix for the first. `m_longtext` is
+   * measured by nothing at all, and deleting every one of its caps from all four generated modules
+   * in all three modes leaves both passes byte identical to green.
+   *
+   * The two things that measure a cap do not measure the same amount of it, and the printed line
+   * used to give each of them one word, so `the pool and the byte-cap stage` read as two
+   * measurements of the cap when only one of them is. They are named apart now:
+   *
+   *   `separated`  the pool holds a string this column's byte cap refuses and its UTF-16 count does
+   *                not, which is the only kind of string the comparison above can tell the two
+   *                counts apart with. It does not pin the cap: moving `m_tinytext`'s emitted cap to
+   *                254 or to 256 produces no failure from the pool at all.
+   *   `bracketed`  the pair below was built and pushed through, at the cap and one byte over, which
+   *                does pin the cap to a single value.
+   */
+  const CAP_COVERAGE: Record<string, string> = {
+    m_tinytext: 'bracketed and separated',
+    m_text: 'bracketed and separated',
+    m_mediumtext: 'bracketed only',
+    m_longtext: 'neither',
+  };
+
+  const capProblems: string[] = [];
+  const capMeasured: string[] = [];
+  const capUnreachable: string[] = [];
+  {
+    const mysql = DIALECTS.find((d) => d.name === 'mysql');
+    if (!mysql) {
+      capProblems.push('the MySQL dialect is not in this stage, so no byte cap was measured');
+    } else {
+      const loaded: Record<string, any> = {};
+      for (const lib of LIB_NAMES) loaded[lib] = await mysql.mods[lib]();
+      for (const [col, cap] of Object.entries(TEXT_CAPS)) {
+        const wide = Math.floor(cap / 3);
+        const rest = cap - wide * 3;
+        const units = wide + rest;
+        if (units + 1 > MAX_JS_STRING) {
+          capUnreachable.push(`${col} (a probe needs ${units + 1} units, over this V8's ${MAX_JS_STRING})`);
+          // UTF-8 spends at most 3 bytes per UTF-16 unit, checked over every code point, so no JS
+          // string here can carry more than this many bytes. When that is under the cap the cap
+          // cannot be exceeded at all, which is stronger than this construction being too long,
+          // and it is the state `longtext` is in. Anything else means some other construction
+          // reaches the column and this list is hiding it.
+          if (MAX_JS_STRING * 3 >= cap) {
+            capProblems.push(
+              `${col} is listed as unprobeable, but a JS string here can carry ${MAX_JS_STRING * 3} ` +
+                `bytes, which is over its ${cap} byte cap. Some construction reaches it and this one does not.`
+            );
+          }
+          continue;
+        }
+        const atCap = '\u4E00'.repeat(wide) + 'x'.repeat(rest);
+        const overCap = `${atCap}x`;
+        for (const mode of MODE_NAMES) {
+          for (const libName of LIB_NAMES) {
+            const lib = LIBS[libName];
+            const o = safeField(lib, OFFICIAL[libName][mode](mysql.table as never), col);
+            const m = safeField(lib, loaded[libName][`${PREFIX[mode]}matrixSchema`], col);
+            if (!o || !m) {
+              capProblems.push(`${col} has no field on ${mode}/${libName}, so no cap was measured`);
+              continue;
+            }
+            const at = { o: probe(lib, o, atCap), m: probe(lib, m, atCap) };
+            const over = { o: probe(lib, o, overCap), m: probe(lib, m, overCap) };
+            capMeasured.push(`${col}/${mode}/${libName}/at`, `${col}/${mode}/${libName}/over`);
+            // Today's state and the only one that is not a finding, on both halves. Official counts
+            // UTF-16 units, so it takes both. DRZL counts bytes, so the cap is where MySQL puts it:
+            // `cap` bytes in, `cap + 1` bytes out.
+            if (at.o === 'accept' && at.m === 'accept' && over.o === 'accept' && over.m === 'reject') continue;
+            capProblems.push(
+              `${col} on ${mode}/${libName}: at ${cap} bytes (${units} units) official ${at.o}, ` +
+                `DRZL ${at.m}; at ${cap + 1} bytes (${units + 1} units) official ${over.o}, ` +
+                `DRZL ${over.m}. Expected both accepted and DRZL alone refusing the second, which ` +
+                'is where MySQL 8.4.11 puts the boundary.'
+            );
+          }
+        }
+      }
+    }
+  }
+  if (!capMeasured.length) capProblems.push('no MySQL text column had its byte cap measured');
+
+  // The coverage claim, computed rather than asserted in a comment nobody re-runs.
+  const poolSeparates = (cap: number) =>
+    POOL.some(([, x]) => typeof x === 'string' && Buffer.byteLength(x, 'utf8') > cap && x.length <= cap);
+  const coverageSeen: string[] = [];
+  for (const [col, cap] of Object.entries(TEXT_CAPS)) {
+    const byPool = poolSeparates(cap);
+    const byStage = capMeasured.some((probed) => probed.startsWith(`${col}/`));
+    const got = byPool && byStage
+      ? 'bracketed and separated'
+      : byPool
+        ? 'separated only'
+        : byStage
+          ? 'bracketed only'
+          : 'neither';
+    coverageSeen.push(`${col} ${got}`);
+    if (CAP_COVERAGE[col] === got) continue;
+    capProblems.push(
+      `${col} is declared '${CAP_COVERAGE[col] ?? 'nothing, being absent from CAP_COVERAGE'}'` +
+        `, and this run measured '${got}'`
+    );
+  }
+  for (const col of Object.keys(CAP_COVERAGE)) {
+    if (col in TEXT_CAPS) continue;
+    capProblems.push(`CAP_COVERAGE names ${col}, which has no cap in TEXT_CAPS, so it describes nothing`);
+  }
+
+  console.log(
+    `    ${capMeasured.length} byte-cap probe(s) bracketing ${Object.keys(TEXT_CAPS).length - capUnreachable.length} ` +
+      `MySQL text column(s); ${capUnreachable.length} cannot be probed at all: ${capUnreachable.join(', ')}`
+  );
+  console.log(
+    "    byte caps: 'bracketed' is probed at the cap and one byte over, which pins DRZL's cap to" +
+      " one value; 'separated' is the pool holding a string the cap refuses on bytes and takes on" +
+      ' characters, which tells the two counts apart without pinning the cap'
+  );
+  console.log(`    ${coverageSeen.join('; ')}`);
+
+  // The absolute half: what the analyzer makes of these two fixtures on its own.
+  const unnamedProblems: string[] = [];
+  const unnamedSeen = new Set<string>();
+  let analyzed = 0;
+  for (const [dialect, file] of [['mysql', 'src/matrix-mysql.ts'], ['sqlite', 'src/matrix-sqlite.ts']]) {
+    const a = await new SchemaAnalyzer(file).analyze({});
+    const failed = a.issues.filter((i) => i.code === 'DRZL_ANL_IMPORT');
+    if (failed.length) {
+      unnamedProblems.push(`${file} could not be imported: ${failed.map((i) => i.message).join('; ')}`);
+      continue;
+    }
+    for (const t of a.tables) {
+      for (const c of t.columns) {
+        analyzed++;
+        if (c.tsType !== 'unknown' && c.dbType !== 'UNKNOWN') continue;
+        const key = `${dialect}/${t.name}.${c.name}`;
+        if (UNNAMED[key]) { unnamedSeen.add(key); continue; }
+        unnamedProblems.push(`${key} is analyzed as unknown on 0.4x and is in no list`);
+      }
+    }
+  }
+  // A run that analyzed nothing would otherwise report every entry as dead and read as a fix.
+  if (!analyzed) unnamedProblems.push('no column was analyzed from the MySQL or SQLite fixture');
+  for (const key of Object.keys(UNNAMED)) {
+    if (!unnamedSeen.has(key)) {
+      unnamedProblems.push(`UNNAMED[${key}] is named on 0.4x now, so delete it here and in DEFECTS`);
+    }
+  }
+  console.log(
+    `    ${analyzed} columns analyzed on 0.4x across the MySQL and SQLite fixtures, ` +
+      `${unnamedSeen.size} unnamed and filed`
+  );
+
+  // The crashes, held to the same rule from both ends as everything else here.
+  const crashProblems: string[] = [];
+  for (const [key, seen] of crashed) {
+    const e = THREW[key];
+    if (!e) {
+      crashProblems.push(
+        `${key}: ${[...seen.sides].sort().join('/')} crashed on ` +
+          `${[...seen.values].sort().join(', ')} in ${[...seen.modes].sort().join(', ')}, ` +
+          'and is in no list'
+      );
+      continue;
+    }
+    const got: Record<string, string> = {
+      side: [...seen.sides].sort().join(','),
+      modes: [...seen.modes].sort().join(','),
+      values: [...seen.values].sort().join(','),
+    };
+    const want: Record<string, string> = {
+      side: e.side,
+      modes: [...e.modes].sort().join(','),
+      values: [...e.values].sort().join(','),
+    };
+    for (const f of ['side', 'modes', 'values']) {
+      if (got[f] !== want[f]) crashProblems.push(`THREW[${key}] declares ${f} ${want[f]}, measured ${got[f]}`);
+    }
+  }
+  for (const key of Object.keys(THREW)) {
+    if (!crashed.has(key)) crashProblems.push(`THREW[${key}] saw no crash on this run`);
+  }
+
+  /**
+   * What DRZL answered where official could not, held to the declaration in both directions.
+   *
+   * Without this a crashing official validator is a licence for DRZL to do anything on that value.
+   * `c_bit` is `bit({ dimensions: 3 }).notNull()`, and on the v1 pass its Insert and Update schemas
+   * were made to accept `null` with that pass staying byte identical to green.
+   */
+  const declMatches = (decl: string, mode: string, label: string) => {
+    const cut = decl.indexOf('/');
+    return (decl.slice(0, cut) === '*' || decl.slice(0, cut) === mode) && decl.slice(cut + 1) === label;
+  };
+  for (const [key, seen] of crashVerdict) {
+    const e = THREW[key];
+    // An undeclared crash is already a failure above; reporting the same site twice adds nothing.
+    if (!e) continue;
+    const want = e.modes.length * e.values.length;
+    if (seen.size !== want) {
+      crashProblems.push(
+        `THREW[${key}] declares ${want} crashed probe(s), measured ${seen.size}: ${[...seen.keys()].sort().join(', ')}`
+      );
+    }
+    const claimed = new Set<string>();
+    for (const [at, verdict] of seen) {
+      const cut = at.indexOf('/');
+      const hits = Object.keys(e.drzl).filter((decl) => declMatches(decl, at.slice(0, cut), at.slice(cut + 1)));
+      if (hits.length !== 1) {
+        crashProblems.push(`THREW[${key}].drzl has ${hits.length} declarations for ${at}, needs exactly one. Measured there: ${verdict}`);
+        continue;
+      }
+      claimed.add(hits[0]);
+      if (e.drzl[hits[0]] === verdict) continue;
+      crashProblems.push(`THREW[${key}].drzl declares ${e.drzl[hits[0]]} on ${at}, measured ${verdict}`);
+    }
+    for (const decl of Object.keys(e.drzl)) {
+      if (!claimed.has(decl)) crashProblems.push(`THREW[${key}].drzl declaration '${decl}' matched no crashed probe`);
+    }
+  }
+
+  /**
+   * And what says those answers are the right ones.
+   *
+   * A pinned verdict stops DRZL's behaviour moving unseen; it does not say the pinned value is
+   * correct, and on this major it is not: the analyzer cannot name `c_bit`, so DRZL takes a NULL
+   * for a NOT NULL column, and takes that column being left out of an insert too. A real Postgres
+   * is what says so. The table is built from the fixture column's own `getSQLType()`, the nullable
+   * twin has to take a NULL before the NOT NULL twin's refusal counts as anything, and the twin
+   * carrying a default has to take an omission while still refusing a NULL before the omission's
+   * refusal is read as an answer about the omission.
+   *
+   * Every probe on this pass is arbitrated, so nothing here rests on a reason for not arbitrating.
+   * The one this pass can still produce, a dialect with no engine in this process, is checked
+   * against the engine's own `select version()` rather than against the branch that writes it.
+   */
+  const arbiterProblems: string[] = [];
+  {
+    const pgColumns = getTableConfig(pgTable as never).columns as { name: string; getSQLType: () => string }[];
+    const wanted: { key: string; label: string; value: unknown; dialect: string; column: string }[] = [];
+    for (const [key, e] of Object.entries(THREW)) {
+      const [dialect, , column] = key.split('/');
+      const declared = Object.keys(e.arbiter).sort().join(',');
+      const values = [...e.values].sort().join(',');
+      if (declared !== values) {
+        arbiterProblems.push(`THREW[${key}].arbiter covers ${declared || 'nothing'}, and the crash values are ${values}`);
+      }
+      for (const label of e.values) {
+        const found = POOL.find(([l]) => l === label);
+        if (!found) {
+          arbiterProblems.push(`THREW[${key}] names the value ${label}, which is not in POOL, so nothing can be asked about it`);
+          continue;
+        }
+        wanted.push({ key, label, value: found[1], dialect, column });
+      }
+    }
+    const probes: DbProbe[] = [];
+    for (const w of wanted) {
+      if (w.dialect !== 'pg') continue;
+      const col = pgColumns.find((c) => c.name === w.column);
+      if (!col) {
+        arbiterProblems.push(`THREW[${w.key}] names a column the Postgres fixture does not have, so no DDL can be built for it`);
+        continue;
+      }
+      // The pool's `undefined` is an absence and is carried to the database as one: the statement
+      // never names the column, rather than binding a NULL where it would have gone.
+      probes.push({ key: w.key, sqlType: col.getSQLType(), label: w.label, absent: w.value === undefined, value: w.value });
+    }
+    const { engine, answers } = await askPostgres(probes);
+    // A run where the database answered nothing would otherwise leave every site reading as
+    // deliberately unarbitrated.
+    if (!probes.length) arbiterProblems.push('no crash site reached a database on this run, so nothing was arbitrated');
+    if (engine !== 'pg') {
+      arbiterProblems.push(`the in-process engine answers 'select version()' with ${engine}, and every answer below is read as a Postgres one`);
+    }
+    let arbitrated = 0;
+    for (const w of wanted) {
+      const e = THREW[w.key];
+      const verdicts = [...new Set(
+        [...(crashVerdict.get(w.key) ?? new Map<string, string>())]
+          .filter(([at]) => at.slice(at.indexOf('/') + 1) === w.label)
+          .map(([, v]) => v)
+      )].sort();
+      let got: string;
+      if (w.dialect !== 'pg') {
+        got = `no in-process ${w.dialect} engine`;
+        // Asserted rather than only computed, against the engine's own name for itself.
+        if (engine === w.dialect) {
+          arbiterProblems.push(
+            `${w.key}/${w.label} is declared unarbitrable for want of a ${w.dialect} engine, and the ` +
+              `engine in this process names itself ${engine}`
+          );
+        }
+      } else {
+        const a = answers.get(`${w.key}/${w.label}`);
+        if (!a) {
+          arbiterProblems.push(`${w.key}/${w.label} was sent to the database and came back with no answer`);
+          continue;
+        }
+        if (a.control) {
+          arbiterProblems.push(`${w.key}/${w.label}: ${a.control}`);
+          continue;
+        }
+        arbitrated++;
+        const asked = w.value === undefined ? 'the column omitted from the insert' : 'it';
+        got = a.verdict === 'accept' ? `postgres accepts ${asked}` : `postgres refuses ${asked} (SQLSTATE ${a.code})`;
+        // The one rule the declaration cannot talk its way out of. A value the database refuses and
+        // DRZL takes is a schema admitting a row the server will not, and it is only not a failure
+        // here because the ledger already names it as a defect. Named or not, the run says which
+        // probe it was and which map covered it: a defect that is filed is still a defect, and a
+        // ledger entry is not a reason to print nothing. `ALLOWED` and `DEFECTS` are read
+        // dialect-wide. On this pass that is the shape of the lookup rather than a live guard,
+        // since every key here is built as `${dialect}/${column}` and no waiver is library-scoped;
+        // the v1 copy of this check is where it does work, and is proven both ways there.
+        if (a.verdict === 'refuse' && verdicts.includes('accept')) {
+          const named = ALLOWED[`${w.dialect}/${w.column}`]
+            ? 'ALLOWED'
+            : DEFECTS[`${w.dialect}/${w.column}`]
+              ? 'DEFECTS'
+              : '';
+          if (named) {
+            console.log(
+              `    ${w.key}/${w.label}: postgres refuses ${asked} and DRZL accepts it, filed as ` +
+                `${named}[${w.dialect}/${w.column}] rather than failed here`
+            );
+          } else {
+            arbiterProblems.push(
+              `${w.key}/${w.label}: postgres refuses ${asked} and DRZL accepts it, and neither map names ` +
+                `${w.dialect}/${w.column}`
+            );
+          }
+        }
+      }
+      if (e.arbiter[w.label] === got) continue;
+      arbiterProblems.push(`THREW[${w.key}].arbiter declares '${e.arbiter[w.label]}' for ${w.label}, and this run got '${got}'`);
+    }
+    console.log(
+      `    ${arbitrated} crash probe(s) arbitrated against a real Postgres, of ` +
+        `${wanted.length} across ${Object.keys(THREW).length} crash site(s)`
+    );
+  }
+
+  const crashCount = [...crashed.values()].reduce((n, c) => n + c.at.size, 0);
+  console.log(
+    `    ${crashCount} probe(s) crashed instead of returning a verdict, on ${crashed.size} ` +
+      `column(s) against ${Object.keys(THREW).length} declared, compared as neither accept nor ` +
+      "reject, and DRZL's own verdict on each pinned above"
+  );
+
+  if (unledgered.length) {
+    console.error('    FAIL: these columns differ from the official 0.4x module and are in neither');
+    console.error('          map. A difference that is deliberate goes in ALLOWED with its reason,');
+    console.error('          and one that is a DRZL defect goes in DEFECTS naming what it is:');
+    for (const k of unledgered) console.error(`      ${k}: ${observed.get(k)!.detail.join('; ')}`);
+  }
+  if (ledgerProblems.length) {
+    console.error('    FAIL: the ledger no longer describes this run. If a defect was fixed, delete');
+    console.error('          its entry; if it moved, re-measure it. An entry left behind is a');
+    console.error('          sentence about something nobody can observe:');
+    for (const p of ledgerProblems) console.error(`      ${p}`);
+  }
+  if (totalCompared !== EXPECTED_COMPARISONS) {
+    const direction = totalCompared < EXPECTED_COMPARISONS ? 'fewer' : 'more';
+    console.error(`    FAIL: ${totalCompared} column comparisons, expected ${EXPECTED_COMPARISONS}.`);
+    console.error(`          This run compared ${direction} columns than EXPECTED_COMPARISONS says.`);
+    if (totalCompared < EXPECTED_COMPARISONS) {
+      console.error('          A parity pass that measures fewer columns than it did yesterday is');
+      console.error('          the failure this file has been bitten by most, so this is a stop.');
+      console.error('          Find what stopped being compared before touching the constant.');
+    } else {
+      console.error('          A fixture grew. That is fine and it is not automatic: measure the');
+      console.error('          new columns, put any difference in ALLOWED or DEFECTS with its');
+      console.error('          reason, and then update EXPECTED_COMPARISONS in this file to match.');
+    }
+  }
+  if (crashProblems.length) {
+    console.error('    FAIL: a probe crashed where the THREW list does not say one does, or a');
+    console.error('          declared crash stopped happening, or DRZL answered something else');
+    console.error('          where it did. A crash is not a verdict and must not be compared as');
+    console.error('          one, and it is not a reason to stop measuring DRZL either:');
+    for (const c of crashProblems) console.error(`      ${c}`);
+  }
+  if (arbiterProblems.length) {
+    console.error('    FAIL: a crash site is no longer settled the way it is declared to be. A');
+    console.error('          value official crashes on is still a value DRZL answers, and');
+    console.error('          something has to say whether that answer is right:');
+    for (const a of arbiterProblems) console.error(`      ${a}`);
+  }
+  if (unnamedProblems.length) {
+    console.error('    FAIL: the unnamed-column list does not describe this run:');
+    for (const u of unnamedProblems) console.error(`      ${u}`);
+  }
+  if (capProblems.length) {
+    console.error('    FAIL: a MySQL text column no longer separates a byte budget from a');
+    console.error('          character count the way it is documented to:');
+    for (const c of capProblems) console.error(`      ${c}`);
+  }
+  if (findings.length) {
+    console.error(`    FAIL: ${findings.length} parity finding(s). A generated schema looser than`);
+    console.error('          the first-party module accepts rows the database will reject.');
+  }
+  if (
+    findings.length ||
+    ledgerProblems.length ||
+    unledgered.length ||
+    crashProblems.length ||
+    arbiterProblems.length ||
+    unnamedProblems.length ||
+    capProblems.length ||
+    totalCompared !== EXPECTED_COMPARISONS
+  ) {
+    process.exit(1);
+  }
+}
+PARITY_0_4X
+
+if ! npx tsx parity-0-4x.ts; then
+  echo "FAIL: DRZL's generated validators do not match the official ones on drizzle-orm 0.4x." >&2
+  exit 1
+fi
 cd "$APP"
 
 # ---------------------------------------------------------------------------------------------
@@ -4076,8 +6638,13 @@ echo "    modes, with the four generators cross-checked against each other on ev
 echo "    checked against a real Postgres, a real SQLite and, where MYSQL_URL is set, a real"
 echo "    MySQL, with applyDefaults compared against what the database writes, and described the"
 echo "    same way by the analyzer under both drizzle-orm majors, bar the differences that stage"
-echo "    names one at a time, three of which are columns 0.4x leaves unnamed. The JSON Schema"
-echo "    output compiles under ajv in strict mode, agrees with Postgres wherever the zod output"
-echo "    does, and speaks as a fifth voice on every CHECK. Every tarball holds the files its"
-echo "    manifest names and nothing from the working tree, and every package npm is serving"
-echo "    carries a provenance attestation."
+echo "    names one at a time, three of which are columns 0.4x leaves unnamed. The same column by"
+echo "    column comparison runs a second time against the first-party validators for 0.45.2,"
+echo "    where the columns known to differ are counted and named above, each with what DRZL"
+echo "    emits, what official emits and which filing it is. Where an official validator crashes"
+echo "    instead of answering, DRZL's own verdict on that value is pinned rather than dropped,"
+echo "    and settled against a real Postgres, which is asked about the column being left out of an"
+echo "    insert as well as about the value it is given. The JSON Schema output compiles under ajv"
+echo "    in strict mode, agrees with Postgres wherever the zod output does, and speaks as a fifth"
+echo "    voice on every CHECK. Every tarball holds the files its manifest names and nothing from"
+echo "    the working tree, and every package npm is serving carries a provenance attestation."
