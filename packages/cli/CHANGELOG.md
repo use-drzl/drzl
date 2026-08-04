@@ -1,5 +1,18 @@
 # @drzl/cli
 
+## 4.14.1
+
+### Patch Changes
+
+- Updated dependencies [6fbdb22]
+  - @drzl/analyzer@1.15.0
+  - @drzl/generator-zod@3.16.0
+  - @drzl/generator-valibot@3.15.0
+  - @drzl/generator-arktype@3.12.0
+  - @drzl/generator-typebox@0.9.0
+  - @drzl/generator-orpc@2.7.0
+  - @drzl/generator-service@2.3.0
+
 ## 4.14.0
 
 ### Minor Changes
