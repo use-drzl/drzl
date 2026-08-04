@@ -43,3 +43,13 @@ caps and 22000 CJK characters for the 65535 byte ones, `mediumtext` needs a 10.7
 measured on its own, and `longtext` needs more units than V8 will put in a string, so it has no
 probe at all and the stage says so. A real MySQL 8 settles every direction: `tinytext`, `text` and
 `blob` all refuse what official accepts.
+
+Both passes are now held to the same standard, which took three rounds because each one closed a
+hole on the pass being built and left it open on the pass beside it. The v1 waivers carry `libs`,
+`modes` and a pairing count as well as the signature, so a regression confined to insert and update
+cannot hide behind a matching select; the v1 pass has the byte-cap stage, which is where its
+`m_mediumtext` divergence was found sitting under a green parity line; it asserts its own resolved
+`drizzle-orm` major and a written-out comparison total, neither of which it had; and the seven
+cross-generator waivers carry signatures too, so the line claiming all four generators agree on
+every column and value now says how many documented differences it is standing on. That line was
+false at HEAD: seven columns disagree on five values each, and every row was being discarded unread.

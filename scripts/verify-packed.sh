@@ -1046,6 +1046,7 @@ import {
 } from 'drizzle-orm/typebox-legacy';
 // The pool and the accessors come from a file the 0.4x pass reads as well, so both majors are
 // asked the same question with the same values.
+import { readFileSync } from 'node:fs';
 import { POOL, LIBS, probe, type Lib, type Verdict } from './pool.js';
 
 import { matrix as pgTable } from './schema.js';
@@ -1123,9 +1124,12 @@ const recordThrow = (key: string, side: string, mode: string, value: string) => 
  *
  * `divergence` is keyed `<modes>/<libraries>`, `*` for all of them, and each value is the exact
  * signature measured for those pairings: `L: <labels DRZL accepts and official refuses> | T: <the
- * other way>`, in pool order. Three literals stand for a property rather than a list, so they
- * cannot be written down wrongly: `every probe official rejects` says DRZL took the whole pool,
- * and the two `has it, omits it` strings say one side produced no field at all.
+ * other way>`, in pool order. Three signatures are a property rather than a list, so they cannot be
+ * written down wrongly: `every probe official rejects` says DRZL took the whole pool, and the two
+ * `has it, omits it` strings say one side produced no field at all. All three are what the run
+ * produces in those states, and no waiver declares any of them today, since no waived column on
+ * this major is untyped or missing on one side. They are the shape a future one would take, not a
+ * claim about the current list.
  *
  * Until this existed a waiver asserted only that it suppressed something, and a real regression
  * walked through it: stripping every length cap from `m_tinytext` in all four generated modules
@@ -1137,7 +1141,20 @@ const recordThrow = (key: string, side: string, mode: string, value: string) => 
  * differently from official re-opens that waiver, because the alternative is a waiver quietly
  * covering a divergence nobody has looked at.
  */
-type Waiver = { why: string; divergence: Record<string, string> };
+type Waiver = {
+  /** The libraries this waiver covers, asserted exactly against what it suppressed. */
+  libs: string[];
+  /** The modes it covers, asserted the same way. */
+  modes: string[];
+  /** Why the divergence is deliberate. */
+  why: string;
+  /** The exact divergence, keyed `<modes>/<libraries>`. */
+  divergence: Record<string, string>;
+};
+
+const LIB_NAMES = ['zod', 'valibot', 'arktype', 'typebox'];
+const MODE_NAMES = ['select', 'insert', 'update'];
+const WRITE = ['insert', 'update'];
 
 const ALL_PROBES = 'every probe official rejects';
 
@@ -1168,12 +1185,14 @@ const ALLOWED: Record<string, Waiver> = {
   // Binary payloads are typed as Uint8Array rather than Buffer. A Buffer is a Uint8Array, so
   // nothing official accepts is turned away. The wider check needs no `@types/node`, survives a
   // runtime where `Buffer` is undefined, and makes bytea and blob validate the same way.
-  'pg/c_bytea': { why: 'Uint8Array accepted where official demands a Buffer', divergence: { '*/*': `L: Uint8Array | T: ` } },
-  'sqlite/s_blob_buf': { why: 'as pg/c_bytea', divergence: { '*/*': `L: Uint8Array | T: ` } },
+  'pg/c_bytea': { libs: LIB_NAMES, modes: MODE_NAMES, why: 'Uint8Array accepted where official demands a Buffer', divergence: { '*/*': `L: Uint8Array | T: ` } },
+  'sqlite/s_blob_buf': { libs: LIB_NAMES, modes: MODE_NAMES, why: 'as pg/c_bytea', divergence: { '*/*': `L: Uint8Array | T: ` } },
   // `coerceDates` defaults to coercing on insert and update, which is a documented DRZL option
   // and is what `coerceDates: 'none'` turns off to match official exactly. Only strings and
   // numbers are coerced: null, booleans and arrays are rejected, which `z.coerce.date()` accepts.
   'pg/c_date_d': {
+    libs: LIB_NAMES,
+    modes: WRITE,
     why: 'coerceDates accepts a date string or epoch number on write',
     divergence: {
       '*/zod': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', '12.5', '0101', '010' | T: `,
@@ -1181,6 +1200,8 @@ const ALLOWED: Record<string, Waiver> = {
     },
   },
   'pg/c_ts_d': {
+    libs: LIB_NAMES,
+    modes: WRITE,
     why: 'as pg/c_date_d',
     divergence: {
       '*/zod': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', '12.5', '0101', '010' | T: `,
@@ -1188,6 +1209,8 @@ const ALLOWED: Record<string, Waiver> = {
     },
   },
   'mysql/m_date': {
+    libs: LIB_NAMES,
+    modes: WRITE,
     why: 'as pg/c_date_d',
     divergence: {
       '*/zod': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', '12.5', '0101', '010' | T: `,
@@ -1195,6 +1218,8 @@ const ALLOWED: Record<string, Waiver> = {
     },
   },
   'mysql/m_datetime': {
+    libs: LIB_NAMES,
+    modes: WRITE,
     why: 'as pg/c_date_d',
     divergence: {
       '*/zod': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', '12.5', '0101', '010' | T: `,
@@ -1202,6 +1227,8 @@ const ALLOWED: Record<string, Waiver> = {
     },
   },
   'mysql/m_ts': {
+    libs: LIB_NAMES,
+    modes: WRITE,
     why: 'as pg/c_date_d',
     divergence: {
       '*/zod': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', '12.5', '0101', '010' | T: `,
@@ -1209,6 +1236,8 @@ const ALLOWED: Record<string, Waiver> = {
     },
   },
   'sqlite/s_int_ts': {
+    libs: LIB_NAMES,
+    modes: WRITE,
     why: 'as pg/c_date_d',
     divergence: {
       '*/zod': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', '12.5', '0101', '010' | T: `,
@@ -1216,6 +1245,8 @@ const ALLOWED: Record<string, Waiver> = {
     },
   },
   'sqlite/s_int_ts_ms': {
+    libs: LIB_NAMES,
+    modes: WRITE,
     why: 'as pg/c_date_d',
     divergence: {
       '*/zod': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', '12.5', '0101', '010' | T: `,
@@ -1225,55 +1256,61 @@ const ALLOWED: Record<string, Waiver> = {
   // Official emits `Type.String({ format: 'uuid' })`, and TypeBox fails a format it has no entry
   // for rather than ignoring it, so that schema rejects every valid uuid in any project that has
   // not populated `FormatRegistry` first. This generator emits a pattern, which needs no setup.
-  'pg/typebox/c_uuid': { why: 'official uses an unregistered `format`, which rejects every uuid', divergence: { '*/*': `L: uuid | T: ` } },
+  'pg/typebox/c_uuid': { libs: ['typebox'], modes: MODE_NAMES, why: 'official uses an unregistered `format`, which rejects every uuid', divergence: { '*/*': `L: uuid | T: ` } },
   // A character limit counts *characters*; official counts `.length`, which is UTF-16 units, so
   // it refuses three emoji in a `char(4)` the database accepts. Measured against Postgres: three
   // emoji insert into a `char(4)` and read back as four code points, which are seven UTF-16 units.
-  'pg/c_char': { why: 'character limit counts code points; official counts UTF-16 units', divergence: { '*/*': `L: 3 emoji, 3 emoji | T: ` } },
-  'mysql/m_char': { why: 'as pg/c_char', divergence: { '*/*': `L: 3 emoji, 3 emoji | T: ` } },
+  'pg/c_char': { libs: LIB_NAMES, modes: MODE_NAMES, why: 'character limit counts code points; official counts UTF-16 units', divergence: { '*/*': `L: 3 emoji, 3 emoji | T: ` } },
+  'mysql/m_char': { libs: LIB_NAMES, modes: MODE_NAMES, why: 'as pg/c_char', divergence: { '*/*': `L: 3 emoji, 3 emoji | T: ` } },
   // MySQL's TEXT family is capped in bytes and official caps it in UTF-16 units, so official takes
   // a 100 emoji string that is 200 units and 400 bytes into a `tinytext` whose budget is 255. DRZL
   // emits the byte check and refuses it. A real MySQL 8 on a utf8mb4 client is the authority and
   // agrees with DRZL: that insert fails with "Data too long", while the same string goes into a
   // `varchar(255)` and reports `length` 400 with `char_length` 100.
   //
-  // Which columns this reaches is arithmetic, not luck. A separating probe is over the cap in
+  // Which columns the pool reaches is arithmetic, not luck. A separating probe is over the cap in
   // bytes and not over it in UTF-16 units, and UTF-8 spends at most 3 bytes per unit, so it needs
   // more than cap/3 units: 86 for `tinytext` and 21846 for `text`, both in the pool, 5592406 for
-  // `mediumtext`, a 10.7 MiB string the 0.4x stage measures on its own, and 1431655766 for
-  // `longtext`, more units than V8 will put in a string.
-  'mysql/m_tinytext': { why: 'MySQL caps TEXT in bytes; official caps it in UTF-16 units, and takes 400 bytes into a 255 byte column', divergence: { '*/*': `L:  | T: 100 emoji` } },
-  'mysql/m_text': { why: 'as mysql/m_tinytext, 66000 bytes against a 65535 byte budget', divergence: { '*/*': `L:  | T: 22000 cjk` } },
+  // `mediumtext`, and 1431655766 for `longtext`, more units than V8 will put in a string.
+  //
+  // The two the pool cannot reach are measured by the byte-cap stage further down this same file,
+  // against these modules and this official package. An earlier version of this sentence said the
+  // 0.4x stage measured `mediumtext` "on its own", which was a coverage claim about a different
+  // object: that stage probes the 0.4x modules against `drizzle-zod@0.8.3`, and those modules emit
+  // no character cap at all. `m_mediumtext` really did diverge here, unwaived and unmeasured,
+  // while that sentence stood.
+  'mysql/m_tinytext': { libs: LIB_NAMES, modes: MODE_NAMES, why: 'MySQL caps TEXT in bytes; official caps it in UTF-16 units, and takes 400 bytes into a 255 byte column', divergence: { '*/*': `L:  | T: 100 emoji` } },
+  'mysql/m_text': { libs: LIB_NAMES, modes: MODE_NAMES, why: 'as mysql/m_tinytext, 66000 bytes against a 65535 byte budget', divergence: { '*/*': `L:  | T: 22000 cjk` } },
   // The blob half of the same table, which only this pass reaches: 0.4x's mysql-core has no `blob`
   // export at all, so the 0.4x fixture drops the column. MySQL 8.4 answers the same way for it as
   // for `text`: both refuse the 22000 CJK string with "Data too long", and `mediumtext` in the same
   // table takes it and stores 66000 bytes, which is what shows the probe is measuring the cap.
-  'mysql/m_blob': { why: 'as mysql/m_tinytext, on a BLOB whose budget is also 65535 bytes', divergence: { '*/*': `L:  | T: 22000 cjk` } },
+  'mysql/m_blob': { libs: LIB_NAMES, modes: MODE_NAMES, why: 'as mysql/m_tinytext, on a BLOB whose budget is also 65535 bytes', divergence: { '*/*': `L:  | T: 22000 cjk` } },
   // Stricter than official, and verified against Postgres itself through PGlite: a `numeric`
   // column is a string, and a bare string schema accepts 'hello' where the database rejects it.
   // Official accepts all of these; the database does not.
-  'pg/c_numeric': { why: 'numeric format enforced; official accepts any string, Postgres does not', divergence: { '*/*': `L:  | T: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1'` } },
-  'pg/c_decimal': { why: 'as pg/c_numeric', divergence: { '*/*': `L:  | T: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1'` } },
-  'mysql/m_decimal': { why: 'as pg/c_numeric', divergence: { '*/*': `L:  | T: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1'` } },
+  'pg/c_numeric': { libs: LIB_NAMES, modes: MODE_NAMES, why: 'numeric format enforced; official accepts any string, Postgres does not', divergence: { '*/*': `L:  | T: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1'` } },
+  'pg/c_decimal': { libs: LIB_NAMES, modes: MODE_NAMES, why: 'as pg/c_numeric', divergence: { '*/*': `L:  | T: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1'` } },
+  'mysql/m_decimal': { libs: LIB_NAMES, modes: MODE_NAMES, why: 'as pg/c_numeric', divergence: { '*/*': `L:  | T: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1'` } },
   // Stricter than official, in DRZL's favour.
-  'pg/valibot/c_json': { why: 'DRZL rejects Infinity and non-plain objects; official accepts both', divergence: { '*/*': `L:  | T: Infinity, Date, Buffer, Uint8Array` } },
-  'pg/valibot/c_jsonb': { why: 'as pg/valibot/c_json', divergence: { '*/*': `L:  | T: Infinity, Date, Buffer, Uint8Array` } },
-  'pg/valibot/c_jsonb_typed': { why: 'as pg/valibot/c_json', divergence: { '*/*': `L:  | T: Infinity, Date, Buffer, Uint8Array` } },
-  'mysql/valibot/m_json': { why: 'as pg/valibot/c_json', divergence: { '*/*': `L:  | T: Infinity, Date, Buffer, Uint8Array` } },
-  'sqlite/valibot/s_text_json': { why: 'as pg/valibot/c_json', divergence: { '*/*': `L:  | T: Infinity, Date, Buffer, Uint8Array` } },
-  'sqlite/valibot/s_blob_json': { why: 'as pg/valibot/c_json', divergence: { '*/*': `L:  | T: Infinity, Date, Buffer, Uint8Array` } },
+  'pg/valibot/c_json': { libs: ['valibot'], modes: MODE_NAMES, why: 'DRZL rejects Infinity and non-plain objects; official accepts both', divergence: { '*/*': `L:  | T: Infinity, Date, Buffer, Uint8Array` } },
+  'pg/valibot/c_jsonb': { libs: ['valibot'], modes: MODE_NAMES, why: 'as pg/valibot/c_json', divergence: { '*/*': `L:  | T: Infinity, Date, Buffer, Uint8Array` } },
+  'pg/valibot/c_jsonb_typed': { libs: ['valibot'], modes: MODE_NAMES, why: 'as pg/valibot/c_json', divergence: { '*/*': `L:  | T: Infinity, Date, Buffer, Uint8Array` } },
+  'mysql/valibot/m_json': { libs: ['valibot'], modes: MODE_NAMES, why: 'as pg/valibot/c_json', divergence: { '*/*': `L:  | T: Infinity, Date, Buffer, Uint8Array` } },
+  'sqlite/valibot/s_text_json': { libs: ['valibot'], modes: MODE_NAMES, why: 'as pg/valibot/c_json', divergence: { '*/*': `L:  | T: Infinity, Date, Buffer, Uint8Array` } },
+  'sqlite/valibot/s_blob_json': { libs: ['valibot'], modes: MODE_NAMES, why: 'as pg/valibot/c_json', divergence: { '*/*': `L:  | T: Infinity, Date, Buffer, Uint8Array` } },
   // A `blob()` with no mode is Drizzle's json mode, not its buffer mode, so this is the same
   // column shape as s_blob_json and gets the same reasoning. `s_blob_buf` above is the buffer one.
-  'sqlite/valibot/s_blob': { why: 'as pg/valibot/c_json; a bare blob() is Drizzle json mode', divergence: { '*/*': `L:  | T: Infinity, Date, Buffer, Uint8Array` } },
-  'pg/valibot/c_point': { why: 'v.strictTuple rejects a third element; official v.tuple ignores extras', divergence: { '*/*': `L:  | T: [1,2,3]` } },
-  'pg/valibot/c_geometry': { why: 'as pg/valibot/c_point', divergence: { '*/*': `L:  | T: [1,2,3]` } },
+  'sqlite/valibot/s_blob': { libs: ['valibot'], modes: MODE_NAMES, why: 'as pg/valibot/c_json; a bare blob() is Drizzle json mode', divergence: { '*/*': `L:  | T: Infinity, Date, Buffer, Uint8Array` } },
+  'pg/valibot/c_point': { libs: ['valibot'], modes: MODE_NAMES, why: 'v.strictTuple rejects a third element; official v.tuple ignores extras', divergence: { '*/*': `L:  | T: [1,2,3]` } },
+  'pg/valibot/c_geometry': { libs: ['valibot'], modes: MODE_NAMES, why: 'as pg/valibot/c_point', divergence: { '*/*': `L:  | T: [1,2,3]` } },
   // Official emits `Type.RegExp`, whose check runs `RegExp.prototype.test` against the raw value,
   // and `test` stringifies what it is given: `[]` becomes '' and matches `^[01]*$`. So official
   // accepts an empty array for a binary column. This generator emits a `string` carrying a
   // `pattern`, which refuses a non-string before the pattern is consulted. Postgres masks the
   // same hole on `c_bit` only because that column has a `minLength` an array cannot satisfy.
-  'mysql/typebox/m_binary': { why: 'official Type.RegExp accepts a non-string whose string form matches', divergence: { '*/*': `L:  | T: []` } },
-  'mysql/typebox/m_varbinary': { why: 'as mysql/typebox/m_binary', divergence: { '*/*': `L:  | T: []` } },
+  'mysql/typebox/m_binary': { libs: ['typebox'], modes: MODE_NAMES, why: 'official Type.RegExp accepts a non-string whose string form matches', divergence: { '*/*': `L:  | T: []` } },
+  'mysql/typebox/m_varbinary': { libs: ['typebox'], modes: MODE_NAMES, why: 'as mysql/typebox/m_binary', divergence: { '*/*': `L:  | T: []` } },
   // No arktype bigint entry. There were three, reading "ArkType cannot bound a bigint in its
   // string DSL", and only half of that was true: the DSL cannot state the bound, but a narrow can,
   // and this generator already used narrows for every character cap. It was the one place in this
@@ -1301,19 +1338,24 @@ const allowed = (dialect: string, lib: string, col: string, mode: string, signat
  * Cross-generator gaps that follow from what each library can express, not from a defect in one
  * generator. Keyed `<dialect>/<column>` and carrying its reason, for the same reason ALLOWED is.
  */
-const CROSS_ALLOWED: Record<string, string> = {
+const CROSS_ALLOWED: Record<string, { why: string; divergence: string }> = {
   // ArkType's string DSL has no recursive JSON value, so this generator emits
   // `number | object | string | boolean | null`, which takes NaN, Infinity and any object at all.
   // The other three build a real JSON value check. A capability difference between the libraries:
   // official `drizzle-orm/arktype` produces the same widening, which is why this shows up here and
   // not against official.
-  'pg/c_json': "arktype's string DSL cannot state a recursive JSON value",
-  'pg/c_jsonb': 'as pg/c_json',
-  'pg/c_jsonb_typed': 'as pg/c_json',
-  'mysql/m_json': 'as pg/c_json',
-  'sqlite/s_text_json': 'as pg/c_json',
-  'sqlite/s_blob_json': 'as pg/c_json',
-  'sqlite/s_blob': 'as pg/c_json; a bare blob() is Drizzle json mode',
+  //
+  // The signature is what each of these actually suppresses, and it is identical on all seven:
+  // five values, arktype alone accepting each. Before it was here, `crossAllowed` discarded every
+  // row for its column whatever the rows said, so making DRZL's typebox `c_jsonb` reject `{}` was
+  // absorbed and the stage still printed that all four generators agree on every column and value.
+  'pg/c_json': { why: "arktype's string DSL cannot state a recursive JSON value", divergence: `NaN: arktype accept, zod/valibot/typebox reject; Infinity: arktype accept, zod/valibot/typebox reject; Date: arktype accept, zod/valibot/typebox reject; Buffer: arktype accept, zod/valibot/typebox reject; Uint8Array: arktype accept, zod/valibot/typebox reject` },
+  'pg/c_jsonb': { why: 'as pg/c_json', divergence: `NaN: arktype accept, zod/valibot/typebox reject; Infinity: arktype accept, zod/valibot/typebox reject; Date: arktype accept, zod/valibot/typebox reject; Buffer: arktype accept, zod/valibot/typebox reject; Uint8Array: arktype accept, zod/valibot/typebox reject` },
+  'pg/c_jsonb_typed': { why: 'as pg/c_json', divergence: `NaN: arktype accept, zod/valibot/typebox reject; Infinity: arktype accept, zod/valibot/typebox reject; Date: arktype accept, zod/valibot/typebox reject; Buffer: arktype accept, zod/valibot/typebox reject; Uint8Array: arktype accept, zod/valibot/typebox reject` },
+  'mysql/m_json': { why: 'as pg/c_json', divergence: `NaN: arktype accept, zod/valibot/typebox reject; Infinity: arktype accept, zod/valibot/typebox reject; Date: arktype accept, zod/valibot/typebox reject; Buffer: arktype accept, zod/valibot/typebox reject; Uint8Array: arktype accept, zod/valibot/typebox reject` },
+  'sqlite/s_text_json': { why: 'as pg/c_json', divergence: `NaN: arktype accept, zod/valibot/typebox reject; Infinity: arktype accept, zod/valibot/typebox reject; Date: arktype accept, zod/valibot/typebox reject; Buffer: arktype accept, zod/valibot/typebox reject; Uint8Array: arktype accept, zod/valibot/typebox reject` },
+  'sqlite/s_blob_json': { why: 'as pg/c_json', divergence: `NaN: arktype accept, zod/valibot/typebox reject; Infinity: arktype accept, zod/valibot/typebox reject; Date: arktype accept, zod/valibot/typebox reject; Buffer: arktype accept, zod/valibot/typebox reject; Uint8Array: arktype accept, zod/valibot/typebox reject` },
+  'sqlite/s_blob': { why: 'as pg/c_json; a bare blob() is Drizzle json mode', divergence: `NaN: arktype accept, zod/valibot/typebox reject; Infinity: arktype accept, zod/valibot/typebox reject; Date: arktype accept, zod/valibot/typebox reject; Buffer: arktype accept, zod/valibot/typebox reject; Uint8Array: arktype accept, zod/valibot/typebox reject` },
   // No bigint entry either, for the reason given in ALLOWED: arktype now bounds a bigint with a
   // narrow, so the four generators agree about `c_bigint_b`, `m_bigint_b` and `s_blob_bigint`.
   // No `c_char` entry. There was one, reading "zod and valibot count code points; TypeBox and
@@ -1324,10 +1366,15 @@ const CROSS_ALLOWED: Record<string, string> = {
 };
 
 const usedCrossWaivers = new Set<string>();
-const crossAllowed = (dialect: string, col: string) => {
+// What each cross-generator waiver actually discarded, so the declaration can be compared with the
+// run. `crossAllowed` used to return a boolean and the caller threw the rows away unread.
+const crossWaived = new Map<string, string>();
+const crossAllowed = (dialect: string, col: string, rows: string[]) => {
   const key = `${dialect}/${col}`;
   if (!CROSS_ALLOWED[key]) return false;
   usedCrossWaivers.add(key);
+  // The column name is stripped so the signature reads as the difference rather than as the row.
+  crossWaived.set(key, rows.map((r) => r.trim().replace(`${col} on `, '')).join('; '));
   return true;
 };
 
@@ -1369,6 +1416,35 @@ const DIALECTS = [
 
 const PREFIX = { select: 'Select', insert: 'Insert', update: 'Update' } as const;
 let findings = 0;
+
+/**
+ * Every column of every fixture, in every library and every mode: 40 Postgres, 29 MySQL and 14
+ * SQLite columns, times four libraries, times three modes.
+ *
+ * Written out rather than derived from the arrays above, which would make it true by construction
+ * and say nothing. The 0.4x stage has carried this since it was written; this pass had only the
+ * per-pairing guard, which cannot see a whole dialect quietly dropping out.
+ */
+const EXPECTED_COMPARISONS = (40 + 29 + 14) * 4 * 3;
+let totalCompared = 0;
+
+/**
+ * Which drizzle-orm this tree actually resolved.
+ *
+ * Off disk rather than through `require.resolve`, whose `exports` map has no `./package.json`
+ * entry. Asserted before a column is touched, for the reason the 0.4x stage asserts its own: the
+ * cross-major diff compared 0.45.2 with 0.45.2 for a day and was green throughout, because the
+ * version was believed rather than read. This pass pins v1 in its install line and had no check at
+ * all, so the same install-line typo would have made it a second 0.4x pass measuring nothing new.
+ */
+const drizzleVersion = JSON.parse(readFileSync('node_modules/drizzle-orm/package.json', 'utf8')).version;
+if (typeof drizzleVersion !== 'string' || drizzleVersion.split('.')[0] !== '1') {
+  console.error(`FAIL: this tree resolves drizzle-orm ${JSON.stringify(drizzleVersion)}, not the v1 line.`);
+  console.error('      The 0.4x parity stage near the end of this script measures the other major,');
+  console.error('      and two passes over the same one would compare it twice and pass.');
+  process.exit(1);
+}
+console.log(`    drizzle-orm ${drizzleVersion}, with its own zod, valibot, arktype and typebox-legacy modules`);
 
 for (const d of DIALECTS) {
   const loaded: Record<string, any> = {};
@@ -1463,6 +1539,7 @@ for (const d of DIALECTS) {
         );
       }
 
+      totalCompared += compared;
       // A run that compared no column at all would otherwise print `parity` and pass. That is the
       // shape of failure this file has been bitten by most: the stage was green because it had
       // measured nothing, not because there was nothing to find.
@@ -1513,18 +1590,126 @@ for (const d of DIALECTS) {
       // marked the key used because the column exists in the fixture, which made the dead-waiver
       // check below true of `ALLOWED` and false of `CROSS_ALLOWED`: a waiver naming a real column
       // the four generators agree about sat there indefinitely, and `pg/c_char` was one.
-      if (crossAllowed(d.name, k)) continue;
+      if (crossAllowed(d.name, k, found)) continue;
       disagreements.push(...found);
     }
+    // Printed rather than implied, because the line below used to claim universal agreement while
+    // seven columns disagreed on five values each and were being discarded unread.
+    const crossCols = [...crossWaived.keys()].filter((key) => key.startsWith(`${d.name}/`)).length;
+    const crossHere = [...crossWaived.entries()]
+      .filter(([key]) => key.startsWith(`${d.name}/`))
+      .reduce((n, [, sig]) => n + sig.split('; ').length, 0);
     if (disagreements.length) {
       console.log(`    the four ${d.name} generators disagree with each other:`);
       console.log(disagreements.join('\n'));
       findings += disagreements.length;
     } else {
-      console.log(`    all four ${d.name} generators agree with each other on every column and value`);
+      console.log(
+        `    all four ${d.name} generators agree with each other on every column and value, bar ` +
+          `the ${crossHere} documented difference(s) on ${crossCols} column(s)`
+      );
     }
   }
 }
+
+/**
+ * The MySQL byte caps, measured once each instead of on every pairing.
+ *
+ * Same stage as the 0.4x tree carries, and it is here because that one does not cover this pass:
+ * it probes `src/gen-0-4x/mysql/*` against `drizzle-zod@0.8.3`, which is a different object twice
+ * over. The v1 modules emit a character cap the 0.4x ones do not, and they are compared against
+ * `drizzle-orm/zod`. A sentence in ALLOWED above used to say the 0.4x stage covered `mediumtext`
+ * for this pass; it never did, and `m_mediumtext` was a live divergence sitting under a green
+ * parity line the whole time.
+ *
+ * A separating probe has to be over the cap in bytes and not over it in UTF-16 units, and UTF-8
+ * spends at most 3 bytes per unit, so it needs more than cap/3 units and is built from three-byte
+ * characters. The pool carries the two small ones; `mediumtext` needs a 10.7 MiB string, cheap
+ * once and far too heavy on every pairing; `longtext` needs more units than V8 will put in a
+ * string, so it has no probe at all and this says so rather than leaving a filed field looking
+ * covered.
+ *
+ * `m_blob` is here and not on the 0.4x side because 0.45.2's mysql-core has no `blob` export, so
+ * that fixture cannot carry the column.
+ */
+const MAX_JS_STRING = 536870888;
+const TEXT_CAPS: Record<string, number> = {
+  m_tinytext: 255,
+  m_text: 65535,
+  m_mediumtext: 16777215,
+  m_longtext: 4294967295,
+  m_blob: 65535,
+};
+const capProblems: string[] = [];
+const capMeasured: string[] = [];
+const capUnreachable: string[] = [];
+{
+  const mysql = DIALECTS.find((d) => d.name === 'mysql');
+  if (!mysql) {
+    capProblems.push('the MySQL dialect is not in this pass, so no byte cap was measured');
+  } else {
+    const loaded: Record<string, any> = {};
+    for (const lib of mysql.libs) loaded[lib] = await mysql.mods[lib]();
+    for (const [col, cap] of Object.entries(TEXT_CAPS)) {
+      const units = Math.floor(cap / 3) + 1;
+      if (units > MAX_JS_STRING) {
+        capUnreachable.push(`${col} (needs ${units} units, over the ${MAX_JS_STRING} maximum)`);
+        continue;
+      }
+      const probeValue = '\u4E00'.repeat(units);
+      for (const mode of ['select', 'insert', 'update'] as const) {
+        for (const libName of mysql.libs) {
+          const lib = LIBS[libName];
+          const o = safeField(lib, OFFICIAL[libName][mode](mysql.table as never), col);
+          const m = safeField(lib, loaded[libName][`${PREFIX[mode]}matrixSchema`], col);
+          if (!o || !m) {
+            capProblems.push(`${col} has no field on ${mode}/${libName}, so no cap was measured`);
+            continue;
+          }
+          const ov = probe(lib, o, probeValue);
+          const mv = probe(lib, m, probeValue);
+          capMeasured.push(`${col}/${mode}/${libName}`);
+          // Today's state, and the only one that is not a finding. Official counts UTF-16 units
+          // and takes it, DRZL counts bytes and refuses it, and MySQL 8.4 refuses it too: the
+          // same 22000 CJK string is rejected by `text` and `blob` with "Data too long" while
+          // `mediumtext` in the same table stores its 66000 bytes.
+          if (ov === 'accept' && mv === 'reject') continue;
+          capProblems.push(
+            `${col} on ${mode}/${libName}: official ${ov}, DRZL ${mv}, for ${units} units and ` +
+              `${units * 3} bytes against a ${cap} byte cap. Expected official to accept and DRZL ` +
+              'to refuse.'
+          );
+        }
+      }
+    }
+  }
+}
+if (!capMeasured.length) capProblems.push('no MySQL text column had its byte cap measured');
+console.log(
+  `    ${capMeasured.length} byte-cap probe(s) on ${Object.keys(TEXT_CAPS).length - capUnreachable.length} ` +
+    `MySQL text column(s); ${capUnreachable.length} cannot be probed at all: ${capUnreachable.join(', ')}`
+);
+if (capProblems.length) {
+  console.error('FAIL: a MySQL text column no longer separates a byte budget from a character');
+  console.error('      count the way it is documented to:');
+  for (const c of capProblems) console.error(`      ${c}`);
+}
+
+if (totalCompared !== EXPECTED_COMPARISONS) {
+  const direction = totalCompared < EXPECTED_COMPARISONS ? 'fewer' : 'more';
+  console.error(`FAIL: ${totalCompared} column comparisons, expected ${EXPECTED_COMPARISONS}.`);
+  console.error(`      This run compared ${direction} columns than EXPECTED_COMPARISONS says.`);
+  if (totalCompared < EXPECTED_COMPARISONS) {
+    console.error('      A parity pass that measures fewer columns than it did yesterday is the');
+    console.error('      failure this file has been bitten by most, so this is a stop. Find what');
+    console.error('      stopped being compared before touching the constant.');
+  } else {
+    console.error('      A fixture grew. That is fine and it is not automatic: measure the new');
+    console.error('      columns, put any difference in ALLOWED with its reason, and then update');
+    console.error('      EXPECTED_COMPARISONS in this file to match.');
+  }
+}
+console.log(`    ${totalCompared} column comparisons`);
 
 // A waiver that suppresses nothing is not harmless. It is a sentence claiming a divergence exists
 // and is fine, sitting next to the divergences that really do, and the next person to widen this
@@ -1543,6 +1728,23 @@ const deadWaivers = [
 const waiverProblems: string[] = [];
 for (const [key, seen] of waived) {
   const entry = ALLOWED[key];
+  // Which pairings carry the divergence, not only what it looks like. A signature alone is
+  // satisfied by any non-empty subset: deleting the `m_tinytext` byte cap on insert and update
+  // and leaving select alone left this pass green, four pairings matching where twelve should,
+  // while a MySQL TINYTEXT insert schema took 400 bytes the server refuses.
+  const gotLibs = [...new Set([...seen.keys()].map((x) => x.split('/')[1]))].sort().join(',');
+  const gotModes = [...new Set([...seen.keys()].map((x) => x.split('/')[0]))].sort().join(',');
+  const wantLibs = [...entry.libs].sort().join(',');
+  const wantModes = [...entry.modes].sort().join(',');
+  if (gotLibs !== wantLibs) waiverProblems.push(`ALLOWED[${key}] declares libs ${wantLibs}, measured ${gotLibs}`);
+  if (gotModes !== wantModes) waiverProblems.push(`ALLOWED[${key}] declares modes ${wantModes}, measured ${gotModes}`);
+  const wantPairings = entry.libs.length * entry.modes.length;
+  if (seen.size !== wantPairings) {
+    waiverProblems.push(
+      `ALLOWED[${key}] declares ${wantPairings} pairings, measured ${seen.size}: ` +
+        [...seen.keys()].sort().join(', ')
+    );
+  }
   const claimed = new Set<string>();
   for (const [pairing, sig] of seen) {
     const hits = Object.keys(entry.divergence).filter((d) => pairingMatches(d, pairing));
@@ -1573,6 +1775,20 @@ if (waiverProblems.length) {
 
 // The crashes, held to the same rule from both ends. An undeclared one is a difference nobody
 // looked at; a declared one that stopped happening is a sentence about something nobody can see.
+// The cross-generator waivers, held to their signatures the same way. Identical mechanism, and it
+// is here because the deferral that left it out last round turned out to be exploitable in exactly
+// the way the previous one was.
+const crossProblems: string[] = [];
+for (const [key, sig] of crossWaived) {
+  const want = CROSS_ALLOWED[key].divergence;
+  if (want === sig) continue;
+  crossProblems.push(`CROSS_ALLOWED[${key}] declares\n        ${want}\n      and measured\n        ${sig}`);
+}
+if (crossProblems.length) {
+  console.error('FAIL: a cross-generator waiver no longer covers what it was written for:');
+  for (const c of crossProblems) console.error(`      ${c}`);
+}
+
 const throwProblems: string[] = [];
 for (const [key, seen] of threwSeen) {
   const e = THREW[key];
@@ -1616,7 +1832,17 @@ if (findings) {
 
 // Counted separately and exited on together, so one run reports both rather than hiding the
 // second behind the first. A dead waiver is not a looser schema and must not be described as one.
-if (findings || deadWaivers.length || throwProblems.length || waiverProblems.length) process.exit(1);
+if (
+  findings ||
+  deadWaivers.length ||
+  throwProblems.length ||
+  waiverProblems.length ||
+  crossProblems.length ||
+  capProblems.length ||
+  totalCompared !== EXPECTED_COMPARISONS
+) {
+  process.exit(1);
+}
 PARITY_HARNESS
 
 # drizzle-orm is pinned: the parity target is a specific release, and a floating one would turn
@@ -4538,12 +4764,20 @@ const ALLOWED: Record<string, Entry> = {
  * string there too, so the two agree and this comparison reports nothing however it is probed. The
  * cross-major diff is what sees that one.
  *
- * Visible, but pointing the other way. `mtext.t_*.maxLength`, four filed fields, sit on the MySQL
- * text family, and this comparison did report parity for all four until the pool carried a string
- * that separates a byte budget from a character count. That was a pool gap rather than agreement,
- * and the difference it exposes is DRZL being the stricter and correct one, so it lives in ALLOWED
- * with the measurement rather than here. Worth stating in this docstring because a green line over
- * a filed field is exactly the thing a ledger is supposed to make impossible.
+ * Visible, and pointing the other way. `mtext.t_*.maxLength` is four filed fields on the MySQL text
+ * family, and this comparison reports parity for all four, because the difference it would show is
+ * DRZL being the stricter and correct one. Where each of the four is actually measured, since a
+ * green `parity` line over a filed field is the thing a ledger is supposed to make impossible and
+ * an earlier version of this paragraph claimed all four were in ALLOWED when two were not:
+ *
+ *   t_tiny     ALLOWED[mysql/m_tinytext], from the 100 emoji probe, and the byte-cap stage
+ *   t_text     ALLOWED[mysql/m_text], from the 22000 CJK probe, and the byte-cap stage
+ *   t_medium   the byte-cap stage alone. Its separating string is 10.7 MiB, too heavy for a pool.
+ *   t_long     nothing. Its separating string would need more units than V8 will put in a string,
+ *              and the byte-cap stage prints it by name as unprobeable rather than omitting it.
+ *
+ * So one of the four is genuinely uncovered, it is uncovered for a reason that is arithmetic
+ * rather than effort, and the run says so out loud.
  */
 const DEFECTS: Record<string, Entry> = {
   // ---- a float carries no bounds on 0.4x -----------------------------------------------------
