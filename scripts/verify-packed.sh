@@ -934,6 +934,14 @@ export const POOL: [string, unknown][] = [
   // short, so dropping an element's constraint looked identical to keeping it: two generators
   // stopped capping array elements and nothing here could tell.
   ['["11-char"]', ['x'.repeat(11)]], ['["3 emoji"]', ['\u{1F44D}\u{1F44D}\u{1F44D}']],
+  // 100 code points, 200 UTF-16 units, 400 UTF-8 bytes. The only string here that separates a byte
+  // budget from a character count at a cap this pool can reach, and without it the whole MySQL text
+  // family reported parity on both majors while four filed fields sat on those columns: every other
+  // string here is either ascii, where the two counts coincide, or far too short to reach any cap.
+  // A real MySQL 8 on a utf8mb4 client settles which count is the database's: `tinytext` refuses
+  // this string ("Data too long"), and `varchar(255)` takes it and reports `length` 400 with
+  // `char_length` 100. So TINYTEXT's 255 is bytes and VARCHAR's 255 is characters, in one table.
+  ['100 emoji', '\u{1F44D}'.repeat(100)],
   ['Buffer', Buffer.from('ab')], ['Uint8Array', new Uint8Array([1, 2])],
   ["'999.999.999.999'", '999.999.999.999'], ["'10.0.0.1'", '10.0.0.1'],
   ['{x:1,y:2}', { x: 1, y: 2 }], ["'12.5'", '12.5'], ["'0101'", '0101'], ["'010'", '010'],
@@ -946,6 +954,37 @@ export const LIBS: Record<string, Lib> = {
   valibot: { field: (s, k) => s.entries[k], ok: (f, x) => v.safeParse(f, x).success },
   arktype: { field: (s, k) => s.get(k), ok: (f, x) => !(f(x) instanceof type.errors) },
   typebox: { field: (s, k) => s.properties[k], ok: (f, x) => Value.Check(f, x) },
+};
+
+/**
+ * What one schema said about one value. `threw` is not a verdict and neither pass may treat it as
+ * one.
+ *
+ * This used to be a `catch { return false }`, which scored an exception as a rejection. Every one
+ * of them comes from the same place, and the set is provable rather than sampled: official's
+ * TypeBox module emits `{ type: 'RegExp', source, maxLength }` for a few columns, and TypeBox's
+ * `maxLength` check reads `value.length` with no type guard, so `null` and `undefined` crash it
+ * instead of failing it. Enumerated on both majors, the set of crashing columns and the set of
+ * `type: 'RegExp'` columns are the same set, nine pairings on v1 and three on 0.4x:
+ *
+ *   v1     pg/c_bit, mysql/m_binary, mysql/m_varbinary, in all three modes
+ *   0.4x   pg/c_bit alone, because that module emits a bare string for the binary columns
+ *
+ * So it is one upstream defect present on both majors rather than a difference between them. Zero
+ * crashes come from arktype, which the sentence that used to stand here named, and zero from
+ * anything DRZL emits on either major.
+ *
+ * Scoring those as rejections is not harmless: they fed the `looser` counts the ledger entries are
+ * asserted against, so a swallowed crash was being reported as evidence.
+ */
+export type Verdict = 'accept' | 'reject' | 'threw';
+
+export const probe = (lib: Lib, f: any, x: unknown): Verdict => {
+  try {
+    return lib.ok(f, x) ? 'accept' : 'reject';
+  } catch {
+    return 'threw';
+  }
 };
 PARITY_POOL
 cp "$WORK/parity-pool.ts" src/pool.ts
@@ -989,7 +1028,7 @@ import {
 } from 'drizzle-orm/typebox-legacy';
 // The pool and the accessors come from a file the 0.4x pass reads as well, so both majors are
 // asked the same question with the same values.
-import { POOL, LIBS, type Lib } from './pool.js';
+import { POOL, LIBS, probe, type Lib, type Verdict } from './pool.js';
 
 import { matrix as pgTable } from './schema.js';
 import { matrix as myTable } from './schema-mysql.js';
@@ -1006,19 +1045,55 @@ const OFFICIAL: Record<string, Record<string, (t: any) => any>> = {
   typebox: { select: tSelect, insert: tInsert, update: tUpdate },
 };
 
-const safeOk = (lib: Lib, f: any, x: unknown) => {
-  try {
-    return lib.ok(f, x);
-  } catch {
-    return false;
-  }
-};
 const safeField = (lib: Lib, s: any, k: string) => {
   try {
     return lib.field(s, k);
   } catch {
     return undefined;
   }
+};
+
+/**
+ * Probes where one side crashes instead of answering, which is not a verdict and is not compared
+ * as one. Declared exactly, and asserted in both directions like every other list here: an
+ * undeclared crash fails this script, and a declared one that no longer happens fails it too.
+ *
+ * Keyed `<dialect>/<library>/<column>`.
+ */
+const THREW: Record<string, { side: string; modes: string[]; values: string[]; why: string }> = {
+  // Three columns, one cause, and the set is derived rather than collected: official's TypeBox
+  // module emits `{ type: 'RegExp', maxLength }` for exactly these three on this major, and
+  // TypeBox's length check reads `value.length` with no type guard. Enumerating the `type: RegExp`
+  // columns and the crashing columns across all three dialects and all three modes gives the same
+  // nine pairings. `drizzle-typebox 0.3.3` on 0.45.2 has the same defect on `c_bit`, and emits a
+  // bare string for the two binary columns, so the 0.4x pass declares one site and not three.
+  // Nothing DRZL emits crashes on any probe, on either major.
+  'pg/typebox/c_bit': {
+    side: 'official',
+    modes: ['select', 'insert', 'update'],
+    values: ['null', 'undefined'],
+    why: 'official Type.RegExp with maxLength reads .length of a null value',
+  },
+  'mysql/typebox/m_binary': {
+    side: 'official',
+    modes: ['select', 'insert', 'update'],
+    values: ['null', 'undefined'],
+    why: 'as pg/typebox/c_bit',
+  },
+  'mysql/typebox/m_varbinary': {
+    side: 'official',
+    modes: ['select', 'insert', 'update'],
+    values: ['null', 'undefined'],
+    why: 'as pg/typebox/c_bit',
+  },
+};
+const threwSeen = new Map<string, { sides: Set<string>; modes: Set<string>; values: Set<string> }>();
+const recordThrow = (key: string, side: string, mode: string, value: string) => {
+  const seen = threwSeen.get(key) ?? { sides: new Set(), modes: new Set(), values: new Set() };
+  seen.sides.add(side);
+  seen.modes.add(mode);
+  seen.values.add(value);
+  threwSeen.set(key, seen);
 };
 
 /**
@@ -1053,9 +1128,20 @@ const ALLOWED: Record<string, string> = {
   // not populated `FormatRegistry` first. This generator emits a pattern, which needs no setup.
   'pg/typebox/c_uuid': 'official uses an unregistered `format`, which rejects every uuid',
   // A character limit counts *characters*; official counts `.length`, which is UTF-16 units, so
-  // it refuses three emoji in a `char(4)` the database accepts. Measured against Postgres.
+  // it refuses three emoji in a `char(4)` the database accepts. Measured against Postgres: three
+  // emoji insert into a `char(4)` and read back as four code points, which are seven UTF-16 units.
   'pg/c_char': 'character limit counts code points; official counts UTF-16 units',
   'mysql/m_char': 'as pg/c_char',
+  // MySQL's TEXT family is capped in bytes and official caps it in UTF-16 units, so official takes
+  // a 100 emoji string that is 200 units and 400 bytes into a `tinytext` whose budget is 255. DRZL
+  // emits the byte check and refuses it. A real MySQL 8 on a utf8mb4 client is the authority and
+  // agrees with DRZL: that insert fails with "Data too long", while the same string goes into a
+  // `varchar(255)` and reports `length` 400 with `char_length` 100.
+  //
+  // Only `m_tinytext` appears, and that is the pool rather than the defect: `text` is 65535 bytes,
+  // `mediumtext` 16 MB and `longtext` 4 GB, and no string here is long enough to cross those in
+  // bytes without also crossing them in units.
+  'mysql/m_tinytext': 'MySQL caps TEXT in bytes; official caps it in UTF-16 units, and takes 400 bytes into a 255 byte column',
   // Stricter than official, and verified against Postgres itself through PGlite: a `numeric`
   // column is a string, and a bare string schema accepts 'hello' where the database rejects it.
   // Official accepts all of these; the database does not.
@@ -1225,11 +1311,19 @@ for (const d of DIALECTS) {
         let officialTook = false;
         let drzlTook = false;
         for (const [label, x] of POOL) {
-          const a = safeOk(lib, o, x);
-          const b = safeOk(lib, m, x);
-          officialTook ||= a;
-          drzlTook ||= b;
-          if (a !== b) (b ? looser : tighter).push(label);
+          const a: Verdict = probe(lib, o, x);
+          const b: Verdict = probe(lib, m, x);
+          // A crash is not a verdict, so this value is not compared for this column. It is
+          // recorded and held to the THREW list above instead, which is what keeps it from being
+          // an absence that reads as agreement.
+          if (a === 'threw' || b === 'threw') {
+            if (a === 'threw') recordThrow(`${d.name}/${libName}/${k}`, 'official', mode, label);
+            if (b === 'threw') recordThrow(`${d.name}/${libName}/${k}`, 'drzl', mode, label);
+            continue;
+          }
+          officialTook ||= a === 'accept';
+          drzlTook ||= b === 'accept';
+          if (a !== b) (b === 'accept' ? looser : tighter).push(label);
         }
         // A column both sides reject every probe for agrees perfectly and proves nothing: the two
         // schemas could be a correct one and a broken one and this loop could not tell them apart.
@@ -1285,9 +1379,14 @@ for (const d of DIALECTS) {
         found.push(`        ${k}: missing from ${absent.join(', ')}`);
       } else {
         for (const [label, x] of POOL) {
-          const verdicts = d.libs.map((n) => [n, safeOk(LIBS[n], fields[n], x)] as const);
-          const yes = verdicts.filter(([, r]) => r).map(([n]) => n);
-          const no = verdicts.filter(([, r]) => !r).map(([n]) => n);
+          const verdicts = d.libs.map((n) => [n, probe(LIBS[n], fields[n], x)] as const);
+          // A generator that crashed is not one that rejected. Recorded on the DRZL side, where
+          // nothing is declared, so any crash out of DRZL's own output fails this script.
+          for (const [n, r] of verdicts) {
+            if (r === 'threw') recordThrow(`${d.name}/${n}/${k}`, 'drzl', 'select', label);
+          }
+          const yes = verdicts.filter(([, r]) => r === 'accept').map(([n]) => n);
+          const no = verdicts.filter(([, r]) => r === 'reject').map(([n]) => n);
           if (yes.length && no.length) {
             found.push(`        ${k} on ${label}: ${yes.join('/')} accept, ${no.join('/')} reject`);
           }
@@ -1320,6 +1419,38 @@ const deadWaivers = [
   ...Object.keys(ALLOWED).filter((k) => !usedWaivers.has(k)).map((k) => `ALLOWED[${k}]`),
   ...Object.keys(CROSS_ALLOWED).filter((k) => !usedCrossWaivers.has(k)).map((k) => `CROSS_ALLOWED[${k}]`),
 ];
+
+// The crashes, held to the same rule from both ends. An undeclared one is a difference nobody
+// looked at; a declared one that stopped happening is a sentence about something nobody can see.
+const throwProblems: string[] = [];
+for (const [key, seen] of threwSeen) {
+  const e = THREW[key];
+  if (!e) {
+    throwProblems.push(
+      `${key}: ${[...seen.sides].join('/')} crashed on ${[...seen.values].sort().join(', ')} ` +
+        `in ${[...seen.modes].sort().join(', ')}, and is in no list`
+    );
+    continue;
+  }
+  const got = { side: [...seen.sides].sort().join(','), modes: [...seen.modes].sort().join(','), values: [...seen.values].sort().join(',') };
+  const want = { side: e.side, modes: [...e.modes].sort().join(','), values: [...e.values].sort().join(',') };
+  for (const f of ['side', 'modes', 'values'] as const) {
+    if (got[f] !== want[f]) throwProblems.push(`THREW[${key}] declares ${f} ${want[f]}, measured ${got[f]}`);
+  }
+}
+for (const key of Object.keys(THREW)) {
+  if (!threwSeen.has(key)) throwProblems.push(`THREW[${key}] saw no crash on this run`);
+}
+console.log(
+  `    ${[...threwSeen.values()].reduce((n, s) => n + s.modes.size * s.values.size, 0)} probe(s) crashed ` +
+    `instead of returning a verdict, on ${threwSeen.size} column(s) against ` +
+    `${Object.keys(THREW).length} declared`
+);
+if (throwProblems.length) {
+  console.error('FAIL: a probe crashed where the list above does not say one does. A crash is not');
+  console.error('      a verdict and must not be compared as one:');
+  for (const t of throwProblems) console.error(`      ${t}`);
+}
 if (deadWaivers.length) {
   console.error('FAIL: these waivers suppressed nothing on this run, so they describe a');
   console.error('      divergence that no longer happens. Delete them rather than keeping a');
@@ -1334,7 +1465,7 @@ if (findings) {
 
 // Counted separately and exited on together, so one run reports both rather than hiding the
 // second behind the first. A dead waiver is not a looser schema and must not be described as one.
-if (findings || deadWaivers.length) process.exit(1);
+if (findings || deadWaivers.length || throwProblems.length) process.exit(1);
 PARITY_HARNESS
 
 # drizzle-orm is pinned: the parity target is a specific release, and a floating one would turn
@@ -4005,13 +4136,29 @@ cat > parity-0-4x.ts <<'PARITY_0_4X'
  * cross product of the two. Every entry measured today is that shape. A defect that reached, say,
  * zod on select and valibot on insert would fail the count and have to be split into two entries.
  *
- * The limit of it: where two independent causes meet on one column, fixing one of them leaves the
- * entry suppressing the other and the counts unchanged. One column is like that today, `c_char`
- * and its MySQL twin, and both causes are named in the entry. The per-pairing looser/tighter
- * counts are printed on any ledger failure so a partial change is visible in the output.
+ * The limit of it, measured on the one column with two independent causes rather than assumed.
+ * `c_char` differs from official on 7 pool values today. Recomputed against the real official
+ * field under each half fixed:
+ *
+ *   fix the code-point half, so DRZL counts UTF-16 units   7 values become 5, still all looser
+ *   fix the exact-length half, so DRZL demands exactly 4   7 values become 0
+ *
+ * So one half is caught and the other is not. Fixing the exact-length half leaves the entry
+ * suppressing nothing, which fails the stage. Fixing the code-point half leaves the same
+ * libraries, the same modes, the same pairing count and the same direction, so the gate stays
+ * green and the change shows up only in the per-pairing counts, which are printed on any ledger
+ * failure. An earlier version of this paragraph said neither half was caught and that the counts
+ * do not move; both halves of that were wrong.
+ *
+ * `direction` is what closes the other shape of this, where a break reverses an entry rather than
+ * narrowing it. It does not close the `c_char` case, because a narrowing keeps its direction.
+ * Measured on `mysql/m_tinytext`: deleting the analyzer's 0.4x byte cap turns that entry from
+ * `tighter` to `looser` on the same libraries and modes, and without the field the entry
+ * suppressed the very defect it was written next to.
  */
 import { readFileSync } from 'node:fs';
-import { POOL, LIBS, type Lib } from './src/pool.js';
+import { SchemaAnalyzer } from '@drzl/analyzer';
+import { POOL, LIBS, probe, type Lib, type Verdict } from './src/pool.js';
 
 import {
   createSelectSchema as zSelect,
@@ -4050,6 +4197,22 @@ type Entry = {
   libs: string[];
   /** The modes it shows up in, asserted the same way. */
   modes: string[];
+  /**
+   * Which way the disagreement runs, in every pairing this entry covers.
+   *
+   *   looser   DRZL accepts values official refuses, and refuses none official accepts
+   *   tighter  the other way round
+   *   both     each side takes something the other does not, which is what a wrong type looks like
+   *
+   * Asserted like the rest, and it is what stops an entry from absorbing a defect it does not
+   * describe. Not hypothetical: `mysql/m_tinytext` is `tighter` today, and deleting the analyzer's
+   * 0.4x byte cap turns it into `looser` on the same libraries, the same modes and the same
+   * pairing count. Without this field that break was suppressed by its own waiver.
+   *
+   * A direction is a property of the disagreement rather than a count of samples, so widening the
+   * pool does not churn it.
+   */
+  direction: 'looser' | 'tighter' | 'both';
   /** What DRZL emits on 0.4x. */
   drzl: string;
   /** What the official 0.4x module emits for the same column. */
@@ -4087,6 +4250,7 @@ const ALLOWED: Record<string, Entry> = {
   'pg/c_char': {
     libs: LIB_NAMES,
     modes: MODE_NAMES,
+    direction: 'looser',
     drzl: 'a string of at most 4 code points',
     official: 'a string of exactly 4 UTF-16 units',
     filed: 'not a defect: two deliberate differences, see the note above',
@@ -4094,9 +4258,32 @@ const ALLOWED: Record<string, Entry> = {
   'mysql/m_char': {
     libs: LIB_NAMES,
     modes: MODE_NAMES,
+    direction: 'looser',
     drzl: 'as pg/c_char',
     official: 'as pg/c_char',
     filed: 'as pg/c_char',
+  },
+  // MySQL caps the TEXT family in bytes; official caps it in UTF-16 units. A real MySQL 8 on a
+  // utf8mb4 client is the authority and puts DRZL on the right side of it: a 100 emoji string is
+  // 200 units and 400 bytes, `insert into caps (t) values (?)` into a `tinytext` fails with "Data
+  // too long", and the same string goes into a `varchar(255)` and reports `length` 400 with
+  // `char_length` 100. So one table has a byte budget and a character count side by side.
+  //
+  // Until the pool carried that string, all four MySQL text columns reported parity on both
+  // majors while `mtext.t_text.maxLength` and its three siblings were filed against them. The
+  // green line was not agreement, it was a pool with nothing in it that could tell the two counts
+  // apart: every other string here is ascii, where they coincide, or too short to reach a cap.
+  //
+  // Only `tinytext` shows it, and that is the pool rather than the defect: `text` is 65535 bytes,
+  // `mediumtext` 16 MB and `longtext` 4 GB, and a string long enough to cross those in bytes
+  // crosses them in UTF-16 units too, so both sides refuse it and agree.
+  'mysql/m_tinytext': {
+    libs: LIB_NAMES,
+    modes: MODE_NAMES,
+    direction: 'tighter',
+    drzl: 'a string of at most 255 UTF-8 bytes, which is the column budget',
+    official: 'a string of at most 255 UTF-16 units, so it takes 400 bytes into a 255 byte column',
+    filed: 'not a defect: DRZL is stricter, and MySQL itself refuses what official accepts',
   },
   // `coerceDates` defaults to coercing on insert and update, which is a documented DRZL option and
   // is what `coerceDates: 'none'` turns off to match official exactly. Only strings and numbers
@@ -4104,20 +4291,22 @@ const ALLOWED: Record<string, Entry> = {
   'pg/c_date_d': {
     libs: LIB_NAMES,
     modes: WRITE,
+    direction: 'looser',
     drzl: 'a Date, or a string or number coerced to one',
     official: 'a Date only',
     filed: 'not a defect: coerceDates',
   },
-  'pg/c_ts_d': { libs: LIB_NAMES, modes: WRITE, drzl: 'as pg/c_date_d', official: 'as pg/c_date_d', filed: 'as pg/c_date_d' },
-  'mysql/m_date': { libs: LIB_NAMES, modes: WRITE, drzl: 'as pg/c_date_d', official: 'as pg/c_date_d', filed: 'as pg/c_date_d' },
-  'mysql/m_datetime': { libs: LIB_NAMES, modes: WRITE, drzl: 'as pg/c_date_d', official: 'as pg/c_date_d', filed: 'as pg/c_date_d' },
-  'mysql/m_ts': { libs: LIB_NAMES, modes: WRITE, drzl: 'as pg/c_date_d', official: 'as pg/c_date_d', filed: 'as pg/c_date_d' },
-  'sqlite/s_int_ts': { libs: LIB_NAMES, modes: WRITE, drzl: 'as pg/c_date_d', official: 'as pg/c_date_d', filed: 'as pg/c_date_d' },
+  'pg/c_ts_d': { libs: LIB_NAMES, modes: WRITE, direction: 'looser', drzl: 'as pg/c_date_d', official: 'as pg/c_date_d', filed: 'as pg/c_date_d' },
+  'mysql/m_date': { libs: LIB_NAMES, modes: WRITE, direction: 'looser', drzl: 'as pg/c_date_d', official: 'as pg/c_date_d', filed: 'as pg/c_date_d' },
+  'mysql/m_datetime': { libs: LIB_NAMES, modes: WRITE, direction: 'looser', drzl: 'as pg/c_date_d', official: 'as pg/c_date_d', filed: 'as pg/c_date_d' },
+  'mysql/m_ts': { libs: LIB_NAMES, modes: WRITE, direction: 'looser', drzl: 'as pg/c_date_d', official: 'as pg/c_date_d', filed: 'as pg/c_date_d' },
+  'sqlite/s_int_ts': { libs: LIB_NAMES, modes: WRITE, direction: 'looser', drzl: 'as pg/c_date_d', official: 'as pg/c_date_d', filed: 'as pg/c_date_d' },
   // TypeBox fails a format it has no entry for rather than ignoring it, so official's schema
   // rejects every valid uuid in any project that has not populated `FormatRegistry` first.
   'pg/c_uuid': {
     libs: ['typebox'],
     modes: MODE_NAMES,
+    direction: 'looser',
     drzl: 'a string carrying a uuid pattern, which needs no setup',
     official: "Type.String({ format: 'uuid' }), which rejects every uuid until FormatRegistry is populated",
     filed: 'not a defect: DRZL is the usable one',
@@ -4126,15 +4315,16 @@ const ALLOWED: Record<string, Entry> = {
   'pg/c_json': {
     libs: ['valibot'],
     modes: MODE_NAMES,
+    direction: 'tighter',
     drzl: 'a JSON value: no Infinity, no Date, no Buffer',
     official: 'v.any(), which takes all three',
     filed: 'not a defect: DRZL is stricter',
   },
-  'pg/c_jsonb': { libs: ['valibot'], modes: MODE_NAMES, drzl: 'as pg/c_json', official: 'as pg/c_json', filed: 'as pg/c_json' },
-  'pg/c_jsonb_typed': { libs: ['valibot'], modes: MODE_NAMES, drzl: 'as pg/c_json', official: 'as pg/c_json', filed: 'as pg/c_json' },
-  'mysql/m_json': { libs: ['valibot'], modes: MODE_NAMES, drzl: 'as pg/c_json', official: 'as pg/c_json', filed: 'as pg/c_json' },
-  'sqlite/s_text_json': { libs: ['valibot'], modes: MODE_NAMES, drzl: 'as pg/c_json', official: 'as pg/c_json', filed: 'as pg/c_json' },
-  'sqlite/s_blob_json': { libs: ['valibot'], modes: MODE_NAMES, drzl: 'as pg/c_json', official: 'as pg/c_json', filed: 'as pg/c_json' },
+  'pg/c_jsonb': { libs: ['valibot'], modes: MODE_NAMES, direction: 'tighter', drzl: 'as pg/c_json', official: 'as pg/c_json', filed: 'as pg/c_json' },
+  'pg/c_jsonb_typed': { libs: ['valibot'], modes: MODE_NAMES, direction: 'tighter', drzl: 'as pg/c_json', official: 'as pg/c_json', filed: 'as pg/c_json' },
+  'mysql/m_json': { libs: ['valibot'], modes: MODE_NAMES, direction: 'tighter', drzl: 'as pg/c_json', official: 'as pg/c_json', filed: 'as pg/c_json' },
+  'sqlite/s_text_json': { libs: ['valibot'], modes: MODE_NAMES, direction: 'tighter', drzl: 'as pg/c_json', official: 'as pg/c_json', filed: 'as pg/c_json' },
+  'sqlite/s_blob_json': { libs: ['valibot'], modes: MODE_NAMES, direction: 'tighter', drzl: 'as pg/c_json', official: 'as pg/c_json', filed: 'as pg/c_json' },
 };
 
 /**
@@ -4148,11 +4338,20 @@ const ALLOWED: Record<string, Entry> = {
  * plus four MySQL text columns, so no MySQL float, no MySQL binary, no MySQL year and no SQLite
  * column of any kind had ever been described under both majors.
  *
- * One filed defect is invisible here, which is worth saying because a gate is easy to mistake for
- * a complete one. `matrix.c_numeric.format` and its two siblings are the numeric pattern being
- * attached on the v1 arm only, so on 0.4x DRZL emits a bare string for `c_numeric` and `c_decimal`
- * and takes 'hello' back. Official drizzle-zod 0.8.3 emits a bare string there too, so the two
- * agree and this comparison reports nothing. The cross-major diff is what sees that one.
+ * Two kinds of filed defect are not in this map, and they are not there for different reasons.
+ *
+ * Invisible, because official is equally loose. `matrix.c_numeric.format` and its two siblings are
+ * the numeric pattern being attached on the v1 arm only, so on 0.4x DRZL emits a bare string for
+ * `c_numeric` and `c_decimal` and takes 'hello' back. Official drizzle-zod 0.8.3 emits a bare
+ * string there too, so the two agree and this comparison reports nothing however it is probed. The
+ * cross-major diff is what sees that one.
+ *
+ * Visible, but pointing the other way. `mtext.t_*.maxLength`, four filed fields, sit on the MySQL
+ * text family, and this comparison did report parity for all four until the pool carried a string
+ * that separates a byte budget from a character count. That was a pool gap rather than agreement,
+ * and the difference it exposes is DRZL being the stricter and correct one, so it lives in ALLOWED
+ * with the measurement rather than here. Worth stating in this docstring because a green line over
+ * a filed field is exactly the thing a ledger is supposed to make impossible.
  */
 const DEFECTS: Record<string, Entry> = {
   // ---- a float carries no bounds on 0.4x -----------------------------------------------------
@@ -4161,6 +4360,7 @@ const DEFECTS: Record<string, Entry> = {
   'pg/c_real': {
     libs: LIB_NAMES,
     modes: MODE_NAMES,
+    direction: 'looser',
     drzl: 'an unbounded number',
     official: 'a number within +/-8388607',
     filed: 'AC: matrix.c_real.min, .max, .integer',
@@ -4168,6 +4368,7 @@ const DEFECTS: Record<string, Entry> = {
   'pg/c_double': {
     libs: LIB_NAMES,
     modes: MODE_NAMES,
+    direction: 'looser',
     drzl: 'an unbounded number',
     official: 'a number within +/-140737488355327',
     filed: 'AC: matrix.c_double.min, .max, .integer',
@@ -4175,6 +4376,7 @@ const DEFECTS: Record<string, Entry> = {
   'pg/c_numeric_n': {
     libs: LIB_NAMES,
     modes: MODE_NAMES,
+    direction: 'looser',
     drzl: 'an unbounded number',
     official: 'a number within the safe-integer range',
     filed: 'AC: matrix.c_numeric_n.min, .max, .integer',
@@ -4182,6 +4384,7 @@ const DEFECTS: Record<string, Entry> = {
   'mysql/m_real': {
     libs: LIB_NAMES,
     modes: MODE_NAMES,
+    direction: 'looser',
     drzl: 'an unbounded number',
     official: 'a number within +/-140737488355327',
     filed: 'new: the same float defect, on a dialect the cross-major fixture cannot reach',
@@ -4189,6 +4392,7 @@ const DEFECTS: Record<string, Entry> = {
   'mysql/m_double': {
     libs: LIB_NAMES,
     modes: MODE_NAMES,
+    direction: 'looser',
     drzl: 'an unbounded number',
     official: 'a number within +/-140737488355327',
     filed: 'new: as mysql/m_real',
@@ -4196,6 +4400,7 @@ const DEFECTS: Record<string, Entry> = {
   'mysql/m_float': {
     libs: LIB_NAMES,
     modes: MODE_NAMES,
+    direction: 'looser',
     drzl: 'an unbounded number',
     official: 'a number within +/-8388607',
     filed: 'new: as mysql/m_real',
@@ -4203,6 +4408,7 @@ const DEFECTS: Record<string, Entry> = {
   'sqlite/s_real': {
     libs: LIB_NAMES,
     modes: MODE_NAMES,
+    direction: 'looser',
     drzl: 'an unbounded number',
     official: 'a number within +/-140737488355327',
     filed: 'new: as mysql/m_real, on SQLite',
@@ -4216,6 +4422,7 @@ const DEFECTS: Record<string, Entry> = {
   'pg/c_point': {
     libs: LIB_NAMES,
     modes: MODE_NAMES,
+    direction: 'both',
     drzl: 'a string',
     official: 'a tuple [number, number]',
     filed: 'AC: matrix.c_point.tsType, .dbType, .shape',
@@ -4223,6 +4430,7 @@ const DEFECTS: Record<string, Entry> = {
   'pg/c_line': {
     libs: LIB_NAMES,
     modes: MODE_NAMES,
+    direction: 'both',
     drzl: 'a string',
     official: 'a tuple [number, number, number]',
     filed: 'AC: matrix.c_line.tsType, .dbType, .shape',
@@ -4241,6 +4449,7 @@ const DEFECTS: Record<string, Entry> = {
   'pg/c_geometry': {
     libs: LIB_NAMES,
     modes: MODE_NAMES,
+    direction: 'looser',
     drzl: 'unknown, which accepts every value in the pool',
     official: 'a tuple [number, number]',
     filed: 'AC: matrix.c_geometry.tsType, .dbType, .shape, and check-old.ts KNOWN_UNNAMED',
@@ -4248,6 +4457,7 @@ const DEFECTS: Record<string, Entry> = {
   'pg/c_bit': {
     libs: LIB_NAMES,
     modes: MODE_NAMES,
+    direction: 'looser',
     drzl: 'unknown, which accepts every value in the pool',
     official: 'a string of at most 3 characters matching ^[01]*$',
     filed: 'AC: matrix.c_bit.tsType, .dbType, .shape, and check-old.ts KNOWN_UNNAMED',
@@ -4255,6 +4465,7 @@ const DEFECTS: Record<string, Entry> = {
   'pg/c_vector': {
     libs: LIB_NAMES,
     modes: MODE_NAMES,
+    direction: 'looser',
     drzl: 'unknown, which accepts every value in the pool',
     official: 'an array of exactly 3 numbers',
     filed: 'AC: matrix.c_vector.tsType, .dbType, .shape, and check-old.ts KNOWN_UNNAMED',
@@ -4262,6 +4473,7 @@ const DEFECTS: Record<string, Entry> = {
   'sqlite/s_blob': {
     libs: LIB_NAMES,
     modes: MODE_NAMES,
+    direction: 'looser',
     drzl: 'unknown, which accepts every value in the pool',
     official: 'a Buffer',
     filed: 'new: no SQLiteBlobBuffer arm in the class-name path',
@@ -4269,6 +4481,7 @@ const DEFECTS: Record<string, Entry> = {
   'sqlite/s_blob_buf': {
     libs: LIB_NAMES,
     modes: MODE_NAMES,
+    direction: 'looser',
     drzl: 'unknown, which accepts every value in the pool',
     official: 'a Buffer',
     filed: 'new: as sqlite/s_blob',
@@ -4276,6 +4489,7 @@ const DEFECTS: Record<string, Entry> = {
   'sqlite/s_int_ts_ms': {
     libs: LIB_NAMES,
     modes: MODE_NAMES,
+    direction: 'looser',
     drzl: 'unknown, which accepts every value in the pool',
     official: 'a Date',
     filed: 'new: integer({ mode: timestamp_ms }) is unnamed on 0.4x',
@@ -4289,22 +4503,39 @@ const DEFECTS: Record<string, Entry> = {
   'mysql/m_decimal': {
     libs: LIB_NAMES,
     modes: MODE_NAMES,
+    direction: 'both',
     drzl: 'a number',
     official: 'a string',
     filed: 'new: DRZL emits a string on v1, so the two majors disagree as well',
   },
+  // The two official majors do not agree about this column, so `official: a string` is only half
+  // the picture and a reader needs the rest before acting on it. Measured on the column object and
+  // on both modules:
+  //
+  //                        0.4x                       v1
+  //   drizzle-orm          dataType 'string'          dataType 'string binary'
+  //   official validator   any string                 ^[01]*$ capped at the declared length
+  //   DRZL                 z.instanceof(Uint8Array)   the same capped string official v1 emits
+  //
+  // That settles which side is wrong without appealing to self-consistency: DRZL's 0.4x answer
+  // contradicts drizzle-orm's own declared `dataType` on the major it is measured on. Both
+  // wrong-direction repairs are already gated, so neither can be taken by accident: emitting
+  // `Uint8Array` on v1 breaks the v1 pass, and emitting `^[01]*$` on 0.4x breaks this one, since
+  // official 0.4x accepts 'zzz'.
   'mysql/m_binary': {
     libs: LIB_NAMES,
     modes: MODE_NAMES,
+    direction: 'both',
     drzl: 'a Uint8Array',
-    official: 'a string',
-    filed: 'new: DRZL emits a capped string on v1',
+    official: "a bare string on 0.4x, where official v1 emits ^[01]*$ capped at 4",
+    filed: "new: drizzle-orm declares dataType 'string' on both majors",
   },
   'mysql/m_varbinary': {
     libs: LIB_NAMES,
     modes: MODE_NAMES,
+    direction: 'both',
     drzl: 'a Uint8Array',
-    official: 'a string',
+    official: "a bare string on 0.4x, where official v1 emits ^[01]*$ capped at 16",
     filed: 'new: as mysql/m_binary',
   },
 
@@ -4316,6 +4547,7 @@ const DEFECTS: Record<string, Entry> = {
   'mysql/m_serial': {
     libs: LIB_NAMES,
     modes: MODE_NAMES,
+    direction: 'looser',
     drzl: 'an unbounded integer, so it takes -1 for an auto-increment column',
     official: 'an integer within 0..9007199254740991',
     filed: 'new',
@@ -4323,6 +4555,7 @@ const DEFECTS: Record<string, Entry> = {
   'mysql/m_year': {
     libs: LIB_NAMES,
     modes: MODE_NAMES,
+    direction: 'looser',
     drzl: 'an unbounded integer',
     official: 'an integer within 1901..2155',
     filed: 'new',
@@ -4330,6 +4563,7 @@ const DEFECTS: Record<string, Entry> = {
   'sqlite/s_int': {
     libs: ['valibot', 'arktype', 'typebox'],
     modes: MODE_NAMES,
+    direction: 'looser',
     drzl: 'an integer within the signed 64-bit range',
     official: 'an integer within the safe-integer range',
     filed: 'new',
@@ -4337,28 +4571,77 @@ const DEFECTS: Record<string, Entry> = {
   'sqlite/s_blob_bigint': {
     libs: LIB_NAMES,
     modes: MODE_NAMES,
+    direction: 'looser',
     drzl: 'an unbounded bigint',
     official: 'a bigint within the signed 64-bit range',
     filed: 'new',
   },
 };
 
-// A throw is a rejection, not an absence of an answer: an arktype narrow throws for a value of the
-// wrong type, and every library here treats that as a failed check. `safeField` returning nothing
-// is not read as agreement anywhere below; it produces a finding row.
-const safeOk = (lib: Lib, f: any, x: unknown) => {
-  try {
-    return lib.ok(f, x);
-  } catch {
-    return false;
-  }
-};
+// A field lookup that throws yields nothing, and nothing is not read as agreement anywhere below:
+// every branch that reaches an absent field pushes a finding row. Measured on this run, it throws
+// zero times, so the catch is a guard rather than a path anything travels. Verdicts go through
+// `probe` in pool.ts, which does not treat a crash as a rejection.
 const safeField = (lib: Lib, s: any, k: string) => {
   try {
     return lib.field(s, k);
   } catch {
     return undefined;
   }
+};
+
+/**
+ * Probes where one side crashes instead of answering. Declared exactly and asserted in both
+ * directions, keyed `<dialect>/<library>/<column>`.
+ *
+ * A crash is not a verdict, so the value it happened on is not compared for that column. It is
+ * recorded here instead, which is what stops a swallowed exception from being scored as the other
+ * side's answer.
+ */
+type Crash = { side: string; modes: string[]; values: string[]; why: string };
+const THREW: Record<string, Crash> = {
+  // Official emits `{ type: 'RegExp', source: '^[01]+$', maxLength: 3 }`, and TypeBox's length
+  // check reads `value.length` with no type guard, so `null` and `undefined` crash it rather than
+  // failing it. `drizzle-orm/typebox-legacy` on 1.0.0-rc.4 does the same, so this is an upstream
+  // defect on both majors rather than a difference between them.
+  //
+  // One site here and three in the v1 pass, and the difference is upstream rather than arbitrary:
+  // the crashing columns are exactly the columns official emits as `type: 'RegExp'`, enumerated on
+  // both majors, and this module emits a bare string for `m_binary` and `m_varbinary` where the v1
+  // one emits a capped pattern. Nothing DRZL emits crashes on any probe, on either major.
+  'pg/typebox/c_bit': {
+    side: 'official',
+    modes: ['select', 'insert', 'update'],
+    values: ['null', 'undefined'],
+    why: 'official Type.RegExp with maxLength reads .length of a null value',
+  },
+};
+
+/**
+ * Columns the analyzer cannot name at all on 0.4x, in the two fixtures nothing else checks.
+ *
+ * The comparison above is differential and can only see DRZL and official disagreeing. This is
+ * absolute, and it is what still fires when they agree about something wrong, which is the state
+ * `m_enum` is in below. `check-old.ts` in the stage above does the same job for the Postgres and
+ * MySQL-text fixtures; it cannot cover these two, because it runs before this stage writes them.
+ * One home per fixture, so a fix has exactly one entry to remove.
+ *
+ * Asserted both ways: an unnamed column that is not here fails, and an entry here whose column is
+ * named now fails too.
+ */
+const UNNAMED: Record<string, string> = {
+  // No SQLiteBlobBuffer arm in the class-name path, and a bare `blob()` really is a buffer column
+  // on 0.45.2. Both also carry a DEFECTS entry above, which is the relative half of the finding.
+  'sqlite/matrix.s_blob': 'no SQLiteBlobBuffer arm in the class-name path',
+  'sqlite/matrix.s_blob_buf': 'as sqlite/matrix.s_blob',
+  'sqlite/matrix.s_int_ts_ms': 'integer({ mode: timestamp_ms }) has no arm; only mode timestamp does',
+  // The one the comparison cannot see, and the reason this absolute check earns its place. The
+  // analyzer names no type for a 0.4x mysqlEnum and prints "so its validator will accept any
+  // value", and that sentence is false: every generator reads `enumValues` off the column
+  // regardless of `tsType`, and the 0.4x zod output for this column is `z.enum(['a','b','c'])`.
+  // So the emitted validator is right, the comparison above reports parity, and nothing but this
+  // line records that the analyzer still cannot describe the column. Filed as addendum Z.
+  'mysql/matrix.m_enum': 'no MySqlEnumColumn arm; the generators recover the values from enumValues',
 };
 
 const DIALECTS = [
@@ -4448,8 +4731,16 @@ async function main() {
   });
   console.log(`    drizzle-orm ${drizzle} against ${officials.join(', ')}`);
 
-  type Seen = { libs: Set<string>; modes: Set<string>; pairings: number; detail: string[] };
+  type Seen = { libs: Set<string>; modes: Set<string>; directions: Set<string>; pairings: number; detail: string[] };
   const observed = new Map<string, Seen>();
+  const crashed = new Map<string, { sides: Set<string>; modes: Set<string>; values: Set<string> }>();
+  const recordCrash = (key: string, side: string, mode: string, value: string) => {
+    const seen = crashed.get(key) ?? { sides: new Set<string>(), modes: new Set<string>(), values: new Set<string>() };
+    seen.sides.add(side);
+    seen.modes.add(mode);
+    seen.values.add(value);
+    crashed.set(key, seen);
+  };
   const findings: string[] = [];
   let totalCompared = 0;
   let pairings = 0;
@@ -4459,6 +4750,10 @@ async function main() {
     for (const lib of LIB_NAMES) loaded[lib] = await d.mods[lib]();
 
     for (const mode of MODE_NAMES) {
+      // Column names come from the official zod schema regardless of library: every module emits
+      // the same set, and zod is the one whose shape is trivially enumerable. Built once per mode
+      // rather than once per library, which was four builds of the same object.
+      const oShape = OFFICIAL.zod[mode](d.table as never).shape;
       for (const libName of LIB_NAMES) {
         pairings++;
         const lib = LIBS[libName];
@@ -4468,9 +4763,6 @@ async function main() {
           findings.push(`${d.name}/${libName}/${mode}: no ${PREFIX[mode]}matrixSchema exported`);
           continue;
         }
-        // Column names come from the official zod schema regardless of library: every module emits
-        // the same set, and zod is the one whose shape is trivially enumerable.
-        const oShape = OFFICIAL.zod[mode](d.table as never).shape;
         const rows: string[] = [];
         let compared = 0;
         let ledgered = 0;
@@ -4493,11 +4785,19 @@ async function main() {
           let officialTook = false;
           let drzlTook = false;
           for (const [label, x] of POOL) {
-            const a = safeOk(lib, o, x);
-            const b = safeOk(lib, m, x);
-            officialTook ||= a;
-            drzlTook ||= b;
-            if (a !== b) (b ? looser : tighter).push(label);
+            const a: Verdict = probe(lib, o, x);
+            const b: Verdict = probe(lib, m, x);
+            // A crash is not a verdict, so this value is not compared for this column. It goes to
+            // the THREW list instead, which is asserted from both ends, so it can neither be
+            // scored as the other side's answer nor vanish.
+            if (a === 'threw' || b === 'threw') {
+              if (a === 'threw') recordCrash(`${d.name}/${libName}/${k}`, 'official', mode, label);
+              if (b === 'threw') recordCrash(`${d.name}/${libName}/${k}`, 'drzl', mode, label);
+              continue;
+            }
+            officialTook ||= a === 'accept';
+            drzlTook ||= b === 'accept';
+            if (a !== b) (b === 'accept' ? looser : tighter).push(label);
           }
           // A column both sides reject every probe for agrees perfectly and proves nothing: the
           // two schemas could be a correct one and a broken one and this loop could not tell them
@@ -4513,10 +4813,12 @@ async function main() {
           if (!looser.length && !tighter.length) continue;
 
           const key = `${d.name}/${k}`;
-          const seen: Seen = observed.get(key) ?? { libs: new Set(), modes: new Set(), pairings: 0, detail: [] };
+          const seen: Seen =
+            observed.get(key) ?? { libs: new Set(), modes: new Set(), directions: new Set(), pairings: 0, detail: [] };
           seen.libs.add(libName);
           seen.modes.add(mode);
           seen.pairings++;
+          seen.directions.add(looser.length && tighter.length ? 'both' : looser.length ? 'looser' : 'tighter');
           seen.detail.push(`${mode}/${libName} ${looser.length} looser ${tighter.length} tighter`);
           observed.set(key, seen);
           if (ALLOWED[key] || DEFECTS[key]) { ledgered++; continue; }
@@ -4581,6 +4883,10 @@ async function main() {
       if (gotModes !== wantModes) {
         ledgerProblems.push(`${name}[${key}] declares modes ${wantModes}, measured ${gotModes}`);
       }
+      const gotDirection = [...seen.directions].sort().join(',');
+      if (gotDirection !== entry.direction) {
+        ledgerProblems.push(`${name}[${key}] declares direction ${entry.direction}, measured ${gotDirection}`);
+      }
       const wantPairings = entry.libs.length * entry.modes.length;
       if (seen.pairings !== wantPairings) {
         ledgerProblems.push(
@@ -4591,6 +4897,75 @@ async function main() {
     }
   }
   const unledgered = [...observed.keys()].filter((k) => !ALLOWED[k] && !DEFECTS[k]);
+
+  // The absolute half: what the analyzer makes of these two fixtures on its own.
+  const unnamedProblems: string[] = [];
+  const unnamedSeen = new Set<string>();
+  let analyzed = 0;
+  for (const [dialect, file] of [['mysql', 'src/matrix-mysql.ts'], ['sqlite', 'src/matrix-sqlite.ts']]) {
+    const a = await new SchemaAnalyzer(file).analyze({});
+    const failed = a.issues.filter((i) => i.code === 'DRZL_ANL_IMPORT');
+    if (failed.length) {
+      unnamedProblems.push(`${file} could not be imported: ${failed.map((i) => i.message).join('; ')}`);
+      continue;
+    }
+    for (const t of a.tables) {
+      for (const c of t.columns) {
+        analyzed++;
+        if (c.tsType !== 'unknown' && c.dbType !== 'UNKNOWN') continue;
+        const key = `${dialect}/${t.name}.${c.name}`;
+        if (UNNAMED[key]) { unnamedSeen.add(key); continue; }
+        unnamedProblems.push(`${key} is analyzed as unknown on 0.4x and is in no list`);
+      }
+    }
+  }
+  // A run that analyzed nothing would otherwise report every entry as dead and read as a fix.
+  if (!analyzed) unnamedProblems.push('no column was analyzed from the MySQL or SQLite fixture');
+  for (const key of Object.keys(UNNAMED)) {
+    if (!unnamedSeen.has(key)) {
+      unnamedProblems.push(`UNNAMED[${key}] is named on 0.4x now, so delete it here and in DEFECTS`);
+    }
+  }
+  console.log(
+    `    ${analyzed} columns analyzed on 0.4x across the MySQL and SQLite fixtures, ` +
+      `${unnamedSeen.size} unnamed and filed`
+  );
+
+  // The crashes, held to the same rule from both ends as everything else here.
+  const crashProblems: string[] = [];
+  for (const [key, seen] of crashed) {
+    const e = THREW[key];
+    if (!e) {
+      crashProblems.push(
+        `${key}: ${[...seen.sides].sort().join('/')} crashed on ` +
+          `${[...seen.values].sort().join(', ')} in ${[...seen.modes].sort().join(', ')}, ` +
+          'and is in no list'
+      );
+      continue;
+    }
+    const got: Record<string, string> = {
+      side: [...seen.sides].sort().join(','),
+      modes: [...seen.modes].sort().join(','),
+      values: [...seen.values].sort().join(','),
+    };
+    const want: Record<string, string> = {
+      side: e.side,
+      modes: [...e.modes].sort().join(','),
+      values: [...e.values].sort().join(','),
+    };
+    for (const f of ['side', 'modes', 'values']) {
+      if (got[f] !== want[f]) crashProblems.push(`THREW[${key}] declares ${f} ${want[f]}, measured ${got[f]}`);
+    }
+  }
+  for (const key of Object.keys(THREW)) {
+    if (!crashed.has(key)) crashProblems.push(`THREW[${key}] saw no crash on this run`);
+  }
+  const crashCount = [...crashed.values()].reduce((n, c) => n + c.modes.size * c.values.size, 0);
+  console.log(
+    `    ${crashCount} probe(s) crashed instead of returning a verdict, on ${crashed.size} ` +
+      `column(s) against ${Object.keys(THREW).length} declared, and were compared as neither ` +
+      'accept nor reject'
+  );
 
   if (unledgered.length) {
     console.error('    FAIL: these columns differ from the official 0.4x module and are in neither');
@@ -4605,15 +4980,41 @@ async function main() {
     for (const p of ledgerProblems) console.error(`      ${p}`);
   }
   if (totalCompared !== EXPECTED_COMPARISONS) {
+    const direction = totalCompared < EXPECTED_COMPARISONS ? 'fewer' : 'more';
     console.error(`    FAIL: ${totalCompared} column comparisons, expected ${EXPECTED_COMPARISONS}.`);
-    console.error('          A parity pass that measures fewer columns than it did yesterday is');
-    console.error('          the failure this file has been bitten by most.');
+    console.error(`          This run compared ${direction} columns than EXPECTED_COMPARISONS says.`);
+    if (totalCompared < EXPECTED_COMPARISONS) {
+      console.error('          A parity pass that measures fewer columns than it did yesterday is');
+      console.error('          the failure this file has been bitten by most, so this is a stop.');
+      console.error('          Find what stopped being compared before touching the constant.');
+    } else {
+      console.error('          A fixture grew. That is fine and it is not automatic: measure the');
+      console.error('          new columns, put any difference in ALLOWED or DEFECTS with its');
+      console.error('          reason, and then update EXPECTED_COMPARISONS in this file to match.');
+    }
+  }
+  if (crashProblems.length) {
+    console.error('    FAIL: a probe crashed where the THREW list does not say one does, or a');
+    console.error('          declared crash stopped happening. A crash is not a verdict and must');
+    console.error('          not be compared as one:');
+    for (const c of crashProblems) console.error(`      ${c}`);
+  }
+  if (unnamedProblems.length) {
+    console.error('    FAIL: the unnamed-column list does not describe this run:');
+    for (const u of unnamedProblems) console.error(`      ${u}`);
   }
   if (findings.length) {
     console.error(`    FAIL: ${findings.length} parity finding(s). A generated schema looser than`);
     console.error('          the first-party module accepts rows the database will reject.');
   }
-  if (findings.length || ledgerProblems.length || unledgered.length || totalCompared !== EXPECTED_COMPARISONS) {
+  if (
+    findings.length ||
+    ledgerProblems.length ||
+    unledgered.length ||
+    crashProblems.length ||
+    unnamedProblems.length ||
+    totalCompared !== EXPECTED_COMPARISONS
+  ) {
     process.exit(1);
   }
 }

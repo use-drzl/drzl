@@ -24,5 +24,15 @@ MySQL year and no SQLite column of any kind had ever been measured against a fir
 on 0.4x.
 
 The ledger is asserted in both directions: a difference in neither map fails the stage, and an
-entry that suppresses nothing, or whose libraries or modes have moved, fails it too. So fixing one
-of these defects fails the gate until its entry goes, rather than passing quietly.
+entry that suppresses nothing, or whose libraries, modes, pairing count or direction have moved,
+fails it too. So fixing one of these defects fails the gate until its entry goes, rather than
+passing quietly.
+
+Two things the pool could not see are now measured. A probe that crashes is no longer scored as a
+rejection: official's TypeBox module emits `Type.RegExp` with a `maxLength` for a few columns and
+TypeBox reads `value.length` with no type guard, so `null` crashes the check instead of failing it.
+Eighteen such probes on v1 and six on 0.4x were being counted as official rejections; they are now
+recorded and asserted as crashes. And the MySQL text family reported parity on both majors while
+four filed fields sat on it, because no string in the pool separated a byte budget from a character
+count. A 100 emoji string does, and a real MySQL 8 settles the direction: `tinytext` refuses it and
+`varchar(255)` takes it.
