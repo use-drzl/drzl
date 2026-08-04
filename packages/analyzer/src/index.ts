@@ -451,9 +451,14 @@ export function describeV1Column(column: any): Partial<Column> | null {
     case 'double': {
       // Only the 4 byte width has a magnitude the database will refuse, and the two databases that
       // have one refuse at different values, so the codec picks which. `float4` is Postgres's
-      // spelling and `float` is MySQL's. SingleStore states `number float` with no codec at all,
-      // measured on 1.0.0-rc.4, and so lands on MySQL's, which is the answer its class-name entry
-      // gives on 0.4x as well; the cross-major diff is what holds those two together.
+      // spelling and `float` is MySQL's. Three dialects state `number float` with no codec at all
+      // on 1.0.0-rc.4, measured: SingleStore, Cockroach and MSSQL. All three land on MySQL's bound
+      // by falling through, which is right for SingleStore and matches the answer its class-name
+      // entry gives on 0.4x, and is **wrong for Cockroach**, whose `real` is a Postgres `FLOAT4`
+      // over the Postgres wire. That is filed rather than fixed: Cockroach and MSSQL lose whole
+      // type families to `unknown` today, so a bound is not the defect worth fixing first, and
+      // neither dialect has a fixture in any gate that would prove a fix. The cross-major diff is
+      // what holds SingleStore's two answers together.
       //
       // Both majors take the same answer here on purpose: the bound moved off `drizzle-orm/zod`'s
       // and onto the database's, and moving one major without the other is what that diff catches.
