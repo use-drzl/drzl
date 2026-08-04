@@ -1006,7 +1006,8 @@ export const probe = (lib: Lib, f: any, x: unknown): Verdict => {
 };
 
 /**
- * A real Postgres, asked directly whether a column takes a value.
+ * A real Postgres, asked directly whether a column takes a value, and whether it takes that column
+ * being left out of the insert altogether.
  *
  * Here because of the hole a crash left. A probe official crashes on cannot be compared, and it
  * used to be dropped, so DRZL's verdict on it was measured by nothing: making the v1 typebox
@@ -1017,25 +1018,62 @@ export const probe = (lib: Lib, f: any, x: unknown): Verdict => {
  * The DDL comes from the fixture's own column object rather than being written down here, so a
  * column that changes type changes what the database is asked about it.
  *
- * Two tables per column, differing only in the constraint. The nullable twin is the control and it
- * has to take a NULL before the NOT NULL twin's answer is read as anything: without it a refusal
- * could as easily be a missing relation, and it would be scored as a verdict about the value.
- * Measured, not supposed: an insert into a table that does not exist fails with SQLSTATE 42P01, a
- * NULL into the NOT NULL twin fails with 23502, and a bit string of the wrong width fails with
- * 22026. So a refusal is reported with its SQLSTATE rather than as a boolean, and "refused by the
- * constraint" is a different answer from "refused by the type".
+ * **A value and an absence are different questions and are asked differently.** A value is bound
+ * as a parameter. An absence is a statement that never names the column, which is what an absent
+ * field is; binding a JS `undefined` in its place asks the value question instead, because the
+ * driver turns it into a NULL on the way to the server. That is measured here rather than assumed:
+ * the bound `undefined` comes back 23502, the same answer as `null`. Both passes used to declare
+ * that no database could be handed an absence at all, which was that measurement about the driver
+ * written up as a fact about databases.
+ *
+ * Three tables per column, differing only in the constraint and the default. Each answer is read
+ * only once its own control holds:
+ *
+ *   `probe_nn_N`    `c T not null`                 the subject
+ *   `probe_null_N`  `c T`                          has to take a NULL and to take an omission
+ *   `probe_def_N`   `c T not null default <lit>`   has to take an omission and still refuse a NULL
+ *
+ * Without the nullable twin, a refusal could as easily be a missing relation and would be scored as
+ * a verdict about the value. Without the twin carrying a default, an omission and a NULL could not
+ * be told apart at all: on `bit(3) not null` they give the same SQLSTATE, so the run would be
+ * reporting the NULL answer under the absence's name. Measured, not supposed:
+ *
+ *   an insert into a table that does not exist        42P01
+ *   NULL into bit(3) not null                         23502
+ *   the column omitted, bit(3) not null               23502
+ *   a bit string of the wrong width                   22026
+ *   NULL into the nullable twin                       accepted
+ *   the column omitted on the nullable twin           accepted
+ *   the column omitted on the twin with a default     accepted, and the default is what is stored
+ *   NULL into the twin with a default                 23502
+ *
+ * So a refusal carries its SQLSTATE rather than being a boolean, "refused by the constraint" is a
+ * different answer from "refused by the type", and "refused because nothing supplied it" is a
+ * different answer from both, on the same column type.
+ *
+ * The default is not written down either. The first pool value the type accepts is read back
+ * through `quote_literal(c::text)` and cast to the column's own type, so a column no pool value
+ * fits reports that it has no twin carrying a default rather than quietly losing the control.
+ *
+ * `engine` is the engine's own answer to `select version()`. A caller that declares a probe
+ * unarbitrable for want of an engine then has something independent of its own branch to check
+ * that reason against.
  */
-export type DbProbe = { key: string; sqlType: string; label: string; value: unknown };
+export type DbProbe = { key: string; sqlType: string; label: string; absent: boolean; value: unknown };
 export type DbAnswer = { verdict: 'accept' | 'refuse'; code: string; control: string };
+export type DbReply = { engine: string; answers: Map<string, DbAnswer> };
 
-export const askPostgres = async (probes: DbProbe[]): Promise<Map<string, DbAnswer>> => {
+export const askPostgres = async (probes: DbProbe[]): Promise<DbReply> => {
   const { PGlite } = await import('@electric-sql/pglite');
   const db = new PGlite();
-  const out = new Map<string, DbAnswer>();
+  const answers = new Map<string, DbAnswer>();
+  let engine = 'unknown';
   try {
-    const insert = async (table: string, value: unknown): Promise<{ verdict: 'accept' | 'refuse'; code: string }> => {
+    const version = (await db.query<{ version: string }>('select version()')).rows[0]?.version ?? '';
+    engine = /^PostgreSQL\b/.test(version) ? 'pg' : `not a Postgres: ${version.split(' ')[0] || 'unnamed'}`;
+    const send = async (sql: string, params: unknown[]): Promise<{ verdict: 'accept' | 'refuse'; code: string }> => {
       try {
-        await db.query(`insert into ${table} (c) values ($1)`, [value]);
+        await db.query(sql, params);
         return { verdict: 'accept', code: '' };
       } catch (e: unknown) {
         // A refusal with no SQLSTATE did not come from Postgres, so it is not reported as one.
@@ -1043,18 +1081,67 @@ export const askPostgres = async (probes: DbProbe[]): Promise<Map<string, DbAnsw
         return { verdict: 'refuse', code: typeof code === 'string' && code ? code : 'no SQLSTATE' };
       }
     };
-    const tables = new Map<string, { nn: string; nullable: string }>();
+    const withValue = (table: string, value: unknown) => send(`insert into ${table} (c, k) values ($1, 1)`, [value]);
+    // The column is not named at all, which is the whole reason `k` is there: an insert has to
+    // still be an insert once `c` is left out of it.
+    const omitting = (table: string) => send(`insert into ${table} (k) values (1)`, []);
+
+    const tables = new Map<string, { nn: string; nullable: string; dflt: string; noDflt: string }>();
     for (const p of probes) {
       if (tables.has(p.key)) continue;
-      const t = { nn: `probe_nn_${tables.size}`, nullable: `probe_null_${tables.size}` };
-      await db.exec(`create table ${t.nn} (c ${p.sqlType} not null); create table ${t.nullable} (c ${p.sqlType})`);
+      const n = tables.size;
+      const t = { nn: `probe_nn_${n}`, nullable: `probe_null_${n}`, dflt: `probe_def_${n}`, noDflt: '' };
+      await db.exec(
+        `create table ${t.nn} (c ${p.sqlType} not null, k int); create table ${t.nullable} (c ${p.sqlType}, k int)`
+      );
+      let lit: string | null = null;
+      for (const [, x] of POOL) {
+        if (x === null || x === undefined) continue;
+        if ((await send(`insert into ${t.nullable} (c, k) values ($1, 0)`, [x])).verdict !== 'accept') continue;
+        const q = await db.query<{ q: string | null }>(`select quote_literal(c::text) as q from ${t.nullable} where k = 0`);
+        lit = q.rows[0]?.q ?? null;
+        await db.exec(`delete from ${t.nullable}`);
+        break;
+      }
+      if (lit === null) {
+        t.noDflt =
+          `no pool value is a ${p.sqlType}, so no twin carrying a default could be built and an ` +
+          'omission cannot be told apart from a NULL here';
+      } else {
+        const built = await send(`create table ${t.dflt} (c ${p.sqlType} not null default ${lit}::${p.sqlType}, k int)`, []);
+        if (built.verdict !== 'accept') {
+          t.noDflt =
+            `${p.sqlType} would not take ${lit} as a default (${built.code}), so an omission cannot ` +
+            'be told apart from a NULL here';
+        }
+      }
       tables.set(p.key, t);
     }
     for (const p of probes) {
       const t = tables.get(p.key)!;
-      const control = await insert(t.nullable, null);
-      const got = await insert(t.nn, p.value);
-      out.set(`${p.key}/${p.label}`, {
+      if (p.absent) {
+        const twinOmit = await omitting(t.nullable);
+        const dfltOmit = t.noDflt ? null : await omitting(t.dflt);
+        const dfltNull = t.noDflt ? null : await withValue(t.dflt, null);
+        const got = await omitting(t.nn);
+        answers.set(`${p.key}/${p.label}`, {
+          verdict: got.verdict,
+          code: got.code,
+          control: twinOmit.verdict !== 'accept'
+            ? `the nullable twin of ${p.sqlType} refused an insert that never names the column (${twinOmit.code}), so this table cannot isolate the constraint`
+            : t.noDflt
+              ? t.noDflt
+              : dfltOmit!.verdict !== 'accept'
+                ? `the twin of ${p.sqlType} carrying a default refused the same omission (${dfltOmit!.code}), so an omission is not reaching a default here`
+                : dfltNull!.verdict !== 'refuse'
+                  ? `the twin of ${p.sqlType} carrying a default took an explicit NULL, so this run cannot tell an omission apart from a NULL`
+                  : '',
+        });
+        continue;
+      }
+      const control = await withValue(t.nullable, null);
+      const got = await withValue(t.nn, p.value);
+      answers.set(`${p.key}/${p.label}`, {
         verdict: got.verdict,
         code: got.code,
         control:
@@ -1066,7 +1153,7 @@ export const askPostgres = async (probes: DbProbe[]): Promise<Map<string, DbAnsw
   } finally {
     await db.close();
   }
-  return out;
+  return { engine, answers };
 };
 PARITY_POOL
 cp "$WORK/parity-pool.ts" src/pool.ts
@@ -1158,9 +1245,13 @@ const safeField = (lib: Lib, s: any, k: string) => {
  *              declaration has to claim at least one probe. This is the part that fails when
  *              DRZL's answer moves.
  *   `arbiter`  who settles that DRZL's answer is the right one, keyed by value, and computed by
- *              the run rather than believed: a real Postgres through PGlite where the value can be
- *              handed to one, and the reason it cannot be otherwise. A value the database refuses
- *              and DRZL accepts is a finding unless the column carries a waiver naming it.
+ *              the run rather than believed: a real Postgres through PGlite wherever one runs for
+ *              that dialect, and the reason it cannot be otherwise. A value the database refuses
+ *              and DRZL accepts is a finding unless a waiver names the column dialect-wide, as
+ *              `<dialect>/<column>`. A library-scoped waiver such as `pg/typebox/c_uuid` does not
+ *              suppress it, which is the fail-closed direction: the database's answer does not
+ *              depend on which library was asked, so a waiver about one library is not a reason to
+ *              accept a row the server will reject.
  *
  * Keyed `<dialect>/<library>/<column>`.
  */
@@ -1192,11 +1283,15 @@ const THREW: Record<string, Crash> = {
       // A real Postgres, built from this column's own `getSQLType()`, refuses a NULL into
       // `bit(3) not null` with a not-null violation, and its nullable twin takes one.
       null: 'postgres refuses it (SQLSTATE 23502)',
-      // Not a gap that better tooling would close. `undefined` is an absence, and the driver turns
-      // it into a NULL on the way to the server: the same insert comes back 23502, which is the
-      // answer for `null`, not an answer about absence. So the database cannot be asked this
-      // question, and DRZL's verdict is pinned instead.
-      undefined: 'no database can be handed an absence',
+      // An absence is handed to a database by leaving the column out of the insert, so this is
+      // asked rather than declared unaskable. What used to stand here said no database could be
+      // handed an absence, on the evidence that a bound `undefined` comes back 23502; that is a
+      // fact about the driver's parameter binding, and it was written up as one about databases.
+      // Measured on this column's own `bit(3) not null`: the insert that never names `c` is
+      // refused 23502, while the same omission against a twin of the same type carrying a default
+      // is accepted and stores the default, and that twin still refuses an explicit NULL. Three
+      // questions, three answers, and this entry is the answer to the middle one.
+      undefined: 'postgres refuses the column omitted from the insert (SQLSTATE 23502)',
     },
   },
   'mysql/typebox/m_binary': {
@@ -1211,8 +1306,13 @@ const THREW: Record<string, Crash> = {
       // `binary(4) not null` and into `varbinary(16) not null` with ERROR 1048 "Column cannot be
       // null", while the same insert carrying values stores 4 and 2 bytes. That is not this run's
       // evidence, so it is not this run's claim, and the pinned verdict is what gates here.
+      //
+      // The absence is unarbitrated for the same reason and not for a different one: there is a
+      // way to ask it, which is to leave the column out of the insert, and no MySQL here to ask.
+      // The reason is checked against the engine's own `select version()` rather than only being
+      // computed by the branch that produces it.
       null: 'no in-process mysql engine',
-      undefined: 'no database can be handed an absence',
+      undefined: 'no in-process mysql engine',
     },
   },
   'mysql/typebox/m_varbinary': {
@@ -1223,7 +1323,7 @@ const THREW: Record<string, Crash> = {
     drzl: { '*/null': 'reject', '*/undefined': 'reject' },
     arbiter: {
       null: 'no in-process mysql engine',
-      undefined: 'no database can be handed an absence',
+      undefined: 'no in-process mysql engine',
     },
   },
 };
@@ -1637,8 +1737,8 @@ for (const d of DIALECTS) {
             if (a === 'threw') recordThrow(`${d.name}/${libName}/${k}`, 'official', mode, label);
             if (b === 'threw') recordThrow(`${d.name}/${libName}/${k}`, 'drzl', mode, label);
             // Not compared, and not unmeasured either: DRZL's answer is pinned against the crash
-            // entry below and arbitrated against a real database where one can be handed the
-            // value. Dropping it here and doing nothing else is what let a null-accepting insert
+            // entry below and arbitrated against a real database wherever one runs for this
+            // dialect. Dropping it here and doing nothing else is what let a null-accepting insert
             // schema on a NOT NULL column sit under a green line.
             recordCrashVerdict(`${d.name}/${libName}/${k}`, mode, label, b);
             continue;
@@ -1800,16 +1900,24 @@ const TEXT_CAPS: Record<string, number> = {
  * one of its caps from all four generated modules in all three modes leaves both passes byte
  * identical to green.
  *
- * `the pool` means the pool holds a string this column's byte cap refuses and its UTF-16 count does
- * not, which is the only kind of string the parity comparison above can tell the two counts apart
- * with. `the byte-cap stage` means the bracketing pair below was built and pushed through.
+ * The two things that measure a cap do not measure the same amount of it, and the printed line used
+ * to give each of them one word, so `the pool and the byte-cap stage` read as two measurements of
+ * the cap when only one of them is. They are named apart now:
+ *
+ *   `separated`  the pool holds a string this column's byte cap refuses and its UTF-16 count does
+ *                not, which is the only kind of string the parity comparison above can tell the two
+ *                counts apart with. It does not pin the cap: moving `m_tinytext`'s emitted cap to
+ *                254 or to 256 produces no failure from the pool at all, and its reach on that
+ *                column starts at 400, where the 100-emoji probe stops being refused.
+ *   `bracketed`  the pair below was built and pushed through, at the cap and one byte over, which
+ *                does pin the cap to a single value.
  */
 const CAP_COVERAGE: Record<string, string> = {
-  m_tinytext: 'the pool and the byte-cap stage',
-  m_text: 'the pool and the byte-cap stage',
-  m_blob: 'the pool and the byte-cap stage',
-  m_mediumtext: 'the byte-cap stage alone',
-  m_longtext: 'nothing',
+  m_tinytext: 'bracketed and separated',
+  m_text: 'bracketed and separated',
+  m_blob: 'bracketed and separated',
+  m_mediumtext: 'bracketed only',
+  m_longtext: 'neither',
 };
 
 const capProblems: string[] = [];
@@ -1880,17 +1988,17 @@ for (const [col, cap] of Object.entries(TEXT_CAPS)) {
   const byPool = poolSeparates(cap);
   const byStage = capMeasured.some((probed) => probed.startsWith(`${col}/`));
   const got = byPool && byStage
-    ? 'the pool and the byte-cap stage'
+    ? 'bracketed and separated'
     : byPool
-      ? 'the pool alone'
+      ? 'separated only'
       : byStage
-        ? 'the byte-cap stage alone'
-        : 'nothing';
+        ? 'bracketed only'
+        : 'neither';
   coverageSeen.push(`${col} ${got}`);
   if (CAP_COVERAGE[col] === got) continue;
   capProblems.push(
-    `${col} is declared as measured by ${CAP_COVERAGE[col] ?? 'nothing, being absent from CAP_COVERAGE'}` +
-      `, and this run measured it by ${got}`
+    `${col} is declared '${CAP_COVERAGE[col] ?? 'nothing, being absent from CAP_COVERAGE'}'` +
+      `, and this run measured '${got}'`
   );
 }
 for (const col of Object.keys(CAP_COVERAGE)) {
@@ -1902,7 +2010,12 @@ console.log(
   `    ${capMeasured.length} byte-cap probe(s) bracketing ${Object.keys(TEXT_CAPS).length - capUnreachable.length} ` +
     `MySQL text column(s); ${capUnreachable.length} cannot be probed at all: ${capUnreachable.join(', ')}`
 );
-console.log(`    byte caps are measured by: ${coverageSeen.join('; ')}`);
+console.log(
+  "    byte caps: 'bracketed' is probed at the cap and one byte over, which pins DRZL's cap to one" +
+    " value; 'separated' is the pool holding a string the cap refuses on bytes and takes on" +
+    ' characters, which tells the two counts apart without pinning the cap'
+);
+console.log(`    ${coverageSeen.join('; ')}`);
 if (capProblems.length) {
   console.error('FAIL: a MySQL text column no longer separates a byte budget from a character');
   console.error('      count the way it is documented to:');
@@ -2065,13 +2178,22 @@ for (const [key, seen] of crashVerdict) {
  * And who says those answers are the right ones.
  *
  * A pinned verdict stops DRZL's behaviour moving unseen; it does not say the pinned value is
- * correct. A real Postgres does, for the values it can be handed: the table is built from the
+ * correct. A real Postgres does, for everything it can be asked: the table is built from the
  * fixture column's own `getSQLType()`, and its nullable twin has to take a NULL before the NOT NULL
  * twin's refusal counts as anything.
  *
- * The two reasons a value is not arbitrated here are computed, not asserted. `undefined` is an
- * absence rather than a value and the driver turns it into a NULL on the way to the server, so the
- * question cannot be put; and PGlite is a Postgres, so it cannot answer for the MySQL columns.
+ * An absence is asked as an absence, by leaving the column out of the insert, and not by binding a
+ * NULL where it would have gone. It used to be classified unarbitrable on the ground that no
+ * database can be handed one, which is false: `pool.ts` has the three-way measurement, and the
+ * consequence of the false ground was that the `undefined` probe on every crash site went
+ * unarbitrated for a reason that named the wrong obstacle.
+ *
+ * One reason for not arbitrating survives, and it is now checked against something outside the
+ * branch that produces it: PGlite is a Postgres, so it cannot answer for the MySQL columns. The
+ * engine reports its own name through `select version()`, so a run where this process did hold an
+ * engine for that dialect fails here instead of printing the excuse. That is the one thing this
+ * block could not previously do: the reason string and the gate were one expression, so the string
+ * was computed and the reason was not checked at all.
  */
 const arbiterProblems: string[] = [];
 {
@@ -2095,18 +2217,23 @@ const arbiterProblems: string[] = [];
   }
   const probes: DbProbe[] = [];
   for (const w of wanted) {
-    if (w.value === undefined || w.dialect !== 'pg') continue;
+    if (w.dialect !== 'pg') continue;
     const col = pgColumns.find((c) => c.name === w.column);
     if (!col) {
       arbiterProblems.push(`THREW[${w.key}] names a column the Postgres fixture does not have, so no DDL can be built for it`);
       continue;
     }
-    probes.push({ key: w.key, sqlType: col.getSQLType(), label: w.label, value: w.value });
+    // The pool's `undefined` is an absence, and it is carried to the database as one rather than
+    // bound as a value. `absent` is what picks the statement that never names the column.
+    probes.push({ key: w.key, sqlType: col.getSQLType(), label: w.label, absent: w.value === undefined, value: w.value });
   }
-  const answers = probes.length ? await askPostgres(probes) : new Map();
+  const { engine, answers } = await askPostgres(probes);
   // A run where the database answered nothing would otherwise leave every site reading as
   // deliberately unarbitrated.
   if (!probes.length) arbiterProblems.push('no crash site reached a database on this run, so nothing was arbitrated');
+  if (engine !== 'pg') {
+    arbiterProblems.push(`the in-process engine answers 'select version()' with ${engine}, and every answer below is read as a Postgres one`);
+  }
   let arbitrated = 0;
   for (const w of wanted) {
     const e = THREW[w.key];
@@ -2116,10 +2243,17 @@ const arbiterProblems: string[] = [];
         .map(([, v]) => v)
     )].sort();
     let got: string;
-    if (w.value === undefined) {
-      got = 'no database can be handed an absence';
-    } else if (w.dialect !== 'pg') {
+    if (w.dialect !== 'pg') {
       got = `no in-process ${w.dialect} engine`;
+      // Asserted rather than only computed. The engine names itself, so the excuse is checked
+      // against something outside the branch that writes it: wiring a MySQL in here and leaving
+      // this declaration alone fails the run instead of reading as deliberate.
+      if (engine === w.dialect) {
+        arbiterProblems.push(
+          `${w.key}/${w.label} is declared unarbitrable for want of a ${w.dialect} engine, and the ` +
+            `engine in this process names itself ${engine}`
+        );
+      }
     } else {
       const a = answers.get(`${w.key}/${w.label}`);
       if (!a) {
@@ -2131,12 +2265,14 @@ const arbiterProblems: string[] = [];
         continue;
       }
       arbitrated++;
-      got = a.verdict === 'accept' ? 'postgres accepts it' : `postgres refuses it (SQLSTATE ${a.code})`;
+      const asked = w.value === undefined ? 'the column omitted from the insert' : 'it';
+      got = a.verdict === 'accept' ? `postgres accepts ${asked}` : `postgres refuses ${asked} (SQLSTATE ${a.code})`;
       // The one rule the declaration cannot talk its way out of. A value the database refuses and
-      // DRZL takes is a schema admitting a row the server will not.
+      // DRZL takes is a schema admitting a row the server will not. `ALLOWED` is read dialect-wide
+      // here and a library-scoped waiver does not reach it, which is the fail-closed direction.
       if (a.verdict === 'refuse' && verdicts.includes('accept') && !ALLOWED[`${w.dialect}/${w.column}`]) {
         arbiterProblems.push(
-          `${w.key}/${w.label}: postgres refuses this value and DRZL accepts it, and no waiver names ` +
+          `${w.key}/${w.label}: postgres refuses ${asked} and DRZL accepts it, and no waiver names ` +
             `${w.dialect}/${w.column}`
         );
       }
@@ -5436,14 +5572,17 @@ const safeField = (lib: Lib, s: any, k: string) => {
  *              probe has to be claimed by exactly one declaration and match it, and every
  *              declaration has to claim at least one probe.
  *   `arbiter`  what settles that DRZL's answer is the right one, keyed by value, computed by the
- *              run rather than believed. A real Postgres through PGlite where the value can be
- *              handed to one; and where it cannot, the reason, also computed.
+ *              run rather than believed. A real Postgres through PGlite wherever one runs for that
+ *              dialect; and where none does, the reason, also computed.
  *
  * On this major `c_bit` is one of the six columns the analyzer cannot name, so DRZL takes every
- * value including a NULL for a NOT NULL column. That is the filed defect DEFECTS[pg/c_bit] carries,
- * and the arbitration says so out loud rather than passing over it: the database refuses the value,
- * DRZL accepts it, and the waiver-or-defect entry naming the column is what keeps that from being a
- * hard failure here as well.
+ * value including a NULL for a NOT NULL column, and takes the column being left out of the insert
+ * as well. That is the filed defect DEFECTS[pg/c_bit] carries, and the arbitration prints a line
+ * per probe saying so: the database refuses it, DRZL accepts it, and the map naming the column is
+ * what keeps that from being a hard failure here too. Until this round it did not print anything.
+ * The claim that it "says so out loud rather than passing over it" stood over a branch guarded by
+ * `!DEFECTS[...]`, so the entry that made the sentence worth writing was also what stopped it from
+ * ever running, and the run printed a count and nothing else.
  */
 type Crash = {
   side: string;
@@ -5478,11 +5617,12 @@ const THREW: Record<string, Crash> = {
       // A real Postgres, built from this column's own `getSQLType()`, refuses a NULL into
       // `bit(3) not null` with a not-null violation, and its nullable twin takes one.
       null: 'postgres refuses it (SQLSTATE 23502)',
-      // Not a gap better tooling would close. `undefined` is an absence, and the driver turns it
-      // into a NULL on the way to the server: the same insert comes back 23502, which is the
-      // answer for `null` rather than an answer about absence. So the database cannot be asked
-      // this, and DRZL's verdict is pinned instead.
-      undefined: 'no database can be handed an absence',
+      // An absence is handed to a database by leaving the column out of the insert. What stood
+      // here said no database could be handed one, on the evidence that a bound `undefined` comes
+      // back 23502; that measures the driver's parameter binding and was written up as a fact
+      // about databases. `pool.ts` asks it as an omission instead, and the twin carrying a default
+      // is what keeps that from being the NULL answer under another name.
+      undefined: 'postgres refuses the column omitted from the insert (SQLSTATE 23502)',
     },
   },
 };
@@ -5686,7 +5826,7 @@ async function main() {
               if (a === 'threw') recordCrash(`${d.name}/${libName}/${k}`, 'official', mode, label);
               if (b === 'threw') recordCrash(`${d.name}/${libName}/${k}`, 'drzl', mode, label);
               // Not compared, and not unmeasured either: DRZL's answer is pinned against the crash
-              // entry and arbitrated against a real database where one can be handed the value.
+              // entry and arbitrated against a real database wherever one runs for this dialect.
               // Dropping it here and doing nothing else is what let a null-accepting insert schema
               // on a NOT NULL column sit under a green line on the other pass.
               recordCrashVerdict(`${d.name}/${libName}/${k}`, mode, label, b);
@@ -5869,15 +6009,22 @@ async function main() {
    * measured by nothing at all, and deleting every one of its caps from all four generated modules
    * in all three modes leaves both passes byte identical to green.
    *
-   * `the pool` means the pool holds a string this column's byte cap refuses and its UTF-16 count
-   * does not, which is the only kind of string the comparison above can tell the two counts apart
-   * with. `the byte-cap stage` means the bracketing pair below was built and pushed through.
+   * The two things that measure a cap do not measure the same amount of it, and the printed line
+   * used to give each of them one word, so `the pool and the byte-cap stage` read as two
+   * measurements of the cap when only one of them is. They are named apart now:
+   *
+   *   `separated`  the pool holds a string this column's byte cap refuses and its UTF-16 count does
+   *                not, which is the only kind of string the comparison above can tell the two
+   *                counts apart with. It does not pin the cap: moving `m_tinytext`'s emitted cap to
+   *                254 or to 256 produces no failure from the pool at all.
+   *   `bracketed`  the pair below was built and pushed through, at the cap and one byte over, which
+   *                does pin the cap to a single value.
    */
   const CAP_COVERAGE: Record<string, string> = {
-    m_tinytext: 'the pool and the byte-cap stage',
-    m_text: 'the pool and the byte-cap stage',
-    m_mediumtext: 'the byte-cap stage alone',
-    m_longtext: 'nothing',
+    m_tinytext: 'bracketed and separated',
+    m_text: 'bracketed and separated',
+    m_mediumtext: 'bracketed only',
+    m_longtext: 'neither',
   };
 
   const capProblems: string[] = [];
@@ -5948,17 +6095,17 @@ async function main() {
     const byPool = poolSeparates(cap);
     const byStage = capMeasured.some((probed) => probed.startsWith(`${col}/`));
     const got = byPool && byStage
-      ? 'the pool and the byte-cap stage'
+      ? 'bracketed and separated'
       : byPool
-        ? 'the pool alone'
+        ? 'separated only'
         : byStage
-          ? 'the byte-cap stage alone'
-          : 'nothing';
+          ? 'bracketed only'
+          : 'neither';
     coverageSeen.push(`${col} ${got}`);
     if (CAP_COVERAGE[col] === got) continue;
     capProblems.push(
-      `${col} is declared as measured by ${CAP_COVERAGE[col] ?? 'nothing, being absent from CAP_COVERAGE'}` +
-        `, and this run measured it by ${got}`
+      `${col} is declared '${CAP_COVERAGE[col] ?? 'nothing, being absent from CAP_COVERAGE'}'` +
+        `, and this run measured '${got}'`
     );
   }
   for (const col of Object.keys(CAP_COVERAGE)) {
@@ -5970,7 +6117,12 @@ async function main() {
     `    ${capMeasured.length} byte-cap probe(s) bracketing ${Object.keys(TEXT_CAPS).length - capUnreachable.length} ` +
       `MySQL text column(s); ${capUnreachable.length} cannot be probed at all: ${capUnreachable.join(', ')}`
   );
-  console.log(`    byte caps are measured by: ${coverageSeen.join('; ')}`);
+  console.log(
+    "    byte caps: 'bracketed' is probed at the cap and one byte over, which pins DRZL's cap to" +
+      " one value; 'separated' is the pool holding a string the cap refuses on bytes and takes on" +
+      ' characters, which tells the two counts apart without pinning the cap'
+  );
+  console.log(`    ${coverageSeen.join('; ')}`);
 
   // The absolute half: what the analyzer makes of these two fixtures on its own.
   const unnamedProblems: string[] = [];
@@ -6078,13 +6230,15 @@ async function main() {
    *
    * A pinned verdict stops DRZL's behaviour moving unseen; it does not say the pinned value is
    * correct, and on this major it is not: the analyzer cannot name `c_bit`, so DRZL takes a NULL
-   * for a NOT NULL column. A real Postgres is what says so, for the values it can be handed. The
-   * table is built from the fixture column's own `getSQLType()`, and the nullable twin has to take
-   * a NULL before the NOT NULL twin's refusal counts as anything.
+   * for a NOT NULL column, and takes that column being left out of an insert too. A real Postgres
+   * is what says so. The table is built from the fixture column's own `getSQLType()`, the nullable
+   * twin has to take a NULL before the NOT NULL twin's refusal counts as anything, and the twin
+   * carrying a default has to take an omission while still refusing a NULL before the omission's
+   * refusal is read as an answer about the omission.
    *
-   * The reason a value is not arbitrated here is computed too. `undefined` is an absence rather
-   * than a value, and the driver turns it into a NULL on the way to the server, so the question
-   * cannot be put at all.
+   * Every probe on this pass is arbitrated, so nothing here rests on a reason for not arbitrating.
+   * The one this pass can still produce, a dialect with no engine in this process, is checked
+   * against the engine's own `select version()` rather than against the branch that writes it.
    */
   const arbiterProblems: string[] = [];
   {
@@ -6108,18 +6262,23 @@ async function main() {
     }
     const probes: DbProbe[] = [];
     for (const w of wanted) {
-      if (w.value === undefined || w.dialect !== 'pg') continue;
+      if (w.dialect !== 'pg') continue;
       const col = pgColumns.find((c) => c.name === w.column);
       if (!col) {
         arbiterProblems.push(`THREW[${w.key}] names a column the Postgres fixture does not have, so no DDL can be built for it`);
         continue;
       }
-      probes.push({ key: w.key, sqlType: col.getSQLType(), label: w.label, value: w.value });
+      // The pool's `undefined` is an absence and is carried to the database as one: the statement
+      // never names the column, rather than binding a NULL where it would have gone.
+      probes.push({ key: w.key, sqlType: col.getSQLType(), label: w.label, absent: w.value === undefined, value: w.value });
     }
-    const answers = probes.length ? await askPostgres(probes) : new Map();
+    const { engine, answers } = await askPostgres(probes);
     // A run where the database answered nothing would otherwise leave every site reading as
     // deliberately unarbitrated.
     if (!probes.length) arbiterProblems.push('no crash site reached a database on this run, so nothing was arbitrated');
+    if (engine !== 'pg') {
+      arbiterProblems.push(`the in-process engine answers 'select version()' with ${engine}, and every answer below is read as a Postgres one`);
+    }
     let arbitrated = 0;
     for (const w of wanted) {
       const e = THREW[w.key];
@@ -6129,10 +6288,15 @@ async function main() {
           .map(([, v]) => v)
       )].sort();
       let got: string;
-      if (w.value === undefined) {
-        got = 'no database can be handed an absence';
-      } else if (w.dialect !== 'pg') {
+      if (w.dialect !== 'pg') {
         got = `no in-process ${w.dialect} engine`;
+        // Asserted rather than only computed, against the engine's own name for itself.
+        if (engine === w.dialect) {
+          arbiterProblems.push(
+            `${w.key}/${w.label} is declared unarbitrable for want of a ${w.dialect} engine, and the ` +
+              `engine in this process names itself ${engine}`
+          );
+        }
       } else {
         const a = answers.get(`${w.key}/${w.label}`);
         if (!a) {
@@ -6144,15 +6308,31 @@ async function main() {
           continue;
         }
         arbitrated++;
-        got = a.verdict === 'accept' ? 'postgres accepts it' : `postgres refuses it (SQLSTATE ${a.code})`;
+        const asked = w.value === undefined ? 'the column omitted from the insert' : 'it';
+        got = a.verdict === 'accept' ? `postgres accepts ${asked}` : `postgres refuses ${asked} (SQLSTATE ${a.code})`;
         // The one rule the declaration cannot talk its way out of. A value the database refuses and
         // DRZL takes is a schema admitting a row the server will not, and it is only not a failure
-        // here because the ledger already names it as a defect.
-        if (a.verdict === 'refuse' && verdicts.includes('accept') && !ALLOWED[`${w.dialect}/${w.column}`] && !DEFECTS[`${w.dialect}/${w.column}`]) {
-          arbiterProblems.push(
-            `${w.key}/${w.label}: postgres refuses this value and DRZL accepts it, and neither map names ` +
-              `${w.dialect}/${w.column}`
-          );
+        // here because the ledger already names it as a defect. Named or not, the run says which
+        // probe it was and which map covered it: a defect that is filed is still a defect, and a
+        // ledger entry is not a reason to print nothing. `ALLOWED` and `DEFECTS` are read
+        // dialect-wide, so a library-scoped waiver does not reach this, which is fail-closed.
+        if (a.verdict === 'refuse' && verdicts.includes('accept')) {
+          const named = ALLOWED[`${w.dialect}/${w.column}`]
+            ? 'ALLOWED'
+            : DEFECTS[`${w.dialect}/${w.column}`]
+              ? 'DEFECTS'
+              : '';
+          if (named) {
+            console.log(
+              `    ${w.key}/${w.label}: postgres refuses ${asked} and DRZL accepts it, filed as ` +
+                `${named}[${w.dialect}/${w.column}] rather than failed here`
+            );
+          } else {
+            arbiterProblems.push(
+              `${w.key}/${w.label}: postgres refuses ${asked} and DRZL accepts it, and neither map names ` +
+                `${w.dialect}/${w.column}`
+            );
+          }
         }
       }
       if (e.arbiter[w.label] === got) continue;
@@ -6460,8 +6640,8 @@ echo "    column comparison runs a second time against the first-party validator
 echo "    where the columns known to differ are counted and named above, each with what DRZL"
 echo "    emits, what official emits and which filing it is. Where an official validator crashes"
 echo "    instead of answering, DRZL's own verdict on that value is pinned rather than dropped,"
-echo "    and settled against a real Postgres for the values one can be handed. The JSON Schema"
-echo "    output compiles under ajv in strict mode, agrees with Postgres wherever the zod output"
-echo "    does, and speaks as a fifth voice on every CHECK. Every tarball holds the files its"
-echo "    manifest names and nothing from the working tree, and every package npm is serving"
-echo "    carries a provenance attestation."
+echo "    and settled against a real Postgres, which is asked about the column being left out of an"
+echo "    insert as well as about the value it is given. The JSON Schema output compiles under ajv"
+echo "    in strict mode, agrees with Postgres wherever the zod output does, and speaks as a fifth"
+echo "    voice on every CHECK. Every tarball holds the files its manifest names and nothing from"
+echo "    the working tree, and every package npm is serving carries a provenance attestation."
