@@ -888,6 +888,68 @@ export const checked = sqliteTable('checked', {
 ]);
 PARITY_SQLITE
 
+# The value pool and the per-library accessors, in a file of their own because two trees push the
+# same values now: this one, pinned to drizzle-orm v1, and the 0.4x tree near the end of this
+# script. Copied rather than shared through a path, since the two trees have separate
+# node_modules and one of them is CommonJS.
+#
+# Written once so the two passes cannot drift. A pool value added for one major has to be answered
+# by the other, and the point of the 0.4x pass is that a difference between the two is a defect
+# rather than a difference in what was asked.
+cat > "$WORK/parity-pool.ts" <<'PARITY_POOL'
+import * as v from 'valibot';
+import { type } from 'arktype';
+import { Value } from '@sinclair/typebox/value';
+
+export const POOL: [string, unknown][] = [
+  ['null', null], ['undefined', undefined], ['""', ''], ["'hello'", 'hello'],
+  ['300-char', 'x'.repeat(300)], ['70k-char', 'x'.repeat(70000)], ['5-char', 'xxxxx'],
+  // Astral-plane characters, which tell a code-point count from a UTF-16 `.length`. Without them
+  // the pool cannot see the difference, which is exactly how the `varchar(n)` bug survived.
+  ['3 emoji', '\u{1F44D}\u{1F44D}\u{1F44D}'],
+  ['5 emoji', '\u{1F44D}\u{1F44D}\u{1F44D}\u{1F44D}\u{1F44D}'],
+  // Astral-plane characters, where a code-point count and a UTF-16 `.length` disagree.
+  // Postgres counts characters for `varchar(n)`, so a 3-emoji string fits in a varchar(5)
+  // that every library's `.max(5)` refuses.
+  ['3 emoji', '\u{1F44D}\u{1F44D}\u{1F44D}'],
+  ['5 emoji', '\u{1F44D}\u{1F44D}\u{1F44D}\u{1F44D}\u{1F44D}'],
+  ["'not-a-uuid'", 'not-a-uuid'], ['uuid', '3f2504e0-4f89-11d3-9a0c-0305e82c3301'],
+  ["'zzz'", 'zzz'], ["'a'", 'a'], ["'happy'", 'happy'],
+  // A member of the `varchar({ enum: ['x', 'y'] })` fixture column. Without it the pool held no
+  // value that column accepts, so both sides rejected all of it and the comparison agreed while
+  // measuring nothing. The vacuity check in each pass is what found it.
+  ["'x'", 'x'],
+  ['0', 0], ['1', 1], ['1.5', 1.5], ['-1', -1], ['200', 200], ['40000', 40000],
+  ['9000000', 9000000], ['2147483648', 2147483648], ['9007199254740993', 9007199254740993],
+  // 1900 and 2500 sit either side of MySQL's YEAR range and nothing sat inside it, so `m_year`
+  // was the same vacuous agreement as the enum above: rejected by both, proving nothing.
+  ['1900', 1900], ['2000', 2000], ['2500', 2500], ['NaN', NaN], ['Infinity', Infinity],
+  ['1n', 1n], ['2n**70n', 2n ** 70n], ['true', true], ['false', false],
+  ['Date', new Date('2020-01-01T00:00:00Z')], ["'2020-01-01'", '2020-01-01'],
+  ["'2020-01-01T00:00:00Z'", '2020-01-01T00:00:00Z'], ["'12:00:00'", '12:00:00'],
+  ["'25:99:99'", '25:99:99'],
+  ['{}', {}], ["{a:'s'}", { a: 's' }], ['[]', []], ["['a']", ['a']], ['[1,2]', [1, 2]],
+  ["['happy']", ['happy']], ['[1,2,3]', [1, 2, 3]],
+  // An array holding a value past its element's cap. Every array probe above holds something
+  // short, so dropping an element's constraint looked identical to keeping it: two generators
+  // stopped capping array elements and nothing here could tell.
+  ['["11-char"]', ['x'.repeat(11)]], ['["3 emoji"]', ['\u{1F44D}\u{1F44D}\u{1F44D}']],
+  ['Buffer', Buffer.from('ab')], ['Uint8Array', new Uint8Array([1, 2])],
+  ["'999.999.999.999'", '999.999.999.999'], ["'10.0.0.1'", '10.0.0.1'],
+  ['{x:1,y:2}', { x: 1, y: 2 }], ["'12.5'", '12.5'], ["'0101'", '0101'], ["'010'", '010'],
+];
+
+export type Lib = { field: (s: any, k: string) => any; ok: (f: any, x: unknown) => boolean };
+
+export const LIBS: Record<string, Lib> = {
+  zod: { field: (s, k) => s.shape[k], ok: (f, x) => f.safeParse(x).success },
+  valibot: { field: (s, k) => s.entries[k], ok: (f, x) => v.safeParse(f, x).success },
+  arktype: { field: (s, k) => s.get(k), ok: (f, x) => !(f(x) instanceof type.errors) },
+  typebox: { field: (s, k) => s.properties[k], ok: (f, x) => Value.Check(f, x) },
+};
+PARITY_POOL
+cp "$WORK/parity-pool.ts" src/pool.ts
+
 cat > src/parity.ts <<'PARITY_HARNESS'
 /**
  * Differential parity for DRZL's validator generators.
@@ -899,6 +961,10 @@ cat > src/parity.ts <<'PARITY_HARNESS'
  *
  * Pass 2 cross-checks DRZL's own four generators against each other, which catches a generator
  * drifting from its siblings on something all four should agree about.
+ *
+ * Both passes here measure drizzle-orm v1, which is what this tree pins. The same comparison
+ * against the first-party modules for 0.45.2 runs near the end of this script, in the 0.4x tree,
+ * and reads its pool of values out of the same `pool.ts` this file does.
  *
  * All four are compared against official. `drizzle-orm/typebox` targets the newer `typebox`
  * package and throws `Class extends value undefined` on import against the released one, but
@@ -921,60 +987,13 @@ import {
   createInsertSchema as tInsert,
   createUpdateSchema as tUpdate,
 } from 'drizzle-orm/typebox-legacy';
-import * as v from 'valibot';
-import { type } from 'arktype';
-import { Value } from '@sinclair/typebox/value';
+// The pool and the accessors come from a file the 0.4x pass reads as well, so both majors are
+// asked the same question with the same values.
+import { POOL, LIBS, type Lib } from './pool.js';
 
 import { matrix as pgTable } from './schema.js';
 import { matrix as myTable } from './schema-mysql.js';
 import { matrix as sqTable } from './schema-sqlite.js';
-
-const POOL: [string, unknown][] = [
-  ['null', null], ['undefined', undefined], ['""', ''], ["'hello'", 'hello'],
-  ['300-char', 'x'.repeat(300)], ['70k-char', 'x'.repeat(70000)], ['5-char', 'xxxxx'],
-  // Astral-plane characters, which tell a code-point count from a UTF-16 `.length`. Without them
-  // the pool cannot see the difference, which is exactly how the `varchar(n)` bug survived.
-  ['3 emoji', '\u{1F44D}\u{1F44D}\u{1F44D}'],
-  ['5 emoji', '\u{1F44D}\u{1F44D}\u{1F44D}\u{1F44D}\u{1F44D}'],
-  // Astral-plane characters, where a code-point count and a UTF-16 `.length` disagree.
-  // Postgres counts characters for `varchar(n)`, so a 3-emoji string fits in a varchar(5)
-  // that every library's `.max(5)` refuses.
-  ['3 emoji', '\u{1F44D}\u{1F44D}\u{1F44D}'],
-  ['5 emoji', '\u{1F44D}\u{1F44D}\u{1F44D}\u{1F44D}\u{1F44D}'],
-  ["'not-a-uuid'", 'not-a-uuid'], ['uuid', '3f2504e0-4f89-11d3-9a0c-0305e82c3301'],
-  ["'zzz'", 'zzz'], ["'a'", 'a'], ["'happy'", 'happy'],
-  // A member of the `varchar({ enum: ['x', 'y'] })` fixture column. Without it the pool held no
-  // value that column accepts, so both sides rejected all of it and the comparison agreed while
-  // measuring nothing. The vacuity check below is what found it.
-  ["'x'", 'x'],
-  ['0', 0], ['1', 1], ['1.5', 1.5], ['-1', -1], ['200', 200], ['40000', 40000],
-  ['9000000', 9000000], ['2147483648', 2147483648], ['9007199254740993', 9007199254740993],
-  // 1900 and 2500 sit either side of MySQL's YEAR range and nothing sat inside it, so `m_year`
-  // was the same vacuous agreement as the enum above: rejected by both, proving nothing.
-  ['1900', 1900], ['2000', 2000], ['2500', 2500], ['NaN', NaN], ['Infinity', Infinity],
-  ['1n', 1n], ['2n**70n', 2n ** 70n], ['true', true], ['false', false],
-  ['Date', new Date('2020-01-01T00:00:00Z')], ["'2020-01-01'", '2020-01-01'],
-  ["'2020-01-01T00:00:00Z'", '2020-01-01T00:00:00Z'], ["'12:00:00'", '12:00:00'],
-  ["'25:99:99'", '25:99:99'],
-  ['{}', {}], ["{a:'s'}", { a: 's' }], ['[]', []], ["['a']", ['a']], ['[1,2]', [1, 2]],
-  ["['happy']", ['happy']], ['[1,2,3]', [1, 2, 3]],
-  // An array holding a value past its element's cap. Every array probe above holds something
-  // short, so dropping an element's constraint looked identical to keeping it: two generators
-  // stopped capping array elements and nothing here could tell.
-  ['["11-char"]', ['x'.repeat(11)]], ['["3 emoji"]', ['\u{1F44D}\u{1F44D}\u{1F44D}']],
-  ['Buffer', Buffer.from('ab')], ['Uint8Array', new Uint8Array([1, 2])],
-  ["'999.999.999.999'", '999.999.999.999'], ["'10.0.0.1'", '10.0.0.1'],
-  ['{x:1,y:2}', { x: 1, y: 2 }], ["'12.5'", '12.5'], ["'0101'", '0101'], ["'010'", '010'],
-];
-
-type Lib = { field: (s: any, k: string) => any; ok: (f: any, x: unknown) => boolean };
-
-const LIBS: Record<string, Lib> = {
-  zod: { field: (s, k) => s.shape[k], ok: (f, x) => f.safeParse(x).success },
-  valibot: { field: (s, k) => s.entries[k], ok: (f, x) => v.safeParse(f, x).success },
-  arktype: { field: (s, k) => s.get(k), ok: (f, x) => !(f(x) instanceof type.errors) },
-  typebox: { field: (s, k) => s.properties[k], ok: (f, x) => Value.Check(f, x) },
-};
 
 const OFFICIAL: Record<string, Record<string, (t: any) => any>> = {
   zod: { select: createSelectSchema, insert: createInsertSchema, update: createUpdateSchema },
@@ -3335,10 +3354,12 @@ const ALLOWED: Record<string, string> = {
  *
  * Every one of these is the analyzer describing a column correctly under one major and not the
  * other, so they are exactly what this stage was built to surface. They are named rather than
- * fixed because fixing one means changing what the analyzer emits for 0.4x, and the gate that
- * would show such a change is right does not exist yet: the parity comparison, which is the one
- * thing here that checks DRZL against the first-party validators column by column, installs
- * drizzle-orm@1.0.0-rc.4 and measures v1 alone.
+ * fixed here because this stage is a diff, and a diff cannot say which side is right.
+ *
+ * The gate that can is the 0.4x parity stage further down, which measures DRZL's emitted
+ * validators against the first-party modules for 0.45.2 the way the stage near the top of this
+ * file does for v1. It carries eight of these columns in its own DEFECTS map, so a fix has to
+ * clear an entry there as well as here.
  */
 const DEFECTS: Record<string, string> = {
   // ---- 0.4x names the SQL type coarsely, and once v1 does ------------------------------------
@@ -3863,6 +3884,745 @@ if ! npx tsx check-old.ts; then
   echo "FAIL: the analyzer loses column types on drizzle-orm 0.4x." >&2
   exit 1
 fi
+
+# ---------------------------------------------------------------------------------------------
+# The same differential parity as the stage near the top of this file, on the other major.
+#
+# That stage installs drizzle-orm@1.0.0-rc.4 and measures v1 alone, so its 36 parity lines said
+# nothing about 0.45.2, which is what `npm install drizzle-orm` still serves. The comparison above
+# is relative: it can see the two majors disagreeing about a column, and cannot see either of them
+# being wrong. This one is absolute on 0.4x, against the first-party validators for that major.
+#
+# Those are four separate packages rather than submodules of drizzle-orm, and each is pinned for
+# the reason drizzle-orm is: the target is a specific release, and a floating one turns an upstream
+# change into a mysterious failure here rather than a deliberate re-measurement. They were chosen
+# by installing them and running them, not from a compatibility table:
+#
+#   drizzle-zod 0.8.3, drizzle-valibot 0.4.2, drizzle-arktype 0.1.3, drizzle-typebox 0.3.3
+#
+# All four declare `drizzle-orm >=0.36.0`, all four import against 0.45.2, and all four build
+# select, insert and update schemas for all three dialects here. None had to be skipped.
+#
+# The json-schema generator takes no part, for the same reason it takes none in the v1 pass: there
+# is no official JSON Schema module to compare it against. That is stated in the stage output
+# rather than left to a reader of this comment, because a generator the stage quietly does not
+# reach is indistinguishable from one that passes.
+# ---------------------------------------------------------------------------------------------
+echo "==> differential parity against the official 0.4x validators"
+npm install --no-audit --no-fund --loglevel=error \
+  drizzle-zod@0.8.3 drizzle-valibot@0.4.2 drizzle-arktype@0.1.3 drizzle-typebox@0.3.3 \
+  valibot arktype @sinclair/typebox >/dev/null
+
+cp "$WORK/parity-pool.ts" src/pool.ts
+
+# The MySQL and SQLite fixtures the v1 pass measures, read out of that tree rather than re-typed,
+# so widening one fixture widens both comparisons. `src/matrix.ts` is already here: the stage above
+# derived it from the Postgres one.
+#
+# MySQL loses one column on the way in. 0.4x's mysql-core has no `blob` export, so a fixture
+# carrying it cannot be imported at all, and that is the only missing one: `tinytext`, `mediumtext`
+# and `longtext` are all functions there, and every other type this fixture names resolves.
+# Measured by importing the module and asking, not by reading a changelog.
+#
+# SQLite loses nothing. Every type its fixture names, including all four blob modes, exists on
+# 0.45.2.
+#
+# Both edits are checked for having changed what they claim to change, because a `sed` that matches
+# nothing is the quiet way to end up comparing the wrong file, and a `cp` of a fixture that has
+# since grown a 0.4x-only import would fail much further down as an import error nobody expects.
+for f in schema-mysql schema-sqlite; do
+  [ -f "$PARITY/src/$f.ts" ] || {
+    echo "FAIL: $PARITY/src/$f.ts is not where this stage expects it, so there is nothing to" >&2
+    echo "      measure against the official 0.4x validators." >&2
+    exit 1
+  }
+done
+sed -e 's/ blob,//' -e '/m_blob/d' "$PARITY/src/schema-mysql.ts" > src/matrix-mysql.ts
+if cmp -s "$PARITY/src/schema-mysql.ts" src/matrix-mysql.ts; then
+  echo "FAIL: nothing was removed from the MySQL parity fixture, so either blob is gone from it" >&2
+  echo "      (in which case delete the edit above and use the file as it is) or the edit no" >&2
+  echo "      longer matches what it is meant to remove." >&2
+  exit 1
+fi
+if grep -q 'blob' src/matrix-mysql.ts; then
+  echo "FAIL: blob survived the edit above, so this fixture cannot be imported under 0.4x." >&2
+  exit 1
+fi
+cp "$PARITY/src/schema-sqlite.ts" src/matrix-sqlite.ts
+
+for dialect in pg mysql sqlite; do
+  case "$dialect" in
+    pg)     schema=src/matrix.ts ;;
+    mysql)  schema=src/matrix-mysql.ts ;;
+    sqlite) schema=src/matrix-sqlite.ts ;;
+  esac
+  gens=""
+  for lib in zod valibot arktype typebox; do
+    gens="$gens    { kind: '$lib', path: 'src/gen-0-4x/$dialect/$lib' },"$'\n'
+  done
+  cat > "drzl.0-4x.$dialect.config.ts" <<CONFIG
+import { defineConfig } from '@drzl/cli/config';
+
+export default defineConfig({
+  schema: '$schema',
+  outDir: 'src/gen-0-4x/$dialect',
+  generators: [
+$gens  ],
+});
+CONFIG
+  npx drzl generate --config "drzl.0-4x.$dialect.config.ts" >/dev/null
+  for lib in zod valibot arktype typebox; do
+    if [ ! -e "src/gen-0-4x/$dialect/$lib/matrix.$lib.ts" ]; then
+      echo "FAIL: the $lib generator produced no file for the $dialect 0.4x parity matrix." >&2
+      exit 1
+    fi
+  done
+done
+
+cat > parity-0-4x.ts <<'PARITY_0_4X'
+/**
+ * Differential parity for DRZL's validator generators on drizzle-orm 0.4x.
+ *
+ * Same method as `src/parity.ts` in the v1 tree and the same pool of values, imported from the
+ * same file: build a schema for every column of every table in three dialects and all three
+ * modes, with DRZL and with the official first-party module, then push the pool through both and
+ * compare verdicts. Reading the emitted source cannot do this, because a schema that validates
+ * and one that merely parses look identical as text.
+ *
+ * The ledger is the part that makes this runnable rather than permanently red. Two maps:
+ *
+ *   ALLOWED  DRZL and the official 0.4x module really do differ here, deliberately.
+ *   DEFECTS  DRZL is wrong or looser on 0.4x. Filed rather than fixed, and reported every run.
+ *
+ * Both are asserted exactly and in both directions. A difference in neither map fails the stage;
+ * an entry that suppresses nothing fails it; and an entry whose libraries or modes no longer match
+ * what was measured fails it with the observed set printed. That last direction is the one that
+ * matters. A list checked only for additions turns into a record of things that used to be wrong,
+ * and a fix then regresses with the gate still green.
+ *
+ * What the pairing count catches and what it does not, stated rather than implied: an entry
+ * declares a set of libraries and a set of modes, and the observed pairings have to be exactly the
+ * cross product of the two. Every entry measured today is that shape. A defect that reached, say,
+ * zod on select and valibot on insert would fail the count and have to be split into two entries.
+ *
+ * The limit of it: where two independent causes meet on one column, fixing one of them leaves the
+ * entry suppressing the other and the counts unchanged. One column is like that today, `c_char`
+ * and its MySQL twin, and both causes are named in the entry. The per-pairing looser/tighter
+ * counts are printed on any ledger failure so a partial change is visible in the output.
+ */
+import { readFileSync } from 'node:fs';
+import { POOL, LIBS, type Lib } from './src/pool.js';
+
+import {
+  createSelectSchema as zSelect,
+  createInsertSchema as zInsert,
+  createUpdateSchema as zUpdate,
+} from 'drizzle-zod';
+import {
+  createSelectSchema as vSelect,
+  createInsertSchema as vInsert,
+  createUpdateSchema as vUpdate,
+} from 'drizzle-valibot';
+import {
+  createSelectSchema as aSelect,
+  createInsertSchema as aInsert,
+  createUpdateSchema as aUpdate,
+} from 'drizzle-arktype';
+import {
+  createSelectSchema as tSelect,
+  createInsertSchema as tInsert,
+  createUpdateSchema as tUpdate,
+} from 'drizzle-typebox';
+
+import { matrix as pgTable } from './src/matrix.js';
+import { matrix as myTable } from './src/matrix-mysql.js';
+import { matrix as sqTable } from './src/matrix-sqlite.js';
+
+const OFFICIAL: Record<string, Record<string, (t: any) => any>> = {
+  zod: { select: zSelect, insert: zInsert, update: zUpdate },
+  valibot: { select: vSelect, insert: vInsert, update: vUpdate },
+  arktype: { select: aSelect, insert: aInsert, update: aUpdate },
+  typebox: { select: tSelect, insert: tInsert, update: tUpdate },
+};
+
+type Entry = {
+  /** The libraries this difference shows up in, asserted exactly against what was measured. */
+  libs: string[];
+  /** The modes it shows up in, asserted the same way. */
+  modes: string[];
+  /** What DRZL emits on 0.4x. */
+  drzl: string;
+  /** What the official 0.4x module emits for the same column. */
+  official: string;
+  /** Which filed defect this is, or why it is not one. */
+  filed: string;
+};
+
+const LIB_NAMES = ['zod', 'valibot', 'arktype', 'typebox'];
+const MODE_NAMES = ['select', 'insert', 'update'];
+// Insert and update. A divergence that only exists on write is a different claim from one that
+// exists on read, and coerceDates is the reason the distinction is load-bearing here.
+const WRITE = ['insert', 'update'];
+
+/**
+ * Divergences from the official 0.4x module that are deliberate and reasoned.
+ *
+ * Every one of these also holds against the v1 module, and the v1 pass carries the same reasoning
+ * in its own ALLOWED map, except where noted on `c_char`.
+ */
+const ALLOWED: Record<string, Entry> = {
+  // Two independent differences meet on this column, and only the first of them is in the v1 pass.
+  //
+  //   code points   a character limit counts characters; official counts `.length`, which is
+  //                 UTF-16 units, so it refuses three emoji in a char(4) the database accepts.
+  //   exact length  drizzle-zod 0.8.3 emits `length_equals 4`, on all three modes. Official v1
+  //                 emits a maximum and no minimum, which is what DRZL emits on both majors, so
+  //                 only the 0.4x module can see this at all.
+  //
+  // The exact-length half is upstream being stricter than the database on write, measured against
+  // Postgres through PGlite rather than argued: `insert into t (c) values ('ab')` into a `char(4)`
+  // is accepted and reads back as `'ab  '`, four characters. So official 0.4x refuses a legal
+  // insert, and DRZL's select schema is the loose one, since a row from that column is always
+  // four characters wide.
+  'pg/c_char': {
+    libs: LIB_NAMES,
+    modes: MODE_NAMES,
+    drzl: 'a string of at most 4 code points',
+    official: 'a string of exactly 4 UTF-16 units',
+    filed: 'not a defect: two deliberate differences, see the note above',
+  },
+  'mysql/m_char': {
+    libs: LIB_NAMES,
+    modes: MODE_NAMES,
+    drzl: 'as pg/c_char',
+    official: 'as pg/c_char',
+    filed: 'as pg/c_char',
+  },
+  // `coerceDates` defaults to coercing on insert and update, which is a documented DRZL option and
+  // is what `coerceDates: 'none'` turns off to match official exactly. Only strings and numbers
+  // are coerced: null, booleans and arrays are still rejected.
+  'pg/c_date_d': {
+    libs: LIB_NAMES,
+    modes: WRITE,
+    drzl: 'a Date, or a string or number coerced to one',
+    official: 'a Date only',
+    filed: 'not a defect: coerceDates',
+  },
+  'pg/c_ts_d': { libs: LIB_NAMES, modes: WRITE, drzl: 'as pg/c_date_d', official: 'as pg/c_date_d', filed: 'as pg/c_date_d' },
+  'mysql/m_date': { libs: LIB_NAMES, modes: WRITE, drzl: 'as pg/c_date_d', official: 'as pg/c_date_d', filed: 'as pg/c_date_d' },
+  'mysql/m_datetime': { libs: LIB_NAMES, modes: WRITE, drzl: 'as pg/c_date_d', official: 'as pg/c_date_d', filed: 'as pg/c_date_d' },
+  'mysql/m_ts': { libs: LIB_NAMES, modes: WRITE, drzl: 'as pg/c_date_d', official: 'as pg/c_date_d', filed: 'as pg/c_date_d' },
+  'sqlite/s_int_ts': { libs: LIB_NAMES, modes: WRITE, drzl: 'as pg/c_date_d', official: 'as pg/c_date_d', filed: 'as pg/c_date_d' },
+  // TypeBox fails a format it has no entry for rather than ignoring it, so official's schema
+  // rejects every valid uuid in any project that has not populated `FormatRegistry` first.
+  'pg/c_uuid': {
+    libs: ['typebox'],
+    modes: MODE_NAMES,
+    drzl: 'a string carrying a uuid pattern, which needs no setup',
+    official: "Type.String({ format: 'uuid' }), which rejects every uuid until FormatRegistry is populated",
+    filed: 'not a defect: DRZL is the usable one',
+  },
+  // Stricter than official, in DRZL's favour, on every json column of every dialect.
+  'pg/c_json': {
+    libs: ['valibot'],
+    modes: MODE_NAMES,
+    drzl: 'a JSON value: no Infinity, no Date, no Buffer',
+    official: 'v.any(), which takes all three',
+    filed: 'not a defect: DRZL is stricter',
+  },
+  'pg/c_jsonb': { libs: ['valibot'], modes: MODE_NAMES, drzl: 'as pg/c_json', official: 'as pg/c_json', filed: 'as pg/c_json' },
+  'pg/c_jsonb_typed': { libs: ['valibot'], modes: MODE_NAMES, drzl: 'as pg/c_json', official: 'as pg/c_json', filed: 'as pg/c_json' },
+  'mysql/m_json': { libs: ['valibot'], modes: MODE_NAMES, drzl: 'as pg/c_json', official: 'as pg/c_json', filed: 'as pg/c_json' },
+  'sqlite/s_text_json': { libs: ['valibot'], modes: MODE_NAMES, drzl: 'as pg/c_json', official: 'as pg/c_json', filed: 'as pg/c_json' },
+  'sqlite/s_blob_json': { libs: ['valibot'], modes: MODE_NAMES, drzl: 'as pg/c_json', official: 'as pg/c_json', filed: 'as pg/c_json' },
+};
+
+/**
+ * Where DRZL is wrong or looser than the official module on 0.4x.
+ *
+ * `filed: 'AC: ...'` names the fields the cross-major stage above already carries for the same
+ * column. The two sets do not line up one to one and were never going to: that map records the
+ * analyzer describing a column differently per major, and this one records the emitted validator
+ * behaving differently from the first-party one. Eight of these columns were already filed there.
+ * The other fourteen are new, and they are new mostly because the cross-major fixture is Postgres
+ * plus four MySQL text columns, so no MySQL float, no MySQL binary, no MySQL year and no SQLite
+ * column of any kind had ever been described under both majors.
+ *
+ * One filed defect is invisible here, which is worth saying because a gate is easy to mistake for
+ * a complete one. `matrix.c_numeric.format` and its two siblings are the numeric pattern being
+ * attached on the v1 arm only, so on 0.4x DRZL emits a bare string for `c_numeric` and `c_decimal`
+ * and takes 'hello' back. Official drizzle-zod 0.8.3 emits a bare string there too, so the two
+ * agree and this comparison reports nothing. The cross-major diff is what sees that one.
+ */
+const DEFECTS: Record<string, Entry> = {
+  // ---- a float carries no bounds on 0.4x -----------------------------------------------------
+  // v1 reads `number float` and `number double` and bounds them at the range each width
+  // represents exactly; 0.4x reaches the same columns through the class name and bounds nothing.
+  'pg/c_real': {
+    libs: LIB_NAMES,
+    modes: MODE_NAMES,
+    drzl: 'an unbounded number',
+    official: 'a number within +/-8388607',
+    filed: 'AC: matrix.c_real.min, .max, .integer',
+  },
+  'pg/c_double': {
+    libs: LIB_NAMES,
+    modes: MODE_NAMES,
+    drzl: 'an unbounded number',
+    official: 'a number within +/-140737488355327',
+    filed: 'AC: matrix.c_double.min, .max, .integer',
+  },
+  'pg/c_numeric_n': {
+    libs: LIB_NAMES,
+    modes: MODE_NAMES,
+    drzl: 'an unbounded number',
+    official: 'a number within the safe-integer range',
+    filed: 'AC: matrix.c_numeric_n.min, .max, .integer',
+  },
+  'mysql/m_real': {
+    libs: LIB_NAMES,
+    modes: MODE_NAMES,
+    drzl: 'an unbounded number',
+    official: 'a number within +/-140737488355327',
+    filed: 'new: the same float defect, on a dialect the cross-major fixture cannot reach',
+  },
+  'mysql/m_double': {
+    libs: LIB_NAMES,
+    modes: MODE_NAMES,
+    drzl: 'an unbounded number',
+    official: 'a number within +/-140737488355327',
+    filed: 'new: as mysql/m_real',
+  },
+  'mysql/m_float': {
+    libs: LIB_NAMES,
+    modes: MODE_NAMES,
+    drzl: 'an unbounded number',
+    official: 'a number within +/-8388607',
+    filed: 'new: as mysql/m_real',
+  },
+  'sqlite/s_real': {
+    libs: LIB_NAMES,
+    modes: MODE_NAMES,
+    drzl: 'an unbounded number',
+    official: 'a number within +/-140737488355327',
+    filed: 'new: as mysql/m_real, on SQLite',
+  },
+
+  // ---- point and line are typed as strings on 0.4x -------------------------------------------
+  // Not looseness but a wrong type: `PgPointTuple` and `PgLineTuple` hand back [x, y] and
+  // [a, b, c], and the class-name path answers `string`, so a select schema built on 0.4x rejects
+  // every row the driver returns. That shows up here as the one direction a wrong type takes:
+  // DRZL accepts 24 strings official refuses, and refuses the tuple official takes.
+  'pg/c_point': {
+    libs: LIB_NAMES,
+    modes: MODE_NAMES,
+    drzl: 'a string',
+    official: 'a tuple [number, number]',
+    filed: 'AC: matrix.c_point.tsType, .dbType, .shape',
+  },
+  'pg/c_line': {
+    libs: LIB_NAMES,
+    modes: MODE_NAMES,
+    drzl: 'a string',
+    official: 'a tuple [number, number, number]',
+    filed: 'AC: matrix.c_line.tsType, .dbType, .shape',
+  },
+
+  // ---- columns the class-name path cannot name at all ----------------------------------------
+  // No arm for the class, so the column comes back `unknown` and every generator emits a validator
+  // that accepts anything. The three Postgres ones are also named in check-old.ts, as an absolute
+  // check rather than a relative one. The three SQLite ones are new here: `SQLiteBlobBuffer` and
+  // the millisecond timestamp mode have no arm either, and no SQLite fixture had ever been
+  // analyzed under 0.4x.
+  //
+  // A bare `blob()` is not the same column on the two majors, measured on the column object:
+  // 0.45.2 builds a `SQLiteBlobBuffer` and 1.0.0-rc.4 builds a `SQLiteBlobJson`. So `s_blob` and
+  // `s_blob_buf` are both buffer columns here, which is why official demands a Buffer for both.
+  'pg/c_geometry': {
+    libs: LIB_NAMES,
+    modes: MODE_NAMES,
+    drzl: 'unknown, which accepts every value in the pool',
+    official: 'a tuple [number, number]',
+    filed: 'AC: matrix.c_geometry.tsType, .dbType, .shape, and check-old.ts KNOWN_UNNAMED',
+  },
+  'pg/c_bit': {
+    libs: LIB_NAMES,
+    modes: MODE_NAMES,
+    drzl: 'unknown, which accepts every value in the pool',
+    official: 'a string of at most 3 characters matching ^[01]*$',
+    filed: 'AC: matrix.c_bit.tsType, .dbType, .shape, and check-old.ts KNOWN_UNNAMED',
+  },
+  'pg/c_vector': {
+    libs: LIB_NAMES,
+    modes: MODE_NAMES,
+    drzl: 'unknown, which accepts every value in the pool',
+    official: 'an array of exactly 3 numbers',
+    filed: 'AC: matrix.c_vector.tsType, .dbType, .shape, and check-old.ts KNOWN_UNNAMED',
+  },
+  'sqlite/s_blob': {
+    libs: LIB_NAMES,
+    modes: MODE_NAMES,
+    drzl: 'unknown, which accepts every value in the pool',
+    official: 'a Buffer',
+    filed: 'new: no SQLiteBlobBuffer arm in the class-name path',
+  },
+  'sqlite/s_blob_buf': {
+    libs: LIB_NAMES,
+    modes: MODE_NAMES,
+    drzl: 'unknown, which accepts every value in the pool',
+    official: 'a Buffer',
+    filed: 'new: as sqlite/s_blob',
+  },
+  'sqlite/s_int_ts_ms': {
+    libs: LIB_NAMES,
+    modes: MODE_NAMES,
+    drzl: 'unknown, which accepts every value in the pool',
+    official: 'a Date',
+    filed: 'new: integer({ mode: timestamp_ms }) is unnamed on 0.4x',
+  },
+
+  // ---- a wrong type on MySQL -----------------------------------------------------------------
+  // Both are the class-name path answering with the wrong JavaScript type rather than with
+  // nothing. `MySqlDecimal` is a string on both majors and DRZL calls it a number here; `binary`
+  // and `varbinary` are strings on both majors and DRZL calls them Uint8Array. Each shows up as
+  // DRZL refusing everything official takes and taking things official refuses.
+  'mysql/m_decimal': {
+    libs: LIB_NAMES,
+    modes: MODE_NAMES,
+    drzl: 'a number',
+    official: 'a string',
+    filed: 'new: DRZL emits a string on v1, so the two majors disagree as well',
+  },
+  'mysql/m_binary': {
+    libs: LIB_NAMES,
+    modes: MODE_NAMES,
+    drzl: 'a Uint8Array',
+    official: 'a string',
+    filed: 'new: DRZL emits a capped string on v1',
+  },
+  'mysql/m_varbinary': {
+    libs: LIB_NAMES,
+    modes: MODE_NAMES,
+    drzl: 'a Uint8Array',
+    official: 'a string',
+    filed: 'new: as mysql/m_binary',
+  },
+
+  // ---- an integer range is missing or wrong on 0.4x ------------------------------------------
+  // `sqlite/s_int` is three libraries rather than four, and the missing one is not an omission:
+  // zod's `.int()` refuses a number outside the safe-integer range on its own, so zod reaches
+  // official's answer for 9007199254740993 without the bound DRZL failed to emit. The other three
+  // have no such rule and take it.
+  'mysql/m_serial': {
+    libs: LIB_NAMES,
+    modes: MODE_NAMES,
+    drzl: 'an unbounded integer, so it takes -1 for an auto-increment column',
+    official: 'an integer within 0..9007199254740991',
+    filed: 'new',
+  },
+  'mysql/m_year': {
+    libs: LIB_NAMES,
+    modes: MODE_NAMES,
+    drzl: 'an unbounded integer',
+    official: 'an integer within 1901..2155',
+    filed: 'new',
+  },
+  'sqlite/s_int': {
+    libs: ['valibot', 'arktype', 'typebox'],
+    modes: MODE_NAMES,
+    drzl: 'an integer within the signed 64-bit range',
+    official: 'an integer within the safe-integer range',
+    filed: 'new',
+  },
+  'sqlite/s_blob_bigint': {
+    libs: LIB_NAMES,
+    modes: MODE_NAMES,
+    drzl: 'an unbounded bigint',
+    official: 'a bigint within the signed 64-bit range',
+    filed: 'new',
+  },
+};
+
+// A throw is a rejection, not an absence of an answer: an arktype narrow throws for a value of the
+// wrong type, and every library here treats that as a failed check. `safeField` returning nothing
+// is not read as agreement anywhere below; it produces a finding row.
+const safeOk = (lib: Lib, f: any, x: unknown) => {
+  try {
+    return lib.ok(f, x);
+  } catch {
+    return false;
+  }
+};
+const safeField = (lib: Lib, s: any, k: string) => {
+  try {
+    return lib.field(s, k);
+  } catch {
+    return undefined;
+  }
+};
+
+const DIALECTS = [
+  {
+    name: 'pg',
+    table: pgTable,
+    mods: {
+      zod: () => import('./src/gen-0-4x/pg/zod/matrix.zod.js'),
+      valibot: () => import('./src/gen-0-4x/pg/valibot/matrix.valibot.js'),
+      arktype: () => import('./src/gen-0-4x/pg/arktype/matrix.arktype.js'),
+      typebox: () => import('./src/gen-0-4x/pg/typebox/matrix.typebox.js'),
+    } as Record<string, () => Promise<any>>,
+  },
+  {
+    name: 'mysql',
+    table: myTable,
+    mods: {
+      zod: () => import('./src/gen-0-4x/mysql/zod/matrix.zod.js'),
+      valibot: () => import('./src/gen-0-4x/mysql/valibot/matrix.valibot.js'),
+      arktype: () => import('./src/gen-0-4x/mysql/arktype/matrix.arktype.js'),
+      typebox: () => import('./src/gen-0-4x/mysql/typebox/matrix.typebox.js'),
+    } as Record<string, () => Promise<any>>,
+  },
+  {
+    name: 'sqlite',
+    table: sqTable,
+    mods: {
+      zod: () => import('./src/gen-0-4x/sqlite/zod/matrix.zod.js'),
+      valibot: () => import('./src/gen-0-4x/sqlite/valibot/matrix.valibot.js'),
+      arktype: () => import('./src/gen-0-4x/sqlite/arktype/matrix.arktype.js'),
+      typebox: () => import('./src/gen-0-4x/sqlite/typebox/matrix.typebox.js'),
+    } as Record<string, () => Promise<any>>,
+  },
+];
+
+const PREFIX: Record<string, string> = { select: 'Select', insert: 'Insert', update: 'Update' };
+
+/**
+ * Every column of every fixture, in every library and every mode: 39 Postgres, 28 MySQL and 14
+ * SQLite columns, times four libraries, times three modes.
+ *
+ * Written out rather than derived from the arrays above, which would make it true by construction
+ * and say nothing. It is the check that this stage cannot pass by comparing nothing, and it is not
+ * a hypothetical failure: the cross-major stage this one sits beside spent a day comparing 0.45.2
+ * against 0.45.2 and was green throughout. A fixture that grows a column fails here and has to be
+ * re-measured, which is the intended cost.
+ */
+const EXPECTED_COMPARISONS = (39 + 28 + 14) * 4 * 3;
+
+// Read off disk rather than through `require.resolve`, whose `exports` map has no `./package.json`
+// entry for drizzle-orm. Reading it is also the point: this reports the version of the tree the
+// run happened in rather than the version somebody believes was installed.
+const version = (pkg: string): string => {
+  const v = JSON.parse(readFileSync(`node_modules/${pkg}/package.json`, 'utf8')).version;
+  if (typeof v !== 'string' || !v) {
+    console.error(`    FAIL: ${pkg} reports no version, so this stage cannot say what it measured.`);
+    process.exit(1);
+  }
+  return v;
+};
+
+// `npm init -y` leaves this project CommonJS, where tsx refuses a top-level await.
+main().catch((e) => {
+  console.error(e);
+  process.exit(1);
+});
+
+async function main() {
+  const drizzle = version('drizzle-orm');
+  if (drizzle.split('.')[0] !== '0') {
+    console.error(`    FAIL: this tree resolves drizzle-orm ${drizzle}, which is not the 0.4x line.`);
+    console.error('          This stage exists because the parity pass near the top of this file');
+    console.error('          measures v1 alone. Run against v1 it would measure it twice and pass.');
+    process.exit(1);
+  }
+  const officials = LIB_NAMES.map((lib) => {
+    const pkg = `drizzle-${lib}`;
+    const v = version(pkg);
+    // The 1.0.0 line of each of these targets drizzle-orm v1. Installed here it would either fail
+    // to import or compare against the wrong major's rules, and either way the pin above moved
+    // without anyone deciding to.
+    if (v.split('.')[0] !== '0') {
+      console.error(`    FAIL: ${pkg}@${v} is the v1 line, not the companion for drizzle-orm 0.4x.`);
+      process.exit(1);
+    }
+    return `${pkg} ${v}`;
+  });
+  console.log(`    drizzle-orm ${drizzle} against ${officials.join(', ')}`);
+
+  type Seen = { libs: Set<string>; modes: Set<string>; pairings: number; detail: string[] };
+  const observed = new Map<string, Seen>();
+  const findings: string[] = [];
+  let totalCompared = 0;
+  let pairings = 0;
+
+  for (const d of DIALECTS) {
+    const loaded: Record<string, any> = {};
+    for (const lib of LIB_NAMES) loaded[lib] = await d.mods[lib]();
+
+    for (const mode of MODE_NAMES) {
+      for (const libName of LIB_NAMES) {
+        pairings++;
+        const lib = LIBS[libName];
+        const official = OFFICIAL[libName][mode](d.table as never);
+        const mine = loaded[libName][`${PREFIX[mode]}matrixSchema`];
+        if (!mine) {
+          findings.push(`${d.name}/${libName}/${mode}: no ${PREFIX[mode]}matrixSchema exported`);
+          continue;
+        }
+        // Column names come from the official zod schema regardless of library: every module emits
+        // the same set, and zod is the one whose shape is trivially enumerable.
+        const oShape = OFFICIAL.zod[mode](d.table as never).shape;
+        const rows: string[] = [];
+        let compared = 0;
+        let ledgered = 0;
+
+        for (const k of Object.keys(oShape)) {
+          const o = safeField(lib, official, k);
+          const m = safeField(lib, mine, k);
+          if (!o && !m) {
+            // Never a skip. Both sides absent means this column was measured by nothing, and
+            // `safeField` returns undefined for a lookup that threw as well as for one that was
+            // missing, so the quiet version of this branch reports parity on an exception.
+            rows.push(`${k}: neither official nor DRZL yielded a field, so nothing was compared`);
+            continue;
+          }
+          if (!m) { rows.push(`${k}: official has it, DRZL omits it`); continue; }
+          if (!o) { rows.push(`${k}: DRZL has it, official omits it`); continue; }
+          compared++;
+          const looser: string[] = [];
+          const tighter: string[] = [];
+          let officialTook = false;
+          let drzlTook = false;
+          for (const [label, x] of POOL) {
+            const a = safeOk(lib, o, x);
+            const b = safeOk(lib, m, x);
+            officialTook ||= a;
+            drzlTook ||= b;
+            if (a !== b) (b ? looser : tighter).push(label);
+          }
+          // A column both sides reject every probe for agrees perfectly and proves nothing: the
+          // two schemas could be a correct one and a broken one and this loop could not tell them
+          // apart. Deliberately outside the ledger below, which says a difference is expected, not
+          // that a column need not be measured.
+          if (!officialTook && !drzlTook) {
+            rows.push(
+              `${k}: neither side accepts any pool value, so this column proves nothing.` +
+                ' Add a value this column accepts to POOL.'
+            );
+            continue;
+          }
+          if (!looser.length && !tighter.length) continue;
+
+          const key = `${d.name}/${k}`;
+          const seen: Seen = observed.get(key) ?? { libs: new Set(), modes: new Set(), pairings: 0, detail: [] };
+          seen.libs.add(libName);
+          seen.modes.add(mode);
+          seen.pairings++;
+          seen.detail.push(`${mode}/${libName} ${looser.length} looser ${tighter.length} tighter`);
+          observed.set(key, seen);
+          if (ALLOWED[key] || DEFECTS[key]) { ledgered++; continue; }
+          rows.push(
+            `${k}:` +
+              (looser.length ? `\n          DRZL accepts, official rejects: ${looser.join(', ')}` : '') +
+              (tighter.length ? `\n          DRZL rejects, official accepts: ${tighter.join(', ')}` : '')
+          );
+        }
+
+        // A run that compared no column at all would otherwise print `parity` and pass.
+        if (compared === 0) {
+          rows.push('no column was compared on both sides, so this pairing measured nothing');
+        }
+        totalCompared += compared;
+        console.log(
+          `    ${d.name.padEnd(7)} ${libName.padEnd(8)} ${mode.padEnd(7)} ` +
+            `${compared}/${Object.keys(oShape).length} cols compared  ` +
+            `${rows.length ? 'DIFFERS' : 'parity'}${ledgered ? ` (${ledgered} in the ledger)` : ''}`
+        );
+        if (rows.length) {
+          for (const r of rows) console.log(`        ${r}`);
+          findings.push(...rows.map((r) => `${d.name}/${libName}/${mode} ${r}`));
+        }
+      }
+    }
+  }
+
+  const filedAlready = Object.values(DEFECTS).filter((e) => e.filed.startsWith('AC:')).length;
+  console.log(`    ${totalCompared} column comparisons across ${pairings} pairings`);
+  console.log(
+    `    ${Object.keys(ALLOWED).length} documented divergence(s); ` +
+      `${Object.keys(DEFECTS).length} known-defect column(s), ${filedAlready} already filed and ` +
+      `${Object.keys(DEFECTS).length - filedAlready} first seen by this stage`
+  );
+  for (const [k, e] of Object.entries(DEFECTS)) {
+    console.log(`      ${k}: DRZL emits ${e.drzl}, official emits ${e.official} [${e.filed}]`);
+  }
+  console.log(
+    '    the json-schema generator is not in this comparison: there is no official 0.4x JSON' +
+      ' Schema module to compare it against'
+  );
+
+  // Both directions. An entry that suppressed nothing describes something nobody can observe, and
+  // an entry whose libraries or modes have moved is describing a different defect from the one
+  // that is there now.
+  const ledgerProblems: string[] = [];
+  for (const [map, name] of [[ALLOWED, 'ALLOWED'], [DEFECTS, 'DEFECTS']] as const) {
+    for (const [key, entry] of Object.entries(map)) {
+      const seen = observed.get(key);
+      if (!seen) {
+        ledgerProblems.push(`${name}[${key}] suppressed nothing on this run`);
+        continue;
+      }
+      const gotLibs = [...seen.libs].sort().join(',');
+      const gotModes = [...seen.modes].sort().join(',');
+      const wantLibs = [...entry.libs].sort().join(',');
+      const wantModes = [...entry.modes].sort().join(',');
+      if (gotLibs !== wantLibs) {
+        ledgerProblems.push(`${name}[${key}] declares libs ${wantLibs}, measured ${gotLibs}`);
+      }
+      if (gotModes !== wantModes) {
+        ledgerProblems.push(`${name}[${key}] declares modes ${wantModes}, measured ${gotModes}`);
+      }
+      const wantPairings = entry.libs.length * entry.modes.length;
+      if (seen.pairings !== wantPairings) {
+        ledgerProblems.push(
+          `${name}[${key}] declares ${wantPairings} pairings, measured ${seen.pairings}: ` +
+            seen.detail.join('; ')
+        );
+      }
+    }
+  }
+  const unledgered = [...observed.keys()].filter((k) => !ALLOWED[k] && !DEFECTS[k]);
+
+  if (unledgered.length) {
+    console.error('    FAIL: these columns differ from the official 0.4x module and are in neither');
+    console.error('          map. A difference that is deliberate goes in ALLOWED with its reason,');
+    console.error('          and one that is a DRZL defect goes in DEFECTS naming what it is:');
+    for (const k of unledgered) console.error(`      ${k}: ${observed.get(k)!.detail.join('; ')}`);
+  }
+  if (ledgerProblems.length) {
+    console.error('    FAIL: the ledger no longer describes this run. If a defect was fixed, delete');
+    console.error('          its entry; if it moved, re-measure it. An entry left behind is a');
+    console.error('          sentence about something nobody can observe:');
+    for (const p of ledgerProblems) console.error(`      ${p}`);
+  }
+  if (totalCompared !== EXPECTED_COMPARISONS) {
+    console.error(`    FAIL: ${totalCompared} column comparisons, expected ${EXPECTED_COMPARISONS}.`);
+    console.error('          A parity pass that measures fewer columns than it did yesterday is');
+    console.error('          the failure this file has been bitten by most.');
+  }
+  if (findings.length) {
+    console.error(`    FAIL: ${findings.length} parity finding(s). A generated schema looser than`);
+    console.error('          the first-party module accepts rows the database will reject.');
+  }
+  if (findings.length || ledgerProblems.length || unledgered.length || totalCompared !== EXPECTED_COMPARISONS) {
+    process.exit(1);
+  }
+}
+PARITY_0_4X
+
+if ! npx tsx parity-0-4x.ts; then
+  echo "FAIL: DRZL's generated validators do not match the official ones on drizzle-orm 0.4x." >&2
+  exit 1
+fi
 cd "$APP"
 
 # ---------------------------------------------------------------------------------------------
@@ -4076,7 +4836,10 @@ echo "    modes, with the four generators cross-checked against each other on ev
 echo "    checked against a real Postgres, a real SQLite and, where MYSQL_URL is set, a real"
 echo "    MySQL, with applyDefaults compared against what the database writes, and described the"
 echo "    same way by the analyzer under both drizzle-orm majors, bar the differences that stage"
-echo "    names one at a time, three of which are columns 0.4x leaves unnamed. The JSON Schema"
+echo "    names one at a time, three of which are columns 0.4x leaves unnamed. The same column by"
+echo "    column comparison runs a second time against the first-party validators for 0.45.2,"
+echo "    where the columns known to differ are counted and named above, each with what DRZL"
+echo "    emits, what official emits and which filing it is. The JSON Schema"
 echo "    output compiles under ajv in strict mode, agrees with Postgres wherever the zod output"
 echo "    does, and speaks as a fifth voice on every CHECK. Every tarball holds the files its"
 echo "    manifest names and nothing from the working tree, and every package npm is serving"
