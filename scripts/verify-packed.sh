@@ -1021,10 +1021,11 @@ export const probe = (lib: Lib, f: any, x: unknown): Verdict => {
  * **A value and an absence are different questions and are asked differently.** A value is bound
  * as a parameter. An absence is a statement that never names the column, which is what an absent
  * field is; binding a JS `undefined` in its place asks the value question instead, because the
- * driver turns it into a NULL on the way to the server. That is measured here rather than assumed:
- * the bound `undefined` comes back 23502, the same answer as `null`. Both passes used to declare
- * that no database could be handed an absence at all, which was that measurement about the driver
- * written up as a fact about databases.
+ * driver turns it into a NULL on the way to the server: a bound `undefined` comes back 23502, the
+ * same answer as `null`. That was measured when this was written and is **not** re-measured on
+ * every run, because the harness never binds `undefined`. It omits the column instead, which is the
+ * question it wants asked. Both passes used to declare that no database could be handed an absence
+ * at all, which was that one measurement about the driver written up as a fact about databases.
  *
  * Three tables per column, differing only in the constraint and the default. Each answer is read
  * only once its own control holds:
@@ -6315,7 +6316,9 @@ async function main() {
         // here because the ledger already names it as a defect. Named or not, the run says which
         // probe it was and which map covered it: a defect that is filed is still a defect, and a
         // ledger entry is not a reason to print nothing. `ALLOWED` and `DEFECTS` are read
-        // dialect-wide, so a library-scoped waiver does not reach this, which is fail-closed.
+        // dialect-wide. On this pass that is the shape of the lookup rather than a live guard,
+        // since every key here is built as `${dialect}/${column}` and no waiver is library-scoped;
+        // the v1 copy of this check is where it does work, and is proven both ways there.
         if (a.verdict === 'refuse' && verdicts.includes('accept')) {
           const named = ALLOWED[`${w.dialect}/${w.column}`]
             ? 'ALLOWED'
