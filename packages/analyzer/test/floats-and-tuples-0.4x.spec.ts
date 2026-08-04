@@ -19,9 +19,11 @@
  * accepted the one string shape the column cannot be given.
  *
  * The floats carried no bounds at all, because the class-name path reads its ranges from
- * `INT_RANGES` and nothing else. That left DRZL looser than `drizzle-zod@0.8.3`, the first-party
- * validator for this same major, which is the one direction this repository's parity gate exists
- * to forbid.
+ * `INT_RANGES` and nothing else, so DRZL described nothing where `drizzle-zod@0.8.3` described a
+ * range. What made that wrong is that the column has a magnitude and the schema claimed it did
+ * not, so the schema promised writes the database refuses. Not the direction of the difference:
+ * the parity gate counts the entries where DRZL accepts something official refuses and most of
+ * them do, several because the database backs DRZL, and these columns are among them now.
  */
 import { describe, it, expect } from 'vitest';
 import { promises as fs } from 'node:fs';
@@ -220,40 +222,25 @@ describe('an inexact numeric column on 0.4x', () => {
     expect(cols.d.max).toBeUndefined();
   });
 
-  it('states integer:false, which decides the bounded case and nothing on the unbounded one', () => {
-    // Three comments claimed `integer: false` was on the unbounded columns to stop
-    // `isIntegerColumn` reading a CHECK-derived pair of bounds as an integer range. Review asked
-    // for the experiment and it disproves the claim: a CHECK never becomes a column bound at all.
-    // The generators fold checks into the emitted range as they emit, and nothing writes them back
-    // onto the Column, so `min` and `max` on a `doublePrecision` carrying two bracketing CHECKs
-    // are still undefined.
-    //
-    // `isIntegerColumn` is reimplemented here in its three lines rather than imported, because
-    // `@drzl/validation-core` is not a dependency of this package. That is a real weakness of this
-    // test: it would not notice that function changing. What it does pin is the input, which is
-    // the half this package owns, and generator-zod's structured-columns spec runs the real one.
-    const isIntegerColumn = (c: {
-      integer?: boolean;
-      dbType?: string;
-      min?: string;
-      max?: string;
-    }) => {
-      if (typeof c.integer === 'boolean') return c.integer;
-      return c.dbType === 'INTEGER' || (c.min !== undefined && c.max !== undefined);
-    };
-    const bounded = { integer: false, dbType: 'REAL', min: `-${FLOAT4_MAX}`, max: FLOAT4_MAX };
-    const unbounded = { integer: false, dbType: 'DOUBLE' };
-    const without = <T extends object>(o: T) => {
-      const { integer: _drop, ...rest } = o as T & { integer?: boolean };
-      return rest;
-    };
-    // On the bounded column the flag is the whole answer: without it the two bounds are read as an
-    // integer range and the emitted schema starts refusing 1.5.
-    expect(isIntegerColumn(bounded)).toBe(false);
-    expect(isIntegerColumn(without(bounded)), 'the flag is load-bearing here').toBe(true);
-    // On the unbounded one it decides nothing, which is what the removed comments got wrong.
-    expect(isIntegerColumn(unbounded)).toBe(false);
-    expect(isIntegerColumn(without(unbounded)), 'and inert here').toBe(false);
+  it('states integer:false on both widths, bounded or not', async () => {
+    // What this package owns: the flag is present on every inexact column whether or not the
+    // column also carries a range. What that flag then decides is `isIntegerColumn`'s job, and it
+    // is asserted against the real function in validation-core's integer-column.spec.ts, which
+    // fails when the flag branch is deleted from it. The first version of this test reimplemented
+    // those three lines here, because `@drzl/validation-core` is not a dependency of this package,
+    // and review showed the loop was closed: deleting the branch from the real function left this
+    // suite green.
+    const cols = await columnsOf(
+      'pg-float-flag-0.4x',
+      `
+      import { pgTable, real, doublePrecision } from 'drizzle-orm/pg-core';
+      export const t = pgTable('t', { r: real(), d: doublePrecision() });
+      `
+    );
+    expect(cols.r.integer, 'bounded').toBe(false);
+    expect(cols.d.integer, 'unbounded').toBe(false);
+    expect(cols.r.max).toBe(FLOAT4_MAX);
+    expect(cols.d.max).toBeUndefined();
   });
 
   it('never turns a CHECK into a column bound, on a float or anything else', async () => {

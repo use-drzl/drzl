@@ -1360,12 +1360,14 @@ const recordThrow = (key: string, side: string, mode: string, value: string) => 
  *
  * `divergence` is keyed `<modes>/<libraries>`, `*` for all of them, and each value is the exact
  * signature measured for those pairings: `L: <labels DRZL accepts and official refuses> | T: <the
- * other way>`, in pool order. Three signatures are a property rather than a list, so they cannot be
- * written down wrongly: `every probe official rejects` says DRZL took the whole pool, and the two
- * `has it, omits it` strings say one side produced no field at all. All three are what the run
- * produces in those states, and no waiver declares any of them today, since no waived column on
- * this major is untyped or missing on one side. They are the shape a future one would take, not a
- * claim about the current list.
+ * other way>`, in pool order. Three signatures are a property rather than a list:
+ * `every probe official rejects (N of them)` says DRZL took the whole pool and states how many
+ * official refused, and the two `has it, omits it` strings say one side produced no field at all.
+ * The count is in the first of those because without it only DRZL's side was pinned: official
+ * narrowing from 58 rejections to 2 left the signature unmoved, since it never mentioned official
+ * at all. All three are what the run produces in those states, and no waiver declares any of them
+ * today, since no waived column on this major is untyped or missing on one side. They are the
+ * shape a future one would take, not a claim about the current list.
  *
  * Until this existed a waiver asserted only that it suppressed something, and a real regression
  * walked through it: stripping every length cap from `m_tinytext` in all four generated modules
@@ -1392,7 +1394,10 @@ const LIB_NAMES = ['zod', 'valibot', 'arktype', 'typebox'];
 const MODE_NAMES = ['select', 'insert', 'update'];
 const WRITE = ['insert', 'update'];
 
-const ALL_PROBES = 'every probe official rejects';
+// A signature stating the divergence as a property rather than as a list, for a column DRZL
+// accepts every probe of. See the fuller note on the same constant in the 0.4x pass below, which
+// is where the six columns in that state live.
+const allProbes = (n: number) => `every probe official rejects (${n} of them)`;
 
 /**
  * Does a declaration key such as `select,insert/zod` cover the pairing `select/zod`? A declaration
@@ -1541,8 +1546,9 @@ const ALLOWED: Record<string, Waiver> = {
   // Looser than official on purpose. An earlier version of this sentence called these the only
   // entries in either pass that run that way, and the map around it refutes that: the run prints
   // how many waivers have DRZL accepting something official refuses, and it is most of them.
-  // `pg/c_char` takes three emoji into a `char(3)`, `pg/c_bytea` takes a Uint8Array, `pg/c_uuid`
-  // takes a uuid TypeBox refuses without a FormatRegistry, and Postgres accepts all three.
+  // `pg/c_char` takes three emoji into a `char(3)`, `pg/c_bytea` takes a Uint8Array, and
+  // `pg/typebox/c_uuid` takes a uuid TypeBox refuses until a FormatRegistry is populated. Postgres
+  // accepts all three. The uuid one is keyed by library because only TypeBox has it.
   //
   // What is unusual about these six is narrower and worth reading for: they are looser on a
   // *numeric range*, which is the kind of divergence this gate was built to catch, and they got
@@ -1594,9 +1600,14 @@ const ALLOWED: Record<string, Waiver> = {
   'mysql/typebox/m_varbinary': { libs: ['typebox'], modes: MODE_NAMES, why: 'as mysql/typebox/m_binary', divergence: { '*/*': `L:  | T: []` } },
   // No arktype bigint entry. There were three, reading "ArkType cannot bound a bigint in its
   // string DSL", and only half of that was true: the DSL cannot state the bound, but a narrow can,
-  // and this generator already used narrows for every character cap. It was the one place in this
-  // whole gate where DRZL was looser than the first-party module, waived on all three dialects.
-  // The generator now bounds bigint columns and all four agree.
+  // and this generator already used narrows for every character cap. The generator now bounds
+  // bigint columns and all four agree.
+  //
+  // That trio used to be described here as the one place in this whole gate where DRZL was looser
+  // than the first-party module. It never was: the run counts the waivers where DRZL accepts
+  // something official refuses and prints the number, and it is most of them. What made those
+  // three worth fixing rather than waiving is that no int64 column can hold the value they let
+  // through.
 };
 
 const usedWaivers = new Set<string>();
@@ -1829,7 +1840,9 @@ for (const d of DIALECTS) {
           continue;
         }
         if (!looser.length && !tighter.length) continue;
-        const signature = drzlAll ? ALL_PROBES : `L: ${looser.join(', ')} | T: ${tighter.join(', ')}`;
+        const signature = drzlAll
+          ? allProbes(looser.length)
+          : `L: ${looser.join(', ')} | T: ${tighter.join(', ')}`;
         if (allowed(d.name, libName, k, mode, signature)) { waivedCount++; continue; }
         rows.push(
           `        ${k}:` +
@@ -2112,7 +2125,9 @@ console.log(`    ${totalCompared} column comparisons`);
  * one is a waiver where DRZL is the looser side. Three comments in this file have now claimed a
  * number for that, and the count is printed here instead so a claim about it cannot go stale: the
  * float waivers added when the bounds moved to the database's were described as "the only entries
- * in either pass that run that way", and they are not, by an order of magnitude.
+ * in either pass that run that way", and they are not: the counts printed below are 18 of 35 here
+ * and 15 of 24 in the 0.4x pass, against the six. An earlier version of this sentence said "by an
+ * order of magnitude", which is 3x and 2.5x.
  *
  * Being looser than official is not by itself a defect and this line is not a warning. Postgres
  * takes three emoji into a `char(3)`, a Uint8Array into a `bytea` and a uuid into a `uuid`, and
@@ -4523,8 +4538,9 @@ const DEFECTS: Record<string, string> = {
   // own validators do not differ here. drizzle-zod 0.8.3 on drizzle-orm 0.45.2 emits `max_length`
   // 255 / 65535 / 16777215 / 4294967295 on all four, off the text subtype (`column.textType`)
   // rather than off `length`, which is the same place DRZL's own 0.4x path gets `maxBytes` from.
-  // So DRZL on 0.4x is looser than official on 0.4x, the one direction this map exists to
-  // record. Same evidence as the float group above.
+  // So DRZL on 0.4x is looser than official on 0.4x here, and that is worth recording because the
+  // column has a cap and DRZL's 0.4x answer claims it does not, not because looser is a direction
+  // this map forbids: the parity passes count their looser entries and most run that way.
   //
   // Measured on the emitted files, since ALLOWED also claimed nothing was accepted on one side
   // and refused on the other. All five generators emit different source, and one differs in
@@ -5126,10 +5142,13 @@ type Entry = {
    * The exact divergence this entry covers, keyed `<modes>/<libraries>` with `*` for all of them.
    *
    * A signature is `L: <labels DRZL accepts and official refuses> | T: <the other way>`, in pool
-   * order, and it has to match what the run measured character for character. The literal
-   * `every probe official rejects` says the same thing as a proof instead of a list: DRZL accepted
-   * every probe, so the divergence is exactly official's rejections and cannot be written down
-   * wrongly.
+   * order, and it has to match what the run measured character for character.
+   * `every probe official rejects (N of them)` says the same thing as a proof instead of a list:
+   * DRZL accepted every probe, so the divergence is exactly official's rejections, and N is how
+   * many those are. Both halves are needed. Without the count only DRZL's side was asserted, and
+   * the six entries using it would have stayed green through official narrowing from 58
+   * rejections to 2. The counts are not uniform either, which the shorthand hid: TypeBox refuses
+   * two fewer probes than the other three on `c_bit`.
    *
    * This replaced a `direction` field, which named only which way the disagreement ran. That
    * closed a reversal and nothing else, and three sabotages walked through it: capping `c_char` at
@@ -5157,8 +5176,15 @@ type Entry = {
  * probe, so the set of differing probes is exactly the set official rejects, and there is nothing
  * to write down wrongly. Six columns are in that state and each would otherwise carry a list of
  * around 56 labels, which is a list nobody would read.
+ *
+ * The count is in the string because without it the shorthand was asserted in one direction only.
+ * "DRZL accepts everything" is pinned by the phrase, and it fails the moment DRZL stops accepting
+ * everything. What was not pinned was official's side: if official narrowed from refusing 26
+ * probes to refusing 2, the divergence shrank by 24 and this signature did not move, because it
+ * never mentioned official's rejections at all. It says how many now, so both halves of the
+ * difference are asserted, which is what every other signature in these maps does.
  */
-const ALL_PROBES = 'every probe official rejects';
+const allProbes = (n: number) => `every probe official rejects (${n} of them)`;
 
 /**
  * Does a declaration key such as `select,insert/zod,typebox` cover the pairing `select/zod`?
@@ -5356,7 +5382,11 @@ const ALLOWED: Record<string, Entry> = {
 };
 
 /**
- * Where DRZL is wrong or looser than the official module on 0.4x.
+ * Where DRZL is wrong on 0.4x, whichever way the difference runs.
+ *
+ * Not "looser than official", which is the neighbouring map's business as often as this one's:
+ * ALLOWED above holds six columns where DRZL is looser and right, because the database says so.
+ * What puts an entry here is that DRZL's answer is wrong about the column.
  *
  * `filed: 'AC: ...'` names the fields the cross-major stage above already carries for the same
  * column. The two sets do not line up one to one and were never going to: that map records the
@@ -5419,7 +5449,13 @@ const DEFECTS: Record<string, Entry> = {
   'pg/c_geometry': {
     libs: LIB_NAMES,
     modes: MODE_NAMES,
-    divergence: { '*/*': `every probe official rejects` },
+    divergence: {
+      'select,insert/zod,arktype,typebox': allProbes(58),
+      'select,insert/valibot': allProbes(57),
+      'update/zod,arktype': allProbes(57),
+      'update/valibot': allProbes(56),
+      'update/typebox': allProbes(58),
+    },
     drzl: 'unknown, which accepts every value in the pool',
     official: 'a tuple [number, number]',
     filed: 'AC: matrix.c_geometry.tsType, .dbType, .shape, and check-old.ts KNOWN_UNNAMED',
@@ -5427,7 +5463,11 @@ const DEFECTS: Record<string, Entry> = {
   'pg/c_bit': {
     libs: LIB_NAMES,
     modes: MODE_NAMES,
-    divergence: { '*/*': `every probe official rejects` },
+    divergence: {
+      'select,insert/zod,valibot,arktype': allProbes(58),
+      'update/zod,valibot,arktype': allProbes(57),
+      '*/typebox': allProbes(56),
+    },
     drzl: 'unknown, which accepts every value in the pool',
     official: 'a string of at most 3 characters matching ^[01]*$',
     filed: 'AC: matrix.c_bit.tsType, .dbType, .shape, and check-old.ts KNOWN_UNNAMED',
@@ -5435,7 +5475,15 @@ const DEFECTS: Record<string, Entry> = {
   'pg/c_vector': {
     libs: LIB_NAMES,
     modes: MODE_NAMES,
-    divergence: { '*/*': `every probe official rejects` },
+    divergence: {
+      // Per pairing, because official's own rejections are not the same everywhere and the bare
+      // shorthand hid that. TypeBox refuses two fewer probes than the rest on `c_bit`, valibot one
+      // fewer on `c_geometry`, and update mode refuses one fewer than select and insert wherever
+      // the column is optional there.
+      'select,insert/*': allProbes(58),
+      'update/zod,valibot,arktype': allProbes(57),
+      'update/typebox': allProbes(58),
+    },
     drzl: 'unknown, which accepts every value in the pool',
     official: 'an array of exactly 3 numbers',
     filed: 'AC: matrix.c_vector.tsType, .dbType, .shape, and check-old.ts KNOWN_UNNAMED',
@@ -5443,7 +5491,15 @@ const DEFECTS: Record<string, Entry> = {
   'sqlite/s_blob': {
     libs: LIB_NAMES,
     modes: MODE_NAMES,
-    divergence: { '*/*': `every probe official rejects` },
+    divergence: {
+      // Per pairing, because official's own rejections are not the same everywhere and the bare
+      // shorthand hid that. TypeBox refuses two fewer probes than the rest on `c_bit`, valibot one
+      // fewer on `c_geometry`, and update mode refuses one fewer than select and insert wherever
+      // the column is optional there.
+      'select,insert/*': allProbes(58),
+      'update/zod,valibot,arktype': allProbes(57),
+      'update/typebox': allProbes(58),
+    },
     drzl: 'unknown, which accepts every value in the pool',
     official: 'a Buffer',
     filed: 'new: no SQLiteBlobBuffer arm in the class-name path',
@@ -5451,7 +5507,15 @@ const DEFECTS: Record<string, Entry> = {
   'sqlite/s_blob_buf': {
     libs: LIB_NAMES,
     modes: MODE_NAMES,
-    divergence: { '*/*': `every probe official rejects` },
+    divergence: {
+      // Per pairing, because official's own rejections are not the same everywhere and the bare
+      // shorthand hid that. TypeBox refuses two fewer probes than the rest on `c_bit`, valibot one
+      // fewer on `c_geometry`, and update mode refuses one fewer than select and insert wherever
+      // the column is optional there.
+      'select,insert/*': allProbes(58),
+      'update/zod,valibot,arktype': allProbes(57),
+      'update/typebox': allProbes(58),
+    },
     drzl: 'unknown, which accepts every value in the pool',
     official: 'a Buffer',
     filed: 'new: as sqlite/s_blob',
@@ -5459,7 +5523,15 @@ const DEFECTS: Record<string, Entry> = {
   'sqlite/s_int_ts_ms': {
     libs: LIB_NAMES,
     modes: MODE_NAMES,
-    divergence: { '*/*': `every probe official rejects` },
+    divergence: {
+      // Per pairing, because official's own rejections are not the same everywhere and the bare
+      // shorthand hid that. TypeBox refuses two fewer probes than the rest on `c_bit`, valibot one
+      // fewer on `c_geometry`, and update mode refuses one fewer than select and insert wherever
+      // the column is optional there.
+      'select,insert/*': allProbes(58),
+      'update/zod,valibot,arktype': allProbes(57),
+      'update/typebox': allProbes(58),
+    },
     drzl: 'unknown, which accepts every value in the pool',
     official: 'a Date',
     filed: 'new: integer({ mode: timestamp_ms }) is unnamed on 0.4x',
@@ -5882,7 +5954,7 @@ async function main() {
           seen.pairings++;
           seen.signatures.set(
             `${mode}/${libName}`,
-            drzlAll ? ALL_PROBES : `L: ${looser.join(', ')} | T: ${tighter.join(', ')}`
+            drzlAll ? allProbes(looser.length) : `L: ${looser.join(', ')} | T: ${tighter.join(', ')}`
           );
           seen.detail.push(`${mode}/${libName} ${looser.length} looser ${tighter.length} tighter`);
           observed.set(key, seen);
@@ -5975,10 +6047,9 @@ async function main() {
         claimed.add(hits[0]);
         const want = entry.divergence[hits[0]];
         if (want === sig) continue;
-        if (want === ALL_PROBES) {
+        if (want.startsWith('every probe official rejects')) {
           ledgerProblems.push(
-            `${name}[${key}] declares that DRZL accepts every probe on ${pairing}, and it does ` +
-              `not. Measured: ${sig}`
+            `${name}[${key}] on ${pairing} declares\n        ${want}\n      and measured\n        ${sig}`
           );
           continue;
         }
@@ -6664,10 +6735,14 @@ cd "$APP"
 echo "OK: $count packages packed, installed into an empty project, generated, and the output"
 echo "    typechecks under bundler, node16 and nodenext, and is compared column by column and value"
 echo "    by value against all four first-party drizzle-orm validator modules on each of three"
-echo "    dialects and three modes. Every difference either fails this run or is waived by name,"
-echo "    and each waiver pins the exact set of probes it covers, in both directions. That"
-echo "    comparison is the guarantee, and it is not \"at least as strict\": most waivers have DRZL"
-echo "    accepting something official refuses, the run counts them above, and each says why."
+echo "    dialects and three modes. Every difference either fails this run or is in one of two"
+echo "    ledgers by name: ALLOWED, where the difference is deliberate, or DEFECTS, where DRZL is"
+echo "    wrong and it is filed rather than fixed and named on every run with what each side"
+echo "    emits. Both ledgers are asserted the same way and in both directions, each entry"
+echo "    pinning the exact set of probes it covers, so a stale entry fails as loudly as an"
+echo "    unledgered difference. That comparison is the guarantee, and it is not \"at least as"
+echo "    strict\": most ledger entries have DRZL accepting something official refuses, the run"
+echo "    counts them above, and each says why."
 echo "    The four generators are cross-checked against each other on every dialect,"
 echo "    checked against a real Postgres, a real SQLite and, where MYSQL_URL is set, a real"
 echo "    MySQL, with applyDefaults compared against what the database writes, and described the"

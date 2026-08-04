@@ -970,8 +970,14 @@ export class SchemaAnalyzer {
    * Only drizzle v1 states this outright, as a `float` or `double` semantic on `dataType`. On
    * 0.4x the same columns reach the analyzer by class name, `INT_RANGES` was the only range table
    * on that path, and so nothing said anything about them at all: not the range, and not that
-   * they are inexact. That made DRZL looser than the first-party validator for the same major on
-   * every one of these columns, which is what the parity gate exists to forbid.
+   * they are inexact. The parity gate measured seven of the ten classes below and reported DRZL
+   * differing from the first-party validator for the same major on all seven. The three
+   * SingleStore classes are in no fixture either pass carries and are covered by unit tests alone.
+   *
+   * Differing is what the gate reports, not what it forbids. Most of its waivers have DRZL
+   * accepting something official refuses and the run counts them; an earlier version of this
+   * sentence said the gate exists to forbid being looser, which the same commit's own success
+   * banner denies.
    *
    * `null` is a value in this table and is not the same as a class it does not name. It says the
    * column is inexact and that no finite magnitude bound is truthful for it, which is the case for

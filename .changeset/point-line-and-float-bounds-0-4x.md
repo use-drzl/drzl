@@ -56,8 +56,11 @@ anything:
 
 So the bounds are the database's now. A 4 byte float is bounded at the one magnitude Postgres does
 refuse, 3.4028234663852886e38, past which it answers `out of range for type real`. An 8 byte float
-carries no magnitude bound, and states `integer: false` on its own so a bounded float is never
-mistaken for an integer. `numeric({ mode: 'number' })` keeps the safe-integer range, which is about
+carries no magnitude bound, and states `integer: false` alongside, which is true of the column
+and is what keeps the *bounded* widths from being read as integers: `isIntegerColumn` falls back to
+"declares both bounds" when the flag is absent, so without it a `real` schema would call `.int()`
+and refuse 1.5. On the unbounded widths the flag decides nothing, since there is no pair of bounds
+to fall back to. `numeric({ mode: 'number' })` keeps the safe-integer range, which is about
 what a JS number can carry rather than about the column.
 
 Measured against this repository's ground-truth stages, which insert every probe into a real
