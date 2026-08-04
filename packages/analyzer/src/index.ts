@@ -253,15 +253,61 @@ const MYSQL_TEXT_CAPS: Record<string, number> = {
 /**
  * Bounds `drizzle-orm/zod` puts on the inexact numeric types, matched deliberately.
  *
- * They are narrower than the column: Postgres `real` holds values up to ~3.4e38. The bound is
- * the point past which a float can no longer represent consecutive integers, so a value above
- * it round-trips through the database as a *different* number. Drizzle chose to reject that
- * rather than lose it silently, and a generated schema that disagreed with the first-party one
- * about the same column would be the more surprising outcome.
+ * Neither the column's range nor its precision limit, and the sentence that used to stand here
+ * said it was the second. Asked of a real Postgres through PGlite, on each column's own SQL type:
+ *
+ *   real              takes 8388608, 9000000, 2147483648, Infinity and NaN; holds every integer
+ *                     exactly up to 16777216, and gives 16777217 back as 16777216
+ *   double precision  takes all of the above and returns each one unchanged
+ *
+ * So `real` represents consecutive integers to twice the bound below and `double precision` to
+ * 2^53, and the database refuses none of it. Drizzle picked the signed 24 bit and 48 bit ranges
+ * instead, and DRZL matches them: a generated schema that disagreed with the first-party module
+ * about the same column would be the more surprising outcome. What that costs is stated rather
+ * than hidden, because it is a real cost: a schema built here turns away a value the column
+ * stores and returns unchanged, and Infinity is the plainest case of it.
+ *
+ * Used on both drizzle majors. v1 reaches it by `dataType` semantic; 0.4x has no codec to read
+ * and reaches it by class name through `INEXACT_RANGES`.
  */
-const V1_FLOAT_BOUNDS: Record<string, [string, string]> = {
+const FLOAT_BOUNDS: Record<string, [string, string]> = {
   float: ['-8388608', '8388607'], // real / float4, 2^23
   double: ['-140737488355328', '140737488355327'], // double precision / float8, 2^47
+};
+
+/**
+ * The range a JS number holds every integer of.
+ *
+ * What a `numeric`/`decimal` column in `{ mode: 'number' }` is bounded by, because the value
+ * arrives as a JS number and the column's own precision is wider than one can carry. Narrower
+ * than the database on that column too: PGlite refuses 2147483648 into a `numeric(10,2)` with
+ * `numeric field overflow`, so this admits values that column will not take. It is what both
+ * drizzle majors and `drizzle-zod` emit, and reading the declared precision instead would make
+ * DRZL disagree with all three.
+ */
+const JS_SAFE_INTEGER_BOUNDS: [string, string] = ['-9007199254740991', '9007199254740991'];
+
+/**
+ * Shapes the class-name fallback can state on its own.
+ *
+ * `shape` used to arrive from `describeV1Column` or from a json column and from nowhere else, so
+ * on drizzle-orm 0.4x, which carries no codec, a `point` had no way to say it was a tuple: a
+ * coarse `/Point|Line/i` over the class name answered `string`. That is wrong in both directions,
+ * measured against a real Postgres rather than against the first-party module. drizzle 0.45.2
+ * maps [1, 2] to the literal `(1,2)`, the column takes it and `mapFromDriverValue` hands back
+ * [1, 2]; it maps the string "1,2" to `(1,,)`, by indexing the string by position, and Postgres
+ * answers `invalid input syntax for type point`. Line behaves the same way, `{1,2,3}` against
+ * `{1,,,2}`.
+ *
+ * Only the tuple modes. `point({ mode: 'xy' })` is a `PgPointObject` and hands back `{ x, y }`,
+ * so neither a tuple nor a string describes it, and drizzle v1 calls that one a tuple too. It is
+ * left where it is rather than moved to a second wrong answer.
+ */
+const TUPLE_CLASS_SHAPES: Record<string, ColumnShape> = {
+  // `line()` is the trap here: its `drizzle:entityKind` is `PgLine` while its constructor is
+  // `PgLineTuple`, and this path matches on the constructor.
+  PgPointTuple: { kind: 'tuple', length: 2 },
+  PgLineTuple: { kind: 'tuple', length: 3 },
 };
 
 /**
@@ -349,7 +395,7 @@ export function describeV1Column(column: any): Partial<Column> | null {
       break;
     case 'float':
     case 'double': {
-      [out.min, out.max] = V1_FLOAT_BOUNDS[semantic]!;
+      [out.min, out.max] = FLOAT_BOUNDS[semantic]!;
       out.integer = false;
       out.tsType = 'number';
       out.dbType = semantic === 'float' ? 'REAL' : 'DOUBLE';
@@ -454,7 +500,7 @@ export function describeV1Column(column: any): Partial<Column> | null {
         out.tsType = 'number';
         out.dbType = 'NUMERIC';
         out.integer = false;
-        [out.min, out.max] = ['-9007199254740991', '9007199254740991'];
+        [out.min, out.max] = JS_SAFE_INTEGER_BOUNDS;
       } else if (js === 'string') {
         out.tsType = 'string';
         out.dbType = codec === 'varchar' ? 'VARCHAR' : codec === 'char' ? 'CHAR' : 'TEXT';
@@ -890,6 +936,41 @@ export class SchemaAnalyzer {
   };
 
   /**
+   * The same, for the numeric types that are not exact, keyed off the Drizzle column class.
+   *
+   * Only drizzle v1 states these outright, as a `float` or `double` semantic on `dataType`. On
+   * 0.4x the same columns reach the analyzer by class name, `INT_RANGES` was the only range table
+   * on that path, and so nothing bounded them at all: DRZL was looser than `drizzle-zod@0.8.3`,
+   * the first-party validator for that same major, which is the one direction this repository's
+   * parity gate exists to forbid. Measured, before the fix: DRZL's `real` schema accepted
+   * 9000000, 2147483648 and 9007199254740993 where official refused all three.
+   *
+   * `integer: false` travels with every entry and is not decoration. `isIntegerColumn` falls back
+   * to "declares both bounds" when the flag is absent, so a range arriving on its own turns the
+   * emitted schema into an integer one and it starts refusing 1.5.
+   *
+   * The widths are the type's, not the name's: MySQL and SingleStore `real` is a synonym for
+   * `double` unless REAL_AS_FLOAT is set, and SQLite `real` is an 8 byte IEEE float. Both are
+   * `number double` on drizzle v1, which is where these pairings come from.
+   */
+  private static readonly INEXACT_RANGES: Record<string, [string, string]> = {
+    // 24 bit: Postgres `real`/float4 and the MySQL family's `float`
+    PgReal: FLOAT_BOUNDS.float,
+    MySqlFloat: FLOAT_BOUNDS.float,
+    SingleStoreFloat: FLOAT_BOUNDS.float,
+    // 48 bit: everything backed by an 8 byte float
+    PgDoublePrecision: FLOAT_BOUNDS.double,
+    MySqlDouble: FLOAT_BOUNDS.double,
+    MySqlReal: FLOAT_BOUNDS.double,
+    SQLiteReal: FLOAT_BOUNDS.double,
+    SingleStoreDouble: FLOAT_BOUNDS.double,
+    SingleStoreReal: FLOAT_BOUNDS.double,
+    // `numeric({ mode: 'number' })`, which v1 reaches through the bare-number arm of
+    // `describeV1Column` and bounds by what a JS number can carry.
+    PgNumericNumber: JS_SAFE_INTEGER_BOUNDS,
+  };
+
+  /**
    * Constraints the column definition already carries, which the analysis used to throw away.
    *
    * Everything here is read off Drizzle's own column instance, so it states what the schema
@@ -911,6 +992,15 @@ export class SchemaAnalyzer {
     if (range) {
       [out.min, out.max] = range;
       out.integer = true;
+    }
+
+    // Disjoint from the table above by construction, and asserted as such by the analyzer tests
+    // rather than left to reading: no class appears in both, so the order of these two blocks
+    // cannot decide an answer.
+    const inexact = SchemaAnalyzer.INEXACT_RANGES[ctor];
+    if (inexact) {
+      [out.min, out.max] = inexact;
+      out.integer = false;
     }
 
     if (/^(Pg)?UUID$/i.test(ctor) || /Uuid$/i.test(ctor)) out.format = 'uuid';
@@ -992,10 +1082,26 @@ export class SchemaAnalyzer {
         // arbitrary precision. Typing them as numbers made the select validator reject every row
         // the database returned, and the insert validator reject the string the driver wants.
         return { tsType: 'string', dbType: 'NUMERIC' };
-      case 'PgFloat':
       case 'PgDoublePrecision':
         // These really are JS numbers.
         return { tsType: 'number', dbType: 'DOUBLE' };
+      // `real()` builds a `PgReal`, which matched no arm and fell through to the coarse
+      // `/Numeric|Float|Double|Real/i` below, so a real column was labelled NUMERIC while v1
+      // called it REAL. The arm above used to name `PgFloat` alongside `PgDoublePrecision`, and
+      // no such class exists in pg-core on either major: `float` is MySQL's spelling and Gel's
+      // is `GelReal`, both of which are matched elsewhere. Enumerated from the module's own
+      // exports on 0.45.2 and on 1.0.0-rc.4, which name only PgReal and PgDoublePrecision.
+      case 'PgReal':
+        return { tsType: 'number', dbType: 'REAL' };
+      // 0.4x names a point and a line by their mode. `point()` is a `PgPointTuple` and `line()` a
+      // `PgLineTuple`, whose entity kind is `PgLine` while its constructor is not, and both used
+      // to fall through to `/Point|Line/i` and come back `string`. The driver hands back [x, y]
+      // and [a, b, c], so a select schema built on 0.4x refused every row, and an insert schema
+      // took the one string form `mapToDriverValue` turns into something Postgres rejects.
+      case 'PgPointTuple':
+        return { tsType: '[number, number]', dbType: 'POINT' };
+      case 'PgLineTuple':
+        return { tsType: '[number, number, number]', dbType: 'LINE' };
       case 'PgJson':
       case 'PgJsonb':
         return { tsType: 'any', dbType: ctor === 'PgJsonb' ? 'JSONB' : 'JSON' };
@@ -1244,10 +1350,13 @@ export class SchemaAnalyzer {
           : undefined;
       const byteCap = sqlType ? MYSQL_TEXT_CAPS[sqlType] : undefined;
 
-      const jsonShape =
+      // The shape the class-name path can state for itself, which until now was only ever the
+      // json one. A `point` on 0.4x has no codec to read and needs a tuple here or the generators
+      // emit a scalar for a value that is not one.
+      const fallbackShape: ColumnShape | undefined =
         dbType === 'JSON' || dbType === 'JSONB' || (col as any)?.config?.mode === 'json'
-          ? ({ kind: 'json' } as const)
-          : undefined;
+          ? { kind: 'json' }
+          : TUPLE_CLASS_SHAPES[String((col as any)?.constructor?.name ?? '')];
 
       // A column with no type is how two real bugs looked from the outside: `.array()` and
       // `pgEnum` columns on drizzle-orm 0.4x came back `unknown`, every generator emitted a
@@ -1262,7 +1371,7 @@ export class SchemaAnalyzer {
       // The condition is "the emitted validator will be wide", not "tsType is unknown". A json
       // column is also `unknown` and is not wide: the generators emit the JSON value space for
       // it. A `custom` shape is wide, and is the one case where the user has a documented fix.
-      const shape = (v1?.shape ?? jsonShape)?.kind;
+      const shape = (v1?.shape ?? fallbackShape)?.kind;
       const finalTs = (v1?.tsType ?? tsType) as string;
       const wide = (finalTs === 'unknown' || finalTs === 'any') && (!shape || shape === 'custom');
       if (wide) {
@@ -1298,7 +1407,7 @@ export class SchemaAnalyzer {
         // that spread has nothing to say and this is the only source.
         ...(arrayDims ? { arrayDimensions: arrayDims } : {}),
         // Only where v1 did not already describe the value, so a shaped column keeps its shape.
-        ...(jsonShape && !v1?.shape ? { shape: jsonShape } : {}),
+        ...(fallbackShape && !v1?.shape ? { shape: fallbackShape } : {}),
         ...(byteCap && v1?.maxBytes === undefined ? { maxBytes: byteCap } : {}),
       });
     }

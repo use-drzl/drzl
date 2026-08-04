@@ -131,7 +131,12 @@ describe('numeric range', () => {
     expect(String(Number(c.b.max))).not.toBe(c.b.max);
   });
 
-  it('does not bound a float or a numeric, which have no integer range', async () => {
+  it('bounds a float by its width and leaves a string numeric alone', async () => {
+    // This used to assert that neither carried a bound, on the reasoning that a float has no
+    // integer range. It has an inexact one, drizzle v1 states it, `drizzle-zod@0.8.3` emits it
+    // on this same major, and leaving it off made DRZL looser than the module it exists to
+    // improve on. A `numeric` in its default string mode really does stay unbounded: a min and a
+    // max on a string say nothing a validator can use, and its `format` carries the check.
     const c = await columns(
       'cons-float',
       `
@@ -142,8 +147,15 @@ describe('numeric range', () => {
       });
       `
     );
-    expect(c.d.min).toBeUndefined();
+    expect(c.d).toMatchObject({
+      tsType: 'number',
+      min: '-140737488355328',
+      max: '140737488355327',
+      integer: false,
+    });
+    expect(c.n.tsType).toBe('string');
     expect(c.n.min).toBeUndefined();
+    expect(c.n.max).toBeUndefined();
   });
 });
 

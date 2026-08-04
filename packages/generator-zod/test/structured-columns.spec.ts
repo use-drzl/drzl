@@ -137,6 +137,30 @@ describe('structured columns', () => {
     expect(accepts(f, 'abc'), 'a string').toBe(false);
   });
 
+  it('bounds an inexact numeric column without turning it into an integer', async () => {
+    // What the analyzer now emits for a `real` column on drizzle-orm 0.4x, where it used to emit
+    // no range at all and DRZL was looser than drizzle-zod@0.8.3 on the same major.
+    //
+    // `integer` has to travel with the bounds. `isIntegerColumn` falls back to "declares both
+    // bounds" when the flag is absent, so a range arriving on its own would make the emitted
+    // schema call `.int()` and start refusing 1.5, which is most of what a real column holds.
+    const m = await schemasFor([
+      col('ratio', {
+        tsType: 'number',
+        dbType: 'REAL',
+        min: '-8388608',
+        max: '8388607',
+        integer: false,
+      }),
+    ]);
+    const f = m.SelecttSchema.shape.ratio;
+    expect(accepts(f, 1.5), 'a fraction, which is the point of the column').toBe(true);
+    expect(accepts(f, 8388607), 'the bound itself').toBe(true);
+    expect(accepts(f, 8388608), 'one past the bound').toBe(false);
+    expect(accepts(f, -8388609), 'one below the bound').toBe(false);
+    expect(accepts(f, Infinity), 'a value Postgres takes and a finite bound cannot').toBe(false);
+  });
+
   it('holds a json column to values that survive a round trip', async () => {
     // `z.any()` accepted all of the rejections below, none of which come back out of the column
     // as they went in.

@@ -4358,8 +4358,10 @@ const ALLOWED: Record<string, string> = {
  *
  * The gate that can is the 0.4x parity stage further down, which measures DRZL's emitted
  * validators against the first-party modules for 0.45.2 the way the stage near the top of this
- * file does for v1. It carries eight of these columns in its own DEFECTS map, so a fix has to
- * clear an entry there as well as here.
+ * file does for v1. It carries three of these columns in its own DEFECTS map, so a fix has to
+ * clear an entry there as well as here. That gate is what made the first fixes possible: the
+ * float bounds and the point and line tuples were filed here for a round because nothing could
+ * show that changing the 0.4x path was right, and both left this map through it.
  */
 const DEFECTS: Record<string, string> = {
   // ---- 0.4x names the SQL type coarsely, and once v1 does ------------------------------------
@@ -4371,10 +4373,12 @@ const DEFECTS: Record<string, string> = {
   // A label, and nothing more, on this fixture. `dbType` is read in exactly one place outside the
   // analyzer, `isIntegerColumn`, which prefers the `integer` flag and only falls back to
   // `dbType === 'INTEGER'`. Measured by changing it rather than by reading the output: setting all
-  // seventeen of these to the value v1 reports, in the analysis of the 0.4x tree, and regenerating
-  // all three fixtures with the zod and JSON Schema generators produces 29 byte-identical files.
-  // Reading the diff of the two majors' output instead would have been wrong here, since `c_real`
-  // sits in this group and in the float group below, and its output does change.
+  // seventeen of the labels this group then held to the value v1 reports, in the analysis of the
+  // 0.4x tree, and regenerating all three fixtures with the zod and JSON Schema generators
+  // produces 29 byte-identical files. Reading the diff of the two majors' output instead would
+  // have been wrong, and `matrix.c_real.dbType` is why: it sat in this group and in the float
+  // group, so its output did change, for the float bounds rather than for the label. It is gone
+  // from both now, because `PgReal` reaches an arm of its own and is named REAL on 0.4x too.
   'rows.small.dbType': 'label only: PgSmallInt is named INTEGER on 0.4x',
   'rows.name.dbType': 'as rows.small.dbType, PgVarchar as TEXT',
   'rows.code.dbType': 'as rows.small.dbType, PgChar as TEXT',
@@ -4384,7 +4388,6 @@ const DEFECTS: Record<string, string> = {
   'matrix.c_char.dbType': 'as rows.code.dbType',
   'matrix.c_smallint.dbType': 'as rows.small.dbType',
   'matrix.c_serial.dbType': 'label only, the other way: 0.4x says SERIAL and v1 says INTEGER',
-  'matrix.c_real.dbType': 'label only: PgReal is named NUMERIC on 0.4x',
   'matrix.c_date_d.dbType': 'as rows.day.dbType',
   'matrix.c_date_s.dbType': 'as rows.day.dbType',
   'matrix.c_varchar_arr.dbType': 'as rows.name.dbType',
@@ -4392,36 +4395,6 @@ const DEFECTS: Record<string, string> = {
   'matrix.c_cidr.dbType': 'as matrix.c_inet.dbType',
   'matrix.c_macaddr.dbType': 'as matrix.c_inet.dbType',
   'mtext.id.dbType': 'as rows.name.dbType, on MySQL: MySqlVarChar is named TEXT on 0.4x',
-
-  // ---- a float carries no bounds on 0.4x -----------------------------------------------------
-  // v1 reads `number float` and `number double` and bounds them at 2^23 and 2^47, the range each
-  // width represents exactly; 0.4x reaches the same columns through the class name and bounds
-  // nothing. Not a difference between the majors: drizzle-zod 0.8.3, the first-party validator
-  // for 0.45.2, emits the same two bounds this fixture's 0.4x side is missing. Measured: it
-  // rejects 8388608 for `real` and 140737488355328 for `double precision`, exactly as
-  // drizzle-orm/zod does on 1.0.0-rc.4.
-  //
-  // The `integer` half of each of these is the flag arriving with the bounds, and on its own it
-  // changes nothing: setting `integer: false` on all five without adding the bounds regenerates
-  // byte identical, because `isIntegerColumn` reaches the same answer from `dbType` and the
-  // absent bounds. Of the 54 fields in this map, those 5 and the 17 labels above are the ones
-  // with no measured effect on generated output; the other 32, on 17 columns, all have one.
-  'rows.ratio.min': 'no float bound on 0.4x, which official drizzle-zod does emit there',
-  'rows.ratio.max': 'as rows.ratio.min',
-  'rows.ratio.integer': 'as rows.ratio.min; the flag comes with the bounds',
-  'defaulted.d_real.min': 'as rows.ratio.min',
-  'defaulted.d_real.max': 'as rows.ratio.min',
-  'defaulted.d_real.integer': 'as rows.ratio.integer',
-  'matrix.c_real.min': 'as rows.ratio.min',
-  'matrix.c_real.max': 'as rows.ratio.min',
-  'matrix.c_real.integer': 'as rows.ratio.integer',
-  'matrix.c_double.min': 'as rows.ratio.min',
-  'matrix.c_double.max': 'as rows.ratio.min',
-  'matrix.c_double.integer': 'as rows.ratio.integer',
-  // `numeric({ mode: 'number' })` is a JS number, so v1 bounds it at the safe-integer range.
-  'matrix.c_numeric_n.min': 'as rows.ratio.min, at the safe-integer range',
-  'matrix.c_numeric_n.max': 'as matrix.c_numeric_n.min',
-  'matrix.c_numeric_n.integer': 'as rows.ratio.integer',
 
   // ---- a numeric column is unchecked on 0.4x -------------------------------------------------
   // The numeric pattern is DRZL's own, kept because a bare string accepts 'hello' for a column
@@ -4431,18 +4404,6 @@ const DEFECTS: Record<string, string> = {
   'rows.amount.format': 'the numeric pattern is attached on v1 only',
   'matrix.c_numeric.format': 'as rows.amount.format',
   'matrix.c_decimal.format': 'as rows.amount.format',
-
-  // ---- point and line are typed as strings on 0.4x -------------------------------------------
-  // The worst of these, because it is not looseness: `PgPointTuple` and `PgLineTuple` hand back
-  // [x, y] and [a, b, c], and the class-name path answers `string`, so a select schema built on
-  // 0.4x rejects every row the driver returns. Official drizzle-zod 0.8.3 on 0.45.2 parses
-  // [1, 2] and refuses '1,2' for the same column.
-  'matrix.c_point.tsType': 'typed `string` on 0.4x, where the driver returns [x, y]',
-  'matrix.c_point.dbType': 'as matrix.c_point.tsType',
-  'matrix.c_point.shape': 'as matrix.c_point.tsType',
-  'matrix.c_line.tsType': 'as matrix.c_point.tsType, for [a, b, c]',
-  'matrix.c_line.dbType': 'as matrix.c_point.tsType',
-  'matrix.c_line.shape': 'as matrix.c_point.tsType',
 
   // ---- geometry, bit and vector are unnamed on 0.4x ------------------------------------------
   // No arm for `PgGeometry`, `PgBinaryVector` or `PgVector` in the class-name path, so all three
@@ -5241,6 +5202,29 @@ const ALLOWED: Record<string, Entry> = {
   'mysql/m_json': { libs: ['valibot'], modes: MODE_NAMES, divergence: { '*/*': `L:  | T: Infinity, Date, Buffer, Uint8Array` }, drzl: 'as pg/c_json', official: 'as pg/c_json', filed: 'as pg/c_json' },
   'sqlite/s_text_json': { libs: ['valibot'], modes: MODE_NAMES, divergence: { '*/*': `L:  | T: Infinity, Date, Buffer, Uint8Array` }, drzl: 'as pg/c_json', official: 'as pg/c_json', filed: 'as pg/c_json' },
   'sqlite/s_blob_json': { libs: ['valibot'], modes: MODE_NAMES, divergence: { '*/*': `L:  | T: Infinity, Date, Buffer, Uint8Array` }, drzl: 'as pg/c_json', official: 'as pg/c_json', filed: 'as pg/c_json' },
+  // Arrived here when `point` stopped being typed `string` on 0.4x and started being the tuple it
+  // is. The v1 pass has carried the same entry all along, for the same reason: DRZL emits
+  // `v.strictTuple` and official emits `v.tuple`, which ignores anything past the declared
+  // members. The other three libraries reject a third element on both sides.
+  //
+  // Postgres is what makes DRZL the right one, rather than a preference for strictness. Asked
+  // through PGlite on a real `point` column, `[1, 2, 3]` is handed to the driver as `(1,2)`,
+  // because drizzle's `mapToDriverValue` reads `value[0]` and `value[1]` and nothing else. The
+  // insert succeeds, the column stores `(1,2)`, and the row reads back as `[1, 2]`. So the value
+  // official accepts is one the database silently truncates.
+  //
+  // `c_line` is not here, and not because it behaves differently. The longest array in the pool
+  // is `[1,2,3]`, which both a strict and a lax 3-tuple accept, so nothing in it separates the two
+  // at that arity. The run asserts every entry's libs and divergence, so listing `c_line` on a
+  // difference nothing measures would fail this stage rather than pass quietly.
+  'pg/c_point': {
+    libs: ['valibot'],
+    modes: MODE_NAMES,
+    divergence: { '*/*': `L:  | T: [1,2,3]` },
+    drzl: 'a strict tuple of exactly two numbers',
+    official: 'v.tuple, which ignores a third element the column then drops',
+    filed: 'not a defect: DRZL is stricter, and Postgres truncates what official accepts',
+  },
 };
 
 /**
@@ -5249,10 +5233,18 @@ const ALLOWED: Record<string, Entry> = {
  * `filed: 'AC: ...'` names the fields the cross-major stage above already carries for the same
  * column. The two sets do not line up one to one and were never going to: that map records the
  * analyzer describing a column differently per major, and this one records the emitted validator
- * behaving differently from the first-party one. Eight of these columns were already filed there.
- * The other fourteen are new, and they are new mostly because the cross-major fixture is Postgres
- * plus four MySQL text columns, so no MySQL float, no MySQL binary, no MySQL year and no SQLite
- * column of any kind had ever been described under both majors.
+ * behaving differently from the first-party one. Three of these columns are also filed there.
+ * The other ten are new, and they are new mostly because the cross-major fixture is Postgres
+ * plus four MySQL text columns, so no MySQL binary, no MySQL year and no SQLite column of any
+ * kind had ever been described under both majors.
+ *
+ * Nine entries have left this map, which is what it is for. `pg/c_real`, `pg/c_double`,
+ * `pg/c_numeric_n`, `mysql/m_real`, `mysql/m_double`, `mysql/m_float` and `sqlite/s_real` were
+ * the class-name path carrying no bound at all for an inexact numeric column, and `pg/c_point`
+ * and `pg/c_line` were it answering `string` for a value the driver hands back as a tuple. Both
+ * are fixed in the analyzer rather than filed now, and removing an entry before the fix is what
+ * showed the entry was covering the defect: taking these nine out on their own failed this stage
+ * with 108 parity findings naming exactly those nine columns.
  *
  * Two kinds of filed defect are not in this map, and they are not there for different reasons.
  *
@@ -5278,112 +5270,6 @@ const ALLOWED: Record<string, Entry> = {
  * rather than effort, and the run says so out loud.
  */
 const DEFECTS: Record<string, Entry> = {
-  // ---- a float carries no bounds on 0.4x -----------------------------------------------------
-  // v1 reads `number float` and `number double` and bounds them at the range each width
-  // represents exactly; 0.4x reaches the same columns through the class name and bounds nothing.
-  'pg/c_real': {
-    libs: LIB_NAMES,
-    modes: MODE_NAMES,
-    divergence: {
-      '*/zod,typebox': `L: 9000000, 2147483648, 9007199254740993 | T: `,
-      '*/valibot,arktype': `L: 9000000, 2147483648, 9007199254740993, Infinity | T: `,
-    },
-    drzl: 'an unbounded number',
-    official: 'a number within +/-8388607',
-    filed: 'AC: matrix.c_real.min, .max, .integer',
-  },
-  'pg/c_double': {
-    libs: LIB_NAMES,
-    modes: MODE_NAMES,
-    divergence: {
-      '*/zod,typebox': `L: 9007199254740993 | T: `,
-      '*/valibot,arktype': `L: 9007199254740993, Infinity | T: `,
-    },
-    drzl: 'an unbounded number',
-    official: 'a number within +/-140737488355327',
-    filed: 'AC: matrix.c_double.min, .max, .integer',
-  },
-  'pg/c_numeric_n': {
-    libs: LIB_NAMES,
-    modes: MODE_NAMES,
-    divergence: {
-      '*/zod,typebox': `L: 9007199254740993 | T: `,
-      '*/valibot,arktype': `L: 9007199254740993, Infinity | T: `,
-    },
-    drzl: 'an unbounded number',
-    official: 'a number within the safe-integer range',
-    filed: 'AC: matrix.c_numeric_n.min, .max, .integer',
-  },
-  'mysql/m_real': {
-    libs: LIB_NAMES,
-    modes: MODE_NAMES,
-    divergence: {
-      '*/zod,typebox': `L: 9007199254740993 | T: `,
-      '*/valibot,arktype': `L: 9007199254740993, Infinity | T: `,
-    },
-    drzl: 'an unbounded number',
-    official: 'a number within +/-140737488355327',
-    filed: 'new: the same float defect, on a dialect the cross-major fixture cannot reach',
-  },
-  'mysql/m_double': {
-    libs: LIB_NAMES,
-    modes: MODE_NAMES,
-    divergence: {
-      '*/zod,typebox': `L: 9007199254740993 | T: `,
-      '*/valibot,arktype': `L: 9007199254740993, Infinity | T: `,
-    },
-    drzl: 'an unbounded number',
-    official: 'a number within +/-140737488355327',
-    filed: 'new: as mysql/m_real',
-  },
-  'mysql/m_float': {
-    libs: LIB_NAMES,
-    modes: MODE_NAMES,
-    divergence: {
-      '*/zod,typebox': `L: 9000000, 2147483648, 9007199254740993 | T: `,
-      '*/valibot,arktype': `L: 9000000, 2147483648, 9007199254740993, Infinity | T: `,
-    },
-    drzl: 'an unbounded number',
-    official: 'a number within +/-8388607',
-    filed: 'new: as mysql/m_real',
-  },
-  'sqlite/s_real': {
-    libs: LIB_NAMES,
-    modes: MODE_NAMES,
-    divergence: {
-      '*/zod,typebox': `L: 9007199254740993 | T: `,
-      '*/valibot,arktype': `L: 9007199254740993, Infinity | T: `,
-    },
-    drzl: 'an unbounded number',
-    official: 'a number within +/-140737488355327',
-    filed: 'new: as mysql/m_real, on SQLite',
-  },
-
-  // ---- point and line are typed as strings on 0.4x -------------------------------------------
-  // Not looseness but a wrong type: `PgPointTuple` and `PgLineTuple` hand back [x, y] and
-  // [a, b, c], and the class-name path answers `string`, so a select schema built on 0.4x rejects
-  // every row the driver returns. That shows up here as the one direction a wrong type takes:
-  // DRZL accepts 24 strings official refuses, and refuses the tuple official takes.
-  'pg/c_point': {
-    libs: LIB_NAMES,
-    modes: MODE_NAMES,
-    divergence: {
-      '*/zod,arktype,typebox': `L: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010' | T: [1,2]`,
-      '*/valibot': `L: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010' | T: [1,2], [1,2,3]`,
-    },
-    drzl: 'a string',
-    official: 'a tuple [number, number]',
-    filed: 'AC: matrix.c_point.tsType, .dbType, .shape',
-  },
-  'pg/c_line': {
-    libs: LIB_NAMES,
-    modes: MODE_NAMES,
-    divergence: { '*/*': `L: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010' | T: [1,2,3]` },
-    drzl: 'a string',
-    official: 'a tuple [number, number, number]',
-    filed: 'AC: matrix.c_line.tsType, .dbType, .shape',
-  },
-
   // ---- columns the class-name path cannot name at all ----------------------------------------
   // No arm for the class, so the column comes back `unknown` and every generator emits a validator
   // that accepts anything. The three Postgres ones are also named in check-old.ts, as an absolute
