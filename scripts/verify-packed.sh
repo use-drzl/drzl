@@ -934,14 +934,32 @@ export const POOL: [string, unknown][] = [
   // short, so dropping an element's constraint looked identical to keeping it: two generators
   // stopped capping array elements and nothing here could tell.
   ['["11-char"]', ['x'.repeat(11)]], ['["3 emoji"]', ['\u{1F44D}\u{1F44D}\u{1F44D}']],
-  // 100 code points, 200 UTF-16 units, 400 UTF-8 bytes. The only string here that separates a byte
-  // budget from a character count at a cap this pool can reach, and without it the whole MySQL text
-  // family reported parity on both majors while four filed fields sat on those columns: every other
-  // string here is either ascii, where the two counts coincide, or far too short to reach any cap.
+  // Two strings that separate a byte budget from a UTF-16 count, and the rule for when one exists.
+  //
+  // A probe separates a cap of N bytes from a cap of N UTF-16 units only if it is over N bytes and
+  // not over N units. UTF-8 spends at most 3 bytes per UTF-16 unit, exhaustively: 1 byte for
+  // U+0000..U+007F and 2 for U+0080..U+07FF, both one unit; 3 for U+0800..U+FFFF, one unit; 4 for
+  // U+10000..U+10FFFF, which is two units and so 2 bytes per unit; and a lone surrogate encodes as
+  // U+FFFD, 3 bytes for one unit. Checked over every code point rather than argued: the maximum
+  // ratio is 3. So a separating probe needs more than N/3 units, and it has to be built out of
+  // three-byte characters to be anywhere near that.
+  //
+  // 100 emoji is 200 units and 400 bytes, which separates 255. 22000 CJK is 22000 units and 66000
+  // bytes, which separates 65535. Those are `tinytext` and `text`. `mediumtext` needs 5592406
+  // units, a 10.7 MiB string that is far too heavy to push through every column of every pairing,
+  // and the byte-cap stage in the 0.4x tree measures that one on its own instead. `longtext` needs
+  // 1431655766 units against a maximum JS string of 536870888 on this V8, measured by bisection,
+  // so no probe for it can exist at all.
+  //
+  // The sentence this replaced said a string long enough to cross those caps in bytes crosses them
+  // in units too. That was generalised from the emoji, where bytes are twice units, and it is false
+  // for every three-byte BMP character. It left two filed fields under a green line.
+  //
   // A real MySQL 8 on a utf8mb4 client settles which count is the database's: `tinytext` refuses
-  // this string ("Data too long"), and `varchar(255)` takes it and reports `length` 400 with
+  // the emoji string ("Data too long"), and `varchar(255)` takes it and reports `length` 400 with
   // `char_length` 100. So TINYTEXT's 255 is bytes and VARCHAR's 255 is characters, in one table.
   ['100 emoji', '\u{1F44D}'.repeat(100)],
+  ['22000 cjk', '\u4E00'.repeat(22000)],
   ['Buffer', Buffer.from('ab')], ['Uint8Array', new Uint8Array([1, 2])],
   ["'999.999.999.999'", '999.999.999.999'], ["'10.0.0.1'", '10.0.0.1'],
   ['{x:1,y:2}', { x: 1, y: 2 }], ["'12.5'", '12.5'], ["'0101'", '0101'], ["'010'", '010'],
@@ -1087,13 +1105,52 @@ const THREW: Record<string, { side: string; modes: string[]; values: string[]; w
     why: 'as pg/typebox/c_bit',
   },
 };
-const threwSeen = new Map<string, { sides: Set<string>; modes: Set<string>; values: Set<string> }>();
+// `at` is every `<side>/<mode>/<value>` that crashed, so the printed figure is a count rather than
+// a cross product that happens to equal one while the pattern is a rectangle.
+const threwSeen = new Map<string, { sides: Set<string>; modes: Set<string>; values: Set<string>; at: Set<string> }>();
 const recordThrow = (key: string, side: string, mode: string, value: string) => {
-  const seen = threwSeen.get(key) ?? { sides: new Set(), modes: new Set(), values: new Set() };
+  const seen =
+    threwSeen.get(key) ?? { sides: new Set<string>(), modes: new Set<string>(), values: new Set<string>(), at: new Set<string>() };
   seen.sides.add(side);
   seen.modes.add(mode);
   seen.values.add(value);
+  seen.at.add(`${side}/${mode}/${value}`);
   threwSeen.set(key, seen);
+};
+
+/**
+ * A waiver pins the exact divergence it covers, not a shape.
+ *
+ * `divergence` is keyed `<modes>/<libraries>`, `*` for all of them, and each value is the exact
+ * signature measured for those pairings: `L: <labels DRZL accepts and official refuses> | T: <the
+ * other way>`, in pool order. Three literals stand for a property rather than a list, so they
+ * cannot be written down wrongly: `every probe official rejects` says DRZL took the whole pool,
+ * and the two `has it, omits it` strings say one side produced no field at all.
+ *
+ * Until this existed a waiver asserted only that it suppressed something, and a real regression
+ * walked through it: stripping every length cap from `m_tinytext` in all four generated modules
+ * left this pass green, because the column still differed, just on different values. The 0.4x
+ * stage named the identical break. Two gates side by side, one absorbing regressions and one not,
+ * is worse than the churn of pinning both.
+ *
+ * The churn is the trade and it is the right way round. A pool value that any waived column treats
+ * differently from official re-opens that waiver, because the alternative is a waiver quietly
+ * covering a divergence nobody has looked at.
+ */
+type Waiver = { why: string; divergence: Record<string, string> };
+
+const ALL_PROBES = 'every probe official rejects';
+
+/**
+ * Does a declaration key such as `select,insert/zod` cover the pairing `select/zod`? A declaration
+ * that covers no pairing, and two that cover the same one, both fail rather than being resolved by
+ * precedence.
+ */
+const pairingMatches = (decl: string, pairing: string) => {
+  const [dModes, dLibs] = decl.split('/');
+  const [mode, lib] = pairing.split('/');
+  const covers = (spec: string, x: string) => spec === '*' || spec.split(',').includes(x);
+  return covers(dModes, mode) && covers(dLibs, lib);
 };
 
 /**
@@ -1107,66 +1164,116 @@ const recordThrow = (key: string, side: string, mode: string, value: string) => 
  * fixtures use distinct `c_`/`m_`/`s_` prefixes, which makes the dialect redundant today and
  * load-bearing the day someone adds a column without one.
  */
-const ALLOWED: Record<string, string> = {
+const ALLOWED: Record<string, Waiver> = {
   // Binary payloads are typed as Uint8Array rather than Buffer. A Buffer is a Uint8Array, so
   // nothing official accepts is turned away. The wider check needs no `@types/node`, survives a
   // runtime where `Buffer` is undefined, and makes bytea and blob validate the same way.
-  'pg/c_bytea': 'Uint8Array accepted where official demands a Buffer',
-  'sqlite/s_blob_buf': 'as pg/c_bytea',
+  'pg/c_bytea': { why: 'Uint8Array accepted where official demands a Buffer', divergence: { '*/*': `L: Uint8Array | T: ` } },
+  'sqlite/s_blob_buf': { why: 'as pg/c_bytea', divergence: { '*/*': `L: Uint8Array | T: ` } },
   // `coerceDates` defaults to coercing on insert and update, which is a documented DRZL option
   // and is what `coerceDates: 'none'` turns off to match official exactly. Only strings and
   // numbers are coerced: null, booleans and arrays are rejected, which `z.coerce.date()` accepts.
-  'pg/c_date_d': 'coerceDates accepts a date string or epoch number on write',
-  'pg/c_ts_d': 'as pg/c_date_d',
-  'mysql/m_date': 'as pg/c_date_d',
-  'mysql/m_datetime': 'as pg/c_date_d',
-  'mysql/m_ts': 'as pg/c_date_d',
-  'sqlite/s_int_ts': 'as pg/c_date_d',
-  'sqlite/s_int_ts_ms': 'as pg/c_date_d',
+  'pg/c_date_d': {
+    why: 'coerceDates accepts a date string or epoch number on write',
+    divergence: {
+      '*/zod': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', '12.5', '0101', '010' | T: `,
+      '*/valibot,arktype,typebox': `L: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010' | T: `,
+    },
+  },
+  'pg/c_ts_d': {
+    why: 'as pg/c_date_d',
+    divergence: {
+      '*/zod': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', '12.5', '0101', '010' | T: `,
+      '*/valibot,arktype,typebox': `L: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010' | T: `,
+    },
+  },
+  'mysql/m_date': {
+    why: 'as pg/c_date_d',
+    divergence: {
+      '*/zod': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', '12.5', '0101', '010' | T: `,
+      '*/valibot,arktype,typebox': `L: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010' | T: `,
+    },
+  },
+  'mysql/m_datetime': {
+    why: 'as pg/c_date_d',
+    divergence: {
+      '*/zod': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', '12.5', '0101', '010' | T: `,
+      '*/valibot,arktype,typebox': `L: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010' | T: `,
+    },
+  },
+  'mysql/m_ts': {
+    why: 'as pg/c_date_d',
+    divergence: {
+      '*/zod': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', '12.5', '0101', '010' | T: `,
+      '*/valibot,arktype,typebox': `L: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010' | T: `,
+    },
+  },
+  'sqlite/s_int_ts': {
+    why: 'as pg/c_date_d',
+    divergence: {
+      '*/zod': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', '12.5', '0101', '010' | T: `,
+      '*/valibot,arktype,typebox': `L: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010' | T: `,
+    },
+  },
+  'sqlite/s_int_ts_ms': {
+    why: 'as pg/c_date_d',
+    divergence: {
+      '*/zod': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', '12.5', '0101', '010' | T: `,
+      '*/valibot,arktype,typebox': `L: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010' | T: `,
+    },
+  },
   // Official emits `Type.String({ format: 'uuid' })`, and TypeBox fails a format it has no entry
   // for rather than ignoring it, so that schema rejects every valid uuid in any project that has
   // not populated `FormatRegistry` first. This generator emits a pattern, which needs no setup.
-  'pg/typebox/c_uuid': 'official uses an unregistered `format`, which rejects every uuid',
+  'pg/typebox/c_uuid': { why: 'official uses an unregistered `format`, which rejects every uuid', divergence: { '*/*': `L: uuid | T: ` } },
   // A character limit counts *characters*; official counts `.length`, which is UTF-16 units, so
   // it refuses three emoji in a `char(4)` the database accepts. Measured against Postgres: three
   // emoji insert into a `char(4)` and read back as four code points, which are seven UTF-16 units.
-  'pg/c_char': 'character limit counts code points; official counts UTF-16 units',
-  'mysql/m_char': 'as pg/c_char',
+  'pg/c_char': { why: 'character limit counts code points; official counts UTF-16 units', divergence: { '*/*': `L: 3 emoji, 3 emoji | T: ` } },
+  'mysql/m_char': { why: 'as pg/c_char', divergence: { '*/*': `L: 3 emoji, 3 emoji | T: ` } },
   // MySQL's TEXT family is capped in bytes and official caps it in UTF-16 units, so official takes
   // a 100 emoji string that is 200 units and 400 bytes into a `tinytext` whose budget is 255. DRZL
   // emits the byte check and refuses it. A real MySQL 8 on a utf8mb4 client is the authority and
   // agrees with DRZL: that insert fails with "Data too long", while the same string goes into a
   // `varchar(255)` and reports `length` 400 with `char_length` 100.
   //
-  // Only `m_tinytext` appears, and that is the pool rather than the defect: `text` is 65535 bytes,
-  // `mediumtext` 16 MB and `longtext` 4 GB, and no string here is long enough to cross those in
-  // bytes without also crossing them in units.
-  'mysql/m_tinytext': 'MySQL caps TEXT in bytes; official caps it in UTF-16 units, and takes 400 bytes into a 255 byte column',
+  // Which columns this reaches is arithmetic, not luck. A separating probe is over the cap in
+  // bytes and not over it in UTF-16 units, and UTF-8 spends at most 3 bytes per unit, so it needs
+  // more than cap/3 units: 86 for `tinytext` and 21846 for `text`, both in the pool, 5592406 for
+  // `mediumtext`, a 10.7 MiB string the 0.4x stage measures on its own, and 1431655766 for
+  // `longtext`, more units than V8 will put in a string.
+  'mysql/m_tinytext': { why: 'MySQL caps TEXT in bytes; official caps it in UTF-16 units, and takes 400 bytes into a 255 byte column', divergence: { '*/*': `L:  | T: 100 emoji` } },
+  'mysql/m_text': { why: 'as mysql/m_tinytext, 66000 bytes against a 65535 byte budget', divergence: { '*/*': `L:  | T: 22000 cjk` } },
+  // The blob half of the same table, which only this pass reaches: 0.4x's mysql-core has no `blob`
+  // export at all, so the 0.4x fixture drops the column. MySQL 8.4 answers the same way for it as
+  // for `text`: both refuse the 22000 CJK string with "Data too long", and `mediumtext` in the same
+  // table takes it and stores 66000 bytes, which is what shows the probe is measuring the cap.
+  'mysql/m_blob': { why: 'as mysql/m_tinytext, on a BLOB whose budget is also 65535 bytes', divergence: { '*/*': `L:  | T: 22000 cjk` } },
   // Stricter than official, and verified against Postgres itself through PGlite: a `numeric`
   // column is a string, and a bare string schema accepts 'hello' where the database rejects it.
   // Official accepts all of these; the database does not.
-  'pg/c_numeric': 'numeric format enforced; official accepts any string, Postgres does not',
-  'pg/c_decimal': 'as pg/c_numeric',
-  'mysql/m_decimal': 'as pg/c_numeric',
+  'pg/c_numeric': { why: 'numeric format enforced; official accepts any string, Postgres does not', divergence: { '*/*': `L:  | T: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1'` } },
+  'pg/c_decimal': { why: 'as pg/c_numeric', divergence: { '*/*': `L:  | T: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1'` } },
+  'mysql/m_decimal': { why: 'as pg/c_numeric', divergence: { '*/*': `L:  | T: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1'` } },
   // Stricter than official, in DRZL's favour.
-  'pg/valibot/c_json': 'DRZL rejects Infinity and non-plain objects; official accepts both',
-  'pg/valibot/c_jsonb': 'as pg/valibot/c_json',
-  'pg/valibot/c_jsonb_typed': 'as pg/valibot/c_json',
-  'mysql/valibot/m_json': 'as pg/valibot/c_json',
-  'sqlite/valibot/s_text_json': 'as pg/valibot/c_json',
-  'sqlite/valibot/s_blob_json': 'as pg/valibot/c_json',
+  'pg/valibot/c_json': { why: 'DRZL rejects Infinity and non-plain objects; official accepts both', divergence: { '*/*': `L:  | T: Infinity, Date, Buffer, Uint8Array` } },
+  'pg/valibot/c_jsonb': { why: 'as pg/valibot/c_json', divergence: { '*/*': `L:  | T: Infinity, Date, Buffer, Uint8Array` } },
+  'pg/valibot/c_jsonb_typed': { why: 'as pg/valibot/c_json', divergence: { '*/*': `L:  | T: Infinity, Date, Buffer, Uint8Array` } },
+  'mysql/valibot/m_json': { why: 'as pg/valibot/c_json', divergence: { '*/*': `L:  | T: Infinity, Date, Buffer, Uint8Array` } },
+  'sqlite/valibot/s_text_json': { why: 'as pg/valibot/c_json', divergence: { '*/*': `L:  | T: Infinity, Date, Buffer, Uint8Array` } },
+  'sqlite/valibot/s_blob_json': { why: 'as pg/valibot/c_json', divergence: { '*/*': `L:  | T: Infinity, Date, Buffer, Uint8Array` } },
   // A `blob()` with no mode is Drizzle's json mode, not its buffer mode, so this is the same
   // column shape as s_blob_json and gets the same reasoning. `s_blob_buf` above is the buffer one.
-  'sqlite/valibot/s_blob': 'as pg/valibot/c_json; a bare blob() is Drizzle json mode',
-  'pg/valibot/c_point': 'v.strictTuple rejects a third element; official v.tuple ignores extras',
-  'pg/valibot/c_geometry': 'as pg/valibot/c_point',
+  'sqlite/valibot/s_blob': { why: 'as pg/valibot/c_json; a bare blob() is Drizzle json mode', divergence: { '*/*': `L:  | T: Infinity, Date, Buffer, Uint8Array` } },
+  'pg/valibot/c_point': { why: 'v.strictTuple rejects a third element; official v.tuple ignores extras', divergence: { '*/*': `L:  | T: [1,2,3]` } },
+  'pg/valibot/c_geometry': { why: 'as pg/valibot/c_point', divergence: { '*/*': `L:  | T: [1,2,3]` } },
   // Official emits `Type.RegExp`, whose check runs `RegExp.prototype.test` against the raw value,
   // and `test` stringifies what it is given: `[]` becomes '' and matches `^[01]*$`. So official
   // accepts an empty array for a binary column. This generator emits a `string` carrying a
   // `pattern`, which refuses a non-string before the pattern is consulted. Postgres masks the
   // same hole on `c_bit` only because that column has a `minLength` an array cannot satisfy.
-  'mysql/typebox/m_binary': 'official Type.RegExp accepts a non-string whose string form matches',
-  'mysql/typebox/m_varbinary': 'as mysql/typebox/m_binary',
+  'mysql/typebox/m_binary': { why: 'official Type.RegExp accepts a non-string whose string form matches', divergence: { '*/*': `L:  | T: []` } },
+  'mysql/typebox/m_varbinary': { why: 'as mysql/typebox/m_binary', divergence: { '*/*': `L:  | T: []` } },
   // No arktype bigint entry. There were three, reading "ArkType cannot bound a bigint in its
   // string DSL", and only half of that was true: the DSL cannot state the bound, but a narrow can,
   // and this generator already used narrows for every character cap. It was the one place in this
@@ -1175,12 +1282,17 @@ const ALLOWED: Record<string, string> = {
 };
 
 const usedWaivers = new Set<string>();
-const allowed = (dialect: string, lib: string, col: string) => {
+// What each waiver actually suppressed, keyed waiver then `<mode>/<library>`, so the declaration
+// above can be compared with the run rather than merely counted.
+const waived = new Map<string, Map<string, string>>();
+const allowed = (dialect: string, lib: string, col: string, mode: string, signature: string) => {
   for (const key of [`${dialect}/${lib}/${col}`, `${dialect}/${col}`]) {
-    if (ALLOWED[key]) {
-      usedWaivers.add(key);
-      return ALLOWED[key];
-    }
+    if (!ALLOWED[key]) continue;
+    usedWaivers.add(key);
+    const seen = waived.get(key) ?? new Map<string, string>();
+    seen.set(`${mode}/${lib}`, signature);
+    waived.set(key, seen);
+    return ALLOWED[key].why;
   }
   return undefined;
 };
@@ -1279,7 +1391,7 @@ for (const d of DIALECTS) {
       // same set, and zod is the one whose shape is trivially enumerable.
       const oShape = OFFICIAL.zod[mode](d.table as never).shape;
       const rows: string[] = [];
-      let waived = 0;
+      let waivedCount = 0;
       // Columns where both sides yielded a field and the pool was actually pushed through them.
       // Printing the shape's column count says how many columns *exist*, which is not the same
       // number and stayed reassuring in a run that compared none of them.
@@ -1296,12 +1408,12 @@ for (const d of DIALECTS) {
           continue;
         }
         if (!m) {
-          if (allowed(d.name, libName, k)) { waived++; continue; }
+          if (allowed(d.name, libName, k, mode, 'official has it, DRZL omits it')) { waivedCount++; continue; }
           rows.push(`        ${k}: official has it, DRZL omits it`);
           continue;
         }
         if (!o) {
-          if (allowed(d.name, libName, k)) { waived++; continue; }
+          if (allowed(d.name, libName, k, mode, 'DRZL has it, official omits it')) { waivedCount++; continue; }
           rows.push(`        ${k}: DRZL has it, official omits it`);
           continue;
         }
@@ -1310,6 +1422,8 @@ for (const d of DIALECTS) {
         const tighter: string[] = [];
         let officialTook = false;
         let drzlTook = false;
+        // Whether DRZL took the whole pool, which is what the derived signature rests on.
+        let drzlAll = true;
         for (const [label, x] of POOL) {
           const a: Verdict = probe(lib, o, x);
           const b: Verdict = probe(lib, m, x);
@@ -1323,6 +1437,7 @@ for (const d of DIALECTS) {
           }
           officialTook ||= a === 'accept';
           drzlTook ||= b === 'accept';
+          if (b !== 'accept') drzlAll = false;
           if (a !== b) (b === 'accept' ? looser : tighter).push(label);
         }
         // A column both sides reject every probe for agrees perfectly and proves nothing: the two
@@ -1339,7 +1454,8 @@ for (const d of DIALECTS) {
           continue;
         }
         if (!looser.length && !tighter.length) continue;
-        if (allowed(d.name, libName, k)) { waived++; continue; }
+        const signature = drzlAll ? ALL_PROBES : `L: ${looser.join(', ')} | T: ${tighter.join(', ')}`;
+        if (allowed(d.name, libName, k, mode, signature)) { waivedCount++; continue; }
         rows.push(
           `        ${k}:` +
             (looser.length ? `\n          DRZL accepts, official rejects: ${looser.join(', ')}` : '') +
@@ -1357,7 +1473,7 @@ for (const d of DIALECTS) {
       console.log(
         `    ${d.name.padEnd(7)} ${libName.padEnd(8)} ${mode.padEnd(7)} ` +
           `${compared}/${Object.keys(oShape).length} cols compared  ${rows.length ? 'DIFFERS' : 'parity'}` +
-          `${waived ? ` (${waived} waived)` : ''}`
+          `${waivedCount ? ` (${waivedCount} waived)` : ''}`
       );
       if (rows.length) {
         console.log(rows.join('\n'));
@@ -1420,6 +1536,41 @@ const deadWaivers = [
   ...Object.keys(CROSS_ALLOWED).filter((k) => !usedCrossWaivers.has(k)).map((k) => `CROSS_ALLOWED[${k}]`),
 ];
 
+// The exact divergence each waiver covers, compared with what it actually suppressed. Every
+// pairing has to be claimed by exactly one declaration and match it character for character, and
+// every declaration has to claim at least one pairing. This is what "suppressed something" cannot
+// say: stripping the length caps off `m_tinytext` still suppresses something, just something else.
+const waiverProblems: string[] = [];
+for (const [key, seen] of waived) {
+  const entry = ALLOWED[key];
+  const claimed = new Set<string>();
+  for (const [pairing, sig] of seen) {
+    const hits = Object.keys(entry.divergence).filter((d) => pairingMatches(d, pairing));
+    if (hits.length !== 1) {
+      waiverProblems.push(
+        `ALLOWED[${key}] has ${hits.length} declarations for ${pairing}, needs exactly one. ` +
+          `Measured there: ${sig}`
+      );
+      continue;
+    }
+    claimed.add(hits[0]);
+    const want = entry.divergence[hits[0]];
+    if (want === sig) continue;
+    waiverProblems.push(
+      `ALLOWED[${key}] on ${pairing} declares\n        ${want}\n      and measured\n        ${sig}`
+    );
+  }
+  for (const d of Object.keys(entry.divergence)) {
+    if (!claimed.has(d)) waiverProblems.push(`ALLOWED[${key}] declaration '${d}' matched no pairing`);
+  }
+}
+if (waiverProblems.length) {
+  console.error('FAIL: a waiver no longer covers the divergence it was written for. Re-measure it');
+  console.error('      and update the signature, or delete it. A waiver that says only "something');
+  console.error('      differs here" absorbs the next regression on the same column:');
+  for (const w of waiverProblems) console.error(`      ${w}`);
+}
+
 // The crashes, held to the same rule from both ends. An undeclared one is a difference nobody
 // looked at; a declared one that stopped happening is a sentence about something nobody can see.
 const throwProblems: string[] = [];
@@ -1442,7 +1593,7 @@ for (const key of Object.keys(THREW)) {
   if (!threwSeen.has(key)) throwProblems.push(`THREW[${key}] saw no crash on this run`);
 }
 console.log(
-  `    ${[...threwSeen.values()].reduce((n, s) => n + s.modes.size * s.values.size, 0)} probe(s) crashed ` +
+  `    ${[...threwSeen.values()].reduce((n, s) => n + s.at.size, 0)} probe(s) crashed ` +
     `instead of returning a verdict, on ${threwSeen.size} column(s) against ` +
     `${Object.keys(THREW).length} declared`
 );
@@ -1465,7 +1616,7 @@ if (findings) {
 
 // Counted separately and exited on together, so one run reports both rather than hiding the
 // second behind the first. A dead waiver is not a looser schema and must not be described as one.
-if (findings || deadWaivers.length || throwProblems.length) process.exit(1);
+if (findings || deadWaivers.length || throwProblems.length || waiverProblems.length) process.exit(1);
 PARITY_HARNESS
 
 # drizzle-orm is pinned: the parity target is a specific release, and a floating one would turn
@@ -4125,36 +4276,34 @@ cat > parity-0-4x.ts <<'PARITY_0_4X'
  *   ALLOWED  DRZL and the official 0.4x module really do differ here, deliberately.
  *   DEFECTS  DRZL is wrong or looser on 0.4x. Filed rather than fixed, and reported every run.
  *
- * Both are asserted exactly and in both directions. A difference in neither map fails the stage;
- * an entry that suppresses nothing fails it; and an entry whose libraries or modes no longer match
- * what was measured fails it with the observed set printed. That last direction is the one that
- * matters. A list checked only for additions turns into a record of things that used to be wrong,
- * and a fix then regresses with the gate still green.
+ * Both are asserted exactly and in both directions. A difference in neither map fails the stage; an
+ * entry that suppresses nothing fails it; and an entry whose libraries, modes, pairing count or
+ * exact divergence no longer match what was measured fails it with the observed signature printed.
+ * That last direction is the one that matters. A list checked only for additions turns into a
+ * record of things that used to be wrong, and a fix then regresses with the gate still green.
  *
- * What the pairing count catches and what it does not, stated rather than implied: an entry
- * declares a set of libraries and a set of modes, and the observed pairings have to be exactly the
- * cross product of the two. Every entry measured today is that shape. A defect that reached, say,
- * zod on select and valibot on insert would fail the count and have to be split into two entries.
+ * `divergence` is what makes an entry pin a specific difference rather than a shape. Three
+ * sabotages walked through the shape-only version, and all three are named now, each verified by
+ * running the stage against the edited output:
  *
- * The limit of it, measured on the one column with two independent causes rather than assumed.
- * `c_char` differs from official on 7 pool values today. Recomputed against the real official
- * field under each half fixed:
+ *   c_char capped at 400 code points instead of 4
+ *   c_char's length check deleted, so a char(4) schema takes a 70,000 character string
+ *   m_tinytext tightened from 255 bytes to 3, so it refuses 'hello' into a TINYTEXT column
  *
- *   fix the code-point half, so DRZL counts UTF-16 units   7 values become 5, still all looser
- *   fix the exact-length half, so DRZL demands exactly 4   7 values become 0
+ * None of them changes the libraries, the modes, the pairing count or which way the disagreement
+ * runs. All of them change which probes differ, which is the only thing that cannot be preserved
+ * by a change to the column's behaviour.
  *
- * So one half is caught and the other is not. Fixing the exact-length half leaves the entry
- * suppressing nothing, which fails the stage. Fixing the code-point half leaves the same
- * libraries, the same modes, the same pairing count and the same direction, so the gate stays
- * green and the change shows up only in the per-pairing counts, which are printed on any ledger
- * failure. An earlier version of this paragraph said neither half was caught and that the counts
- * do not move; both halves of that were wrong.
+ * `c_char` was the example this docstring used to call an exception. It is not one, and the
+ * numbers are worth keeping because they show what a partial fix looks like. Recomputed against
+ * the real official field: it differs on 7 pool values today, on 5 if DRZL counted UTF-16 units,
+ * and on none if DRZL demanded exactly 4 code points. Every one of those is a different signature,
+ * so all three states are distinguishable now, where before only the third was.
  *
- * `direction` is what closes the other shape of this, where a break reverses an entry rather than
- * narrowing it. It does not close the `c_char` case, because a narrowing keeps its direction.
- * Measured on `mysql/m_tinytext`: deleting the analyzer's 0.4x byte cap turns that entry from
- * `tighter` to `looser` on the same libraries and modes, and without the field the entry
- * suppressed the very defect it was written next to.
+ * A ragged defect, one that reached zod on select and valibot on insert alone, is declarable:
+ * `divergence` keys are `<modes>/<libraries>` and can name a single pairing. The pairing count
+ * would still have to be stated, and a sentence here used to say such a defect would have to be
+ * split into two entries, which the key format does not allow.
  */
 import { readFileSync } from 'node:fs';
 import { SchemaAnalyzer } from '@drzl/analyzer';
@@ -4198,27 +4347,53 @@ type Entry = {
   /** The modes it shows up in, asserted the same way. */
   modes: string[];
   /**
-   * Which way the disagreement runs, in every pairing this entry covers.
+   * The exact divergence this entry covers, keyed `<modes>/<libraries>` with `*` for all of them.
    *
-   *   looser   DRZL accepts values official refuses, and refuses none official accepts
-   *   tighter  the other way round
-   *   both     each side takes something the other does not, which is what a wrong type looks like
+   * A signature is `L: <labels DRZL accepts and official refuses> | T: <the other way>`, in pool
+   * order, and it has to match what the run measured character for character. The literal
+   * `every probe official rejects` says the same thing as a proof instead of a list: DRZL accepted
+   * every probe, so the divergence is exactly official's rejections and cannot be written down
+   * wrongly.
    *
-   * Asserted like the rest, and it is what stops an entry from absorbing a defect it does not
-   * describe. Not hypothetical: `mysql/m_tinytext` is `tighter` today, and deleting the analyzer's
-   * 0.4x byte cap turns it into `looser` on the same libraries, the same modes and the same
-   * pairing count. Without this field that break was suppressed by its own waiver.
+   * This replaced a `direction` field, which named only which way the disagreement ran. That
+   * closed a reversal and nothing else, and three sabotages walked through it: capping `c_char` at
+   * 400 code points instead of 4, deleting its length check entirely so a `char(4)` schema takes a
+   * 70,000 character string, and tightening `m_tinytext` from 255 bytes to 3. All three keep the
+   * libraries, the modes, the pairing count and the direction, and all three are named now,
+   * because all three change which probes differ.
    *
-   * A direction is a property of the disagreement rather than a count of samples, so widening the
-   * pool does not churn it.
+   * It is brittle against a pool change, deliberately. Adding a value that any waived column
+   * treats differently from official has to re-open that waiver, because the alternative is a
+   * waiver silently covering a divergence nobody has looked at, which is how two filed `maxLength`
+   * fields spent a round under a green line.
    */
-  direction: 'looser' | 'tighter' | 'both';
+  divergence: Record<string, string>;
   /** What DRZL emits on 0.4x. */
   drzl: string;
   /** What the official 0.4x module emits for the same column. */
   official: string;
   /** Which filed defect this is, or why it is not one. */
   filed: string;
+};
+
+/**
+ * A signature that states the divergence as a property instead of a list. DRZL accepted every
+ * probe, so the set of differing probes is exactly the set official rejects, and there is nothing
+ * to write down wrongly. Six columns are in that state and each would otherwise carry a list of
+ * around 56 labels, which is a list nobody would read.
+ */
+const ALL_PROBES = 'every probe official rejects';
+
+/**
+ * Does a declaration key such as `select,insert/zod,typebox` cover the pairing `select/zod`?
+ * `*` on either side means all of them. Kept deliberately dumb: a declaration that covers no
+ * pairing, or two that cover the same one, both fail rather than being resolved by precedence.
+ */
+const pairingMatches = (decl: string, pairing: string) => {
+  const [dModes, dLibs] = decl.split('/');
+  const [mode, lib] = pairing.split('/');
+  const covers = (spec: string, x: string) => spec === '*' || spec.split(',').includes(x);
+  return covers(dModes, mode) && covers(dLibs, lib);
 };
 
 const LIB_NAMES = ['zod', 'valibot', 'arktype', 'typebox'];
@@ -4250,7 +4425,7 @@ const ALLOWED: Record<string, Entry> = {
   'pg/c_char': {
     libs: LIB_NAMES,
     modes: MODE_NAMES,
-    direction: 'looser',
+    divergence: { '*/*': `L: "", 3 emoji, 3 emoji, 'zzz', 'a', 'x', '010' | T: ` },
     drzl: 'a string of at most 4 code points',
     official: 'a string of exactly 4 UTF-16 units',
     filed: 'not a defect: two deliberate differences, see the note above',
@@ -4258,7 +4433,7 @@ const ALLOWED: Record<string, Entry> = {
   'mysql/m_char': {
     libs: LIB_NAMES,
     modes: MODE_NAMES,
-    direction: 'looser',
+    divergence: { '*/*': `L: "", 3 emoji, 3 emoji, 'zzz', 'a', 'x', '010' | T: ` },
     drzl: 'as pg/c_char',
     official: 'as pg/c_char',
     filed: 'as pg/c_char',
@@ -4274,16 +4449,30 @@ const ALLOWED: Record<string, Entry> = {
   // green line was not agreement, it was a pool with nothing in it that could tell the two counts
   // apart: every other string here is ascii, where they coincide, or too short to reach a cap.
   //
-  // Only `tinytext` shows it, and that is the pool rather than the defect: `text` is 65535 bytes,
-  // `mediumtext` 16 MB and `longtext` 4 GB, and a string long enough to cross those in bytes
-  // crosses them in UTF-16 units too, so both sides refuse it and agree.
+  // Which of the four columns this reaches is a property of the pool and is settled by arithmetic
+  // rather than by trying strings. A separating probe must be over the cap in bytes and not over it
+  // in UTF-16 units, and UTF-8 spends at most 3 bytes per unit, so it needs more than cap/3 units:
+  // 86 for `tinytext` and 21846 for `text`, both carried in the pool, 5592406 for `mediumtext`,
+  // which is a 10.7 MiB string measured by the byte-cap stage below instead of by every pairing,
+  // and 1431655766 for `longtext`, which is more than V8 will let a string be.
   'mysql/m_tinytext': {
     libs: LIB_NAMES,
     modes: MODE_NAMES,
-    direction: 'tighter',
+    divergence: { '*/*': `L:  | T: 100 emoji` },
     drzl: 'a string of at most 255 UTF-8 bytes, which is the column budget',
     official: 'a string of at most 255 UTF-16 units, so it takes 400 bytes into a 255 byte column',
     filed: 'not a defect: DRZL is stricter, and MySQL itself refuses what official accepts',
+  },
+  // The same thing on `text`, reached by the 22000 CJK probe rather than the emoji one: 66000
+  // bytes over 22000 units against a 65535 byte budget. Filed as `mtext.t_text.maxLength`, and it
+  // sat under a green parity line on both majors until that probe existed.
+  'mysql/m_text': {
+    libs: LIB_NAMES,
+    modes: MODE_NAMES,
+    divergence: { '*/*': `L:  | T: 22000 cjk` },
+    drzl: 'a string of at most 65535 UTF-8 bytes, which is the column budget',
+    official: 'a string of at most 65535 UTF-16 units, so it takes 66000 bytes into a 65535 byte column',
+    filed: 'not a defect: as mysql/m_tinytext',
   },
   // `coerceDates` defaults to coercing on insert and update, which is a documented DRZL option and
   // is what `coerceDates: 'none'` turns off to match official exactly. Only strings and numbers
@@ -4291,22 +4480,25 @@ const ALLOWED: Record<string, Entry> = {
   'pg/c_date_d': {
     libs: LIB_NAMES,
     modes: WRITE,
-    direction: 'looser',
+    divergence: {
+      '*/zod': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', '12.5', '0101', '010' | T: `,
+      '*/valibot,arktype,typebox': `L: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010' | T: `,
+    },
     drzl: 'a Date, or a string or number coerced to one',
     official: 'a Date only',
     filed: 'not a defect: coerceDates',
   },
-  'pg/c_ts_d': { libs: LIB_NAMES, modes: WRITE, direction: 'looser', drzl: 'as pg/c_date_d', official: 'as pg/c_date_d', filed: 'as pg/c_date_d' },
-  'mysql/m_date': { libs: LIB_NAMES, modes: WRITE, direction: 'looser', drzl: 'as pg/c_date_d', official: 'as pg/c_date_d', filed: 'as pg/c_date_d' },
-  'mysql/m_datetime': { libs: LIB_NAMES, modes: WRITE, direction: 'looser', drzl: 'as pg/c_date_d', official: 'as pg/c_date_d', filed: 'as pg/c_date_d' },
-  'mysql/m_ts': { libs: LIB_NAMES, modes: WRITE, direction: 'looser', drzl: 'as pg/c_date_d', official: 'as pg/c_date_d', filed: 'as pg/c_date_d' },
-  'sqlite/s_int_ts': { libs: LIB_NAMES, modes: WRITE, direction: 'looser', drzl: 'as pg/c_date_d', official: 'as pg/c_date_d', filed: 'as pg/c_date_d' },
+  'pg/c_ts_d': { libs: LIB_NAMES, modes: WRITE, divergence: { '*/zod': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', '12.5', '0101', '010' | T: `, '*/valibot,arktype,typebox': `L: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010' | T: `,     }, drzl: 'as pg/c_date_d', official: 'as pg/c_date_d', filed: 'as pg/c_date_d' },
+  'mysql/m_date': { libs: LIB_NAMES, modes: WRITE, divergence: { '*/zod': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', '12.5', '0101', '010' | T: `, '*/valibot,arktype,typebox': `L: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010' | T: `,     }, drzl: 'as pg/c_date_d', official: 'as pg/c_date_d', filed: 'as pg/c_date_d' },
+  'mysql/m_datetime': { libs: LIB_NAMES, modes: WRITE, divergence: { '*/zod': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', '12.5', '0101', '010' | T: `, '*/valibot,arktype,typebox': `L: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010' | T: `,     }, drzl: 'as pg/c_date_d', official: 'as pg/c_date_d', filed: 'as pg/c_date_d' },
+  'mysql/m_ts': { libs: LIB_NAMES, modes: WRITE, divergence: { '*/zod': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', '12.5', '0101', '010' | T: `, '*/valibot,arktype,typebox': `L: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010' | T: `,     }, drzl: 'as pg/c_date_d', official: 'as pg/c_date_d', filed: 'as pg/c_date_d' },
+  'sqlite/s_int_ts': { libs: LIB_NAMES, modes: WRITE, divergence: { '*/zod': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', '12.5', '0101', '010' | T: `, '*/valibot,arktype,typebox': `L: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010' | T: `,     }, drzl: 'as pg/c_date_d', official: 'as pg/c_date_d', filed: 'as pg/c_date_d' },
   // TypeBox fails a format it has no entry for rather than ignoring it, so official's schema
   // rejects every valid uuid in any project that has not populated `FormatRegistry` first.
   'pg/c_uuid': {
     libs: ['typebox'],
     modes: MODE_NAMES,
-    direction: 'looser',
+    divergence: { '*/*': `L: uuid | T: ` },
     drzl: 'a string carrying a uuid pattern, which needs no setup',
     official: "Type.String({ format: 'uuid' }), which rejects every uuid until FormatRegistry is populated",
     filed: 'not a defect: DRZL is the usable one',
@@ -4315,16 +4507,16 @@ const ALLOWED: Record<string, Entry> = {
   'pg/c_json': {
     libs: ['valibot'],
     modes: MODE_NAMES,
-    direction: 'tighter',
+    divergence: { '*/*': `L:  | T: Infinity, Date, Buffer, Uint8Array` },
     drzl: 'a JSON value: no Infinity, no Date, no Buffer',
     official: 'v.any(), which takes all three',
     filed: 'not a defect: DRZL is stricter',
   },
-  'pg/c_jsonb': { libs: ['valibot'], modes: MODE_NAMES, direction: 'tighter', drzl: 'as pg/c_json', official: 'as pg/c_json', filed: 'as pg/c_json' },
-  'pg/c_jsonb_typed': { libs: ['valibot'], modes: MODE_NAMES, direction: 'tighter', drzl: 'as pg/c_json', official: 'as pg/c_json', filed: 'as pg/c_json' },
-  'mysql/m_json': { libs: ['valibot'], modes: MODE_NAMES, direction: 'tighter', drzl: 'as pg/c_json', official: 'as pg/c_json', filed: 'as pg/c_json' },
-  'sqlite/s_text_json': { libs: ['valibot'], modes: MODE_NAMES, direction: 'tighter', drzl: 'as pg/c_json', official: 'as pg/c_json', filed: 'as pg/c_json' },
-  'sqlite/s_blob_json': { libs: ['valibot'], modes: MODE_NAMES, direction: 'tighter', drzl: 'as pg/c_json', official: 'as pg/c_json', filed: 'as pg/c_json' },
+  'pg/c_jsonb': { libs: ['valibot'], modes: MODE_NAMES, divergence: { '*/*': `L:  | T: Infinity, Date, Buffer, Uint8Array` }, drzl: 'as pg/c_json', official: 'as pg/c_json', filed: 'as pg/c_json' },
+  'pg/c_jsonb_typed': { libs: ['valibot'], modes: MODE_NAMES, divergence: { '*/*': `L:  | T: Infinity, Date, Buffer, Uint8Array` }, drzl: 'as pg/c_json', official: 'as pg/c_json', filed: 'as pg/c_json' },
+  'mysql/m_json': { libs: ['valibot'], modes: MODE_NAMES, divergence: { '*/*': `L:  | T: Infinity, Date, Buffer, Uint8Array` }, drzl: 'as pg/c_json', official: 'as pg/c_json', filed: 'as pg/c_json' },
+  'sqlite/s_text_json': { libs: ['valibot'], modes: MODE_NAMES, divergence: { '*/*': `L:  | T: Infinity, Date, Buffer, Uint8Array` }, drzl: 'as pg/c_json', official: 'as pg/c_json', filed: 'as pg/c_json' },
+  'sqlite/s_blob_json': { libs: ['valibot'], modes: MODE_NAMES, divergence: { '*/*': `L:  | T: Infinity, Date, Buffer, Uint8Array` }, drzl: 'as pg/c_json', official: 'as pg/c_json', filed: 'as pg/c_json' },
 };
 
 /**
@@ -4360,7 +4552,10 @@ const DEFECTS: Record<string, Entry> = {
   'pg/c_real': {
     libs: LIB_NAMES,
     modes: MODE_NAMES,
-    direction: 'looser',
+    divergence: {
+      '*/zod,typebox': `L: 9000000, 2147483648, 9007199254740993 | T: `,
+      '*/valibot,arktype': `L: 9000000, 2147483648, 9007199254740993, Infinity | T: `,
+    },
     drzl: 'an unbounded number',
     official: 'a number within +/-8388607',
     filed: 'AC: matrix.c_real.min, .max, .integer',
@@ -4368,7 +4563,10 @@ const DEFECTS: Record<string, Entry> = {
   'pg/c_double': {
     libs: LIB_NAMES,
     modes: MODE_NAMES,
-    direction: 'looser',
+    divergence: {
+      '*/zod,typebox': `L: 9007199254740993 | T: `,
+      '*/valibot,arktype': `L: 9007199254740993, Infinity | T: `,
+    },
     drzl: 'an unbounded number',
     official: 'a number within +/-140737488355327',
     filed: 'AC: matrix.c_double.min, .max, .integer',
@@ -4376,7 +4574,10 @@ const DEFECTS: Record<string, Entry> = {
   'pg/c_numeric_n': {
     libs: LIB_NAMES,
     modes: MODE_NAMES,
-    direction: 'looser',
+    divergence: {
+      '*/zod,typebox': `L: 9007199254740993 | T: `,
+      '*/valibot,arktype': `L: 9007199254740993, Infinity | T: `,
+    },
     drzl: 'an unbounded number',
     official: 'a number within the safe-integer range',
     filed: 'AC: matrix.c_numeric_n.min, .max, .integer',
@@ -4384,7 +4585,10 @@ const DEFECTS: Record<string, Entry> = {
   'mysql/m_real': {
     libs: LIB_NAMES,
     modes: MODE_NAMES,
-    direction: 'looser',
+    divergence: {
+      '*/zod,typebox': `L: 9007199254740993 | T: `,
+      '*/valibot,arktype': `L: 9007199254740993, Infinity | T: `,
+    },
     drzl: 'an unbounded number',
     official: 'a number within +/-140737488355327',
     filed: 'new: the same float defect, on a dialect the cross-major fixture cannot reach',
@@ -4392,7 +4596,10 @@ const DEFECTS: Record<string, Entry> = {
   'mysql/m_double': {
     libs: LIB_NAMES,
     modes: MODE_NAMES,
-    direction: 'looser',
+    divergence: {
+      '*/zod,typebox': `L: 9007199254740993 | T: `,
+      '*/valibot,arktype': `L: 9007199254740993, Infinity | T: `,
+    },
     drzl: 'an unbounded number',
     official: 'a number within +/-140737488355327',
     filed: 'new: as mysql/m_real',
@@ -4400,7 +4607,10 @@ const DEFECTS: Record<string, Entry> = {
   'mysql/m_float': {
     libs: LIB_NAMES,
     modes: MODE_NAMES,
-    direction: 'looser',
+    divergence: {
+      '*/zod,typebox': `L: 9000000, 2147483648, 9007199254740993 | T: `,
+      '*/valibot,arktype': `L: 9000000, 2147483648, 9007199254740993, Infinity | T: `,
+    },
     drzl: 'an unbounded number',
     official: 'a number within +/-8388607',
     filed: 'new: as mysql/m_real',
@@ -4408,7 +4618,10 @@ const DEFECTS: Record<string, Entry> = {
   'sqlite/s_real': {
     libs: LIB_NAMES,
     modes: MODE_NAMES,
-    direction: 'looser',
+    divergence: {
+      '*/zod,typebox': `L: 9007199254740993 | T: `,
+      '*/valibot,arktype': `L: 9007199254740993, Infinity | T: `,
+    },
     drzl: 'an unbounded number',
     official: 'a number within +/-140737488355327',
     filed: 'new: as mysql/m_real, on SQLite',
@@ -4422,7 +4635,10 @@ const DEFECTS: Record<string, Entry> = {
   'pg/c_point': {
     libs: LIB_NAMES,
     modes: MODE_NAMES,
-    direction: 'both',
+    divergence: {
+      '*/zod,arktype,typebox': `L: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010' | T: [1,2]`,
+      '*/valibot': `L: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010' | T: [1,2], [1,2,3]`,
+    },
     drzl: 'a string',
     official: 'a tuple [number, number]',
     filed: 'AC: matrix.c_point.tsType, .dbType, .shape',
@@ -4430,7 +4646,7 @@ const DEFECTS: Record<string, Entry> = {
   'pg/c_line': {
     libs: LIB_NAMES,
     modes: MODE_NAMES,
-    direction: 'both',
+    divergence: { '*/*': `L: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010' | T: [1,2,3]` },
     drzl: 'a string',
     official: 'a tuple [number, number, number]',
     filed: 'AC: matrix.c_line.tsType, .dbType, .shape',
@@ -4449,7 +4665,7 @@ const DEFECTS: Record<string, Entry> = {
   'pg/c_geometry': {
     libs: LIB_NAMES,
     modes: MODE_NAMES,
-    direction: 'looser',
+    divergence: { '*/*': `every probe official rejects` },
     drzl: 'unknown, which accepts every value in the pool',
     official: 'a tuple [number, number]',
     filed: 'AC: matrix.c_geometry.tsType, .dbType, .shape, and check-old.ts KNOWN_UNNAMED',
@@ -4457,7 +4673,7 @@ const DEFECTS: Record<string, Entry> = {
   'pg/c_bit': {
     libs: LIB_NAMES,
     modes: MODE_NAMES,
-    direction: 'looser',
+    divergence: { '*/*': `every probe official rejects` },
     drzl: 'unknown, which accepts every value in the pool',
     official: 'a string of at most 3 characters matching ^[01]*$',
     filed: 'AC: matrix.c_bit.tsType, .dbType, .shape, and check-old.ts KNOWN_UNNAMED',
@@ -4465,7 +4681,7 @@ const DEFECTS: Record<string, Entry> = {
   'pg/c_vector': {
     libs: LIB_NAMES,
     modes: MODE_NAMES,
-    direction: 'looser',
+    divergence: { '*/*': `every probe official rejects` },
     drzl: 'unknown, which accepts every value in the pool',
     official: 'an array of exactly 3 numbers',
     filed: 'AC: matrix.c_vector.tsType, .dbType, .shape, and check-old.ts KNOWN_UNNAMED',
@@ -4473,7 +4689,7 @@ const DEFECTS: Record<string, Entry> = {
   'sqlite/s_blob': {
     libs: LIB_NAMES,
     modes: MODE_NAMES,
-    direction: 'looser',
+    divergence: { '*/*': `every probe official rejects` },
     drzl: 'unknown, which accepts every value in the pool',
     official: 'a Buffer',
     filed: 'new: no SQLiteBlobBuffer arm in the class-name path',
@@ -4481,7 +4697,7 @@ const DEFECTS: Record<string, Entry> = {
   'sqlite/s_blob_buf': {
     libs: LIB_NAMES,
     modes: MODE_NAMES,
-    direction: 'looser',
+    divergence: { '*/*': `every probe official rejects` },
     drzl: 'unknown, which accepts every value in the pool',
     official: 'a Buffer',
     filed: 'new: as sqlite/s_blob',
@@ -4489,7 +4705,7 @@ const DEFECTS: Record<string, Entry> = {
   'sqlite/s_int_ts_ms': {
     libs: LIB_NAMES,
     modes: MODE_NAMES,
-    direction: 'looser',
+    divergence: { '*/*': `every probe official rejects` },
     drzl: 'unknown, which accepts every value in the pool',
     official: 'a Date',
     filed: 'new: integer({ mode: timestamp_ms }) is unnamed on 0.4x',
@@ -4503,7 +4719,20 @@ const DEFECTS: Record<string, Entry> = {
   'mysql/m_decimal': {
     libs: LIB_NAMES,
     modes: MODE_NAMES,
-    direction: 'both',
+    divergence: {
+      'insert/arktype': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 9007199254740993, 1900, 2000, 2500, Infinity | T: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010'`,
+      'insert/typebox': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 9007199254740993, 1900, 2000, 2500 | T: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010'`,
+      'insert/valibot': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 9007199254740993, 1900, 2000, 2500, Infinity | T: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010'`,
+      'insert/zod': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 9007199254740993, 1900, 2000, 2500 | T: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010'`,
+      'select/arktype': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 9007199254740993, 1900, 2000, 2500, Infinity | T: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010'`,
+      'select/typebox': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 9007199254740993, 1900, 2000, 2500 | T: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010'`,
+      'select/valibot': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 9007199254740993, 1900, 2000, 2500, Infinity | T: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010'`,
+      'select/zod': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 9007199254740993, 1900, 2000, 2500 | T: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010'`,
+      'update/arktype': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 9007199254740993, 1900, 2000, 2500, NaN, Infinity | T: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010'`,
+      'update/typebox': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 9007199254740993, 1900, 2000, 2500 | T: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010'`,
+      'update/valibot': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 9007199254740993, 1900, 2000, 2500, Infinity | T: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010'`,
+      'update/zod': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 9007199254740993, 1900, 2000, 2500 | T: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010'`,
+    },
     drzl: 'a number',
     official: 'a string',
     filed: 'new: DRZL emits a string on v1, so the two majors disagree as well',
@@ -4525,7 +4754,7 @@ const DEFECTS: Record<string, Entry> = {
   'mysql/m_binary': {
     libs: LIB_NAMES,
     modes: MODE_NAMES,
-    direction: 'both',
+    divergence: { '*/*': `L: Buffer, Uint8Array | T: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010'` },
     drzl: 'a Uint8Array',
     official: "a bare string on 0.4x, where official v1 emits ^[01]*$ capped at 4",
     filed: "new: drizzle-orm declares dataType 'string' on both majors",
@@ -4533,7 +4762,7 @@ const DEFECTS: Record<string, Entry> = {
   'mysql/m_varbinary': {
     libs: LIB_NAMES,
     modes: MODE_NAMES,
-    direction: 'both',
+    divergence: { '*/*': `L: Buffer, Uint8Array | T: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010'` },
     drzl: 'a Uint8Array',
     official: "a bare string on 0.4x, where official v1 emits ^[01]*$ capped at 16",
     filed: 'new: as mysql/m_binary',
@@ -4547,7 +4776,10 @@ const DEFECTS: Record<string, Entry> = {
   'mysql/m_serial': {
     libs: LIB_NAMES,
     modes: MODE_NAMES,
-    direction: 'looser',
+    divergence: {
+      '*/zod': `L: -1 | T: `,
+      '*/valibot,arktype,typebox': `L: -1, 9007199254740993 | T: `,
+    },
     drzl: 'an unbounded integer, so it takes -1 for an auto-increment column',
     official: 'an integer within 0..9007199254740991',
     filed: 'new',
@@ -4555,7 +4787,10 @@ const DEFECTS: Record<string, Entry> = {
   'mysql/m_year': {
     libs: LIB_NAMES,
     modes: MODE_NAMES,
-    direction: 'looser',
+    divergence: {
+      '*/zod': `L: 0, 1, -1, 200, 40000, 9000000, 2147483648, 1900, 2500 | T: `,
+      '*/valibot,arktype,typebox': `L: 0, 1, -1, 200, 40000, 9000000, 2147483648, 9007199254740993, 1900, 2500 | T: `,
+    },
     drzl: 'an unbounded integer',
     official: 'an integer within 1901..2155',
     filed: 'new',
@@ -4563,7 +4798,7 @@ const DEFECTS: Record<string, Entry> = {
   'sqlite/s_int': {
     libs: ['valibot', 'arktype', 'typebox'],
     modes: MODE_NAMES,
-    direction: 'looser',
+    divergence: { '*/*': `L: 9007199254740993 | T: ` },
     drzl: 'an integer within the signed 64-bit range',
     official: 'an integer within the safe-integer range',
     filed: 'new',
@@ -4571,7 +4806,7 @@ const DEFECTS: Record<string, Entry> = {
   'sqlite/s_blob_bigint': {
     libs: LIB_NAMES,
     modes: MODE_NAMES,
-    direction: 'looser',
+    divergence: { '*/*': `L: 2n**70n | T: ` },
     drzl: 'an unbounded bigint',
     official: 'a bigint within the signed 64-bit range',
     filed: 'new',
@@ -4731,14 +4966,26 @@ async function main() {
   });
   console.log(`    drizzle-orm ${drizzle} against ${officials.join(', ')}`);
 
-  type Seen = { libs: Set<string>; modes: Set<string>; directions: Set<string>; pairings: number; detail: string[] };
+  type Seen = {
+    libs: Set<string>;
+    modes: Set<string>;
+    signatures: Map<string, string>;
+    pairings: number;
+    detail: string[];
+  };
   const observed = new Map<string, Seen>();
-  const crashed = new Map<string, { sides: Set<string>; modes: Set<string>; values: Set<string> }>();
+  // `at` is every `<mode>/<value>` that actually crashed, so the printed figure is a count of
+  // crashes rather than `modes.size * values.size`, which is the same number only while the
+  // pattern is a rectangle. It is one today, and the assertion is on the sets either way.
+  const crashed = new Map<string, { sides: Set<string>; modes: Set<string>; values: Set<string>; at: Set<string> }>();
   const recordCrash = (key: string, side: string, mode: string, value: string) => {
-    const seen = crashed.get(key) ?? { sides: new Set<string>(), modes: new Set<string>(), values: new Set<string>() };
+    const seen =
+      crashed.get(key) ??
+      { sides: new Set<string>(), modes: new Set<string>(), values: new Set<string>(), at: new Set<string>() };
     seen.sides.add(side);
     seen.modes.add(mode);
     seen.values.add(value);
+    seen.at.add(`${side}/${mode}/${value}`);
     crashed.set(key, seen);
   };
   const findings: string[] = [];
@@ -4784,6 +5031,8 @@ async function main() {
           const tighter: string[] = [];
           let officialTook = false;
           let drzlTook = false;
+          // Whether DRZL took the whole pool, which is what the derived signature rests on.
+          let drzlAll = true;
           for (const [label, x] of POOL) {
             const a: Verdict = probe(lib, o, x);
             const b: Verdict = probe(lib, m, x);
@@ -4797,6 +5046,7 @@ async function main() {
             }
             officialTook ||= a === 'accept';
             drzlTook ||= b === 'accept';
+            if (b !== 'accept') drzlAll = false;
             if (a !== b) (b === 'accept' ? looser : tighter).push(label);
           }
           // A column both sides reject every probe for agrees perfectly and proves nothing: the
@@ -4814,11 +5064,15 @@ async function main() {
 
           const key = `${d.name}/${k}`;
           const seen: Seen =
-            observed.get(key) ?? { libs: new Set(), modes: new Set(), directions: new Set(), pairings: 0, detail: [] };
+            observed.get(key) ??
+            { libs: new Set(), modes: new Set(), signatures: new Map(), pairings: 0, detail: [] };
           seen.libs.add(libName);
           seen.modes.add(mode);
           seen.pairings++;
-          seen.directions.add(looser.length && tighter.length ? 'both' : looser.length ? 'looser' : 'tighter');
+          seen.signatures.set(
+            `${mode}/${libName}`,
+            drzlAll ? ALL_PROBES : `L: ${looser.join(', ')} | T: ${tighter.join(', ')}`
+          );
           seen.detail.push(`${mode}/${libName} ${looser.length} looser ${tighter.length} tighter`);
           observed.set(key, seen);
           if (ALLOWED[key] || DEFECTS[key]) { ledgered++; continue; }
@@ -4883,10 +5137,6 @@ async function main() {
       if (gotModes !== wantModes) {
         ledgerProblems.push(`${name}[${key}] declares modes ${wantModes}, measured ${gotModes}`);
       }
-      const gotDirection = [...seen.directions].sort().join(',');
-      if (gotDirection !== entry.direction) {
-        ledgerProblems.push(`${name}[${key}] declares direction ${entry.direction}, measured ${gotDirection}`);
-      }
       const wantPairings = entry.libs.length * entry.modes.length;
       if (seen.pairings !== wantPairings) {
         ledgerProblems.push(
@@ -4894,9 +5144,106 @@ async function main() {
             seen.detail.join('; ')
         );
       }
+      // The exact divergence, both ways. Every pairing has to be claimed by exactly one
+      // declaration, and its signature has to match; every declaration has to claim at least one.
+      const claimed = new Set<string>();
+      for (const [pairing, sig] of seen.signatures) {
+        const hits = Object.keys(entry.divergence).filter((d) => pairingMatches(d, pairing));
+        if (hits.length !== 1) {
+          ledgerProblems.push(
+            `${name}[${key}] has ${hits.length} declarations for ${pairing}, needs exactly one. ` +
+              `Measured there: ${sig}`
+          );
+          continue;
+        }
+        claimed.add(hits[0]);
+        const want = entry.divergence[hits[0]];
+        if (want === sig) continue;
+        if (want === ALL_PROBES) {
+          ledgerProblems.push(
+            `${name}[${key}] declares that DRZL accepts every probe on ${pairing}, and it does ` +
+              `not. Measured: ${sig}`
+          );
+          continue;
+        }
+        ledgerProblems.push(
+          `${name}[${key}] on ${pairing} declares\n        ${want}\n      and measured\n        ${sig}`
+        );
+      }
+      for (const d of Object.keys(entry.divergence)) {
+        if (!claimed.has(d)) ledgerProblems.push(`${name}[${key}] declaration '${d}' matched no pairing`);
+      }
     }
   }
   const unledgered = [...observed.keys()].filter((k) => !ALLOWED[k] && !DEFECTS[k]);
+
+  /**
+   * The MySQL text caps the pool cannot carry, measured once each instead of on every pairing.
+   *
+   * A separating probe has to be over the cap in bytes and not over it in UTF-16 units, and UTF-8
+   * spends at most 3 bytes per UTF-16 unit, so it needs more than cap/3 units and has to be built
+   * from three-byte characters. The pool carries the two small ones. `mediumtext` needs a 10.7 MiB
+   * string, which is far too heavy to push through 972 comparisons and perfectly cheap to push
+   * through four, and `longtext` needs more units than V8 will put in a string, so it has no probe
+   * at all and this says so rather than leaving a filed field looking covered.
+   *
+   * The string is derived from each column's own cap rather than written down, so a cap that moves
+   * moves the probe with it.
+   */
+  const MAX_JS_STRING = 536870888;
+  const TEXT_CAPS: Record<string, number> = {
+    m_tinytext: 255,
+    m_text: 65535,
+    m_mediumtext: 16777215,
+    m_longtext: 4294967295,
+  };
+  const capProblems: string[] = [];
+  const capMeasured: string[] = [];
+  const capUnreachable: string[] = [];
+  {
+    const mysql = DIALECTS.find((d) => d.name === 'mysql');
+    if (!mysql) {
+      capProblems.push('the MySQL dialect is not in this stage, so no byte cap was measured');
+    } else {
+      const loaded: Record<string, any> = {};
+      for (const lib of LIB_NAMES) loaded[lib] = await mysql.mods[lib]();
+      for (const [col, cap] of Object.entries(TEXT_CAPS)) {
+        const units = Math.floor(cap / 3) + 1;
+        if (units > MAX_JS_STRING) {
+          capUnreachable.push(`${col} (needs ${units} units, over the ${MAX_JS_STRING} maximum)`);
+          continue;
+        }
+        const probeValue = '\u4E00'.repeat(units);
+        for (const mode of MODE_NAMES) {
+          for (const libName of LIB_NAMES) {
+            const lib = LIBS[libName];
+            const o = safeField(lib, OFFICIAL[libName][mode](mysql.table as never), col);
+            const m = safeField(lib, loaded[libName][`${PREFIX[mode]}matrixSchema`], col);
+            if (!o || !m) {
+              capProblems.push(`${col} has no field on ${mode}/${libName}, so no cap was measured`);
+              continue;
+            }
+            const ov = probe(lib, o, probeValue);
+            const mv = probe(lib, m, probeValue);
+            capMeasured.push(`${col}/${mode}/${libName}`);
+            // Today's state, and the only one that is not a finding: official counts units and
+            // takes it, DRZL counts bytes and refuses it, and MySQL refuses it too.
+            if (ov === 'accept' && mv === 'reject') continue;
+            capProblems.push(
+              `${col} on ${mode}/${libName}: official ${ov}, DRZL ${mv}, for ${units} units and ` +
+                `${units * 3} bytes against a ${cap} byte cap. Expected official to accept and ` +
+                'DRZL to refuse.'
+            );
+          }
+        }
+      }
+    }
+  }
+  if (!capMeasured.length) capProblems.push('no MySQL text column had its byte cap measured');
+  console.log(
+    `    ${capMeasured.length} byte-cap probe(s) on ${Object.keys(TEXT_CAPS).length - capUnreachable.length} ` +
+      `MySQL text column(s); ${capUnreachable.length} cannot be probed at all: ${capUnreachable.join(', ')}`
+  );
 
   // The absolute half: what the analyzer makes of these two fixtures on its own.
   const unnamedProblems: string[] = [];
@@ -4960,7 +5307,7 @@ async function main() {
   for (const key of Object.keys(THREW)) {
     if (!crashed.has(key)) crashProblems.push(`THREW[${key}] saw no crash on this run`);
   }
-  const crashCount = [...crashed.values()].reduce((n, c) => n + c.modes.size * c.values.size, 0);
+  const crashCount = [...crashed.values()].reduce((n, c) => n + c.at.size, 0);
   console.log(
     `    ${crashCount} probe(s) crashed instead of returning a verdict, on ${crashed.size} ` +
       `column(s) against ${Object.keys(THREW).length} declared, and were compared as neither ` +
@@ -5003,6 +5350,11 @@ async function main() {
     console.error('    FAIL: the unnamed-column list does not describe this run:');
     for (const u of unnamedProblems) console.error(`      ${u}`);
   }
+  if (capProblems.length) {
+    console.error('    FAIL: a MySQL text column no longer separates a byte budget from a');
+    console.error('          character count the way it is documented to:');
+    for (const c of capProblems) console.error(`      ${c}`);
+  }
   if (findings.length) {
     console.error(`    FAIL: ${findings.length} parity finding(s). A generated schema looser than`);
     console.error('          the first-party module accepts rows the database will reject.');
@@ -5013,6 +5365,7 @@ async function main() {
     unledgered.length ||
     crashProblems.length ||
     unnamedProblems.length ||
+    capProblems.length ||
     totalCompared !== EXPECTED_COMPARISONS
   ) {
     process.exit(1);

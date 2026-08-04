@@ -23,10 +23,13 @@ diff's fixture is Postgres plus four MySQL text columns, so no MySQL float, no M
 MySQL year and no SQLite column of any kind had ever been measured against a first-party validator
 on 0.4x.
 
-The ledger is asserted in both directions: a difference in neither map fails the stage, and an
-entry that suppresses nothing, or whose libraries, modes, pairing count or direction have moved,
-fails it too. So fixing one of these defects fails the gate until its entry goes, rather than
-passing quietly.
+Every entry, in both passes, pins the exact set of probes it covers: which values DRZL accepts and
+official refuses, and which the other way. A difference in neither map fails the stage, an entry
+that suppresses nothing fails it, and an entry whose divergence has changed at all fails it with
+the measured signature printed. A waiver that asserted only "something differs here" absorbed
+regressions on its own column: a `char(4)` schema with its length check deleted, a `TINYTEXT`
+schema tightened from 255 bytes to 3, and a `m_tinytext` regression on the v1 side all passed
+before this and are all named now.
 
 Two things the pool could not see are now measured. A probe that crashes is no longer scored as a
 rejection: official's TypeBox module emits `Type.RegExp` with a `maxLength` for a few columns and
@@ -34,5 +37,9 @@ TypeBox reads `value.length` with no type guard, so `null` crashes the check ins
 Eighteen such probes on v1 and six on 0.4x were being counted as official rejections; they are now
 recorded and asserted as crashes. And the MySQL text family reported parity on both majors while
 four filed fields sat on it, because no string in the pool separated a byte budget from a character
-count. A 100 emoji string does, and a real MySQL 8 settles the direction: `tinytext` refuses it and
-`varchar(255)` takes it.
+count. Which caps a pool can separate is arithmetic: UTF-8 spends at most 3 bytes per UTF-16 unit,
+so a separating probe needs more than cap/3 units. The pool now carries 100 emoji for the 255 byte
+caps and 22000 CJK characters for the 65535 byte ones, `mediumtext` needs a 10.7 MiB string and is
+measured on its own, and `longtext` needs more units than V8 will put in a string, so it has no
+probe at all and the stage says so. A real MySQL 8 settles every direction: `tinytext`, `text` and
+`blob` all refuse what official accepts.
