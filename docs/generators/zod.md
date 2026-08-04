@@ -45,10 +45,24 @@ Integer ranges follow the column width, and `bigint({ mode: 'number' })` is type
 with the JavaScript safe-integer bound rather than as a bigint, because that is what the value
 actually is.
 
-`real` and `double precision` are bounded too, at the point past which a float stops being able
-to represent consecutive integers. That is narrower than the column, which holds far larger
-values, but a number above it comes back out of the database as a _different_ number.
-`drizzle-orm/zod` draws the line in the same place.
+`real` is bounded where Postgres stops accepting, `3.4028235677973366e38`, written out in full
+decimal. Postgres takes every double up to and including that one and answers `out of range for
+type real` to the next. That edge is above the largest float32 rather than at it: a `real` at full
+magnitude comes back over the text protocol as `3.4028235e+38`, which is already past the float32,
+so a schema bounded there would refuse the value the driver just handed you. `double precision`
+carries no magnitude bound at all: Postgres stored `Number.MAX_VALUE` in one and handed it back
+unchanged.
+
+MySQL's `float` is bounded lower, at `3.4028234663852886e38`, because MySQL is stricter here than
+Postgres: a real MySQL 8.4 refuses the very next double above the largest float32, in strict mode
+and under the stock `sql_mode` alike. Its `double` and `real` carry no bound, like Postgres's
+`double precision`.
+
+Those bounds are the database's rather than `drizzle-orm/zod`'s, which bounds the same two columns
+at `-8388608 .. 8388607` and `-140737488355328 .. 140737488355327`. Both refuse values the column
+hands back, `9000000` in a `real` and `1.75e15` in a `double precision`, so DRZL is deliberately
+wider on every 4 and 8 byte float column. Each one is waived in the parity gate with the measured
+divergence attached.
 
 ## Character limits count characters
 
@@ -110,10 +124,16 @@ every row the database returns:
 | `bytea()`                   | `Buffer`                   | `z.instanceof(Uint8Array)`              |
 | `json()`, `jsonb()`         | any JSON value             | `z.json()`                              |
 
-`bytea` is typed as `Uint8Array` rather than `Buffer`, which is the one place the output is
-deliberately wider than `drizzle-orm/zod`. A Buffer is a Uint8Array, so nothing official accepts
-is turned away; the wider check needs no `@types/node`, survives a runtime where `Buffer` is not
-defined, and makes a Postgres `bytea` and a SQLite `blob` validate the same way.
+`bytea` is typed as `Uint8Array` rather than `Buffer`, which is deliberately wider than
+`drizzle-orm/zod`. A Buffer is a Uint8Array, so nothing official accepts is turned away; the wider
+check needs no `@types/node`, survives a runtime where `Buffer` is not defined, and makes a
+Postgres `bytea` and a SQLite `blob` validate the same way.
+
+It is not the only place the output is wider. This page used to say it was, which the project's own
+parity gate had already contradicted: that gate waives each difference from the first-party module
+with the exact values measured, and prints on every run how many of them are DRZL accepting
+something official refuses. The float bounds described above are wider on six columns across the
+three dialects, and every one of those is waived too.
 
 A CHECK constraint naming an array or a structured column is skipped rather than folded in, since
 the comparison is against a scalar literal and describes neither.

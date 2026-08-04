@@ -87,9 +87,9 @@ runs the emitted schemas against **three real databases** on every commit: Postg
 PGlite, SQLite via `node:sqlite`, and MySQL as a CI service container.
 
 ```
-    1400 probes against a real Postgres (40 columns)
-    agree with the database: DRZL 1007, drizzle-orm 979
-    DRZL closer than drizzle-orm on 28, further on 0
+    1440 probes against a real Postgres (40 columns)
+    agree with the database: DRZL 1048, drizzle-orm 1013
+    DRZL closer than drizzle-orm on 35, further on 0
 
     53 CHECK probes against a real Postgres (13 constrained columns)
     rows Postgres rejects and the validator accepts: DRZL 0, drizzle-orm 22

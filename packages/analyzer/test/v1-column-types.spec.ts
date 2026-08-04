@@ -48,6 +48,33 @@ describe('numbers', () => {
     });
   });
 
+  it('takes the 4 byte float bound from the codec, because the two databases differ', () => {
+    // Postgres refuses a `real` past 3.4028235677973366e38 and MySQL refuses a `FLOAT` past
+    // 3.4028234663852886e38, both bisected against a real server, so one bound for `number float`
+    // would be wrong on one of them. The codec is what tells them apart on v1, and the answer has
+    // to match what the class-name table gives the same column on 0.4x or the cross-major diff in
+    // verify-packed.sh fails.
+    expect(describeV1Column(col('number float', 'float4'))).toMatchObject({
+      min: '-340282356779733661637539395458142568448',
+      max: '340282356779733661637539395458142568448',
+    });
+    expect(describeV1Column(col('number float', 'float'))).toMatchObject({
+      min: '-340282346638528859811704183484516925440',
+      max: '340282346638528859811704183484516925440',
+    });
+    // SingleStore states the semantic and no codec at all on 1.0.0-rc.4, measured on a real
+    // `singlestoreTable`, so it lands here. It is MySQL wire-compatible and was not measured
+    // itself, so it takes MySQL's edge rather than the wider one.
+    expect(describeV1Column({ dataType: 'number float', dimensions: 0 })).toMatchObject({
+      max: '340282346638528859811704183484516925440',
+    });
+    // 8 byte floats carry no magnitude bound on either database: MySQL's `DOUBLE` returned
+    // Number.MAX_VALUE and 1e300 identical while the `FLOAT` beside it refused both.
+    const d = describeV1Column(col('number double', 'float8'));
+    expect(d?.min).toBeUndefined();
+    expect(d?.max).toBeUndefined();
+  });
+
   it('marks the inexact types as non-integers even though they carry bounds', () => {
     // The generators used to read "declares both bounds" as "is an integer". That held only while
     // integers were the sole bounded type, so stating it outright is the whole point of the flag.
@@ -86,6 +113,30 @@ describe('structured values', () => {
       kind: 'tuple',
       length: 2,
     });
+  });
+
+  it('DEFECT: calls the object modes tuples too, and they are objects', () => {
+    // `point({ mode: 'xy' })` is `object point` with codec `point` on v1, and hands back
+    // `{ x, y }`; `line({ mode: 'abc' })` is `object line` and hands back `{ a, b, c }`. Both
+    // reach the same `case 'point'` and `case 'line'` arms above and come back as tuples, so a v1
+    // select schema for either rejects every row the driver returns. That is the same class of
+    // defect as typing a `point` as a string was, and it is worse than 0.4x's answer rather than
+    // better: 0.4x calls them strings, which is also wrong.
+    //
+    // Filed rather than fixed. Describing `{ x, y }` needs a `ColumnShape` no generator has, and
+    // no fixture in either parity pass carries an object-mode column, so there is no gate to turn
+    // red first. Pinned here so a change to those arms has to say what it did to these two: the
+    // 0.4x half is pinned in floats-and-tuples-0.4x.spec.ts and this is the v1 half, which had
+    // none.
+    expect(describeV1Column(col('object point', 'point'))?.shape).toEqual({
+      kind: 'tuple',
+      length: 2,
+    });
+    expect(describeV1Column(col('object line', 'line'))?.shape).toEqual({
+      kind: 'tuple',
+      length: 3,
+    });
+    expect(describeV1Column(col('object point', 'point'))?.tsType).toBe('[number, number]');
   });
 
   it('carries the declared width of a vector and a bit string', () => {

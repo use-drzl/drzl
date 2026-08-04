@@ -39,6 +39,15 @@ function singularize(s: string) {
 function tsTypeOf(c: Column): string {
   // basic mapping from analyzer tsType
   if (c.enumValues && c.enumValues.length) return c.enumValues.map((v) => `'${v}'`).join(' | ');
+  // A tuple column, built from the shape rather than pasted from `tsType`. The allowlist below is
+  // a list of scalar names and everything else falls to `unknown`, so a `point` was written as
+  // `unknown` here while the validators emitted a two-number tuple for the same column. Review
+  // measured it: on drizzle-orm 0.4x the emitted type went from `string`, which was wrong, to
+  // `unknown`, which is honest and says nothing. `[number, number]` is ordinary TypeScript and the
+  // analyzer already states the arity.
+  if (c.shape?.kind === 'tuple') {
+    return `[${Array.from({ length: c.shape.length }, () => 'number').join(', ')}]`;
+  }
   switch (c.tsType) {
     case 'number':
     case 'string':

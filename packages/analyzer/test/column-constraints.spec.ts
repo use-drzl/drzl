@@ -131,19 +131,49 @@ describe('numeric range', () => {
     expect(String(Number(c.b.max))).not.toBe(c.b.max);
   });
 
-  it('does not bound a float or a numeric, which have no integer range', async () => {
+  it('states that a float is inexact, bounds only the width that has one', async () => {
+    // Three answers here, and the middle one is the point.
+    //
+    // `doublePrecision` carries no range. float8 is the JavaScript number's own format, so
+    // Postgres takes every finite JS number into one, measured through PGlite to
+    // Number.MAX_VALUE and returned identical. Any finite bound would refuse a value the column
+    // stores. It still states `integer: false`, and on this column that decides nothing: it is
+    // true of the column and it is what makes the *bounded* case work, which the flag test in
+    // validation-core's integer-column.spec.ts measures from both ends against the real
+    // `isIntegerColumn`. It named floats-and-tuples-0.4x.spec.ts until the measurement moved out
+    // of there, and that file now asserts the flag's presence alone.
+    //
+    // `real` is bounded, at the one magnitude the database does refuse: PGlite takes
+    // 3.4028235677973366e38 and answers `out of range for type real` to the next double up. That
+    // is above the largest float32 rather than at it, which is not a rounding of the digits; see
+    // the analyzer's own docstring for the bisection and for MySQL, whose edge is a different
+    // number.
+    //
+    // A `numeric` in its default string mode stays unbounded: a min and a max on a string say
+    // nothing a validator can use, and its `format` carries the check instead.
     const c = await columns(
       'cons-float',
       `
-      import { pgTable, doublePrecision, numeric } from 'drizzle-orm/pg-core';
+      import { pgTable, real, doublePrecision, numeric } from 'drizzle-orm/pg-core';
       export const t = pgTable('t', {
+        r: real('r'),
         d: doublePrecision('d'),
         n: numeric('n', { precision: 10, scale: 2 }),
       });
       `
     );
+    expect(c.d).toMatchObject({ tsType: 'number', integer: false });
     expect(c.d.min).toBeUndefined();
+    expect(c.d.max).toBeUndefined();
+    expect(c.r).toMatchObject({
+      tsType: 'number',
+      min: '-340282356779733661637539395458142568448',
+      max: '340282356779733661637539395458142568448',
+      integer: false,
+    });
+    expect(c.n.tsType).toBe('string');
     expect(c.n.min).toBeUndefined();
+    expect(c.n.max).toBeUndefined();
   });
 });
 

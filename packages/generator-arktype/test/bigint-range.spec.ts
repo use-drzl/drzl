@@ -3,9 +3,14 @@
  *
  * This generator emitted a bare `bigint` and nothing else, so a `bigint({ mode: 'bigint' })`
  * column accepted `2n ** 70n`: a value no int64 column can hold, that zod, valibot and typebox
- * all reject, and that `drizzle-orm/arktype` rejects too. Looser than the first-party validator
- * is the one direction this project says generated output must never take, and it was waived on
- * all three dialects in the packed gate rather than fixed.
+ * all reject, and that `drizzle-orm/arktype` rejects too. It was waived on all three dialects in
+ * the packed gate rather than fixed.
+ *
+ * Being looser than the first-party validator is not by itself the thing that made it wrong, and
+ * an earlier version of this sentence said it was "the one direction this project says generated
+ * output must never take". The gate counts its looser waivers and most of them run that way, some
+ * because the database backs DRZL. What made this one wrong is that no `int64` column can hold
+ * `2n ** 70n`, so the schema promised a write the database refuses.
  *
  * The reason recorded for the waiver was half true. ArkType's *string DSL* genuinely cannot state
  * it: `type('bigint >= -9223372036854775808n')` throws "Comparator >= must be followed by a

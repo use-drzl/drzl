@@ -224,6 +224,17 @@ interface LibDialect {
   object: (body: string) => string;
   /** Same, on one line. A single-key lookup input reads better without the wrapping. */
   objectInline: (body: string) => string;
+  /**
+   * A fixed-length tuple of numbers: a `point`, a `line`, a `geometry`.
+   *
+   * Absent for ArkType, which is not an oversight. Its field values are emitted as quoted
+   * string-DSL fragments, and the DSL has no tuple: `type({ p: '[number, number]' })` throws
+   * `Expected an expression before '[number, number]'`, measured. The array-literal form
+   * `type({ p: ['number', 'number'] })` does work and does reject a third element, but it is not a
+   * string, so it composes with neither `nullable` nor `optional` here, both of which build DSL
+   * text around their argument. ArkType therefore keeps `unknown` for these columns.
+   */
+  tuple?: (length: number) => string;
   /** ArkType types are strings, so the field value is JSON-encoded rather than emitted bare. */
   fieldIsString?: boolean;
   /** Applied to the whole update schema, where the library has a shorthand for it. */
@@ -246,6 +257,7 @@ const LIBS: Record<Lib, LibDialect> = {
     boolean: 'z.boolean()',
     date: 'z.date()',
     unknown: 'z.unknown()',
+    tuple: (n) => `z.tuple([${Array.from({ length: n }, () => 'z.number()').join(', ')}])`,
     enum: (vals) => `z.enum([${vals.map(q).join(', ')}] as const)`,
     array: (e) => `z.array(${e})`,
     nullable: (b) => `${b}.nullable()`,
@@ -260,6 +272,7 @@ const LIBS: Record<Lib, LibDialect> = {
     boolean: 'v.boolean()',
     date: 'v.date()',
     unknown: 'v.unknown()',
+    tuple: (n) => `v.tuple([${Array.from({ length: n }, () => 'v.number()').join(', ')}])`,
     enum: (vals) => `v.picklist([${vals.map(q).join(', ')}] as const)`,
     array: (e) => `v.array(${e})`,
     nullable: (b) => `v.nullable(${b})`,
@@ -289,6 +302,10 @@ function mapExpr(column: Column, lib: Lib, mode: 'insert' | 'update' | 'select')
   const d = LIBS[lib];
   let base = (() => {
     if (column.enumValues && column.enumValues.length) return d.enum(column.enumValues);
+    // Before the analyzer described a `point` as a tuple this landed on `string` on drizzle-orm
+    // 0.4x, which refuses the value the driver returns, and then on `unknown`, which accepts
+    // anything at all including a null payload the insert will not survive. Neither is the column.
+    if (column.shape?.kind === 'tuple' && d.tuple) return d.tuple(column.shape.length);
     switch (column.tsType) {
       case 'number':
         return d.number;

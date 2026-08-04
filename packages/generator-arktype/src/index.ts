@@ -382,9 +382,11 @@ function atNarrow(c: Column, predicate: (v: string) => string, message: string):
  * `type('bigint >= -9223372036854775808n')` throws "Comparator >= must be followed by a
  * corresponding literal", and the same bound written as a number rounds: 9223372036854775807
  * is not representable as a double. So this generator emitted a bare `bigint` and accepted
- * `2n ** 70n`, which every other generator rejects and which no int64 column can hold. That is
- * the one direction this project says generated output must never take, looser than the
- * first-party validator, and the packed gate had it waived on all three dialects.
+ * `2n ** 70n`, which every other generator rejects and which no int64 column can hold, so the
+ * schema promised a write the database refuses. The packed gate had it waived on all three
+ * dialects. Being looser than the first-party validator is not what made it wrong, though an
+ * earlier version of this sentence said it was the one direction generated output must never
+ * take: that gate counts its looser entries and most of them run that way.
  *
  * A narrow can hold it, exactly as the character caps do. Null passes, matching SQL and matching
  * the cap narrows, so the guard belongs here rather than in a wrapping union.

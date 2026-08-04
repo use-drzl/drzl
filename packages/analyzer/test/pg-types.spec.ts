@@ -95,6 +95,11 @@ export { table as pg_table };
     expect(get('cidr')).toBe('string');
     expect(get('mac')).toBe('string');
     expect(get('mac8')).toBe('string');
+    // These two are the coarse `/Point|Line/i` fallback and not what drizzle builds. `point()`
+    // is a `PgPointTuple` and `line()` a `PgLineTuple` on both majors, both of which are tuples
+    // and are asserted against the installed drizzle in floats-and-tuples-0.4x.spec.ts. What is
+    // still reached through this arm is `point({ mode: 'xy' })` and `line({ mode: 'abc' })`,
+    // which hand back an object and are a filed defect on both majors.
     expect(get('p')).toBe('string');
     expect(get('l')).toBe('string');
     expect(get('j')).toBe('any');

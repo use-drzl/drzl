@@ -14,8 +14,11 @@
  *
  * DRZL emitted `z.string()` and `z.number().int()` for all of them, so a 300 character name and
  * a smallint of 40000 both passed validation and failed at the database. Being the codegen
- * alternative to a first-party runtime module is only defensible if the output is at least as
- * strict.
+ * alternative to a first-party runtime module is only defensible if every difference from it is
+ * known and accounted for. Not if the output is at least as strict, which this sentence used to
+ * say: `verify-packed.sh` counts the waivers where DRZL is the looser side and most of them are,
+ * several backed by the database. What is indefensible is a difference nobody has looked at, and
+ * a bound the column has and the schema does not is one of those.
  */
 import { describe, it, expect } from 'vitest';
 import { ZodGenerator } from '../src/index';
