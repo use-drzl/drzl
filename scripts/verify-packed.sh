@@ -3458,10 +3458,27 @@ const DEFECTS: Record<string, string> = {
   // verdict:
   //
   //   zod, valibot, arktype, typebox   v1 gains a code-point check of the same number as the
-  //                                    byte check both majors emit. It cannot bind: over
-  //                                    1200036 (value, cap) pairs the byte check never passed
-  //                                    while the character check failed, and the two emitted zod
-  //                                    schemas agreed on 624 of 624 verdicts.
+  //                                    byte check both majors emit, and it can never be the
+  //                                    deciding one. UTF-8 spends at least one byte per code
+  //                                    point, so bytes(v) >= codePoints(v) for every string, and
+  //                                    a lone surrogate encodes as U+FFFD, three bytes for one
+  //                                    code point, which leans the same way. The two caps are the
+  //                                    same number on all four columns. So anything inside the
+  //                                    byte cap is inside the character cap, and the check v1
+  //                                    adds refuses nothing the check both majors emit accepts.
+  //                                    That argument needs `maxBytes <= maxLength`, which is a
+  //                                    property of the column rather than of the encoding, and
+  //                                    the stage below asserts it instead of leaving it to luck.
+  //
+  //                                    Same verdicts, not the same behaviour. The two majors
+  //                                    describe a rejection differently, so this is invisible
+  //                                    only to a caller that reads the boolean. On 256 ascii into
+  //                                    `t_tiny`: zod and valibot report one issue on 0.4x ("at
+  //                                    most 255 bytes") and two on v1 (the character one first,
+  //                                    then the byte one), arktype reports one on each and names
+  //                                    the character cap on v1 where 0.4x names the byte cap, and
+  //                                    typebox reports two against three under `Value.Errors`.
+  //                                    Anything rendering validation errors sees a difference.
   //   json-schema                      no byte check to fall back on. v1 carries `maxLength` and
   //                                    0.4x carries no cap of any kind, so a 256 character
   //                                    `t_tiny` is accepted by the 0.4x document and refused by
@@ -3646,6 +3663,36 @@ for (const [field, sawValue] of seen) {
   );
 }
 
+// The precondition the four `mtext` entries above are argued from, made executable.
+//
+// That argument has two halves. One is a property of UTF-8 and cannot change. The other is
+// `maxBytes <= maxLength` on the column, which is a property of what the analyzer read, and
+// nothing held it: a column whose byte cap is above its character cap makes v1's character check
+// the deciding one. With a 20 byte cap and a 10 character cap, 15 ascii characters pass the byte
+// check and fail the other, so v1 refuses a value 0.4x takes and those entries stop describing a
+// difference in wording alone.
+//
+// Nothing in this fixture can do that today, and the reason is drizzle's rather than the schema's:
+// handing `text()` a `{ length: 10 }` moves neither major, because v1 overwrites it with the
+// type's own cap and 0.4x carries no length on a text column at all. Both measured, at runtime, on
+// the column object the analyzer reads. A choice that release makes is not a rule, which is why
+// this is a check rather than one more sentence.
+//
+// A column carrying only one of the two caps is outside this: with no `maxLength` there is no
+// character check to bind, and with no `maxBytes` there is no byte check to bind first.
+const capChecked: string[] = [];
+const capBroken: string[] = [];
+for (const [side, doc] of [['0.4x', a], ['v1', b]] as const) {
+  const cols = doc.columns as Record<string, Record<string, unknown>>;
+  for (const [name, col] of Object.entries(cols)) {
+    const bytes = col.maxBytes;
+    const chars = col.maxLength;
+    if (typeof bytes !== 'number' || typeof chars !== 'number') continue;
+    capChecked.push(`${side} ${name}`);
+    if (bytes > chars) capBroken.push(`${side} ${name}: maxBytes ${bytes} over maxLength ${chars}`);
+  }
+}
+
 const defects = suppressed.filter((s) => s.defect);
 const columnsWithDefects = [...new Set(defects.map((s) => s.key.replace(/\.[^.]+$/, '')))];
 console.log(
@@ -3659,6 +3706,7 @@ console.log(
 if (columnsWithDefects.length) {
   console.log(`    described differently per major: ${columnsWithDefects.join(', ')}`);
 }
+console.log(`    ${capChecked.length} column(s) carry both a byte cap and a character cap`);
 
 // A waiver that suppresses nothing is a sentence claiming a difference exists, sitting next to
 // the ones that do. Both maps are held to it, so fixing a defect fails this stage until its
@@ -3684,7 +3732,19 @@ if (diffs.length) {
   console.error('\n    A generator reads these fields, so a difference here is a different schema.');
 }
 
-if (diffs.length || dead.length) process.exit(1);
+if (!capChecked.length) {
+  console.error('    FAIL: no column carries both a byte cap and a character cap, so the rule');
+  console.error('          above compared nothing. The four mtext entries are argued from it, so');
+  console.error('          give the fixture a column carrying both or drop the argument.');
+}
+if (capBroken.length) {
+  console.error('    FAIL: a byte cap is above the character cap on the same column, so the code');
+  console.error('          point check v1 adds can refuse a value the byte check accepts, and the');
+  console.error('          mtext entries above no longer describe a difference in wording alone:');
+  for (const c of capBroken) console.error(`      ${c}`);
+}
+
+if (diffs.length || dead.length || capBroken.length || !capChecked.length) process.exit(1);
 CROSS
 
 OLD_JSON="$WORK/cols-0.4x.json" NEW_JSON="$WORK/cols-v1.json" npx tsx cross-major.ts || {
