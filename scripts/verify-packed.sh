@@ -2122,6 +2122,28 @@ const SELECT_OPTIONAL: Record<string, string> = {
 const usedSelectOptional = new Set<string>();
 const selectOptionalProblems: string[] = [];
 
+/**
+ * How far the check above actually reached, declared and asserted in both directions.
+ *
+ * An absolute check has no second side to disagree with it, so a shrinking reach is invisible in
+ * its own output: it inspects fewer schemas, finds nothing, and prints the same line. Measured
+ * rather than feared. Making DRZL's Postgres TypeBox `SelectmatrixSchema` barren at `c_uuid`, the
+ * column `PRESENCE_BARREN` already declares on official's side, drops all 40 of that pairing's keys
+ * out of the absolute check, and it hid a `c_text` key made optional in the same edit. Every
+ * presence counter and the `N column(s) whose key ...` line were byte identical to a clean run.
+ *
+ * So the reach is a declaration like any other. `SCHEMAS` is every `<dialect>/<table>/<library>`
+ * whose select schema yielded at least one key to inspect, and `KEYS` is how many keys that was.
+ * Both are measured by the run and compared with these, so examining fewer fails and examining more
+ * fails too.
+ */
+// 24 is three dialects times two tables times four libraries, and 504 is every column of all six
+// tables in each of the four. Nothing is lost to a crash here: the omissions that crash do so on
+// official's side, and this check reads DRZL's alone.
+const SELECT_REACH = { schemas: 24, keys: 504 };
+const selectSchemas = new Set<string>();
+let selectKeysInspected = 0;
+
 const usedPresenceWaivers = new Set<string>();
 const presenceWaived = new Map<string, Map<string, string>>();
 const presenceAllowed = (dialect: string, lib: string, col: string, mode: string, signature: string) => {
@@ -2508,10 +2530,15 @@ for (const d of DIALECTS) {
         // it is still wrong where official cannot answer at all. `pg/typebox/n_bit` on the 0.4x
         // pass is the second case: official crashes on that omission, so the comparison below has
         // no verdict to differ from and this line is the only thing that sees it.
-        if (mode === 'select' && b === 'optional') {
-          const key = `${d.name}/${libName}/${k}`;
-          if (SELECT_OPTIONAL[key]) usedSelectOptional.add(key);
-          else selectOptionalProblems.push(`${key}: DRZL's select schema lets this key be missing, and nothing declares it`);
+        if (mode === 'select' && b) {
+          // Counted where the check reads, so the two can never describe different sets.
+          selectSchemas.add(`${d.name}/${t.name}/${libName}`);
+          selectKeysInspected++;
+          if (b === 'optional') {
+            const key = `${d.name}/${libName}/${k}`;
+            if (SELECT_OPTIONAL[key]) usedSelectOptional.add(key);
+            else selectOptionalProblems.push(`${key}: DRZL's select schema lets this key be missing, and nothing declares it`);
+          }
         }
         // Never a skip, and never silently: every column lands in exactly one of the three
         // counters, and the three have to add up to the pairing count further down.
@@ -2821,9 +2848,17 @@ for (const key of Object.keys(SELECT_OPTIONAL)) {
     selectOptionalProblems.push(`SELECT_OPTIONAL[${key}] requires its key on select now, so delete it`);
   }
 }
+if (selectSchemas.size !== SELECT_REACH.schemas || selectKeysInspected !== SELECT_REACH.keys) {
+  selectOptionalProblems.push(
+    `the select check read ${selectSchemas.size} schema(s) and ${selectKeysInspected} key(s), ` +
+      `declared ${SELECT_REACH.schemas} and ${SELECT_REACH.keys}. It has no second side to ` +
+      'disagree with it, so a shrinking reach is silent unless this fails'
+  );
+}
 console.log(
-  `    ${Object.keys(SELECT_OPTIONAL).length} column(s) whose key DRZL's select schema lets go ` +
-    `missing, all declared: ${Object.keys(SELECT_OPTIONAL).join(', ')}`
+  `    ${selectKeysInspected} select key(s) across ${selectSchemas.size} schema(s) required, bar ` +
+    `${Object.keys(SELECT_OPTIONAL).length} declared to let the key go missing: ` +
+    Object.keys(SELECT_OPTIONAL).join(', ')
 );
 console.log(
   `    ${presenceCompared} key-presence comparisons asked of the object rather than the field, ` +
@@ -6608,13 +6643,13 @@ const DEFECTS: Record<string, Entry> = {
     divergence: {
       'select/zod,valibot,arktype': allProbes(61, ['null', "'010'"]),
       'insert,update/zod,valibot,arktype': allProbes(60, ['null', 'undefined', "'010'"]),
-      // One lower than the other three on select and the same as them on insert and update, and
-      // not because typebox refuses more. Official's TypeBox schema throws on `null` and
-      // `undefined` here, so neither is compared in any mode and both go to THREW. On select that
-      // removes `undefined` from official's rejections and leaves `null`, which it accepted and
-      // never counted; on insert and update official accepts both, so removing them changes
-      // nothing. `pg/c_bit` above is two lower in every mode for the same reason and a different
-      // column: it is `notNull`, so official rejects `null` there and the count did hold it.
+      // Not "typebox refuses more": official's TypeBox schema throws on `null` and `undefined`
+      // here, so neither probe is compared in any mode and the THREW ledger holds both. How far
+      // that moves the count is not stated here, because the declarations on these three lines are
+      // the count and a sentence beside them is one more thing that can go stale. Two attempts at
+      // that sentence already have, in this file, both of them saying "two lower in every mode":
+      // once on `pg/c_bit` above, where the `allProbes` docstring records the correction, and once
+      // here, where the fix for the first was copied without re-reading the numbers.
       '*/typebox': allProbes(60, ["'010'"]),
     },
     drzl: 'unknown, which accepts every value in the pool',
@@ -6737,6 +6772,14 @@ const PRESENCE_BARREN: Record<string, string> = {
  * column the class-name path cannot name, plus the customType, which is unnamed on both majors.
  * Only TypeBox: zod, valibot and arktype keep the key required for their own nullable unknown.
  */
+/**
+ * How far the check below actually reached, declared and asserted in both directions, for the
+ * reason the v1 copy carries: an absolute check has no second side, so a shrinking reach prints the
+ * same line and finds nothing. Measured on the v1 pass by making a select schema barren at a column
+ * already declared in `PRESENCE_BARREN`, which dropped 40 keys and hid a real optional one.
+ */
+const SELECT_REACH = { schemas: 24, keys: 492 };
+
 const SELECT_OPTIONAL: Record<string, string> = {
   'pg/typebox/n_geometry': 'no PgGeometry arm, so a nullable unknown, whose TypeBox key may be missing',
   'pg/typebox/n_bit': 'as pg/typebox/n_geometry, and official crashes on the omission so PRESENCE cannot see it',
@@ -7111,6 +7154,8 @@ async function main() {
   const usedBarren = new Set<string>();
   const usedSelectOptional = new Set<string>();
   const selectOptionalProblems: string[] = [];
+  const selectSchemas = new Set<string>();
+  let selectKeysInspected = 0;
   const presenceProblems: string[] = [];
   const presenceObserved = new Map<string, Seen>();
   const presenceThrew = new Map<string, { sides: Set<string>; modes: Set<string> }>();
@@ -7257,10 +7302,15 @@ async function main() {
           // The absolute half, read off DRZL's side alone and before the two are compared. See the
           // note on SELECT_OPTIONAL: `pg/typebox/n_bit` reaches this line and reaches nothing else,
           // because official crashes on that omission rather than answering it.
-          if (mode === 'select' && b === 'optional') {
-            const abs = `${d.name}/${libName}/${k}`;
-            if (SELECT_OPTIONAL[abs]) usedSelectOptional.add(abs);
-            else selectOptionalProblems.push(`${abs}: DRZL's select schema lets this key be missing, and nothing declares it`);
+          if (mode === 'select' && b) {
+            // Counted where the check reads, so the two can never describe different sets.
+            selectSchemas.add(`${d.name}/${t.name}/${libName}`);
+            selectKeysInspected++;
+            if (b === 'optional') {
+              const abs = `${d.name}/${libName}/${k}`;
+              if (SELECT_OPTIONAL[abs]) usedSelectOptional.add(abs);
+              else selectOptionalProblems.push(`${abs}: DRZL's select schema lets this key be missing, and nothing declares it`);
+            }
           }
           // Never a skip, and never silently: every column lands in exactly one of the three
           // counters, and the three have to add up to the pairing count further down.
@@ -7311,8 +7361,9 @@ async function main() {
   ).length;
   console.log(`    ${totalCompared} column comparisons across ${pairings} pairings`);
   console.log(
-    `    ${Object.keys(SELECT_OPTIONAL).length} column(s) whose key DRZL's select schema lets go ` +
-      `missing, all declared: ${Object.keys(SELECT_OPTIONAL).join(', ')}`
+    `    ${selectKeysInspected} select key(s) across ${selectSchemas.size} schema(s) required, bar ` +
+      `${Object.keys(SELECT_OPTIONAL).length} declared to let the key go missing: ` +
+      Object.keys(SELECT_OPTIONAL).join(', ')
   );
   console.log(
     `    ${presenceCompared} key-presence comparisons asked of the object rather than the field, ` +
@@ -7427,6 +7478,13 @@ async function main() {
     if (!usedSelectOptional.has(key)) {
       selectOptionalProblems.push(`SELECT_OPTIONAL[${key}] requires its key on select now, so delete it`);
     }
+  }
+  if (selectSchemas.size !== SELECT_REACH.schemas || selectKeysInspected !== SELECT_REACH.keys) {
+    selectOptionalProblems.push(
+      `the select check read ${selectSchemas.size} schema(s) and ${selectKeysInspected} key(s), ` +
+        `declared ${SELECT_REACH.schemas} and ${SELECT_REACH.keys}. It has no second side to ` +
+        'disagree with it, so a shrinking reach is silent unless this fails'
+    );
   }
   for (const [key, seen] of presenceThrew) {
     const e = THREW[key];
