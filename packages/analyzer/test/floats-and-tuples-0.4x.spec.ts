@@ -32,8 +32,18 @@ import { SchemaAnalyzer } from '../src/index';
 
 const dir = path.resolve(__dirname, 'fixtures');
 
-/** The largest finite float32, which is the only magnitude Postgres refuses on a `real` column. */
-const FLOAT4_MAX = '340282346638528859811704183484516925440';
+/**
+ * The two 4 byte float edges, which are not the same number.
+ *
+ * MySQL's `FLOAT` stops at the largest finite float32 exactly. Postgres's `real` takes every double
+ * up to `2 ** 128 - 2 ** 103`, 268435456 representable doubles further on, and stores the largest
+ * float32 for all of them. Both bisected against a real server; see the analyzer's own docstring
+ * for the runs, and the test at the bottom of this file for the consequence.
+ */
+const MYSQL_FLOAT_MAX = '340282346638528859811704183484516925440';
+const PG_FLOAT4_MAX = '340282356779733661637539395458142568448';
+/** What a `real` at full magnitude comes back as over the text protocol. */
+const FLOAT4_TEXT_ROUND_TRIP = 3.4028235e38;
 
 async function tableOf(name: string, source: string) {
   await fs.mkdir(dir, { recursive: true });
@@ -115,8 +125,8 @@ describe('an inexact numeric column on 0.4x', () => {
     expect(cols.r).toMatchObject({
       tsType: 'number',
       dbType: 'REAL',
-      min: `-${FLOAT4_MAX}`,
-      max: FLOAT4_MAX,
+      min: `-${PG_FLOAT4_MAX}`,
+      max: PG_FLOAT4_MAX,
       integer: false,
     });
     // An 8 byte float carries no magnitude bound at all, because there is no finite one that is
@@ -148,7 +158,12 @@ describe('an inexact numeric column on 0.4x', () => {
       expect(c.min).toBeUndefined();
       expect(c.max).toBeUndefined();
     }
-    expect(my.f).toMatchObject({ min: `-${FLOAT4_MAX}`, max: FLOAT4_MAX, integer: false });
+    // MySQL's own edge, not Postgres's. A real MySQL 8.4 in strict mode refuses the very next
+    // double above the largest float32, where Postgres takes another 268435456 of them, so a
+    // `FLOAT` column bounded at Postgres's number would promise a write MySQL answers
+    // `Out of range value for column` to.
+    expect(my.f).toMatchObject({ min: `-${MYSQL_FLOAT_MAX}`, max: MYSQL_FLOAT_MAX, integer: false });
+    expect(Number(my.f.max), 'narrower than the Postgres bound').toBeLessThan(Number(PG_FLOAT4_MAX));
 
     const sq = await columnsOf(
       'sqlite-floats-0.4x',
@@ -171,7 +186,9 @@ describe('an inexact numeric column on 0.4x', () => {
     );
     expect(ss.r.min).toBeUndefined();
     expect(ss.d.min).toBeUndefined();
-    expect(ss.f).toMatchObject({ min: `-${FLOAT4_MAX}`, max: FLOAT4_MAX, integer: false });
+    // SingleStore is MySQL wire-compatible and no server was measured for it here, so it takes
+    // MySQL's edge rather than the wider of the two.
+    expect(ss.f).toMatchObject({ min: `-${MYSQL_FLOAT_MAX}`, max: MYSQL_FLOAT_MAX, integer: false });
   });
 
   it('names no class in both range tables', () => {
@@ -239,7 +256,7 @@ describe('an inexact numeric column on 0.4x', () => {
     );
     expect(cols.r.integer, 'bounded').toBe(false);
     expect(cols.d.integer, 'unbounded').toBe(false);
-    expect(cols.r.max).toBe(FLOAT4_MAX);
+    expect(cols.r.max).toBe(PG_FLOAT4_MAX);
     expect(cols.d.max).toBeUndefined();
   });
 
@@ -266,10 +283,10 @@ describe('an inexact numeric column on 0.4x', () => {
     expect(cols.d.integer).toBe(false);
   });
 
-  it('carries the database limit, not drizzle-zod, and the limit is the largest float4', async () => {
-    // This bound is a measured database edge. PGlite, on a real `real` column: it accepted
-    // 3.4028234663852886e38 and returned it identical, and refused 3.4028236e38 with
-    // `"3.4028236e+38" is out of range for type real`.
+  it('carries the database limit, not drizzle-zod and not the float32 the digits look like', async () => {
+    // This bound is a measured database edge, bisected over the raw bit pattern of a double
+    // against PGlite on a real `real` column: 3.4028235677973366e38 is accepted and stored, and
+    // the next double up, 3.402823567797337e38, answers `... is out of range for type real`.
     //
     // It used to be `drizzle-zod`'s +/-8388607, which is not a limit of anything: the same column
     // stores 8388608, 9000000, 1e9 and 2147483648 and returns each unchanged, so that bound made
@@ -284,20 +301,37 @@ describe('an inexact numeric column on 0.4x', () => {
       `
     );
     const max = Number(cols.r.max);
-    // Written out in full decimal rather than as 3.4028234663852886e38, and this asserts the two
+    // Written out in full decimal rather than as 3.4028235677973366e38, and this asserts the two
     // are the same double. The spelling is load-bearing: ArkType's string DSL cannot resolve an
     // exponent literal, and the parity stage crashed with
     // `ParseError: '-3.4028234663852886e38' is unresolvable` when the bound was written that way.
     expect(cols.r.max, 'no exponent in the emitted bound').not.toMatch(/e/i);
-    expect(max).toBe(3.4028234663852886e38);
-    // The largest finite float32, asserted the way JavaScript can check it rather than described:
-    // it survives a round trip through float32, and the next float32 up is Infinity.
-    expect(Math.fround(max), 'is exactly representable as a float32').toBe(max);
-    expect(Math.fround(3.4028236e38), 'and is the last one that is').toBe(Infinity);
+    expect(max).toBe(3.4028235677973366e38);
     expect(Number.isFinite(max)).toBe(true);
-    // The value the old bound refused and the column holds exactly, so this cannot silently
-    // regress to a narrower one.
-    expect(max).toBeGreaterThan(1e9);
+    // It is `2 ** 128 - 2 ** 103`, the midpoint between the largest float32 and the first power of
+    // two past it, which is where Postgres's rounding stops bringing an input back into range.
+    expect(BigInt(cols.r.max!), 'the exact integer, not a rounded print of it').toBe(
+      2n ** 128n - 2n ** 103n
+    );
+    // Not a float32, whatever the leading digits suggest: JavaScript rounds that midpoint to even,
+    // which overflows, while Postgres rounds it down and stores the largest float32. Anyone
+    // "correcting" this bound to `Math.fround`'s idea of the edge reintroduces the defect below.
+    expect(Math.fround(max), 'JS rounds the midpoint up, Postgres rounds it down').toBe(Infinity);
+    // The defect this width exists to prevent, which the float32 bound had. A `real` at full
+    // magnitude is sent back over the text protocol as `3.4028235e+38`; every text-protocol driver
+    // parses that into a double above the largest float32, so a select schema bounded there
+    // refused a row the column had just handed back.
+    expect(Math.fround(FLOAT4_TEXT_ROUND_TRIP), 'is a full-magnitude float4 in text form').toBe(
+      3.4028234663852886e38
+    );
+    expect(FLOAT4_TEXT_ROUND_TRIP, 'which the float32 bound refused').toBeGreaterThan(
+      Number(MYSQL_FLOAT_MAX)
+    );
+    expect(max, 'and this bound takes').toBeGreaterThanOrEqual(FLOAT4_TEXT_ROUND_TRIP);
+    // Still narrow enough to catch the one genuine over-acceptance, and it cannot silently regress
+    // to `drizzle-zod`'s number either.
+    expect(max, 'refuses 1e300').toBeLessThan(1e300);
+    expect(max, 'and is nowhere near +/-8388607').toBeGreaterThan(1e9);
   });
 
   it('leaves Infinity and NaN outside every range, which the database does not', async () => {

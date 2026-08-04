@@ -37,12 +37,14 @@ export type SelectpeopleOutput = Static<typeof SelectpeopleSchema>;
 | `varchar(255)`      | `Type.Intersect([Type.String(), <code-point cap>])`, see below          |
 | `uuid()`            | `Type.String({ pattern: '...' })`                                      |
 | `smallint()`        | `Type.Integer({ minimum: -32768, maximum: 32767 })`                    |
-| `real()`            | `Type.Number({ minimum: -3.4028234663852886e38, maximum: 3.4028234663852886e38 })`, written out in full |
+| `real()`            | `Type.Number({ minimum: -3.4028235677973366e38, maximum: 3.4028235677973366e38 })`, written out in full |
 | `doublePrecision()` | `Type.Number()`, with no magnitude bound                               |
 
-The two float rows are the database's answer rather than `drizzle-orm/typebox`'s. Postgres stores
-`3.4028234663852886e38` in a `real` and answers `out of range for type real` to the next value up,
-and it stored `Number.MAX_VALUE` in a `double precision` and handed it back unchanged. See
+The two float rows are the database's answer rather than `drizzle-orm/typebox`'s. Postgres accepts
+every double up to `3.4028235677973366e38` in a `real` and answers `out of range for type real` to
+the next one, and it stored `Number.MAX_VALUE` in a `double precision` and handed it back unchanged.
+On MySQL a `float()` is bounded lower, at `3.4028234663852886e38`, because a real MySQL 8.4 refuses
+the next double after that one. See
 [Zod → What the column declares](/generators/zod#what-the-column-declares-is-what-the-schema-enforces).
 
 ### Why uuid is a pattern and not a format

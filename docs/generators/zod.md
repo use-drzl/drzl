@@ -45,10 +45,18 @@ Integer ranges follow the column width, and `bigint({ mode: 'number' })` is type
 with the JavaScript safe-integer bound rather than as a bigint, because that is what the value
 actually is.
 
-`real` is bounded at the one magnitude Postgres does refuse, `3.4028234663852886e38`, written out in
-full decimal. Postgres stores that value and answers `out of range for type real` to the next one
-up. `double precision` carries no magnitude bound at all: Postgres stored `Number.MAX_VALUE` in one
-and handed it back unchanged.
+`real` is bounded where Postgres stops accepting, `3.4028235677973366e38`, written out in full
+decimal. Postgres takes every double up to and including that one and answers `out of range for
+type real` to the next. That edge is above the largest float32 rather than at it: a `real` at full
+magnitude comes back over the text protocol as `3.4028235e+38`, which is already past the float32,
+so a schema bounded there would refuse the value the driver just handed you. `double precision`
+carries no magnitude bound at all: Postgres stored `Number.MAX_VALUE` in one and handed it back
+unchanged.
+
+MySQL's `float` is bounded lower, at `3.4028234663852886e38`, because MySQL is stricter here than
+Postgres: a real MySQL 8.4 refuses the very next double above the largest float32, in strict mode
+and under the stock `sql_mode` alike. Its `double` and `real` carry no bound, like Postgres's
+`double precision`.
 
 Those bounds are the database's rather than `drizzle-orm/zod`'s, which bounds the same two columns
 at `-8388608 .. 8388607` and `-140737488355328 .. 140737488355327`. Both refuse values the column

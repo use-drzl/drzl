@@ -251,19 +251,42 @@ const MYSQL_TEXT_CAPS: Record<string, number> = {
 };
 
 /**
- * The largest magnitude a 4 byte float column holds, which is the only bound the database draws.
+ * The largest magnitude a 4 byte float column accepts, which is the only bound the database draws.
  *
- * Measured through PGlite, on a real `real` column, and it is a hard edge rather than a taste:
+ * There are two of them, because the two databases that have a 4 byte float do not put the edge in
+ * the same place. Both were bisected over the raw bit pattern of a double, sending each value as a
+ * literal so the server parsed it itself rather than a driver.
  *
- *   3.4028234663852886e38   accepted, returned identical
- *   3.4028236e38            refused, `"3.4028236e+38" is out of range for type real`
+ * Postgres, PGlite on a `real` column, 62 steps:
+ *
+ *   3.4028234663852886e38   accepted, stored, read back identical   (the largest finite float32)
+ *   3.4028235677973366e38   accepted, and stored as 3.4028234663852886e38
+ *   3.402823567797337e38    refused, `... is out of range for type real`   (the next double up)
  *   1e300                   refused, the same way
  *
- * It is also exactly where JavaScript's own float32 rounding stops:
- * `Math.fround(3.4028234663852886e38)` is itself and `Math.fround(3.4028236e38)` is `Infinity`.
- * Both facts are asserted in floats-and-tuples-0.4x.spec.ts rather than left as this paragraph.
+ * MySQL 8.4 in `STRICT_ALL_TABLES`, on a `FLOAT` column, 61 steps, and again under the stock
+ * MySQL 8 `sql_mode`:
  *
- * Spelled in full decimal, like every other bound here, and not as `3.4028234663852886e38`. That
+ *   3.4028234663852886e38   accepted, stored, read back identical
+ *   3.402823466385289e38    refused, `Out of range value for column 'r' at row 1`
+ *   3.4028235e38            refused, the same way
+ *
+ * So MySQL's edge is the largest finite float32 exactly and Postgres's is 268435456 representable
+ * doubles above it. Postgres's number is `2 ** 128 - 2 ** 103`, the midpoint between the largest
+ * float32 and the first power of two past it, and it rounds that midpoint down: the row it stored
+ * for the edge value reads back as the largest float32.
+ *
+ * **Postgres's edge is not a float32, and the difference is a value users hit.** A `real` column at
+ * full magnitude comes back over the text protocol as `3.4028235e+38`, which every text-protocol
+ * driver parses into a double above the largest float32, so a select schema bounded at the float32
+ * refused a row that column had just handed back. That is the same defect as typing a `point` as a
+ * string, at the top of one type, and the parity probe pool now carries that exact value. Do not
+ * describe Postgres's bound as a float32 on the strength of the digits: `Math.fround` answers
+ * `Infinity` for it, because JavaScript rounds that midpoint to even and Postgres rounds it down.
+ * Every line above is asserted in floats-and-tuples-0.4x.spec.ts rather than left as this
+ * paragraph.
+ *
+ * Spelled in full decimal, like every other bound here, and not as `3.4028235677973366e38`. That
  * is not a style choice: the generators paste these strings into their own syntax, and ArkType's
  * string DSL cannot resolve an exponent literal. The parity stage crashed on
  * `ParseError: '-3.4028234663852886e38' is unresolvable` before this was written out. The two
@@ -279,10 +302,11 @@ const MYSQL_TEXT_CAPS: Record<string, number> = {
  * bound is the database's and the divergence from official is waived in both parity passes with
  * this measurement attached.
  *
- * There is deliberately no `double` entry. float8 is the JavaScript number's own format, so
- * every finite JS number round-trips through it by construction, measured to
- * `Number.MAX_VALUE`, and any finite bound on an 8 byte float column would refuse a value the
- * column stores.
+ * There is deliberately no `double` entry, on either database. float8 is the JavaScript number's
+ * own format, so every finite JS number round-trips through it by construction, measured to
+ * `Number.MAX_VALUE` in Postgres and again in MySQL's `DOUBLE`, which returned both that and
+ * 1e300 identical while refusing each of them in a `FLOAT` beside it. Any finite bound on an
+ * 8 byte float column would refuse a value the column stores.
  *
  * `integer: false` is still stated for those columns, and on an unbounded one it decides nothing:
  * measured on a `doublePrecision` column carrying two bracketing CHECKs, `isIntegerColumn` answers
@@ -298,8 +322,12 @@ const MYSQL_TEXT_CAPS: Record<string, number> = {
  * honestly needs a union rather than a range, in every generator, which is filed rather than done
  * here.
  */
-const FLOAT4_MAX = '340282346638528859811704183484516925440';
-const FLOAT4_RANGE: [string, string] = [`-${FLOAT4_MAX}`, FLOAT4_MAX];
+/** The largest finite float32, which is exactly where MySQL's `FLOAT` stops. */
+const FLOAT32_MAX = '340282346638528859811704183484516925440';
+/** `2 ** 128 - 2 ** 103`, the largest double Postgres takes in a `real`. Not a float32. */
+const PG_FLOAT4_INPUT_MAX = '340282356779733661637539395458142568448';
+const PG_FLOAT4_RANGE: [string, string] = [`-${PG_FLOAT4_INPUT_MAX}`, PG_FLOAT4_INPUT_MAX];
+const MYSQL_FLOAT_RANGE: [string, string] = [`-${FLOAT32_MAX}`, FLOAT32_MAX];
 
 /**
  * The range a JS number holds every integer of.
@@ -421,10 +449,16 @@ export function describeV1Column(column: any): Partial<Column> | null {
       break;
     case 'float':
     case 'double': {
-      // Only the 4 byte width has a magnitude the database will refuse. Both majors take the same
-      // answer here on purpose: the bound moved off `drizzle-orm/zod`'s and onto the database's,
-      // and moving one major without the other is what the cross-major diff exists to catch.
-      if (semantic === 'float') [out.min, out.max] = FLOAT4_RANGE;
+      // Only the 4 byte width has a magnitude the database will refuse, and the two databases that
+      // have one refuse at different values, so the codec picks which. `float4` is Postgres's
+      // spelling and `float` is MySQL's. SingleStore states `number float` with no codec at all,
+      // measured on 1.0.0-rc.4, and so lands on MySQL's, which is the answer its class-name entry
+      // gives on 0.4x as well; the cross-major diff is what holds those two together.
+      //
+      // Both majors take the same answer here on purpose: the bound moved off `drizzle-orm/zod`'s
+      // and onto the database's, and moving one major without the other is what that diff catches.
+      if (semantic === 'float')
+        [out.min, out.max] = codec === 'float4' ? PG_FLOAT4_RANGE : MYSQL_FLOAT_RANGE;
       out.integer = false;
       out.tsType = 'number';
       out.dbType = semantic === 'float' ? 'REAL' : 'DOUBLE';
@@ -1000,10 +1034,12 @@ export class SchemaAnalyzer {
    * `number double` on drizzle v1, which is where these pairings come from.
    */
   private static readonly INEXACT_RANGES: Record<string, [string, string] | null> = {
-    // 4 byte floats, whose magnitude Postgres does refuse past FLOAT4_MAX
-    PgReal: FLOAT4_RANGE,
-    MySqlFloat: FLOAT4_RANGE,
-    SingleStoreFloat: FLOAT4_RANGE,
+    // 4 byte floats, the one width a database refuses a magnitude for, and the two that have one
+    // refuse at different values. SingleStore is MySQL wire-compatible and unmeasured here, so it
+    // takes MySQL's rather than the wider of the two.
+    PgReal: PG_FLOAT4_RANGE,
+    MySqlFloat: MYSQL_FLOAT_RANGE,
+    SingleStoreFloat: MYSQL_FLOAT_RANGE,
     // 8 byte floats, which hold every finite JS number
     PgDoublePrecision: null,
     MySqlDouble: null,

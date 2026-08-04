@@ -48,6 +48,33 @@ describe('numbers', () => {
     });
   });
 
+  it('takes the 4 byte float bound from the codec, because the two databases differ', () => {
+    // Postgres refuses a `real` past 3.4028235677973366e38 and MySQL refuses a `FLOAT` past
+    // 3.4028234663852886e38, both bisected against a real server, so one bound for `number float`
+    // would be wrong on one of them. The codec is what tells them apart on v1, and the answer has
+    // to match what the class-name table gives the same column on 0.4x or the cross-major diff in
+    // verify-packed.sh fails.
+    expect(describeV1Column(col('number float', 'float4'))).toMatchObject({
+      min: '-340282356779733661637539395458142568448',
+      max: '340282356779733661637539395458142568448',
+    });
+    expect(describeV1Column(col('number float', 'float'))).toMatchObject({
+      min: '-340282346638528859811704183484516925440',
+      max: '340282346638528859811704183484516925440',
+    });
+    // SingleStore states the semantic and no codec at all on 1.0.0-rc.4, measured on a real
+    // `singlestoreTable`, so it lands here. It is MySQL wire-compatible and was not measured
+    // itself, so it takes MySQL's edge rather than the wider one.
+    expect(describeV1Column({ dataType: 'number float', dimensions: 0 })).toMatchObject({
+      max: '340282346638528859811704183484516925440',
+    });
+    // 8 byte floats carry no magnitude bound on either database: MySQL's `DOUBLE` returned
+    // Number.MAX_VALUE and 1e300 identical while the `FLOAT` beside it refused both.
+    const d = describeV1Column(col('number double', 'float8'));
+    expect(d?.min).toBeUndefined();
+    expect(d?.max).toBeUndefined();
+  });
+
   it('marks the inexact types as non-integers even though they carry bounds', () => {
     // The generators used to read "declares both bounds" as "is an integer". That held only while
     // integers were the sole bounded type, so stating it outright is the whole point of the flag.

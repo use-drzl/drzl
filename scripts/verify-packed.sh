@@ -927,6 +927,21 @@ export const POOL: [string, unknown][] = [
   ["'x'", 'x'],
   ['0', 0], ['1', 1], ['1.5', 1.5], ['-1', -1], ['200', 200], ['40000', 40000],
   ['9000000', 9000000], ['2147483648', 2147483648], ['9007199254740993', 9007199254740993],
+  // What a Postgres `real` at full magnitude comes back as over the text protocol, and the reason
+  // the two 4 byte float columns below no longer carry the same bound.
+  //
+  // Every other number here is orders of magnitude away from a float4 edge, so nothing in this
+  // pool could tell a bound at the largest float32 from one at the largest double Postgres
+  // accepts. Those are different numbers: Postgres takes 268435456 representable doubles past the
+  // float32 and stores the float32 for all of them, and this is one of them. A select schema
+  // bounded at the float32 refused the row a `real` column had just handed back, which is the
+  // defect this branch exists to remove, and it survived a green run of both parity passes and
+  // 1400 ground-truth probes because no probe was within 30 orders of magnitude of the edge.
+  //
+  // It separates the two dialects as well as the two bounds: `pg/c_real` accepts it and
+  // `mysql/m_float` does not, because a real MySQL 8.4 refuses it with
+  // `Out of range value for column`.
+  ['3.4028235e38', 3.4028235e38],
   // 1900 and 2500 sit either side of MySQL's YEAR range and nothing sat inside it, so `m_year`
   // was the same vacuous agreement as the enum above: rejected by both, proving nothing.
   ['1900', 1900], ['2000', 2000], ['2500', 2500], ['NaN', NaN], ['Infinity', Infinity],
@@ -1026,7 +1041,7 @@ export type Lib = { field: (s: any, k: string) => any; ok: (f: any, x: unknown) 
  *   the property carries Symbol(TypeBox.Kind) and Symbol(TypeBox.Optional)
  *   Value.Check(objectSchema, {}) with the key omitted   true
  *   Value.Check(property, undefined)                     false
- *   deleting Symbol(TypeBox.Optional) from the property  changes 0 of 57 pool verdicts
+ *   deleting Symbol(TypeBox.Optional) from the property  changes 0 of 58 pool verdicts
  *
  * So on TypeBox, and only on TypeBox, a required field and an optional one compare identically on
  * every probe: this harness cannot tell them apart, in either direction, and would report parity
@@ -1463,7 +1478,7 @@ const WRITE = ['insert', 'update'];
 
 // A signature for a column DRZL accepts every probe of, stated as the count of official's
 // rejections plus the exact set it accepts instead. The complement is what makes it a set rather
-// than a shape, and it is one to three labels where the list it replaces is 54 to 56. See the
+// than a shape, and it is one to three labels where the list it replaces is 55 to 57. See the
 // fuller note on the same constant in the 0.4x pass below, which is where the six columns in that
 // state live; no waiver in this pass is in that state today.
 const allProbes = (n: number, accepted: string[]) =>
@@ -1630,10 +1645,17 @@ const ALLOWED: Record<string, Waiver> = {
   // `real` / float4. Official bounds it at +/-8388607, and the column stores 8388608, 9000000,
   // 1e9 and 2147483648 and returns every one of them unchanged, and holds every integer exactly
   // to 16777216. So official's bound refuses rows the column hands back, and a select schema that
-  // did the same refused its own rows. DRZL bounds it where the database does instead:
-  // 3.4028234663852886e38 is accepted and 3.4028236e38 answers
-  // `"3.4028236e+38" is out of range for type real`. That is why 9007199254740993 is in the
-  // signature and 1e300 is not: the first is inside the float4 magnitude and the second is not.
+  // did the same refused its own rows. DRZL bounds it where the database does instead, bisected
+  // over the raw bit pattern of a double: 3.4028235677973366e38 is accepted and the next double
+  // up answers `... is out of range for type real`. That is why 9007199254740993 and
+  // 3.4028235e38 are in the signature and 1e300 is not.
+  //
+  // `pg/c_real` and `mysql/m_float` are the same width and do not have the same bound, which is
+  // why they no longer share a signature. Postgres takes 268435456 representable doubles past the
+  // largest float32 and stores the float32 for each; MySQL 8.4 refuses the very next double,
+  // measured in `STRICT_ALL_TABLES` and again under the stock MySQL 8 `sql_mode`. The probe that
+  // separates them is `3.4028235e38`, which is what a full-magnitude float4 looks like coming
+  // back over the text protocol.
   //
   // `double precision` / float8 and everything else backed by an 8 byte float. No bound at all,
   // because there is no finite one that is true: float8 is the JavaScript number's own format and
@@ -1656,12 +1678,12 @@ const ALLOWED: Record<string, Waiver> = {
   //                      only valibot and arktype do, because `z.number()` and `Type.Number()`
   //                      refuse it with no bound at all. Filed: describing that column honestly
   //                      needs a union in every generator rather than a range.
-  'pg/c_real': { libs: LIB_NAMES, modes: MODE_NAMES, why: 'bounded at the float4 magnitude Postgres refuses rather than at drizzle-zod +/-8388607, which refuses rows the column returns', divergence: { '*/*': `L: 9000000, 2147483648, 9007199254740993 | T: ` } },
-  'mysql/m_float': { libs: LIB_NAMES, modes: MODE_NAMES, why: 'as pg/c_real; MySQL FLOAT is the same 4 byte width', divergence: { '*/*': `L: 9000000, 2147483648, 9007199254740993 | T: ` } },
-  'pg/c_double': { libs: LIB_NAMES, modes: MODE_NAMES, why: 'no finite bound is true of an 8 byte float, which holds every finite JS number', divergence: { '*/zod,typebox': `L: 9007199254740993 | T: `, '*/valibot,arktype': `L: 9007199254740993, Infinity | T: ` } },
-  'mysql/m_real': { libs: LIB_NAMES, modes: MODE_NAMES, why: 'as pg/c_double; MySQL REAL is a synonym for DOUBLE', divergence: { '*/zod,typebox': `L: 9007199254740993 | T: `, '*/valibot,arktype': `L: 9007199254740993, Infinity | T: ` } },
-  'mysql/m_double': { libs: LIB_NAMES, modes: MODE_NAMES, why: 'as pg/c_double', divergence: { '*/zod,typebox': `L: 9007199254740993 | T: `, '*/valibot,arktype': `L: 9007199254740993, Infinity | T: ` } },
-  'sqlite/s_real': { libs: LIB_NAMES, modes: MODE_NAMES, why: 'as pg/c_double; SQLite REAL is an 8 byte IEEE float', divergence: { '*/zod,typebox': `L: 9007199254740993 | T: `, '*/valibot,arktype': `L: 9007199254740993, Infinity | T: ` } },
+  'pg/c_real': { libs: LIB_NAMES, modes: MODE_NAMES, why: 'bounded where Postgres stops accepting rather than at drizzle-zod +/-8388607, which refuses rows the column returns', divergence: { '*/*': `L: 9000000, 2147483648, 9007199254740993, 3.4028235e38 | T: ` } },
+  'mysql/m_float': { libs: LIB_NAMES, modes: MODE_NAMES, why: 'as pg/c_real, but at MySQL edge: a real MySQL 8.4 refuses 3.4028235e38 where Postgres takes it', divergence: { '*/*': `L: 9000000, 2147483648, 9007199254740993 | T: ` } },
+  'pg/c_double': { libs: LIB_NAMES, modes: MODE_NAMES, why: 'no finite bound is true of an 8 byte float, which holds every finite JS number', divergence: { '*/zod,typebox': `L: 9007199254740993, 3.4028235e38 | T: `, '*/valibot,arktype': `L: 9007199254740993, 3.4028235e38, Infinity | T: ` } },
+  'mysql/m_real': { libs: LIB_NAMES, modes: MODE_NAMES, why: 'as pg/c_double; MySQL REAL is a synonym for DOUBLE', divergence: { '*/zod,typebox': `L: 9007199254740993, 3.4028235e38 | T: `, '*/valibot,arktype': `L: 9007199254740993, 3.4028235e38, Infinity | T: ` } },
+  'mysql/m_double': { libs: LIB_NAMES, modes: MODE_NAMES, why: 'as pg/c_double', divergence: { '*/zod,typebox': `L: 9007199254740993, 3.4028235e38 | T: `, '*/valibot,arktype': `L: 9007199254740993, 3.4028235e38, Infinity | T: ` } },
+  'sqlite/s_real': { libs: LIB_NAMES, modes: MODE_NAMES, why: 'as pg/c_double; SQLite REAL is an 8 byte IEEE float', divergence: { '*/zod,typebox': `L: 9007199254740993, 3.4028235e38 | T: `, '*/valibot,arktype': `L: 9007199254740993, 3.4028235e38, Infinity | T: ` } },
   // Official emits `Type.RegExp`, whose check runs `RegExp.prototype.test` against the raw value,
   // and `test` stringifies what it is given: `[]` becomes '' and matches `^[01]*$`. So official
   // accepts an empty array for a binary column. This generator emits a `string` carrying a
@@ -3126,6 +3148,11 @@ cat > src/probes.ts <<'PROBES'
 export const MATRIX_POOL: [string, unknown][] = [
   ['0', 0], ['1.5', 1.5], ['-1', -1], ['40000', 40000], ['2147483648', 2147483648],
   ['1e9', 1e9], ['1e300', 1e300], ['9007199254740993', 9007199254740993],
+  // A `real` at full magnitude, as the text protocol returns it. Postgres accepts it and stores
+  // the largest float32; a schema bounded at that float32 refuses it, which is a schema refusing
+  // its own column's rows. Nothing else here is within 30 orders of magnitude of that edge, so
+  // this stage asked 1400 questions and none of them was about it.
+  ['3.4028235e38', 3.4028235e38],
   ['NaN', NaN], ['Infinity', Infinity],
   ["''", ''], ["'hello'", 'hello'], ['300-char', 'x'.repeat(300)],
   ['3 emoji', '\u{1F44D}\u{1F44D}\u{1F44D}'],
@@ -3291,7 +3318,7 @@ GROUND_TRUTH
 # @electric-sql/pglite is installed with the rest of this tree, far above, because the parity pass
 # needs a Postgres too now. It had its own install line here, which was a second install of the
 # same package into the same tree.
-if ! npx tsx src/ground-truth.ts; then
+if ! npx tsx src/ground-truth.ts | tee -a "$WORK/printed.log"; then
   echo "FAIL: a generated schema disagrees with Postgres itself." >&2
   exit 1
 fi
@@ -3879,7 +3906,7 @@ console.log(
 await db.close();
 CHECKS_TRUTH
 
-if ! npx tsx src/checks-truth.ts; then
+if ! npx tsx src/checks-truth.ts | tee -a "$WORK/printed.log"; then
   echo "FAIL: a generated CHECK disagrees with Postgres." >&2
   exit 1
 fi
@@ -3955,7 +3982,7 @@ if (diffs.length) {
 await db.close();
 DEFAULTS_TRUTH
 
-if ! npx tsx src/defaults-truth.ts; then
+if ! npx tsx src/defaults-truth.ts | tee -a "$WORK/printed.log"; then
   echo "FAIL: applyDefaults does not reproduce the database's defaults." >&2
   exit 1
 fi
@@ -4106,7 +4133,7 @@ if (loose.length) {
 await db.end();
 MYSQL_TRUTH
 
-if ! npx tsx src/mysql-truth.ts; then
+if ! npx tsx src/mysql-truth.ts | tee -a "$WORK/printed.log"; then
   echo "FAIL: a generated schema disagrees with MySQL." >&2
   exit 1
 fi
@@ -4214,10 +4241,69 @@ db.close();
 SQLITE_TRUTH
 
 # `node:sqlite` is still flagged experimental, and its warning is not news here.
-if ! npx tsx --disable-warning=ExperimentalWarning src/sqlite-truth.ts; then
+if ! npx tsx --disable-warning=ExperimentalWarning src/sqlite-truth.ts | tee -a "$WORK/printed.log"; then
   echo "FAIL: a generated CHECK disagrees with SQLite." >&2
   exit 1
 fi
+
+# ---------------------------------------------------------------------------------------------
+# The numbers the published documentation quotes, against the run that produced them.
+#
+# Until this existed nothing in the project checked a number in the documentation. Measured rather
+# than assumed: `9.9999999999999999e42` substituted for the float4 bound in the shipped TypeBox
+# page left `pnpm lint`, `pnpm typecheck`, every package test, `pnpm -C docs build` and
+# `scripts/extract-doc-configs.mjs` all at exit 0, and that last one is the only docs-aware stage
+# in the whole gate: it reads runnable config blocks and cannot see a table or a paragraph.
+#
+# It is not a documentation test framework, and it does not try to be. It covers exactly one
+# thing, the block in benchmarks.md that quotes this script's own output, which is the only prose
+# in the docs whose numbers this run also computes. That block was stale when this check was
+# written: it claimed `DRZL 1007, drizzle-orm 979` and `closer on 28` for a run that had been
+# printing 1012 and 33 since the commit that changed the float bounds, and five rounds of review
+# had read the same branch without noticing. Every other number in the docs is still unchecked and
+# still has nothing behind it.
+#
+# The comparison is line by line and literal, so a fabricated digit fails rather than a fabricated
+# sentence. Lines about MySQL are skipped, by name and out loud, when no MYSQL_URL is set: that
+# stage did not run, so this run has nothing to compare them with.
+#
+# Both controls were run against a captured run log before this shipped. `DRZL 1048` changed to
+# `DRZL 9999` in the page exits 1 naming that line. The vacuity control matters more, because this
+# check finds its block by a phrase in the prose above it: editing "three real databases" to
+# "three actual databases" makes the extraction return nothing, and the count guard below exits 1
+# rather than reporting that everything matched.
+echo "==> the numbers the documentation quotes, against this run"
+DOC_BENCH="$ROOT/docs/guide/benchmarks.md"
+doc_missing=0
+doc_checked=0
+doc_skipped=0
+while IFS= read -r doc_line; do
+  doc_trim="$(printf '%s' "$doc_line" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
+  [ -z "$doc_trim" ] && continue
+  if [ -z "${MYSQL_URL:-}" ] && printf '%s' "$doc_trim" | grep -q 'MySQL'; then
+    doc_skipped=$((doc_skipped + 1))
+    echo "    not compared, that stage did not run without MYSQL_URL: $doc_trim"
+    continue
+  fi
+  doc_checked=$((doc_checked + 1))
+  if ! grep -Fq -- "$doc_trim" "$WORK/printed.log"; then
+    if [ "$doc_missing" -eq 0 ]; then
+      echo "    FAIL: docs/guide/benchmarks.md quotes this script's output, and this run did not"
+      echo "          print these lines. Paste what the run printed, or say what changed:"
+    fi
+    echo "      $doc_trim"
+    doc_missing=$((doc_missing + 1))
+  fi
+done < <(awk '/three real databases/{found=1} found && /^```$/{n++; next} found && n==1' "$DOC_BENCH")
+if [ "$doc_checked" -eq 0 ]; then
+  echo "    FAIL: found no quoted lines to compare, so this check measured nothing." >&2
+  exit 1
+fi
+if [ "$doc_missing" -gt 0 ]; then
+  echo "FAIL: the documentation quotes numbers this run did not produce." >&2
+  exit 1
+fi
+echo "    $doc_checked line(s) of docs/guide/benchmarks.md matched this run's output, $doc_skipped not compared"
 
 cd "$APP"
 
@@ -5223,7 +5309,7 @@ type Entry = {
    * `every probe official rejects (N of them), and official accepts only: <labels>` states the
    * same set from the other end, for the six columns DRZL accepts the whole pool of: the
    * divergence is exactly official's rejections, N is how many those are, and the labels are the
-   * complement, which is one to three where the list they replace is 54 to 56. Naming the
+   * complement, which is one to three where the list they replace is 55 to 57. Naming the
    * complement is what makes it a set. The count on its own was a shape, measured: with
    * `c_vector` changed from `vector({ dimensions: 3 })` to `dimensions: 2`, official refuses
    * `[1,2,3]` and accepts `[1,2]`, which is the opposite behaviour at the same count of 56, and
@@ -5253,22 +5339,22 @@ type Entry = {
 /**
  * A signature for a column DRZL accepts every probe of: official's rejection count, plus the exact
  * set official accepts instead. Six columns are in that state, all six of them columns the
- * class-name path cannot name at all, and the alternative is a list of 54 to 56 labels written out
+ * class-name path cannot name at all, and the alternative is a list of 55 to 57 labels written out
  * once per pairing group.
  *
  * Naming what official accepts names the divergence exactly, from the other end. DRZL accepted
  * every compared probe, so the probes that differ are exactly the ones official rejected, and that
- * is every compared probe except the ones listed here. One to three labels instead of 54 to 56.
+ * is every compared probe except the ones listed here. One to three labels instead of 55 to 57.
  *
  * Both halves are here because each closed a hole the other left open, and both holes were live.
  *
  *   the count       the phrase alone pinned DRZL's side only. "DRZL accepts everything" fails the
  *                   moment DRZL stops accepting everything, but official was not mentioned, so
- *                   official narrowing from 56 rejections to 2 left the signature unmoved.
+ *                   official narrowing from 57 rejections to 2 left the signature unmoved.
  *   the complement  the count pinned how many, not which. Measured: `c_vector` changed from
  *                   `vector({ dimensions: 3 })` to `dimensions: 2` in src/matrix.ts makes official
  *                   accept `[1,2]` and refuse `[1,2,3]`, the opposite behaviour, at the same count
- *                   of 56 on all 12 pairings. The stage exited 0 and went on printing "official
+ *                   of 57 on all 12 pairings. The stage exited 0 and went on printing "official
  *                   emits an array of exactly 3 numbers". With the complement declared the same
  *                   edit exits 1 on all 12 pairings.
  *
@@ -5283,18 +5369,18 @@ type Entry = {
  *                                     `s.properties[k]`, where it is inert:
  *                                     `Value.Check(prop, undefined)` is false with
  *                                     `Symbol(TypeBox.Optional)` present on the property, and
- *                                     deleting that symbol changes 0 of 57 pool verdicts.
+ *                                     deleting that symbol changes 0 of 58 pool verdicts.
  *   valibot on c_geometry             one fewer in every mode: official builds a `v.tuple`, which
  *                                     ignores extra items, so `[1,2,3]` and `[1,2,3,4]` both go
  *                                     into a 2-tuple and `[1,2,3]` is accepted alongside `[1,2]`.
- *   typebox on c_bit                  54 in all three modes, and not because it takes anything the
+ *   typebox on c_bit                  55 in all three modes, and not because it takes anything the
  *                                     other three refuse. Official's TypeBox schema throws on
  *                                     `null` and `undefined` for that column, so those two probes
  *                                     are not compared at all: they go to the THREW ledger and are
  *                                     arbitrated against a real Postgres. An earlier version of
  *                                     this note called it "TypeBox refuses two fewer probes",
  *                                     which reads as a rejection it never made, and which was also
- *                                     wrong about update, where the other three are at 55.
+ *                                     wrong about update, where the other three are at 56.
  */
 const allProbes = (n: number, accepted: string[]) =>
   `every probe official rejects (${n} of them), and official accepts only: ` +
@@ -5476,23 +5562,25 @@ const ALLOWED: Record<string, Entry> = {
   'pg/c_real': {
     libs: LIB_NAMES,
     modes: MODE_NAMES,
-    divergence: { '*/*': `L: 9000000, 2147483648, 9007199254740993 | T: ` },
-    drzl: 'a number within the float4 magnitude Postgres accepts',
+    divergence: { '*/*': `L: 9000000, 2147483648, 9007199254740993, 3.4028235e38 | T: ` },
+    drzl: 'a number within the magnitude Postgres accepts into a real',
     official: 'a number within +/-8388607, which refuses rows the column returns',
     filed: 'not a defect: the database is the arbiter, see the same key in the v1 pass',
   },
-  'mysql/m_float': { libs: LIB_NAMES, modes: MODE_NAMES, divergence: { '*/*': `L: 9000000, 2147483648, 9007199254740993 | T: ` }, drzl: 'as pg/c_real', official: 'as pg/c_real', filed: 'as pg/c_real' },
+  // Not `as pg/c_real` in the signature, which it was until MySQL was measured: the two 4 byte
+  // floats have different edges, and `3.4028235e38` is the probe that says so.
+  'mysql/m_float': { libs: LIB_NAMES, modes: MODE_NAMES, divergence: { '*/*': `L: 9000000, 2147483648, 9007199254740993 | T: ` }, drzl: 'as pg/c_real, at the narrower MySQL edge', official: 'as pg/c_real', filed: 'as pg/c_real' },
   'pg/c_double': {
     libs: LIB_NAMES,
     modes: MODE_NAMES,
-    divergence: { '*/zod,typebox': `L: 9007199254740993 | T: `, '*/valibot,arktype': `L: 9007199254740993, Infinity | T: ` },
+    divergence: { '*/zod,typebox': `L: 9007199254740993, 3.4028235e38 | T: `, '*/valibot,arktype': `L: 9007199254740993, 3.4028235e38, Infinity | T: ` },
     drzl: 'an unbounded number, because no finite bound is true of an 8 byte float',
     official: 'a number within +/-140737488355327, which refuses an ordinary microsecond epoch',
     filed: 'not a defect: as pg/c_real',
   },
-  'mysql/m_real': { libs: LIB_NAMES, modes: MODE_NAMES, divergence: { '*/zod,typebox': `L: 9007199254740993 | T: `, '*/valibot,arktype': `L: 9007199254740993, Infinity | T: ` }, drzl: 'as pg/c_double', official: 'as pg/c_double', filed: 'as pg/c_real' },
-  'mysql/m_double': { libs: LIB_NAMES, modes: MODE_NAMES, divergence: { '*/zod,typebox': `L: 9007199254740993 | T: `, '*/valibot,arktype': `L: 9007199254740993, Infinity | T: ` }, drzl: 'as pg/c_double', official: 'as pg/c_double', filed: 'as pg/c_real' },
-  'sqlite/s_real': { libs: LIB_NAMES, modes: MODE_NAMES, divergence: { '*/zod,typebox': `L: 9007199254740993 | T: `, '*/valibot,arktype': `L: 9007199254740993, Infinity | T: ` }, drzl: 'as pg/c_double', official: 'as pg/c_double', filed: 'as pg/c_real' },
+  'mysql/m_real': { libs: LIB_NAMES, modes: MODE_NAMES, divergence: { '*/zod,typebox': `L: 9007199254740993, 3.4028235e38 | T: `, '*/valibot,arktype': `L: 9007199254740993, 3.4028235e38, Infinity | T: ` }, drzl: 'as pg/c_double', official: 'as pg/c_double', filed: 'as pg/c_real' },
+  'mysql/m_double': { libs: LIB_NAMES, modes: MODE_NAMES, divergence: { '*/zod,typebox': `L: 9007199254740993, 3.4028235e38 | T: `, '*/valibot,arktype': `L: 9007199254740993, 3.4028235e38, Infinity | T: ` }, drzl: 'as pg/c_double', official: 'as pg/c_double', filed: 'as pg/c_real' },
+  'sqlite/s_real': { libs: LIB_NAMES, modes: MODE_NAMES, divergence: { '*/zod,typebox': `L: 9007199254740993, 3.4028235e38 | T: `, '*/valibot,arktype': `L: 9007199254740993, 3.4028235e38, Infinity | T: ` }, drzl: 'as pg/c_double', official: 'as pg/c_double', filed: 'as pg/c_real' },
 };
 
 /**
@@ -5564,11 +5652,11 @@ const DEFECTS: Record<string, Entry> = {
     libs: LIB_NAMES,
     modes: MODE_NAMES,
     divergence: {
-      'select,insert/zod,arktype,typebox': allProbes(56, ['[1,2]']),
-      'select,insert/valibot': allProbes(55, ['[1,2]', '[1,2,3]']),
-      'update/zod,arktype': allProbes(55, ['undefined', '[1,2]']),
-      'update/valibot': allProbes(54, ['undefined', '[1,2]', '[1,2,3]']),
-      'update/typebox': allProbes(56, ['[1,2]']),
+      'select,insert/zod,arktype,typebox': allProbes(57, ['[1,2]']),
+      'select,insert/valibot': allProbes(56, ['[1,2]', '[1,2,3]']),
+      'update/zod,arktype': allProbes(56, ['undefined', '[1,2]']),
+      'update/valibot': allProbes(55, ['undefined', '[1,2]', '[1,2,3]']),
+      'update/typebox': allProbes(57, ['[1,2]']),
     },
     drzl: 'unknown, which accepts every value in the pool',
     official: 'a tuple [number, number]',
@@ -5578,11 +5666,11 @@ const DEFECTS: Record<string, Entry> = {
     libs: LIB_NAMES,
     modes: MODE_NAMES,
     divergence: {
-      'select,insert/zod,valibot,arktype': allProbes(56, ["'010'"]),
-      'update/zod,valibot,arktype': allProbes(55, ['undefined', "'010'"]),
+      'select,insert/zod,valibot,arktype': allProbes(57, ["'010'"]),
+      'update/zod,valibot,arktype': allProbes(56, ['undefined', "'010'"]),
       // Not "typebox refuses fewer": official's TypeBox schema throws on `null` and `undefined`
       // here, so those two probes are not compared in any mode and the THREW ledger holds them.
-      '*/typebox': allProbes(54, ["'010'"]),
+      '*/typebox': allProbes(55, ["'010'"]),
     },
     drzl: 'unknown, which accepts every value in the pool',
     official: 'a string of at most 3 characters matching ^[01]*$',
@@ -5595,9 +5683,9 @@ const DEFECTS: Record<string, Entry> = {
       // Per pairing, because official's own rejections are not the same everywhere and the bare
       // shorthand hid that. What each split measures is on `allProbes`, where it is measured
       // rather than argued.
-      'select,insert/*': allProbes(56, ['[1,2,3]']),
-      'update/zod,valibot,arktype': allProbes(55, ['undefined', '[1,2,3]']),
-      'update/typebox': allProbes(56, ['[1,2,3]']),
+      'select,insert/*': allProbes(57, ['[1,2,3]']),
+      'update/zod,valibot,arktype': allProbes(56, ['undefined', '[1,2,3]']),
+      'update/typebox': allProbes(57, ['[1,2,3]']),
     },
     drzl: 'unknown, which accepts every value in the pool',
     official: 'an array of exactly 3 numbers',
@@ -5607,9 +5695,9 @@ const DEFECTS: Record<string, Entry> = {
     libs: LIB_NAMES,
     modes: MODE_NAMES,
     divergence: {
-      'select,insert/*': allProbes(56, ['Buffer']),
-      'update/zod,valibot,arktype': allProbes(55, ['undefined', 'Buffer']),
-      'update/typebox': allProbes(56, ['Buffer']),
+      'select,insert/*': allProbes(57, ['Buffer']),
+      'update/zod,valibot,arktype': allProbes(56, ['undefined', 'Buffer']),
+      'update/typebox': allProbes(57, ['Buffer']),
     },
     drzl: 'unknown, which accepts every value in the pool',
     official: 'a Buffer',
@@ -5619,9 +5707,9 @@ const DEFECTS: Record<string, Entry> = {
     libs: LIB_NAMES,
     modes: MODE_NAMES,
     divergence: {
-      'select,insert/*': allProbes(56, ['Buffer']),
-      'update/zod,valibot,arktype': allProbes(55, ['undefined', 'Buffer']),
-      'update/typebox': allProbes(56, ['Buffer']),
+      'select,insert/*': allProbes(57, ['Buffer']),
+      'update/zod,valibot,arktype': allProbes(56, ['undefined', 'Buffer']),
+      'update/typebox': allProbes(57, ['Buffer']),
     },
     drzl: 'unknown, which accepts every value in the pool',
     official: 'a Buffer',
@@ -5631,9 +5719,9 @@ const DEFECTS: Record<string, Entry> = {
     libs: LIB_NAMES,
     modes: MODE_NAMES,
     divergence: {
-      'select,insert/*': allProbes(56, ['Date']),
-      'update/zod,valibot,arktype': allProbes(55, ['undefined', 'Date']),
-      'update/typebox': allProbes(56, ['Date']),
+      'select,insert/*': allProbes(57, ['Date']),
+      'update/zod,valibot,arktype': allProbes(56, ['undefined', 'Date']),
+      'update/typebox': allProbes(57, ['Date']),
     },
     drzl: 'unknown, which accepts every value in the pool',
     official: 'a Date',
@@ -5649,18 +5737,18 @@ const DEFECTS: Record<string, Entry> = {
     libs: LIB_NAMES,
     modes: MODE_NAMES,
     divergence: {
-      'insert/arktype': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 9007199254740993, 1900, 2000, 2500, Infinity | T: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010'`,
-      'insert/typebox': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 9007199254740993, 1900, 2000, 2500 | T: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010'`,
-      'insert/valibot': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 9007199254740993, 1900, 2000, 2500, Infinity | T: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010'`,
-      'insert/zod': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 9007199254740993, 1900, 2000, 2500 | T: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010'`,
-      'select/arktype': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 9007199254740993, 1900, 2000, 2500, Infinity | T: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010'`,
-      'select/typebox': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 9007199254740993, 1900, 2000, 2500 | T: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010'`,
-      'select/valibot': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 9007199254740993, 1900, 2000, 2500, Infinity | T: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010'`,
-      'select/zod': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 9007199254740993, 1900, 2000, 2500 | T: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010'`,
-      'update/arktype': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 9007199254740993, 1900, 2000, 2500, NaN, Infinity | T: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010'`,
-      'update/typebox': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 9007199254740993, 1900, 2000, 2500 | T: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010'`,
-      'update/valibot': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 9007199254740993, 1900, 2000, 2500, Infinity | T: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010'`,
-      'update/zod': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 9007199254740993, 1900, 2000, 2500 | T: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010'`,
+      'insert/arktype': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 9007199254740993, 3.4028235e38, 1900, 2000, 2500, Infinity | T: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010'`,
+      'insert/typebox': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 9007199254740993, 3.4028235e38, 1900, 2000, 2500 | T: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010'`,
+      'insert/valibot': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 9007199254740993, 3.4028235e38, 1900, 2000, 2500, Infinity | T: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010'`,
+      'insert/zod': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 9007199254740993, 3.4028235e38, 1900, 2000, 2500 | T: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010'`,
+      'select/arktype': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 9007199254740993, 3.4028235e38, 1900, 2000, 2500, Infinity | T: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010'`,
+      'select/typebox': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 9007199254740993, 3.4028235e38, 1900, 2000, 2500 | T: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010'`,
+      'select/valibot': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 9007199254740993, 3.4028235e38, 1900, 2000, 2500, Infinity | T: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010'`,
+      'select/zod': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 9007199254740993, 3.4028235e38, 1900, 2000, 2500 | T: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010'`,
+      'update/arktype': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 9007199254740993, 3.4028235e38, 1900, 2000, 2500, NaN, Infinity | T: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010'`,
+      'update/typebox': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 9007199254740993, 3.4028235e38, 1900, 2000, 2500 | T: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010'`,
+      'update/valibot': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 9007199254740993, 3.4028235e38, 1900, 2000, 2500, Infinity | T: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010'`,
+      'update/zod': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 9007199254740993, 3.4028235e38, 1900, 2000, 2500 | T: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010'`,
     },
     drzl: 'a number',
     official: 'a string',
@@ -5707,7 +5795,7 @@ const DEFECTS: Record<string, Entry> = {
     modes: MODE_NAMES,
     divergence: {
       '*/zod': `L: -1 | T: `,
-      '*/valibot,arktype,typebox': `L: -1, 9007199254740993 | T: `,
+      '*/valibot,arktype,typebox': `L: -1, 9007199254740993, 3.4028235e38 | T: `,
     },
     drzl: 'an unbounded integer, so it takes -1 for an auto-increment column',
     official: 'an integer within 0..9007199254740991',
@@ -5718,7 +5806,7 @@ const DEFECTS: Record<string, Entry> = {
     modes: MODE_NAMES,
     divergence: {
       '*/zod': `L: 0, 1, -1, 200, 40000, 9000000, 2147483648, 1900, 2500 | T: `,
-      '*/valibot,arktype,typebox': `L: 0, 1, -1, 200, 40000, 9000000, 2147483648, 9007199254740993, 1900, 2500 | T: `,
+      '*/valibot,arktype,typebox': `L: 0, 1, -1, 200, 40000, 9000000, 2147483648, 9007199254740993, 3.4028235e38, 1900, 2500 | T: `,
     },
     drzl: 'an unbounded integer',
     official: 'an integer within 1901..2155',

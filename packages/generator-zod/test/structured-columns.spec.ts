@@ -138,8 +138,9 @@ describe('structured columns', () => {
   });
 
   it('bounds a 4 byte float at the magnitude the database refuses', async () => {
-    // What the analyzer emits for a `real` column. The bound is a measured Postgres edge: PGlite
-    // takes 3.4028234663852886e38 and answers `out of range for type real` to 3.4028236e38.
+    // What the analyzer emits for a Postgres `real` column. The bound is a measured edge, bisected
+    // against PGlite: it takes 3.4028235677973366e38 and answers `out of range for type real` to
+    // the next double up.
     //
     // `integer` has to travel with the bounds. `isIntegerColumn` falls back to "declares both
     // bounds" when the flag is absent, so a range arriving on its own would make the emitted
@@ -148,16 +149,20 @@ describe('structured columns', () => {
       col('ratio', {
         tsType: 'number',
         dbType: 'REAL',
-        min: '-340282346638528859811704183484516925440',
-        max: '340282346638528859811704183484516925440',
+        min: '-340282356779733661637539395458142568448',
+        max: '340282356779733661637539395458142568448',
         integer: false,
       }),
     ]);
     const f = m.SelecttSchema.shape.ratio;
     expect(accepts(f, 1.5), 'a fraction, which is the point of the column').toBe(true);
-    expect(accepts(f, 3.4028234663852886e38), 'the bound itself').toBe(true);
-    expect(accepts(f, 3.4028236e38), 'past the largest float32').toBe(false);
-    expect(accepts(f, -3.4028236e38), 'and below the smallest').toBe(false);
+    expect(accepts(f, 3.4028235677973366e38), 'the bound itself').toBe(true);
+    // The value a `real` at full magnitude comes back as over the text protocol. A bound at the
+    // largest float32, 3.4028234663852886e38, refused this and so refused the column's own row.
+    expect(accepts(f, 3.4028235e38), 'a full-magnitude float4 in text form').toBe(true);
+    expect(accepts(f, 3.402823567797337e38), 'the first double Postgres refuses').toBe(false);
+    expect(accepts(f, -3.402823567797337e38), 'and below the smallest').toBe(false);
+    expect(accepts(f, 1e300), 'still catches the one genuine over-acceptance').toBe(false);
     // Values a shipped release refused and the column stores exactly. The bound used to be
     // drizzle-zod's +/-8388607 and this is what that cost.
     expect(accepts(f, 8388608)).toBe(true);

@@ -30,7 +30,8 @@ import { describe, it, expect } from 'vitest';
 import { isIntegerColumn } from '../src/index';
 import type { Column } from '@drzl/analyzer';
 
-const FLOAT4_MAX = '340282346638528859811704183484516925440';
+/** What the analyzer emits for a Postgres `real`: the largest double that column accepts. */
+const PG_FLOAT4_MAX = '340282356779733661637539395458142568448';
 
 const col = (over: Partial<Column>): Column =>
   ({
@@ -50,7 +51,7 @@ const withoutFlag = (c: Column): Column => {
 };
 
 describe('a bounded inexact column', () => {
-  const real = col({ dbType: 'REAL', min: `-${FLOAT4_MAX}`, max: FLOAT4_MAX, integer: false });
+  const real = col({ dbType: 'REAL', min: `-${PG_FLOAT4_MAX}`, max: PG_FLOAT4_MAX, integer: false });
 
   it('is not an integer, because the flag says so', () => {
     expect(isIntegerColumn(real)).toBe(false);

@@ -144,7 +144,10 @@ describe('numeric range', () => {
     // of there, and that file now asserts the flag's presence alone.
     //
     // `real` is bounded, at the one magnitude the database does refuse: PGlite takes
-    // 3.4028234663852886e38 and answers `out of range for type real` to 3.4028236e38.
+    // 3.4028235677973366e38 and answers `out of range for type real` to the next double up. That
+    // is above the largest float32 rather than at it, which is not a rounding of the digits; see
+    // the analyzer's own docstring for the bisection and for MySQL, whose edge is a different
+    // number.
     //
     // A `numeric` in its default string mode stays unbounded: a min and a max on a string say
     // nothing a validator can use, and its `format` carries the check instead.
@@ -164,8 +167,8 @@ describe('numeric range', () => {
     expect(c.d.max).toBeUndefined();
     expect(c.r).toMatchObject({
       tsType: 'number',
-      min: '-340282346638528859811704183484516925440',
-      max: '340282346638528859811704183484516925440',
+      min: '-340282356779733661637539395458142568448',
+      max: '340282356779733661637539395458142568448',
       integer: false,
     });
     expect(c.n.tsType).toBe('string');
