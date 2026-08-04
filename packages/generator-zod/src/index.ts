@@ -203,12 +203,20 @@ function shapeExpr(c: Column, typedJsonRef?: string): string | undefined {
       // all: it emits `z.any()`, losing both the type and the narrowing `unknown` would force.
       return typedJsonRef ? `z.custom<${typedJsonRef}>()` : 'z.unknown()';
     case 'buffer':
-      // `Uint8Array` rather than `Buffer`, which is the one place the output is deliberately
-      // wider than `drizzle-orm/zod`. A Buffer is a Uint8Array, so everything official accepts
-      // is accepted here; the reverse is not true. Reasons for the wider check: it needs no
-      // `@types/node` and so survives an edge or browser build, `Buffer` is not defined in those
-      // runtimes at all and `v instanceof Buffer` would throw rather than fail, and it makes a
-      // Postgres `bytea` and a SQLite `blob` validate identically instead of by dialect.
+      // `Uint8Array` rather than `Buffer`, which is deliberately wider than `drizzle-orm/zod`.
+      // A Buffer is a Uint8Array, so everything official accepts is accepted here; the reverse
+      // is not true. Both halves are asserted in test/structured-columns.spec.ts, which pushes a
+      // plain `Uint8Array` and a `Buffer` at the emitted field.
+      //
+      // It is not "the one place" the output is wider, which is what this sentence and the docs
+      // page both used to say. That is not a judgement, it is countable: `verify-packed.sh`
+      // counts the waivers where DRZL accepts something official refuses and prints the number
+      // on every run, and the float bounds released alongside this comment added six more.
+      //
+      // Reasons for the wider check: it needs no `@types/node` and so survives an edge or browser
+      // build, `Buffer` is not defined in those runtimes at all and `v instanceof Buffer` would
+      // throw rather than fail, and it makes a Postgres `bytea` and a SQLite `blob` validate
+      // identically instead of by dialect.
       return 'z.instanceof(Uint8Array)';
     case 'tuple':
       return `z.tuple([${Array.from({ length: s.length }, () => 'z.number()').join(', ')}])`;

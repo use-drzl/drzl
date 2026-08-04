@@ -910,13 +910,13 @@ import { Value } from '@sinclair/typebox/value';
 export const POOL: [string, unknown][] = [
   ['null', null], ['undefined', undefined], ['""', ''], ["'hello'", 'hello'],
   ['300-char', 'x'.repeat(300)], ['70k-char', 'x'.repeat(70000)], ['5-char', 'xxxxx'],
-  // Astral-plane characters, which tell a code-point count from a UTF-16 `.length`. Without them
-  // the pool cannot see the difference, which is exactly how the `varchar(n)` bug survived.
-  ['3 emoji', '\u{1F44D}\u{1F44D}\u{1F44D}'],
-  ['5 emoji', '\u{1F44D}\u{1F44D}\u{1F44D}\u{1F44D}\u{1F44D}'],
-  // Astral-plane characters, where a code-point count and a UTF-16 `.length` disagree.
-  // Postgres counts characters for `varchar(n)`, so a 3-emoji string fits in a varchar(5)
-  // that every library's `.max(5)` refuses.
+  // Astral-plane characters, where a code-point count and a UTF-16 `.length` disagree. Without
+  // them the pool cannot see the difference, which is exactly how the `varchar(n)` bug survived:
+  // Postgres counts characters for `varchar(n)`, so a 3-emoji string fits in a varchar(5) that
+  // every library's `.max(5)` refuses.
+  //
+  // Both of these were once listed twice, under two comments saying that in two ways. See the
+  // duplicate check below the pool.
   ['3 emoji', '\u{1F44D}\u{1F44D}\u{1F44D}'],
   ['5 emoji', '\u{1F44D}\u{1F44D}\u{1F44D}\u{1F44D}\u{1F44D}'],
   ["'not-a-uuid'", 'not-a-uuid'], ['uuid', '3f2504e0-4f89-11d3-9a0c-0305e82c3301'],
@@ -971,6 +971,48 @@ export const POOL: [string, unknown][] = [
   ['{x:1,y:2}', { x: 1, y: 2 }], ["'12.5'", '12.5'], ["'0101'", '0101'], ["'010'", '010'],
 ];
 
+/**
+ * The pool holds each probe once, enforced rather than asserted.
+ *
+ * `3 emoji` and `5 emoji` were each listed twice, added under two comments that say the same thing
+ * two ways, so `POOL.length` read 59 over 57 distinct values. Nothing failed and nothing could:
+ * two entries carrying the same value get the same verdict from every schema on every side, so a
+ * duplicate cannot produce a disagreement. What it does instead is inflate the counts a ledger
+ * declares, each of which is the length of a list built by walking this pool, and put a label into
+ * an `L:` or `T:` list twice, where that reads as two different probes.
+ *
+ * Measured by removing the two and re-running both passes against the declarations they had:
+ * 168 declared-against-measured mismatches on the 0.4x pass over 17 entries, 102 on the v1 pass
+ * over 12, every one of them a count two lower or a list with a repeat gone. No verdict moved and
+ * no summary count moved on either pass.
+ *
+ * Both halves are checked. A duplicate label makes two entries indistinguishable in a printed
+ * signature even when their values differ, and a duplicate value is the inflation above even when
+ * the labels differ.
+ */
+const poolKey = (x: unknown): string => {
+  if (typeof x === 'bigint') return `bigint:${x}`;
+  if (typeof x === 'number') return `number:${Object.is(x, -0) ? '-0' : String(x)}`;
+  if (typeof x === 'string') return `string:${x}`;
+  if (x instanceof Date) return `date:${x.getTime()}`;
+  if (ArrayBuffer.isView(x)) return `bytes:${Array.from(x as Uint8Array).join(',')}`;
+  return `${typeof x}:${JSON.stringify(x) ?? String(x)}`;
+};
+const repeated = (keys: string[]): string[] => [
+  ...new Set(keys.filter((k, i) => keys.indexOf(k) !== i)),
+];
+{
+  const labels = repeated(POOL.map(([label]) => label));
+  const values = repeated(POOL.map(([, value]) => poolKey(value)));
+  if (labels.length > 0 || values.length > 0) {
+    throw new Error(
+      `POOL holds duplicate entries, so every count taken off it is inflated. ` +
+        `Repeated label(s): ${labels.join(', ') || 'none'}. ` +
+        `Repeated value(s): ${values.map((k) => k.slice(0, 40)).join(', ') || 'none'}.`,
+    );
+  }
+}
+
 export type Lib = { field: (s: any, k: string) => any; ok: (f: any, x: unknown) => boolean };
 
 /**
@@ -984,7 +1026,7 @@ export type Lib = { field: (s: any, k: string) => any; ok: (f: any, x: unknown) 
  *   the property carries Symbol(TypeBox.Kind) and Symbol(TypeBox.Optional)
  *   Value.Check(objectSchema, {}) with the key omitted   true
  *   Value.Check(property, undefined)                     false
- *   deleting Symbol(TypeBox.Optional) from the property  changes 0 of 59 pool verdicts
+ *   deleting Symbol(TypeBox.Optional) from the property  changes 0 of 57 pool verdicts
  *
  * So on TypeBox, and only on TypeBox, a required field and an optional one compare identically on
  * every probe: this harness cannot tell them apart, in either direction, and would report parity
@@ -1387,8 +1429,8 @@ const recordThrow = (key: string, side: string, mode: string, value: string) => 
  * took the whole pool, how many official refused and exactly which ones it did not, and the two
  * `has it, omits it` strings say one side produced no field at all. That first one carries both a
  * count and a complement because each without the other is a shape: with neither, official
- * narrowing from 58 rejections to 2 left the signature unmoved; with the count alone, official
- * swapping which probes it refuses left it unmoved at the same 58. Both holes were measured on the
+ * narrowing from 56 rejections to 2 left the signature unmoved; with the count alone, official
+ * swapping which probes it refuses left it unmoved at the same 56. Both holes were measured on the
  * 0.4x pass, where the six columns in that state live. All three are what the run produces in
  * those states, and no waiver declares any of them today, since no waived column on this major is
  * untyped or missing on one side. They are the shape a future one would take, not a claim about
@@ -1421,7 +1463,7 @@ const WRITE = ['insert', 'update'];
 
 // A signature for a column DRZL accepts every probe of, stated as the count of official's
 // rejections plus the exact set it accepts instead. The complement is what makes it a set rather
-// than a shape, and it is one to three labels where the list it replaces is 56 to 58. See the
+// than a shape, and it is one to three labels where the list it replaces is 54 to 56. See the
 // fuller note on the same constant in the 0.4x pass below, which is where the six columns in that
 // state live; no waiver in this pass is in that state today.
 const allProbes = (n: number, accepted: string[]) =>
@@ -1466,7 +1508,7 @@ const ALLOWED: Record<string, Waiver> = {
     why: 'coerceDates accepts a date string or epoch number on write',
     divergence: {
       '*/zod': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', '12.5', '0101', '010' | T: `,
-      '*/valibot,arktype,typebox': `L: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010' | T: `,
+      '*/valibot,arktype,typebox': `L: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010' | T: `,
     },
   },
   'pg/c_ts_d': {
@@ -1475,7 +1517,7 @@ const ALLOWED: Record<string, Waiver> = {
     why: 'as pg/c_date_d',
     divergence: {
       '*/zod': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', '12.5', '0101', '010' | T: `,
-      '*/valibot,arktype,typebox': `L: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010' | T: `,
+      '*/valibot,arktype,typebox': `L: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010' | T: `,
     },
   },
   'mysql/m_date': {
@@ -1484,7 +1526,7 @@ const ALLOWED: Record<string, Waiver> = {
     why: 'as pg/c_date_d',
     divergence: {
       '*/zod': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', '12.5', '0101', '010' | T: `,
-      '*/valibot,arktype,typebox': `L: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010' | T: `,
+      '*/valibot,arktype,typebox': `L: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010' | T: `,
     },
   },
   'mysql/m_datetime': {
@@ -1493,7 +1535,7 @@ const ALLOWED: Record<string, Waiver> = {
     why: 'as pg/c_date_d',
     divergence: {
       '*/zod': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', '12.5', '0101', '010' | T: `,
-      '*/valibot,arktype,typebox': `L: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010' | T: `,
+      '*/valibot,arktype,typebox': `L: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010' | T: `,
     },
   },
   'mysql/m_ts': {
@@ -1502,7 +1544,7 @@ const ALLOWED: Record<string, Waiver> = {
     why: 'as pg/c_date_d',
     divergence: {
       '*/zod': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', '12.5', '0101', '010' | T: `,
-      '*/valibot,arktype,typebox': `L: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010' | T: `,
+      '*/valibot,arktype,typebox': `L: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010' | T: `,
     },
   },
   'sqlite/s_int_ts': {
@@ -1511,7 +1553,7 @@ const ALLOWED: Record<string, Waiver> = {
     why: 'as pg/c_date_d',
     divergence: {
       '*/zod': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', '12.5', '0101', '010' | T: `,
-      '*/valibot,arktype,typebox': `L: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010' | T: `,
+      '*/valibot,arktype,typebox': `L: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010' | T: `,
     },
   },
   'sqlite/s_int_ts_ms': {
@@ -1520,7 +1562,7 @@ const ALLOWED: Record<string, Waiver> = {
     why: 'as pg/c_date_d',
     divergence: {
       '*/zod': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', '12.5', '0101', '010' | T: `,
-      '*/valibot,arktype,typebox': `L: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010' | T: `,
+      '*/valibot,arktype,typebox': `L: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010' | T: `,
     },
   },
   // Official emits `Type.String({ format: 'uuid' })`, and TypeBox fails a format it has no entry
@@ -1530,8 +1572,8 @@ const ALLOWED: Record<string, Waiver> = {
   // A character limit counts *characters*; official counts `.length`, which is UTF-16 units, so
   // it refuses three emoji in a `char(4)` the database accepts. Measured against Postgres: three
   // emoji insert into a `char(4)` and read back as four code points, which are seven UTF-16 units.
-  'pg/c_char': { libs: LIB_NAMES, modes: MODE_NAMES, why: 'character limit counts code points; official counts UTF-16 units', divergence: { '*/*': `L: 3 emoji, 3 emoji | T: ` } },
-  'mysql/m_char': { libs: LIB_NAMES, modes: MODE_NAMES, why: 'as pg/c_char', divergence: { '*/*': `L: 3 emoji, 3 emoji | T: ` } },
+  'pg/c_char': { libs: LIB_NAMES, modes: MODE_NAMES, why: 'character limit counts code points; official counts UTF-16 units', divergence: { '*/*': `L: 3 emoji | T: ` } },
+  'mysql/m_char': { libs: LIB_NAMES, modes: MODE_NAMES, why: 'as pg/c_char', divergence: { '*/*': `L: 3 emoji | T: ` } },
   // MySQL's TEXT family is capped in bytes and official caps it in UTF-16 units, so official takes
   // a 100 emoji string that is 200 units and 400 bytes into a `tinytext` whose budget is 255. DRZL
   // emits the byte check and refuses it. A real MySQL 8 on a utf8mb4 client is the authority and
@@ -1557,9 +1599,9 @@ const ALLOWED: Record<string, Waiver> = {
   // Stricter than official, and verified against Postgres itself through PGlite: a `numeric`
   // column is a string, and a bare string schema accepts 'hello' where the database rejects it.
   // Official accepts all of these; the database does not.
-  'pg/c_numeric': { libs: LIB_NAMES, modes: MODE_NAMES, why: 'numeric format enforced; official accepts any string, Postgres does not', divergence: { '*/*': `L:  | T: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1'` } },
-  'pg/c_decimal': { libs: LIB_NAMES, modes: MODE_NAMES, why: 'as pg/c_numeric', divergence: { '*/*': `L:  | T: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1'` } },
-  'mysql/m_decimal': { libs: LIB_NAMES, modes: MODE_NAMES, why: 'as pg/c_numeric', divergence: { '*/*': `L:  | T: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1'` } },
+  'pg/c_numeric': { libs: LIB_NAMES, modes: MODE_NAMES, why: 'numeric format enforced; official accepts any string, Postgres does not', divergence: { '*/*': `L:  | T: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1'` } },
+  'pg/c_decimal': { libs: LIB_NAMES, modes: MODE_NAMES, why: 'as pg/c_numeric', divergence: { '*/*': `L:  | T: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1'` } },
+  'mysql/m_decimal': { libs: LIB_NAMES, modes: MODE_NAMES, why: 'as pg/c_numeric', divergence: { '*/*': `L:  | T: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1'` } },
   // Stricter than official, in DRZL's favour.
   'pg/valibot/c_json': { libs: ['valibot'], modes: MODE_NAMES, why: 'DRZL rejects Infinity and non-plain objects; official accepts both', divergence: { '*/*': `L:  | T: Infinity, Date, Buffer, Uint8Array` } },
   'pg/valibot/c_jsonb': { libs: ['valibot'], modes: MODE_NAMES, why: 'as pg/valibot/c_json', divergence: { '*/*': `L:  | T: Infinity, Date, Buffer, Uint8Array` } },
@@ -5181,10 +5223,10 @@ type Entry = {
    * `every probe official rejects (N of them), and official accepts only: <labels>` states the
    * same set from the other end, for the six columns DRZL accepts the whole pool of: the
    * divergence is exactly official's rejections, N is how many those are, and the labels are the
-   * complement, which is one to three where the list they replace is 56 to 58. Naming the
+   * complement, which is one to three where the list they replace is 54 to 56. Naming the
    * complement is what makes it a set. The count on its own was a shape, measured: with
    * `c_vector` changed from `vector({ dimensions: 3 })` to `dimensions: 2`, official refuses
-   * `[1,2,3]` and accepts `[1,2]`, which is the opposite behaviour at the same count of 58, and
+   * `[1,2,3]` and accepts `[1,2]`, which is the opposite behaviour at the same count of 56, and
    * the stage was green.
    *
    * This replaced a `direction` field, which named only which way the disagreement ran. That
@@ -5211,22 +5253,22 @@ type Entry = {
 /**
  * A signature for a column DRZL accepts every probe of: official's rejection count, plus the exact
  * set official accepts instead. Six columns are in that state, all six of them columns the
- * class-name path cannot name at all, and the alternative is a list of 56 to 58 labels written out
+ * class-name path cannot name at all, and the alternative is a list of 54 to 56 labels written out
  * once per pairing group.
  *
  * Naming what official accepts names the divergence exactly, from the other end. DRZL accepted
  * every compared probe, so the probes that differ are exactly the ones official rejected, and that
- * is every compared probe except the ones listed here. One to three labels instead of 56 to 58.
+ * is every compared probe except the ones listed here. One to three labels instead of 54 to 56.
  *
  * Both halves are here because each closed a hole the other left open, and both holes were live.
  *
  *   the count       the phrase alone pinned DRZL's side only. "DRZL accepts everything" fails the
  *                   moment DRZL stops accepting everything, but official was not mentioned, so
- *                   official narrowing from 58 rejections to 2 left the signature unmoved.
+ *                   official narrowing from 56 rejections to 2 left the signature unmoved.
  *   the complement  the count pinned how many, not which. Measured: `c_vector` changed from
  *                   `vector({ dimensions: 3 })` to `dimensions: 2` in src/matrix.ts makes official
  *                   accept `[1,2]` and refuse `[1,2,3]`, the opposite behaviour, at the same count
- *                   of 58 on all 12 pairings. The stage exited 0 and went on printing "official
+ *                   of 56 on all 12 pairings. The stage exited 0 and went on printing "official
  *                   emits an array of exactly 3 numbers". With the complement declared the same
  *                   edit exits 1 on all 12 pairings.
  *
@@ -5241,18 +5283,18 @@ type Entry = {
  *                                     `s.properties[k]`, where it is inert:
  *                                     `Value.Check(prop, undefined)` is false with
  *                                     `Symbol(TypeBox.Optional)` present on the property, and
- *                                     deleting that symbol changes 0 of 59 pool verdicts.
+ *                                     deleting that symbol changes 0 of 57 pool verdicts.
  *   valibot on c_geometry             one fewer in every mode: official builds a `v.tuple`, which
  *                                     ignores extra items, so `[1,2,3]` and `[1,2,3,4]` both go
  *                                     into a 2-tuple and `[1,2,3]` is accepted alongside `[1,2]`.
- *   typebox on c_bit                  56 in all three modes, and not because it takes anything the
+ *   typebox on c_bit                  54 in all three modes, and not because it takes anything the
  *                                     other three refuse. Official's TypeBox schema throws on
  *                                     `null` and `undefined` for that column, so those two probes
  *                                     are not compared at all: they go to the THREW ledger and are
  *                                     arbitrated against a real Postgres. An earlier version of
  *                                     this note called it "TypeBox refuses two fewer probes",
  *                                     which reads as a rejection it never made, and which was also
- *                                     wrong about update, where the other three are at 57.
+ *                                     wrong about update, where the other three are at 55.
  */
 const allProbes = (n: number, accepted: string[]) =>
   `every probe official rejects (${n} of them), and official accepts only: ` +
@@ -5299,7 +5341,7 @@ const ALLOWED: Record<string, Entry> = {
   'pg/c_char': {
     libs: LIB_NAMES,
     modes: MODE_NAMES,
-    divergence: { '*/*': `L: "", 3 emoji, 3 emoji, 'zzz', 'a', 'x', '010' | T: ` },
+    divergence: { '*/*': `L: "", 3 emoji, 'zzz', 'a', 'x', '010' | T: ` },
     drzl: 'a string of at most 4 code points',
     official: 'a string of exactly 4 UTF-16 units',
     filed: 'not a defect: two deliberate differences, see the note above',
@@ -5307,7 +5349,7 @@ const ALLOWED: Record<string, Entry> = {
   'mysql/m_char': {
     libs: LIB_NAMES,
     modes: MODE_NAMES,
-    divergence: { '*/*': `L: "", 3 emoji, 3 emoji, 'zzz', 'a', 'x', '010' | T: ` },
+    divergence: { '*/*': `L: "", 3 emoji, 'zzz', 'a', 'x', '010' | T: ` },
     drzl: 'as pg/c_char',
     official: 'as pg/c_char',
     filed: 'as pg/c_char',
@@ -5356,17 +5398,17 @@ const ALLOWED: Record<string, Entry> = {
     modes: WRITE,
     divergence: {
       '*/zod': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', '12.5', '0101', '010' | T: `,
-      '*/valibot,arktype,typebox': `L: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010' | T: `,
+      '*/valibot,arktype,typebox': `L: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010' | T: `,
     },
     drzl: 'a Date, or a string or number coerced to one',
     official: 'a Date only',
     filed: 'not a defect: coerceDates',
   },
-  'pg/c_ts_d': { libs: LIB_NAMES, modes: WRITE, divergence: { '*/zod': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', '12.5', '0101', '010' | T: `, '*/valibot,arktype,typebox': `L: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010' | T: `,     }, drzl: 'as pg/c_date_d', official: 'as pg/c_date_d', filed: 'as pg/c_date_d' },
-  'mysql/m_date': { libs: LIB_NAMES, modes: WRITE, divergence: { '*/zod': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', '12.5', '0101', '010' | T: `, '*/valibot,arktype,typebox': `L: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010' | T: `,     }, drzl: 'as pg/c_date_d', official: 'as pg/c_date_d', filed: 'as pg/c_date_d' },
-  'mysql/m_datetime': { libs: LIB_NAMES, modes: WRITE, divergence: { '*/zod': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', '12.5', '0101', '010' | T: `, '*/valibot,arktype,typebox': `L: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010' | T: `,     }, drzl: 'as pg/c_date_d', official: 'as pg/c_date_d', filed: 'as pg/c_date_d' },
-  'mysql/m_ts': { libs: LIB_NAMES, modes: WRITE, divergence: { '*/zod': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', '12.5', '0101', '010' | T: `, '*/valibot,arktype,typebox': `L: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010' | T: `,     }, drzl: 'as pg/c_date_d', official: 'as pg/c_date_d', filed: 'as pg/c_date_d' },
-  'sqlite/s_int_ts': { libs: LIB_NAMES, modes: WRITE, divergence: { '*/zod': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', '12.5', '0101', '010' | T: `, '*/valibot,arktype,typebox': `L: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010' | T: `,     }, drzl: 'as pg/c_date_d', official: 'as pg/c_date_d', filed: 'as pg/c_date_d' },
+  'pg/c_ts_d': { libs: LIB_NAMES, modes: WRITE, divergence: { '*/zod': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', '12.5', '0101', '010' | T: `, '*/valibot,arktype,typebox': `L: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010' | T: `,     }, drzl: 'as pg/c_date_d', official: 'as pg/c_date_d', filed: 'as pg/c_date_d' },
+  'mysql/m_date': { libs: LIB_NAMES, modes: WRITE, divergence: { '*/zod': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', '12.5', '0101', '010' | T: `, '*/valibot,arktype,typebox': `L: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010' | T: `,     }, drzl: 'as pg/c_date_d', official: 'as pg/c_date_d', filed: 'as pg/c_date_d' },
+  'mysql/m_datetime': { libs: LIB_NAMES, modes: WRITE, divergence: { '*/zod': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', '12.5', '0101', '010' | T: `, '*/valibot,arktype,typebox': `L: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010' | T: `,     }, drzl: 'as pg/c_date_d', official: 'as pg/c_date_d', filed: 'as pg/c_date_d' },
+  'mysql/m_ts': { libs: LIB_NAMES, modes: WRITE, divergence: { '*/zod': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', '12.5', '0101', '010' | T: `, '*/valibot,arktype,typebox': `L: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010' | T: `,     }, drzl: 'as pg/c_date_d', official: 'as pg/c_date_d', filed: 'as pg/c_date_d' },
+  'sqlite/s_int_ts': { libs: LIB_NAMES, modes: WRITE, divergence: { '*/zod': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', '12.5', '0101', '010' | T: `, '*/valibot,arktype,typebox': `L: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010' | T: `,     }, drzl: 'as pg/c_date_d', official: 'as pg/c_date_d', filed: 'as pg/c_date_d' },
   // TypeBox fails a format it has no entry for rather than ignoring it, so official's schema
   // rejects every valid uuid in any project that has not populated `FormatRegistry` first.
   'pg/c_uuid': {
@@ -5522,11 +5564,11 @@ const DEFECTS: Record<string, Entry> = {
     libs: LIB_NAMES,
     modes: MODE_NAMES,
     divergence: {
-      'select,insert/zod,arktype,typebox': allProbes(58, ['[1,2]']),
-      'select,insert/valibot': allProbes(57, ['[1,2]', '[1,2,3]']),
-      'update/zod,arktype': allProbes(57, ['undefined', '[1,2]']),
-      'update/valibot': allProbes(56, ['undefined', '[1,2]', '[1,2,3]']),
-      'update/typebox': allProbes(58, ['[1,2]']),
+      'select,insert/zod,arktype,typebox': allProbes(56, ['[1,2]']),
+      'select,insert/valibot': allProbes(55, ['[1,2]', '[1,2,3]']),
+      'update/zod,arktype': allProbes(55, ['undefined', '[1,2]']),
+      'update/valibot': allProbes(54, ['undefined', '[1,2]', '[1,2,3]']),
+      'update/typebox': allProbes(56, ['[1,2]']),
     },
     drzl: 'unknown, which accepts every value in the pool',
     official: 'a tuple [number, number]',
@@ -5536,11 +5578,11 @@ const DEFECTS: Record<string, Entry> = {
     libs: LIB_NAMES,
     modes: MODE_NAMES,
     divergence: {
-      'select,insert/zod,valibot,arktype': allProbes(58, ["'010'"]),
-      'update/zod,valibot,arktype': allProbes(57, ['undefined', "'010'"]),
+      'select,insert/zod,valibot,arktype': allProbes(56, ["'010'"]),
+      'update/zod,valibot,arktype': allProbes(55, ['undefined', "'010'"]),
       // Not "typebox refuses fewer": official's TypeBox schema throws on `null` and `undefined`
       // here, so those two probes are not compared in any mode and the THREW ledger holds them.
-      '*/typebox': allProbes(56, ["'010'"]),
+      '*/typebox': allProbes(54, ["'010'"]),
     },
     drzl: 'unknown, which accepts every value in the pool',
     official: 'a string of at most 3 characters matching ^[01]*$',
@@ -5553,9 +5595,9 @@ const DEFECTS: Record<string, Entry> = {
       // Per pairing, because official's own rejections are not the same everywhere and the bare
       // shorthand hid that. What each split measures is on `allProbes`, where it is measured
       // rather than argued.
-      'select,insert/*': allProbes(58, ['[1,2,3]']),
-      'update/zod,valibot,arktype': allProbes(57, ['undefined', '[1,2,3]']),
-      'update/typebox': allProbes(58, ['[1,2,3]']),
+      'select,insert/*': allProbes(56, ['[1,2,3]']),
+      'update/zod,valibot,arktype': allProbes(55, ['undefined', '[1,2,3]']),
+      'update/typebox': allProbes(56, ['[1,2,3]']),
     },
     drzl: 'unknown, which accepts every value in the pool',
     official: 'an array of exactly 3 numbers',
@@ -5565,9 +5607,9 @@ const DEFECTS: Record<string, Entry> = {
     libs: LIB_NAMES,
     modes: MODE_NAMES,
     divergence: {
-      'select,insert/*': allProbes(58, ['Buffer']),
-      'update/zod,valibot,arktype': allProbes(57, ['undefined', 'Buffer']),
-      'update/typebox': allProbes(58, ['Buffer']),
+      'select,insert/*': allProbes(56, ['Buffer']),
+      'update/zod,valibot,arktype': allProbes(55, ['undefined', 'Buffer']),
+      'update/typebox': allProbes(56, ['Buffer']),
     },
     drzl: 'unknown, which accepts every value in the pool',
     official: 'a Buffer',
@@ -5577,9 +5619,9 @@ const DEFECTS: Record<string, Entry> = {
     libs: LIB_NAMES,
     modes: MODE_NAMES,
     divergence: {
-      'select,insert/*': allProbes(58, ['Buffer']),
-      'update/zod,valibot,arktype': allProbes(57, ['undefined', 'Buffer']),
-      'update/typebox': allProbes(58, ['Buffer']),
+      'select,insert/*': allProbes(56, ['Buffer']),
+      'update/zod,valibot,arktype': allProbes(55, ['undefined', 'Buffer']),
+      'update/typebox': allProbes(56, ['Buffer']),
     },
     drzl: 'unknown, which accepts every value in the pool',
     official: 'a Buffer',
@@ -5589,9 +5631,9 @@ const DEFECTS: Record<string, Entry> = {
     libs: LIB_NAMES,
     modes: MODE_NAMES,
     divergence: {
-      'select,insert/*': allProbes(58, ['Date']),
-      'update/zod,valibot,arktype': allProbes(57, ['undefined', 'Date']),
-      'update/typebox': allProbes(58, ['Date']),
+      'select,insert/*': allProbes(56, ['Date']),
+      'update/zod,valibot,arktype': allProbes(55, ['undefined', 'Date']),
+      'update/typebox': allProbes(56, ['Date']),
     },
     drzl: 'unknown, which accepts every value in the pool',
     official: 'a Date',
@@ -5607,18 +5649,18 @@ const DEFECTS: Record<string, Entry> = {
     libs: LIB_NAMES,
     modes: MODE_NAMES,
     divergence: {
-      'insert/arktype': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 9007199254740993, 1900, 2000, 2500, Infinity | T: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010'`,
-      'insert/typebox': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 9007199254740993, 1900, 2000, 2500 | T: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010'`,
-      'insert/valibot': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 9007199254740993, 1900, 2000, 2500, Infinity | T: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010'`,
-      'insert/zod': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 9007199254740993, 1900, 2000, 2500 | T: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010'`,
-      'select/arktype': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 9007199254740993, 1900, 2000, 2500, Infinity | T: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010'`,
-      'select/typebox': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 9007199254740993, 1900, 2000, 2500 | T: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010'`,
-      'select/valibot': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 9007199254740993, 1900, 2000, 2500, Infinity | T: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010'`,
-      'select/zod': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 9007199254740993, 1900, 2000, 2500 | T: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010'`,
-      'update/arktype': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 9007199254740993, 1900, 2000, 2500, NaN, Infinity | T: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010'`,
-      'update/typebox': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 9007199254740993, 1900, 2000, 2500 | T: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010'`,
-      'update/valibot': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 9007199254740993, 1900, 2000, 2500, Infinity | T: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010'`,
-      'update/zod': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 9007199254740993, 1900, 2000, 2500 | T: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010'`,
+      'insert/arktype': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 9007199254740993, 1900, 2000, 2500, Infinity | T: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010'`,
+      'insert/typebox': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 9007199254740993, 1900, 2000, 2500 | T: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010'`,
+      'insert/valibot': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 9007199254740993, 1900, 2000, 2500, Infinity | T: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010'`,
+      'insert/zod': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 9007199254740993, 1900, 2000, 2500 | T: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010'`,
+      'select/arktype': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 9007199254740993, 1900, 2000, 2500, Infinity | T: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010'`,
+      'select/typebox': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 9007199254740993, 1900, 2000, 2500 | T: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010'`,
+      'select/valibot': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 9007199254740993, 1900, 2000, 2500, Infinity | T: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010'`,
+      'select/zod': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 9007199254740993, 1900, 2000, 2500 | T: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010'`,
+      'update/arktype': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 9007199254740993, 1900, 2000, 2500, NaN, Infinity | T: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010'`,
+      'update/typebox': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 9007199254740993, 1900, 2000, 2500 | T: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010'`,
+      'update/valibot': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 9007199254740993, 1900, 2000, 2500, Infinity | T: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010'`,
+      'update/zod': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 9007199254740993, 1900, 2000, 2500 | T: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010'`,
     },
     drzl: 'a number',
     official: 'a string',
@@ -5641,7 +5683,7 @@ const DEFECTS: Record<string, Entry> = {
   'mysql/m_binary': {
     libs: LIB_NAMES,
     modes: MODE_NAMES,
-    divergence: { '*/*': `L: Buffer, Uint8Array | T: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010'` },
+    divergence: { '*/*': `L: Buffer, Uint8Array | T: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010'` },
     drzl: 'a Uint8Array',
     official: "a bare string on 0.4x, where official v1 emits ^[01]*$ capped at 4",
     filed: "new: drizzle-orm declares dataType 'string' on both majors",
@@ -5649,7 +5691,7 @@ const DEFECTS: Record<string, Entry> = {
   'mysql/m_varbinary': {
     libs: LIB_NAMES,
     modes: MODE_NAMES,
-    divergence: { '*/*': `L: Buffer, Uint8Array | T: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010'` },
+    divergence: { '*/*': `L: Buffer, Uint8Array | T: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010'` },
     drzl: 'a Uint8Array',
     official: "a bare string on 0.4x, where official v1 emits ^[01]*$ capped at 16",
     filed: 'new: as mysql/m_binary',
