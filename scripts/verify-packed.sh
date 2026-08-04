@@ -685,6 +685,8 @@ export const matrix = pgTable('matrix', {
   c_enum_arr: moodEnum().array().notNull(),
 
   // --- binary / network / geometry / vector ---
+  // Deleted from the 0.4x fixture by a line match on this column's name. No comment near it may
+  // name the type without that prefix: such a line survives the delete and fails the check.
   c_bytea: bytea().notNull(),
   c_inet: inet().notNull(),
   c_cidr: cidr().notNull(),
@@ -696,10 +698,6 @@ export const matrix = pgTable('matrix', {
   c_vector: vector({ dimensions: 3 }).notNull(),
 });
 
-// Every CHECK form the shared parser claims to understand, so Postgres can be asked whether the
-// emitted constraint means the same thing. CHECK support is DRZL's main advantage over the
-// first-party validators and until now it was verified only against its own emitted strings.
-// Nullable on purpose, like the matrix table: each probe inserts one column.
 // Literal column defaults, which `applyDefaults` claims to reproduce in the insert schema. The
 // falsy ones are the point: 0, false and '' are what a truthiness test drops, and a dropped
 // default is invisible until a row arrives with a different value than the database would have
@@ -751,10 +749,14 @@ export const arrays = pgTable('arrays', {
  *
  * The combinations are chosen rather than sampled. A default and a CHECK, because both attach to
  * the column and both have to survive being wrapped; an array and an enum, because both are
- * rebuilt rather than wrapped; and one column of each `shape` the analyzer distinguishes, which
- * is buffer, json, tuple and numberVector. `custom` is the fifth and has no column here: a
- * customType's JavaScript type exists only at compile time, so a fixture cannot carry one that
- * both majors agree about.
+ * rebuilt rather than wrapped; and one column of each `shape` the analyzer distinguishes. Four of
+ * the five are here, which is `json`, `tuple`, `numberVector` and, on v1 alone, `buffer`; the
+ * SQLite table carries `buffer` on both majors and carries the fifth, `custom`.
+ *
+ * `n_geometry`, `n_bit` and `n_vector` are all three of the Postgres classes the 0.4x class-name
+ * path cannot name. That is not incidental to the nullable path: an unnamed column emits an
+ * unknown, and a *nullable* unknown is the one construction whose key TypeBox lets go missing. The
+ * `notNull` twins of all three sit in `matrix` and do not have that property.
  */
 export const nullable = pgTable('nullable', {
   n_text: text(),
@@ -767,6 +769,8 @@ export const nullable = pgTable('nullable', {
   n_json: jsonb(),
   n_ts: timestamp({ mode: 'date' }),
   n_point: point(),
+  n_geometry: geometry(),
+  n_bit: bit({ dimensions: 3 }),
   n_vector: vector({ dimensions: 3 }),
   // Named for c_bytea so the 0.4x stage's edit takes both, on both of these lines.
   c_bytea_null: bytea(),
@@ -776,6 +780,14 @@ export const nullable = pgTable('nullable', {
   n_check: integer(),
 }, (t) => [check('n_check_c', sql`${t.n_check} BETWEEN 18 AND 100`)]);
 
+// Every CHECK form the shared parser claims to understand, so Postgres can be asked whether the
+// emitted constraint means the same thing. CHECK support is DRZL's main advantage over the
+// first-party validators and until now it was verified only against its own emitted strings.
+// Every column is nullable, so that each probe can insert one column and leave the rest out.
+//
+// This note sat above `defaulted` rather than above the table it describes, and it claimed the
+// columns were "nullable on purpose, like the matrix table" when every column of `matrix` is
+// notNull. Both halves are gone.
 export const checked = pgTable('checked', {
   k_min: integer(),
   k_max: integer(),
@@ -903,7 +915,7 @@ export const limits = mysqlTable('limits', {
 PARITY_MYSQL
 
 cat > src/schema-sqlite.ts <<'PARITY_SQLITE'
-import { sqliteTable, text, integer, real, numeric, blob, check } from 'drizzle-orm/sqlite-core';
+import { sqliteTable, text, integer, real, numeric, blob, check, customType } from 'drizzle-orm/sqlite-core';
 import { sql } from 'drizzle-orm';
 
 export const matrix = sqliteTable('matrix', {
@@ -926,8 +938,21 @@ export const matrix = sqliteTable('matrix', {
   s_blob_bigint: blob({ mode: 'bigint' }).notNull(),
 });
 
-// The nullable path on SQLite. `s_n_blob` is the buffer shape and `s_n_json` the json one; SQLite
-// has no array, no tuple and no vector, and its enum is a text column carrying a member list.
+// The fifth `shape` the analyzer distinguishes, and the only one a fixture can carry on both
+// majors: a customType's JavaScript type exists at compile time and nowhere else, so the analyzer
+// names it `custom` and every generator emits an unknown for it. That is what makes it worth
+// carrying, because an unknown is the construction the key-presence axis is about.
+const opaque = customType<{ data: string; driverData: string }>({
+  dataType() {
+    return 'text';
+  },
+});
+
+// The nullable path on SQLite. `s_n_blob` is the buffer shape, `s_n_json` the json one and
+// `s_n_custom` the custom one; SQLite has no array, no tuple and no vector, and its enum is a text
+// column carrying a member list. The `nullable` table on Postgres carries the other two shapes,
+// and it carries the buffer one on v1 alone, since `c_bytea_null` leaves the 0.4x fixture with
+// `c_bytea`.
 export const nullable = sqliteTable('nullable', {
   s_n_text: text(),
   s_n_text_enum: text({ enum: ['a', 'b'] }),
@@ -937,6 +962,8 @@ export const nullable = sqliteTable('nullable', {
   s_n_ts: integer({ mode: 'timestamp' }),
   s_n_real: real(),
   s_n_blob: blob({ mode: 'buffer' }),
+  s_n_ts_ms: integer({ mode: 'timestamp_ms' }),
+  s_n_custom: opaque(),
   s_n_bigint: blob({ mode: 'bigint' }),
   s_n_default: integer().default(7),
   s_n_check: integer(),
@@ -1060,6 +1087,18 @@ export const POOL: [string, unknown][] = [
   ['Buffer', Buffer.from('ab')], ['Uint8Array', new Uint8Array([1, 2])],
   ["'999.999.999.999'", '999.999.999.999'], ["'10.0.0.1'", '10.0.0.1'],
   ['{x:1,y:2}', { x: 1, y: 2 }], ["'12.5'", '12.5'], ["'0101'", '0101'], ["'010'", '010'],
+  // Five integers placed around the `nullable` fixture's `CHECK (col BETWEEN 18 AND 100)`: one
+  // inside, one on each boundary, and one just outside each end.
+  //
+  // Without them a CHECK waiver is a signature no wrong bound can move. Measured rather than
+  // feared: with the pool as it was, moving the emitted bound on the Postgres zod `n_check` column
+  // from `.gte(18).lte(100)` to `.gte(1000000000).lte(2000000000)`, a range that column could never
+  // hold, left the whole script at exit 0 with zero findings. Every other numeric member of this
+  // pool is outside both ranges, so DRZL's accept set over the pool did not move.
+  //
+  // They are appended rather than filed with the other numbers so that adding them reorders no
+  // existing signature: every list here is built in pool order.
+  ['17', 17], ['18', 18], ['50', 50], ['100', 100], ['101', 101],
 ];
 
 /**
@@ -1328,7 +1367,7 @@ export const askPresence = (lib: Lib, schema: any, cols: string[]): PresenceRead
  * unarbitrable for want of an engine then has something independent of its own branch to check
  * that reason against.
  */
-export type DbProbe = { key: string; sqlType: string; label: string; absent: boolean; value: unknown };
+export type DbProbe = { key: string; sqlType: string; notNull: boolean; label: string; absent: boolean; value: unknown };
 export type DbAnswer = { verdict: 'accept' | 'refuse'; code: string; control: string };
 export type DbReply = { engine: string; answers: Map<string, DbAnswer> };
 
@@ -1360,8 +1399,14 @@ export const askPostgres = async (probes: DbProbe[]): Promise<DbReply> => {
       if (tables.has(p.key)) continue;
       const n = tables.size;
       const t = { nn: `probe_nn_${n}`, nullable: `probe_null_${n}`, dflt: `probe_def_${n}`, noDflt: '' };
+      // The subject carries the fixture column's own `notNull`, not a fixed `not null`. Every crash
+      // site was on a `notNull` column until a nullable one arrived, and a nullable subject asked
+      // about as a NOT NULL one answers 23502 to a NULL the column really does take, which reads as
+      // "postgres refuses it and DRZL accepts it" for a schema that is right. The twins below stay
+      // as they are: they are controls on the constraint, not on the column.
       await db.exec(
-        `create table ${t.nn} (c ${p.sqlType} not null, k int); create table ${t.nullable} (c ${p.sqlType}, k int)`
+        `create table ${t.nn} (c ${p.sqlType}${p.notNull ? ' not null' : ''}, k int); ` +
+          `create table ${t.nullable} (c ${p.sqlType}, k int)`
       );
       let lit: string | null = null;
       for (const [, x] of POOL) {
@@ -1583,6 +1628,29 @@ const THREW: Record<string, Crash> = {
     // key out of. See PRESENCE_BARREN.
     absentModes: [],
   },
+  // The nullable twin of the site above, and the reason the crash-site arbitration now reads the
+  // fixture column's own `notNull`. Everything about it is the same defect: official emits
+  // `type: 'RegExp'` with a `maxLength` whose check reads `value.length`. What differs is the right
+  // answer, and it differs because the column differs: `n_bit` is nullable, so accepting a NULL is
+  // correct, and Postgres says so on a table built from this column rather than from `c_bit`'s.
+  'pg/typebox/n_bit': {
+    side: 'official',
+    modes: ['select', 'insert', 'update'],
+    values: ['null', 'undefined'],
+    why: 'as pg/typebox/c_bit',
+    // `reject` on `undefined` in every mode, insert and update included, because a TypeBox field
+    // extracted from the parent never takes `undefined` whether or not it is optional. That is the
+    // same inertness the key-presence axis exists for, seen from the value side.
+    drzl: { '*/null': 'accept', '*/undefined': 'reject' },
+    arbiter: {
+      null: 'postgres accepts it',
+      undefined: 'postgres accepts the column omitted from the insert',
+    },
+    // Select alone, where `c_bit` above is select and insert. A nullable column is optional on
+    // insert and update, so TypeBox skips the property when the key is missing and never reaches
+    // the length check that crashes.
+    absentModes: ['select'],
+  },
   'mysql/typebox/m_binary': {
     side: 'official',
     modes: ['select', 'insert', 'update'],
@@ -1727,7 +1795,7 @@ const ALLOWED: Record<string, Waiver> = {
     modes: WRITE,
     why: 'coerceDates accepts a date string or epoch number on write',
     divergence: {
-      '*/zod': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', '12.5', '0101', '010' | T: `,
+      '*/zod': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', '12.5', '0101', '010', 17, 18, 50, 100, 101 | T: `,
       '*/valibot,arktype,typebox': `L: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010' | T: `,
     },
   },
@@ -1736,7 +1804,7 @@ const ALLOWED: Record<string, Waiver> = {
     modes: WRITE,
     why: 'as pg/c_date_d',
     divergence: {
-      '*/zod': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', '12.5', '0101', '010' | T: `,
+      '*/zod': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', '12.5', '0101', '010', 17, 18, 50, 100, 101 | T: `,
       '*/valibot,arktype,typebox': `L: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010' | T: `,
     },
   },
@@ -1745,7 +1813,7 @@ const ALLOWED: Record<string, Waiver> = {
     modes: WRITE,
     why: 'as pg/c_date_d',
     divergence: {
-      '*/zod': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', '12.5', '0101', '010' | T: `,
+      '*/zod': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', '12.5', '0101', '010', 17, 18, 50, 100, 101 | T: `,
       '*/valibot,arktype,typebox': `L: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010' | T: `,
     },
   },
@@ -1754,7 +1822,7 @@ const ALLOWED: Record<string, Waiver> = {
     modes: WRITE,
     why: 'as pg/c_date_d',
     divergence: {
-      '*/zod': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', '12.5', '0101', '010' | T: `,
+      '*/zod': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', '12.5', '0101', '010', 17, 18, 50, 100, 101 | T: `,
       '*/valibot,arktype,typebox': `L: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010' | T: `,
     },
   },
@@ -1763,7 +1831,7 @@ const ALLOWED: Record<string, Waiver> = {
     modes: WRITE,
     why: 'as pg/c_date_d',
     divergence: {
-      '*/zod': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', '12.5', '0101', '010' | T: `,
+      '*/zod': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', '12.5', '0101', '010', 17, 18, 50, 100, 101 | T: `,
       '*/valibot,arktype,typebox': `L: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010' | T: `,
     },
   },
@@ -1772,7 +1840,7 @@ const ALLOWED: Record<string, Waiver> = {
     modes: WRITE,
     why: 'as pg/c_date_d',
     divergence: {
-      '*/zod': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', '12.5', '0101', '010' | T: `,
+      '*/zod': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', '12.5', '0101', '010', 17, 18, 50, 100, 101 | T: `,
       '*/valibot,arktype,typebox': `L: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010' | T: `,
     },
   },
@@ -1781,7 +1849,7 @@ const ALLOWED: Record<string, Waiver> = {
     modes: WRITE,
     why: 'as pg/c_date_d',
     divergence: {
-      '*/zod': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', '12.5', '0101', '010' | T: `,
+      '*/zod': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', '12.5', '0101', '010', 17, 18, 50, 100, 101 | T: `,
       '*/valibot,arktype,typebox': `L: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010' | T: `,
     },
   },
@@ -1900,17 +1968,19 @@ const ALLOWED: Record<string, Waiver> = {
   // Every divergence below is the one its `notNull` twin in `matrix` already carries, measured
   // again through the wrapper each generator puts round a nullable column. That is the point: the
   // wrapping is where a constraint gets lost, and a signature identical to the twin's is the
-  // evidence that nothing was lost. Two of them have no twin, and they are marked.
+  // evidence that nothing was lost. Three have no twin and they are the three CHECK columns,
+  // because no column of `matrix` carries a CHECK.
   'pg/n_real': { libs: LIB_NAMES, modes: MODE_NAMES, why: 'as pg/c_real, through the nullable wrapper', divergence: { '*/*': `L: 9000000, 2147483648, 9007199254740993, 3.4028235e38 | T: ` } },
   'pg/c_bytea_null': { libs: LIB_NAMES, modes: MODE_NAMES, why: 'as pg/c_bytea, through the nullable wrapper', divergence: { '*/*': `L: Uint8Array | T: ` } },
   'pg/valibot/n_json': { libs: ['valibot'], modes: MODE_NAMES, why: 'as pg/valibot/c_json', divergence: { '*/*': `L:  | T: Infinity, Date, Buffer, Uint8Array` } },
   'pg/valibot/n_point': { libs: ['valibot'], modes: MODE_NAMES, why: 'as pg/valibot/c_point', divergence: { '*/*': `L:  | T: [1,2,3]` } },
+  'pg/valibot/n_geometry': { libs: ['valibot'], modes: MODE_NAMES, why: 'as pg/valibot/c_geometry', divergence: { '*/*': `L:  | T: [1,2,3]` } },
   'pg/n_ts': {
     libs: LIB_NAMES,
     modes: WRITE,
     why: 'as pg/c_ts_d',
     divergence: {
-      '*/zod': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', '12.5', '0101', '010' | T: `,
+      '*/zod': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', '12.5', '0101', '010', 17, 18, 50, 100, 101 | T: `,
       '*/valibot,arktype,typebox': `L: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010' | T: `,
     },
   },
@@ -1927,7 +1997,7 @@ const ALLOWED: Record<string, Waiver> = {
   // that upper bound is a filed defect on 0.4x, so the column carried a deliberate difference and a
   // defect at once and could not go in one map honestly. A two-sided CHECK replaces both bounds and
   // leaves this entry about the CHECK alone.
-  'pg/n_check': { libs: LIB_NAMES, modes: MODE_NAMES, why: 'DRZL enforces the column CHECK; no first-party module reads one', divergence: { '*/*': `L:  | T: 0, 1, -1, 200, 40000, 9000000, 1900, 2000, 2500` } },
+  'pg/n_check': { libs: LIB_NAMES, modes: MODE_NAMES, why: 'DRZL enforces the column CHECK; no first-party module reads one', divergence: { '*/*': `L:  | T: 0, 1, -1, 200, 40000, 9000000, 1900, 2000, 2500, 17, 101` } },
   'mysql/m_n_text': { libs: LIB_NAMES, modes: MODE_NAMES, why: 'as mysql/m_text', divergence: { '*/*': `L:  | T: 22000 cjk` } },
   'mysql/m_n_tinytext': { libs: LIB_NAMES, modes: MODE_NAMES, why: 'as mysql/m_tinytext', divergence: { '*/*': `L:  | T: 100 emoji` } },
   'mysql/m_n_float': { libs: LIB_NAMES, modes: MODE_NAMES, why: 'as mysql/m_float', divergence: { '*/*': `L: 9000000, 2147483648, 9007199254740993 | T: ` } },
@@ -1937,11 +2007,11 @@ const ALLOWED: Record<string, Waiver> = {
     modes: WRITE,
     why: 'as pg/c_date_d',
     divergence: {
-      '*/zod': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', '12.5', '0101', '010' | T: `,
+      '*/zod': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', '12.5', '0101', '010', 17, 18, 50, 100, 101 | T: `,
       '*/valibot,arktype,typebox': `L: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010' | T: `,
     },
   },
-  'mysql/m_n_check': { libs: LIB_NAMES, modes: MODE_NAMES, why: 'as pg/n_check, in MySQL spelling', divergence: { '*/*': `L:  | T: 0, 1, -1, 200, 40000, 9000000, 1900, 2000, 2500` } },
+  'mysql/m_n_check': { libs: LIB_NAMES, modes: MODE_NAMES, why: 'as pg/n_check, in MySQL spelling', divergence: { '*/*': `L:  | T: 0, 1, -1, 200, 40000, 9000000, 1900, 2000, 2500, 17, 101` } },
   'sqlite/s_n_real': { libs: LIB_NAMES, modes: MODE_NAMES, why: 'as sqlite/s_real', divergence: { '*/zod,typebox': `L: 9007199254740993, 3.4028235e38 | T: `, '*/valibot,arktype': `L: 9007199254740993, 3.4028235e38, Infinity | T: ` } },
   'sqlite/s_n_blob': { libs: LIB_NAMES, modes: MODE_NAMES, why: 'as sqlite/s_blob_buf', divergence: { '*/*': `L: Uint8Array | T: ` } },
   'sqlite/valibot/s_n_json': { libs: ['valibot'], modes: MODE_NAMES, why: 'as pg/valibot/c_json', divergence: { '*/*': `L:  | T: Infinity, Date, Buffer, Uint8Array` } },
@@ -1950,11 +2020,20 @@ const ALLOWED: Record<string, Waiver> = {
     modes: WRITE,
     why: 'as sqlite/s_int_ts',
     divergence: {
-      '*/zod': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', '12.5', '0101', '010' | T: `,
+      '*/zod': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', '12.5', '0101', '010', 17, 18, 50, 100, 101 | T: `,
       '*/valibot,arktype,typebox': `L: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010' | T: `,
     },
   },
-  'sqlite/s_n_check': { libs: LIB_NAMES, modes: MODE_NAMES, why: "as pg/n_check; the extra label is official's SQLite integer bound being the safe-integer range where its Postgres one is int32", divergence: { '*/*': `L:  | T: 0, 1, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500` } },
+  'sqlite/s_n_ts_ms': {
+    libs: LIB_NAMES,
+    modes: WRITE,
+    why: 'as sqlite/s_int_ts_ms',
+    divergence: {
+      '*/zod': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', '12.5', '0101', '010', 17, 18, 50, 100, 101 | T: `,
+      '*/valibot,arktype,typebox': `L: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010' | T: `,
+    },
+  },
+  'sqlite/s_n_check': { libs: LIB_NAMES, modes: MODE_NAMES, why: "as pg/n_check; the extra label is official's SQLite integer bound being the safe-integer range where its Postgres one is int32", divergence: { '*/*': `L:  | T: 0, 1, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, 17, 101` } },
 
   // No arktype bigint entry. There were three, reading "ArkType cannot bound a bigint in its
   // string DSL", and only half of that was true: the DSL cannot state the bound, but a narrow can,
@@ -2014,6 +2093,34 @@ const PRESENCE_BARREN: Record<string, string> = {
 };
 const usedBarren = new Set<string>();
 let presenceUnreadable = 0;
+
+/**
+ * The absolute half of the presence axis: on `select`, DRZL's own schema has to require every key.
+ *
+ * The comparison above is differential and can only see DRZL and official disagreeing. It cannot
+ * see them agreeing about something wrong, and on this major that is the only state this defect
+ * comes in: for a nullable column the analyzer cannot name, both sides emit
+ * `Type.Union([Type.Unknown(), Type.Null()])`, whose key TypeBox lets go missing, so a row that
+ * never mentioned the column validates against both. Measured on `drizzle-orm/typebox-legacy`
+ * 1.0.0-rc.4 and on DRZL's output for the same column, side by side:
+ *
+ *   official `s_n_custom`  {"anyOf":[{},{"type":"null"}]}   the key omitted   accepted
+ *   DRZL     `s_n_custom`  {"anyOf":[{},{"type":"null"}]}   the key omitted   accepted
+ *   either one with `s_n_ts_ms` omitted instead                               refused
+ *
+ * A select row always carries every column, so an optional key there is wrong however many
+ * libraries agree about it. Keyed `<dialect>/<library>/<column>`, asserted in both directions: an
+ * undeclared optional select key fails, and a declaration whose key is required now fails too.
+ *
+ * Only TypeBox reaches it. zod, valibot and arktype all keep the key required for their own
+ * nullable unknown, which this run measures rather than assumes, since an entry naming one of them
+ * would go dead.
+ */
+const SELECT_OPTIONAL: Record<string, string> = {
+  'sqlite/typebox/s_n_custom': 'a nullable customType is unknown on both majors, and official emits the same union',
+};
+const usedSelectOptional = new Set<string>();
+const selectOptionalProblems: string[] = [];
 
 const usedPresenceWaivers = new Set<string>();
 const presenceWaived = new Map<string, Map<string, string>>();
@@ -2209,14 +2316,14 @@ const PREFIX = { select: 'Select', insert: 'Insert', update: 'Update' } as const
 let findings = 0;
 
 /**
- * Every column of every fixture, in every library and every mode: 40 + 16 Postgres, 29 + 12 MySQL
- * and 14 + 11 SQLite columns, `matrix` and `nullable`, times four libraries, times three modes.
+ * Every column of every fixture, in every library and every mode: 40 + 18 Postgres, 29 + 12 MySQL
+ * and 14 + 13 SQLite columns, `matrix` and `nullable`, times four libraries, times three modes.
  *
  * Written out rather than derived from the arrays above, which would make it true by construction
  * and say nothing. The 0.4x stage has carried this since it was written; this pass had only the
  * per-pairing guard, which cannot see a whole dialect quietly dropping out.
  */
-const EXPECTED_COMPARISONS = (40 + 16 + 29 + 12 + 14 + 11) * 4 * 3;
+const EXPECTED_COMPARISONS = (40 + 18 + 29 + 12 + 14 + 13) * 4 * 3;
 let totalCompared = 0;
 /**
  * The same denominator for the presence axis, counted separately.
@@ -2396,6 +2503,16 @@ for (const d of DIALECTS) {
       for (const k of Object.keys(oShape)) {
         const a = oPres.verdicts.get(k);
         const b = mPres.verdicts.get(k);
+        // The absolute half, read off DRZL's side alone and before the two are compared: a select
+        // schema that lets a key go missing is wrong even where official does the same thing, and
+        // it is still wrong where official cannot answer at all. `pg/typebox/n_bit` on the 0.4x
+        // pass is the second case: official crashes on that omission, so the comparison below has
+        // no verdict to differ from and this line is the only thing that sees it.
+        if (mode === 'select' && b === 'optional') {
+          const key = `${d.name}/${libName}/${k}`;
+          if (SELECT_OPTIONAL[key]) usedSelectOptional.add(key);
+          else selectOptionalProblems.push(`${key}: DRZL's select schema lets this key be missing, and nothing declares it`);
+        }
         // Never a skip, and never silently: every column lands in exactly one of the three
         // counters, and the three have to add up to the pairing count further down.
         if (!a || !b) {
@@ -2699,6 +2816,15 @@ for (const key of Object.keys(PRESENCE_BARREN)) {
     presenceProblems.push(`PRESENCE_BARREN[${key}] names a column that accepts a pool value now, so delete it`);
   }
 }
+for (const key of Object.keys(SELECT_OPTIONAL)) {
+  if (!usedSelectOptional.has(key)) {
+    selectOptionalProblems.push(`SELECT_OPTIONAL[${key}] requires its key on select now, so delete it`);
+  }
+}
+console.log(
+  `    ${Object.keys(SELECT_OPTIONAL).length} column(s) whose key DRZL's select schema lets go ` +
+    `missing, all declared: ${Object.keys(SELECT_OPTIONAL).join(', ')}`
+);
 console.log(
   `    ${presenceCompared} key-presence comparisons asked of the object rather than the field, ` +
     `${presenceCrashed} where a side crashed on the omission and ${presenceUnreadable} with no ` +
@@ -2927,7 +3053,7 @@ const arbiterProblems: string[] = [];
   // has to reach the same database this one does, and a lookup over one table would report it as a
   // column no DDL can be built for.
   const pgColumns = [pgTable, pgNullable].flatMap(
-    (t) => getTableConfig(t as never).columns as { name: string; getSQLType: () => string }[]
+    (t) => getTableConfig(t as never).columns as { name: string; notNull: boolean; getSQLType: () => string }[]
   );
   const wanted: { key: string; label: string; value: unknown; dialect: string; column: string }[] = [];
   for (const [key, e] of Object.entries(THREW)) {
@@ -2956,7 +3082,14 @@ const arbiterProblems: string[] = [];
     }
     // The pool's `undefined` is an absence, and it is carried to the database as one rather than
     // bound as a value. `absent` is what picks the statement that never names the column.
-    probes.push({ key: w.key, sqlType: col.getSQLType(), label: w.label, absent: w.value === undefined, value: w.value });
+    probes.push({
+      key: w.key,
+      sqlType: col.getSQLType(),
+      notNull: col.notNull,
+      label: w.label,
+      absent: w.value === undefined,
+      value: w.value,
+    });
   }
   const { engine, answers } = await askPostgres(probes);
   // A run where the database answered nothing would otherwise leave every site reading as
@@ -3048,6 +3181,11 @@ if (findings) {
   console.error('      the answer in ALLOWED with its measurement, or fix the generator.');
 }
 
+if (selectOptionalProblems.length) {
+  console.error("FAIL: a select schema lets a key go missing. A select row carries every column, so");
+  console.error('      an optional key there is wrong however many libraries agree about it:');
+  for (const p of selectOptionalProblems) console.error(`      ${p}`);
+}
 if (presenceProblems.length) {
   console.error('FAIL: the key-presence axis could not measure what it claims to. A column no side');
   console.error('      accepts a value for, or an object a side refuses despite being built from');
@@ -3066,6 +3204,7 @@ if (
   crossProblems.length ||
   capProblems.length ||
   presenceProblems.length ||
+  selectOptionalProblems.length ||
   totalCompared !== EXPECTED_COMPARISONS
 ) {
   process.exit(1);
@@ -5237,8 +5376,14 @@ const DEFECTS: Record<string, string> = {
   // The nullable twin of the third, which is what says the gap is about the class rather than
   // about the `notNull` the two columns differ by.
   'nullable.n_vector.tsType': 'as matrix.c_vector.tsType',
-  'nullable.n_vector.dbType': 'as matrix.c_vector.tsType',
-  'nullable.n_vector.shape': 'as matrix.c_vector.tsType',
+  'nullable.n_vector.dbType': 'as matrix.c_vector.dbType',
+  'nullable.n_vector.shape': 'as matrix.c_vector.shape',
+  'nullable.n_geometry.tsType': 'as matrix.c_geometry.tsType',
+  'nullable.n_geometry.dbType': 'as matrix.c_geometry.dbType',
+  'nullable.n_geometry.shape': 'as matrix.c_geometry.shape',
+  'nullable.n_bit.tsType': 'as matrix.c_bit.tsType',
+  'nullable.n_bit.dbType': 'as matrix.c_bit.dbType',
+  'nullable.n_bit.shape': 'as matrix.c_bit.shape',
 
   // ---- MySQL's text family carries no character cap on 0.4x ----------------------------------
   // v1's `MySqlText` states `length` equal to the type's cap, 255 for `tinytext` and 65535 for
@@ -5574,9 +5719,11 @@ const KNOWN_UNNAMED: Record<string, string> = {
   'matrix.c_geometry': 'no PgGeometry arm in the class-name path',
   'matrix.c_bit': 'no PgBinaryVector arm, the class a bit column uses',
   'matrix.c_vector': 'no PgVector arm in the class-name path',
-  // The nullable twin of the third, in the table the same fixture now carries. Same class, same
-  // missing arm, and listing it is what says the gap is about the class rather than about the
+  // The nullable twin of each, in the table the same fixture now carries. Same classes, same
+  // missing arms, and listing them is what says the gap is about the class rather than about the
   // `notNull` the two columns differ by.
+  'nullable.n_geometry': 'as matrix.c_geometry',
+  'nullable.n_bit': 'as matrix.c_bit',
   'nullable.n_vector': 'as matrix.c_vector',
 };
 
@@ -6049,18 +6196,18 @@ const ALLOWED: Record<string, Entry> = {
     libs: LIB_NAMES,
     modes: WRITE,
     divergence: {
-      '*/zod': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', '12.5', '0101', '010' | T: `,
+      '*/zod': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', '12.5', '0101', '010', 17, 18, 50, 100, 101 | T: `,
       '*/valibot,arktype,typebox': `L: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010' | T: `,
     },
     drzl: 'a Date, or a string or number coerced to one',
     official: 'a Date only',
     filed: 'not a defect: coerceDates',
   },
-  'pg/c_ts_d': { libs: LIB_NAMES, modes: WRITE, divergence: { '*/zod': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', '12.5', '0101', '010' | T: `, '*/valibot,arktype,typebox': `L: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010' | T: `,     }, drzl: 'as pg/c_date_d', official: 'as pg/c_date_d', filed: 'as pg/c_date_d' },
-  'mysql/m_date': { libs: LIB_NAMES, modes: WRITE, divergence: { '*/zod': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', '12.5', '0101', '010' | T: `, '*/valibot,arktype,typebox': `L: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010' | T: `,     }, drzl: 'as pg/c_date_d', official: 'as pg/c_date_d', filed: 'as pg/c_date_d' },
-  'mysql/m_datetime': { libs: LIB_NAMES, modes: WRITE, divergence: { '*/zod': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', '12.5', '0101', '010' | T: `, '*/valibot,arktype,typebox': `L: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010' | T: `,     }, drzl: 'as pg/c_date_d', official: 'as pg/c_date_d', filed: 'as pg/c_date_d' },
-  'mysql/m_ts': { libs: LIB_NAMES, modes: WRITE, divergence: { '*/zod': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', '12.5', '0101', '010' | T: `, '*/valibot,arktype,typebox': `L: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010' | T: `,     }, drzl: 'as pg/c_date_d', official: 'as pg/c_date_d', filed: 'as pg/c_date_d' },
-  'sqlite/s_int_ts': { libs: LIB_NAMES, modes: WRITE, divergence: { '*/zod': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', '12.5', '0101', '010' | T: `, '*/valibot,arktype,typebox': `L: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010' | T: `,     }, drzl: 'as pg/c_date_d', official: 'as pg/c_date_d', filed: 'as pg/c_date_d' },
+  'pg/c_ts_d': { libs: LIB_NAMES, modes: WRITE, divergence: { '*/zod': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', '12.5', '0101', '010', 17, 18, 50, 100, 101 | T: `, '*/valibot,arktype,typebox': `L: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010' | T: `,     }, drzl: 'as pg/c_date_d', official: 'as pg/c_date_d', filed: 'as pg/c_date_d' },
+  'mysql/m_date': { libs: LIB_NAMES, modes: WRITE, divergence: { '*/zod': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', '12.5', '0101', '010', 17, 18, 50, 100, 101 | T: `, '*/valibot,arktype,typebox': `L: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010' | T: `,     }, drzl: 'as pg/c_date_d', official: 'as pg/c_date_d', filed: 'as pg/c_date_d' },
+  'mysql/m_datetime': { libs: LIB_NAMES, modes: WRITE, divergence: { '*/zod': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', '12.5', '0101', '010', 17, 18, 50, 100, 101 | T: `, '*/valibot,arktype,typebox': `L: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010' | T: `,     }, drzl: 'as pg/c_date_d', official: 'as pg/c_date_d', filed: 'as pg/c_date_d' },
+  'mysql/m_ts': { libs: LIB_NAMES, modes: WRITE, divergence: { '*/zod': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', '12.5', '0101', '010', 17, 18, 50, 100, 101 | T: `, '*/valibot,arktype,typebox': `L: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010' | T: `,     }, drzl: 'as pg/c_date_d', official: 'as pg/c_date_d', filed: 'as pg/c_date_d' },
+  'sqlite/s_int_ts': { libs: LIB_NAMES, modes: WRITE, divergence: { '*/zod': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', '12.5', '0101', '010', 17, 18, 50, 100, 101 | T: `, '*/valibot,arktype,typebox': `L: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010' | T: `,     }, drzl: 'as pg/c_date_d', official: 'as pg/c_date_d', filed: 'as pg/c_date_d' },
   // TypeBox fails a format it has no entry for rather than ignoring it, so official's schema
   // rejects every valid uuid in any project that has not populated `FormatRegistry` first.
   'pg/c_uuid': {
@@ -6151,27 +6298,29 @@ const ALLOWED: Record<string, Entry> = {
   // ---- the nullable table --------------------------------------------------------------------
   // Each of these is the divergence its `notNull` twin in `matrix` already carries, measured again
   // through the wrapper each generator puts round a nullable column. A signature identical to the
-  // twin's is the evidence that the wrapping loses nothing. `n_check` is the exception and has no
-  // twin: no column of `matrix` carries a CHECK, and no first-party module reads one at all.
+  // twin's is the evidence that the wrapping loses nothing. Three have no twin and they are the
+  // three CHECK columns: no column of `matrix` carries a CHECK, and no first-party module reads
+  // one at all.
   'pg/n_real': { libs: LIB_NAMES, modes: MODE_NAMES, divergence: { '*/*': `L: 9000000, 2147483648, 9007199254740993, 3.4028235e38 | T: ` }, drzl: 'as pg/c_real', official: 'as pg/c_real', filed: 'as pg/c_real' },
   'pg/n_json': { libs: ['valibot'], modes: MODE_NAMES, divergence: { '*/*': `L:  | T: Infinity, Date, Buffer, Uint8Array` }, drzl: 'as pg/c_json', official: 'as pg/c_json', filed: 'as pg/c_json' },
   'pg/n_point': { libs: ['valibot'], modes: MODE_NAMES, divergence: { '*/*': `L:  | T: [1,2,3]` }, drzl: 'as pg/c_point', official: 'as pg/c_point', filed: 'as pg/c_point' },
-  'pg/n_ts': { libs: LIB_NAMES, modes: WRITE, divergence: { '*/zod': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', '12.5', '0101', '010' | T: `, '*/valibot,arktype,typebox': `L: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010' | T: ` }, drzl: 'as pg/c_date_d', official: 'as pg/c_date_d', filed: 'as pg/c_date_d' },
+  'pg/n_ts': { libs: LIB_NAMES, modes: WRITE, divergence: { '*/zod': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', '12.5', '0101', '010', 17, 18, 50, 100, 101 | T: `, '*/valibot,arktype,typebox': `L: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010' | T: ` }, drzl: 'as pg/c_date_d', official: 'as pg/c_date_d', filed: 'as pg/c_date_d' },
   // The database has already answered this one in this same script: the CHECK ground-truth stage
   // runs 53 probes over the `checked` table against a real Postgres and reports rows Postgres
-  // rejects and the validator accepts as DRZL 0, drizzle-orm 22. `n_check` is
-  // `integer CHECK (n_check >= 18)` and 0, 1 and -1 are the pool values under 18.
-  'pg/n_check': { libs: LIB_NAMES, modes: MODE_NAMES, divergence: { '*/*': `L:  | T: 0, 1, -1, 200, 40000, 9000000, 1900, 2000, 2500` }, drzl: 'the column CHECK, as a bound', official: 'no CHECK at all: no first-party module reads one', filed: 'not a defect: this is what DRZL is for' },
+  // rejects and the validator accepts as DRZL 0, drizzle-orm 22, and `k_between BETWEEN 5 AND 15`
+  // there is this column's own CHECK form. The v1 copy of this entry carries the rest of the
+  // reasoning, including why the bound is two-sided.
+  'pg/n_check': { libs: LIB_NAMES, modes: MODE_NAMES, divergence: { '*/*': `L:  | T: 0, 1, -1, 200, 40000, 9000000, 1900, 2000, 2500, 17, 101` }, drzl: 'the column CHECK, as a bound', official: 'no CHECK at all: no first-party module reads one', filed: 'not a defect: this is what DRZL is for' },
   'mysql/m_n_text': { libs: LIB_NAMES, modes: MODE_NAMES, divergence: { '*/*': `L:  | T: 22000 cjk` }, drzl: 'as mysql/m_text', official: 'as mysql/m_text', filed: 'as mysql/m_text' },
   'mysql/m_n_tinytext': { libs: LIB_NAMES, modes: MODE_NAMES, divergence: { '*/*': `L:  | T: 100 emoji` }, drzl: 'as mysql/m_tinytext', official: 'as mysql/m_tinytext', filed: 'as mysql/m_tinytext' },
   'mysql/m_n_float': { libs: LIB_NAMES, modes: MODE_NAMES, divergence: { '*/*': `L: 9000000, 2147483648, 9007199254740993 | T: ` }, drzl: 'as mysql/m_float', official: 'as mysql/m_float', filed: 'as pg/c_real' },
   'mysql/m_n_json': { libs: ['valibot'], modes: MODE_NAMES, divergence: { '*/*': `L:  | T: Infinity, Date, Buffer, Uint8Array` }, drzl: 'as pg/c_json', official: 'as pg/c_json', filed: 'as pg/c_json' },
-  'mysql/m_n_datetime': { libs: LIB_NAMES, modes: WRITE, divergence: { '*/zod': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', '12.5', '0101', '010' | T: `, '*/valibot,arktype,typebox': `L: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010' | T: ` }, drzl: 'as pg/c_date_d', official: 'as pg/c_date_d', filed: 'as pg/c_date_d' },
-  'mysql/m_n_check': { libs: LIB_NAMES, modes: MODE_NAMES, divergence: { '*/*': `L:  | T: 0, 1, -1, 200, 40000, 9000000, 1900, 2000, 2500` }, drzl: 'as pg/n_check', official: 'as pg/n_check', filed: 'as pg/n_check' },
+  'mysql/m_n_datetime': { libs: LIB_NAMES, modes: WRITE, divergence: { '*/zod': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', '12.5', '0101', '010', 17, 18, 50, 100, 101 | T: `, '*/valibot,arktype,typebox': `L: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010' | T: ` }, drzl: 'as pg/c_date_d', official: 'as pg/c_date_d', filed: 'as pg/c_date_d' },
+  'mysql/m_n_check': { libs: LIB_NAMES, modes: MODE_NAMES, divergence: { '*/*': `L:  | T: 0, 1, -1, 200, 40000, 9000000, 1900, 2000, 2500, 17, 101` }, drzl: 'as pg/n_check', official: 'as pg/n_check', filed: 'as pg/n_check' },
   'sqlite/s_n_real': { libs: LIB_NAMES, modes: MODE_NAMES, divergence: { '*/zod,typebox': `L: 9007199254740993, 3.4028235e38 | T: `, '*/valibot,arktype': `L: 9007199254740993, 3.4028235e38, Infinity | T: ` }, drzl: 'as pg/c_double', official: 'as pg/c_double', filed: 'as pg/c_real' },
   'sqlite/s_n_json': { libs: ['valibot'], modes: MODE_NAMES, divergence: { '*/*': `L:  | T: Infinity, Date, Buffer, Uint8Array` }, drzl: 'as pg/c_json', official: 'as pg/c_json', filed: 'as pg/c_json' },
-  'sqlite/s_n_ts': { libs: LIB_NAMES, modes: WRITE, divergence: { '*/zod': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', '12.5', '0101', '010' | T: `, '*/valibot,arktype,typebox': `L: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010' | T: ` }, drzl: 'as pg/c_date_d', official: 'as pg/c_date_d', filed: 'as pg/c_date_d' },
-  'sqlite/s_n_check': { libs: LIB_NAMES, modes: MODE_NAMES, divergence: { '*/*': `L:  | T: 0, 1, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500` }, drzl: 'as pg/n_check', official: 'as pg/n_check', filed: 'as pg/n_check' },
+  'sqlite/s_n_ts': { libs: LIB_NAMES, modes: WRITE, divergence: { '*/zod': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', '12.5', '0101', '010', 17, 18, 50, 100, 101 | T: `, '*/valibot,arktype,typebox': `L: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010' | T: ` }, drzl: 'as pg/c_date_d', official: 'as pg/c_date_d', filed: 'as pg/c_date_d' },
+  'sqlite/s_n_check': { libs: LIB_NAMES, modes: MODE_NAMES, divergence: { '*/*': `L:  | T: 0, 1, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, 17, 101` }, drzl: 'as pg/n_check', official: 'as pg/n_check', filed: 'as pg/n_check' },
 };
 
 /**
@@ -6243,11 +6392,11 @@ const DEFECTS: Record<string, Entry> = {
     libs: LIB_NAMES,
     modes: MODE_NAMES,
     divergence: {
-      'select,insert/zod,arktype,typebox': allProbes(57, ['[1,2]']),
-      'select,insert/valibot': allProbes(56, ['[1,2]', '[1,2,3]']),
-      'update/zod,arktype': allProbes(56, ['undefined', '[1,2]']),
-      'update/valibot': allProbes(55, ['undefined', '[1,2]', '[1,2,3]']),
-      'update/typebox': allProbes(57, ['[1,2]']),
+      'select,insert/zod,arktype,typebox': allProbes(62, ['[1,2]']),
+      'select,insert/valibot': allProbes(61, ['[1,2]', '[1,2,3]']),
+      'update/zod,arktype': allProbes(61, ['undefined', '[1,2]']),
+      'update/valibot': allProbes(60, ['undefined', '[1,2]', '[1,2,3]']),
+      'update/typebox': allProbes(62, ['[1,2]']),
     },
     drzl: 'unknown, which accepts every value in the pool',
     official: 'a tuple [number, number]',
@@ -6257,11 +6406,11 @@ const DEFECTS: Record<string, Entry> = {
     libs: LIB_NAMES,
     modes: MODE_NAMES,
     divergence: {
-      'select,insert/zod,valibot,arktype': allProbes(57, ["'010'"]),
-      'update/zod,valibot,arktype': allProbes(56, ['undefined', "'010'"]),
+      'select,insert/zod,valibot,arktype': allProbes(62, ["'010'"]),
+      'update/zod,valibot,arktype': allProbes(61, ['undefined', "'010'"]),
       // Not "typebox refuses fewer": official's TypeBox schema throws on `null` and `undefined`
       // here, so those two probes are not compared in any mode and the THREW ledger holds them.
-      '*/typebox': allProbes(55, ["'010'"]),
+      '*/typebox': allProbes(60, ["'010'"]),
     },
     drzl: 'unknown, which accepts every value in the pool',
     official: 'a string of at most 3 characters matching ^[01]*$',
@@ -6274,9 +6423,9 @@ const DEFECTS: Record<string, Entry> = {
       // Per pairing, because official's own rejections are not the same everywhere and the bare
       // shorthand hid that. What each split measures is on `allProbes`, where it is measured
       // rather than argued.
-      'select,insert/*': allProbes(57, ['[1,2,3]']),
-      'update/zod,valibot,arktype': allProbes(56, ['undefined', '[1,2,3]']),
-      'update/typebox': allProbes(57, ['[1,2,3]']),
+      'select,insert/*': allProbes(62, ['[1,2,3]']),
+      'update/zod,valibot,arktype': allProbes(61, ['undefined', '[1,2,3]']),
+      'update/typebox': allProbes(62, ['[1,2,3]']),
     },
     drzl: 'unknown, which accepts every value in the pool',
     official: 'an array of exactly 3 numbers',
@@ -6286,9 +6435,9 @@ const DEFECTS: Record<string, Entry> = {
     libs: LIB_NAMES,
     modes: MODE_NAMES,
     divergence: {
-      'select,insert/*': allProbes(57, ['Buffer']),
-      'update/zod,valibot,arktype': allProbes(56, ['undefined', 'Buffer']),
-      'update/typebox': allProbes(57, ['Buffer']),
+      'select,insert/*': allProbes(62, ['Buffer']),
+      'update/zod,valibot,arktype': allProbes(61, ['undefined', 'Buffer']),
+      'update/typebox': allProbes(62, ['Buffer']),
     },
     drzl: 'unknown, which accepts every value in the pool',
     official: 'a Buffer',
@@ -6298,9 +6447,9 @@ const DEFECTS: Record<string, Entry> = {
     libs: LIB_NAMES,
     modes: MODE_NAMES,
     divergence: {
-      'select,insert/*': allProbes(57, ['Buffer']),
-      'update/zod,valibot,arktype': allProbes(56, ['undefined', 'Buffer']),
-      'update/typebox': allProbes(57, ['Buffer']),
+      'select,insert/*': allProbes(62, ['Buffer']),
+      'update/zod,valibot,arktype': allProbes(61, ['undefined', 'Buffer']),
+      'update/typebox': allProbes(62, ['Buffer']),
     },
     drzl: 'unknown, which accepts every value in the pool',
     official: 'a Buffer',
@@ -6310,9 +6459,9 @@ const DEFECTS: Record<string, Entry> = {
     libs: LIB_NAMES,
     modes: MODE_NAMES,
     divergence: {
-      'select,insert/*': allProbes(57, ['Date']),
-      'update/zod,valibot,arktype': allProbes(56, ['undefined', 'Date']),
-      'update/typebox': allProbes(57, ['Date']),
+      'select,insert/*': allProbes(62, ['Date']),
+      'update/zod,valibot,arktype': allProbes(61, ['undefined', 'Date']),
+      'update/typebox': allProbes(62, ['Date']),
     },
     drzl: 'unknown, which accepts every value in the pool',
     official: 'a Date',
@@ -6328,18 +6477,18 @@ const DEFECTS: Record<string, Entry> = {
     libs: LIB_NAMES,
     modes: MODE_NAMES,
     divergence: {
-      'insert/arktype': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 9007199254740993, 3.4028235e38, 1900, 2000, 2500, Infinity | T: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010'`,
-      'insert/typebox': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 9007199254740993, 3.4028235e38, 1900, 2000, 2500 | T: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010'`,
-      'insert/valibot': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 9007199254740993, 3.4028235e38, 1900, 2000, 2500, Infinity | T: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010'`,
-      'insert/zod': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 9007199254740993, 3.4028235e38, 1900, 2000, 2500 | T: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010'`,
-      'select/arktype': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 9007199254740993, 3.4028235e38, 1900, 2000, 2500, Infinity | T: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010'`,
-      'select/typebox': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 9007199254740993, 3.4028235e38, 1900, 2000, 2500 | T: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010'`,
-      'select/valibot': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 9007199254740993, 3.4028235e38, 1900, 2000, 2500, Infinity | T: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010'`,
-      'select/zod': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 9007199254740993, 3.4028235e38, 1900, 2000, 2500 | T: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010'`,
-      'update/arktype': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 9007199254740993, 3.4028235e38, 1900, 2000, 2500, NaN, Infinity | T: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010'`,
-      'update/typebox': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 9007199254740993, 3.4028235e38, 1900, 2000, 2500 | T: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010'`,
-      'update/valibot': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 9007199254740993, 3.4028235e38, 1900, 2000, 2500, Infinity | T: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010'`,
-      'update/zod': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 9007199254740993, 3.4028235e38, 1900, 2000, 2500 | T: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010'`,
+      'insert/arktype': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 9007199254740993, 3.4028235e38, 1900, 2000, 2500, Infinity, 17, 18, 50, 100, 101 | T: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010'`,
+      'insert/typebox': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 9007199254740993, 3.4028235e38, 1900, 2000, 2500, 17, 18, 50, 100, 101 | T: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010'`,
+      'insert/valibot': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 9007199254740993, 3.4028235e38, 1900, 2000, 2500, Infinity, 17, 18, 50, 100, 101 | T: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010'`,
+      'insert/zod': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 9007199254740993, 3.4028235e38, 1900, 2000, 2500, 17, 18, 50, 100, 101 | T: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010'`,
+      'select/arktype': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 9007199254740993, 3.4028235e38, 1900, 2000, 2500, Infinity, 17, 18, 50, 100, 101 | T: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010'`,
+      'select/typebox': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 9007199254740993, 3.4028235e38, 1900, 2000, 2500, 17, 18, 50, 100, 101 | T: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010'`,
+      'select/valibot': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 9007199254740993, 3.4028235e38, 1900, 2000, 2500, Infinity, 17, 18, 50, 100, 101 | T: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010'`,
+      'select/zod': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 9007199254740993, 3.4028235e38, 1900, 2000, 2500, 17, 18, 50, 100, 101 | T: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010'`,
+      'update/arktype': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 9007199254740993, 3.4028235e38, 1900, 2000, 2500, NaN, Infinity, 17, 18, 50, 100, 101 | T: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010'`,
+      'update/typebox': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 9007199254740993, 3.4028235e38, 1900, 2000, 2500, 17, 18, 50, 100, 101 | T: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010'`,
+      'update/valibot': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 9007199254740993, 3.4028235e38, 1900, 2000, 2500, Infinity, 17, 18, 50, 100, 101 | T: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010'`,
+      'update/zod': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 9007199254740993, 3.4028235e38, 1900, 2000, 2500, 17, 18, 50, 100, 101 | T: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010'`,
     },
     drzl: 'a number',
     official: 'a string',
@@ -6396,8 +6545,8 @@ const DEFECTS: Record<string, Entry> = {
     libs: LIB_NAMES,
     modes: MODE_NAMES,
     divergence: {
-      '*/zod': `L: 0, 1, -1, 200, 40000, 9000000, 2147483648, 1900, 2500 | T: `,
-      '*/valibot,arktype,typebox': `L: 0, 1, -1, 200, 40000, 9000000, 2147483648, 9007199254740993, 3.4028235e38, 1900, 2500 | T: `,
+      '*/zod': `L: 0, 1, -1, 200, 40000, 9000000, 2147483648, 1900, 2500, 17, 18, 50, 100, 101 | T: `,
+      '*/valibot,arktype,typebox': `L: 0, 1, -1, 200, 40000, 9000000, 2147483648, 9007199254740993, 3.4028235e38, 1900, 2500, 17, 18, 50, 100, 101 | T: `,
     },
     drzl: 'an unbounded integer',
     official: 'an integer within 1901..2155',
@@ -6427,25 +6576,74 @@ const DEFECTS: Record<string, Entry> = {
     libs: LIB_NAMES,
     modes: MODE_NAMES,
     divergence: {
-      'select/*': allProbes(56, ['null', '[1,2,3]']),
-      'insert,update/zod,valibot,arktype': allProbes(55, ['null', 'undefined', '[1,2,3]']),
-      'insert,update/typebox': allProbes(56, ['null', '[1,2,3]']),
+      'select/*': allProbes(61, ['null', '[1,2,3]']),
+      'insert,update/zod,valibot,arktype': allProbes(60, ['null', 'undefined', '[1,2,3]']),
+      'insert,update/typebox': allProbes(61, ['null', '[1,2,3]']),
     },
     drzl: 'unknown, which accepts every value in the pool',
     official: 'an array of exactly 3 numbers, or null',
     filed: 'as pg/c_vector: no PgVector arm in the class-name path',
   },
+  // The other two Postgres classes the class-name path cannot name. All five classes that produce
+  // this shape are in the fixture now, three here and two on SQLite below.
+  'pg/n_geometry': {
+    libs: LIB_NAMES,
+    modes: MODE_NAMES,
+    divergence: {
+      'select/zod,arktype,typebox': allProbes(61, ['null', '[1,2]']),
+      // valibot's `v.tuple` ignores a third element, so official takes [1,2,3] as well. The same
+      // capability difference ALLOWED[pg/n_point] records from the other side.
+      'select/valibot': allProbes(60, ['null', '[1,2]', '[1,2,3]']),
+      'insert,update/zod,arktype': allProbes(60, ['null', 'undefined', '[1,2]']),
+      'insert,update/valibot': allProbes(59, ['null', 'undefined', '[1,2]', '[1,2,3]']),
+      'insert,update/typebox': allProbes(61, ['null', '[1,2]']),
+    },
+    drzl: 'unknown, which accepts every value in the pool',
+    official: 'a tuple [number, number], or null',
+    filed: 'as pg/c_geometry: no PgGeometry arm in the class-name path',
+  },
+  'pg/n_bit': {
+    libs: LIB_NAMES,
+    modes: MODE_NAMES,
+    divergence: {
+      'select/zod,valibot,arktype': allProbes(61, ['null', "'010'"]),
+      'insert,update/zod,valibot,arktype': allProbes(60, ['null', 'undefined', "'010'"]),
+      // One lower than the other three on select and the same as them on insert and update, and
+      // not because typebox refuses more. Official's TypeBox schema throws on `null` and
+      // `undefined` here, so neither is compared in any mode and both go to THREW. On select that
+      // removes `undefined` from official's rejections and leaves `null`, which it accepted and
+      // never counted; on insert and update official accepts both, so removing them changes
+      // nothing. `pg/c_bit` above is two lower in every mode for the same reason and a different
+      // column: it is `notNull`, so official rejects `null` there and the count did hold it.
+      '*/typebox': allProbes(60, ["'010'"]),
+    },
+    drzl: 'unknown, which accepts every value in the pool',
+    official: 'a string of at most 3 characters matching ^[01]*$, or null',
+    filed: 'as pg/c_bit: no PgBinaryVector arm in the class-name path',
+  },
   'sqlite/s_n_blob': {
     libs: LIB_NAMES,
     modes: MODE_NAMES,
     divergence: {
-      'select/*': allProbes(56, ['null', 'Buffer']),
-      'insert,update/zod,valibot,arktype': allProbes(55, ['null', 'undefined', 'Buffer']),
-      'insert,update/typebox': allProbes(56, ['null', 'Buffer']),
+      'select/*': allProbes(61, ['null', 'Buffer']),
+      'insert,update/zod,valibot,arktype': allProbes(60, ['null', 'undefined', 'Buffer']),
+      'insert,update/typebox': allProbes(61, ['null', 'Buffer']),
     },
     drzl: 'unknown, which accepts every value in the pool',
     official: 'a Buffer, or null',
     filed: 'as sqlite/s_blob_buf: no SQLiteBlobBuffer arm in the class-name path',
+  },
+  'sqlite/s_n_ts_ms': {
+    libs: LIB_NAMES,
+    modes: MODE_NAMES,
+    divergence: {
+      'select/*': allProbes(61, ['null', 'Date']),
+      'insert,update/zod,valibot,arktype': allProbes(60, ['null', 'undefined', 'Date']),
+      'insert,update/typebox': allProbes(61, ['null', 'Date']),
+    },
+    drzl: 'unknown, which accepts every value in the pool',
+    official: 'a Date, or null',
+    filed: 'as sqlite/s_int_ts_ms: integer({ mode: timestamp_ms }) has no arm on 0.4x',
   },
   'sqlite/s_n_int': {
     libs: ['valibot', 'arktype', 'typebox'],
@@ -6493,13 +6691,17 @@ const DEFECTS: Record<string, Entry> = {
  *   Type.Object({ k: Union([Unknown, Null]), other })  the key omitted   accepted
  *   the same object with the key present                                 accepted
  *
- * So it is the nullable form and not the unknown that opens it, which is why the six columns
- * `matrix` cannot name are not here. Three of them are `sqlite/s_blob`, `s_blob_buf` and
- * `s_int_ts_ms`, and this run reads their keys as required on both sides, which is what an entry
- * for them failing as dead says. The other three are the Postgres ones, and they are not read at
- * all: `PRESENCE_BARREN` below makes that whole pairing unreadable. A row that never mentions the
- * column validates against the two entries that are here, and the field-level comparison cannot
- * see it, because TypeBox keeps requiredness on the parent.
+ * So it is the nullable form and not the unknown that opens it, and that is why no column of
+ * `matrix` is here. Seven of them are unnamed on this major: `c_geometry`, `c_bit`, `c_vector`,
+ * `s_blob`, `s_blob_buf`, `s_int_ts_ms` and `m_enum`, the last of which does not emit an unknown at
+ * all because every generator recovers its members from `enumValues`. The other six are `notNull`,
+ * so they emit a bare `Type.Unknown()` and their keys stay required, which this run measures: an
+ * entry for any of them would fail as dead. The three Postgres ones are read on update alone,
+ * because `PRESENCE_BARREN` below makes select and insert unreadable on that pairing, and update is
+ * where both sides make every key optional anyway.
+ *
+ * A row that never mentions the column validates against the entries that are here, and the
+ * field-level comparison cannot see it, because TypeBox keeps requiredness on the parent.
  *
  * Only TypeBox. zod, valibot and arktype all keep the key required for their nullable unknown, and
  * this run measures that rather than assuming it: an entry naming another library fails, and a
@@ -6519,7 +6721,40 @@ const PRESENCE_BARREN: Record<string, string> = {
   'pg/typebox/c_uuid': "official's Type.String({ format: 'uuid' }) refuses every value with no FormatRegistry",
 };
 
+/**
+ * The absolute half of the presence axis: on `select`, DRZL's own schema has to require every key.
+ *
+ * `PRESENCE` below is differential and can only see DRZL and official disagreeing. This fires where
+ * they agree about something wrong, and it fires where official cannot answer at all: `pg/n_bit` is
+ * in this list and not in `PRESENCE`, because official's TypeBox schema throws on the object with
+ * that key omitted rather than reporting it missing, so there is no verdict to differ from.
+ *
+ * A select row always carries every column, so an optional key there is wrong however many
+ * libraries agree about it. Keyed `<dialect>/<library>/<column>` and asserted in both directions.
+ *
+ * Five column classes reach it on this major and all five are here: `PgVector`, `PgGeometry`,
+ * `PgBinaryVector`, `SQLiteBlobBuffer` and `integer({ mode: 'timestamp_ms' })`, each of them a
+ * column the class-name path cannot name, plus the customType, which is unnamed on both majors.
+ * Only TypeBox: zod, valibot and arktype keep the key required for their own nullable unknown.
+ */
+const SELECT_OPTIONAL: Record<string, string> = {
+  'pg/typebox/n_geometry': 'no PgGeometry arm, so a nullable unknown, whose TypeBox key may be missing',
+  'pg/typebox/n_bit': 'as pg/typebox/n_geometry, and official crashes on the omission so PRESENCE cannot see it',
+  'pg/typebox/n_vector': 'as pg/typebox/n_geometry',
+  'sqlite/typebox/s_n_blob': 'as pg/typebox/n_geometry, with no SQLiteBlobBuffer arm',
+  'sqlite/typebox/s_n_ts_ms': 'as pg/typebox/n_geometry, with no timestamp_ms arm',
+  'sqlite/typebox/s_n_custom': 'a nullable customType is unknown on both majors, and official emits the same union',
+};
+
 const PRESENCE: Record<string, Entry> = {
+  'pg/n_geometry': {
+    libs: ['typebox'],
+    modes: ['select'],
+    divergence: { '*/*': 'official required, DRZL optional' },
+    drzl: 'Type.Union([Type.Unknown(), Type.Null()]), whose key TypeBox lets go missing',
+    official: 'a required key on select; on insert a nullable column is optional on both sides',
+    filed: 'as pg/c_geometry: no PgGeometry arm in the class-name path',
+  },
   'pg/n_vector': {
     libs: ['typebox'],
     modes: ['select'],
@@ -6536,6 +6771,18 @@ const PRESENCE: Record<string, Entry> = {
     official: 'as pg/n_vector',
     filed: 'as sqlite/s_blob_buf: no SQLiteBlobBuffer arm in the class-name path',
   },
+  'sqlite/s_n_ts_ms': {
+    libs: ['typebox'],
+    modes: ['select'],
+    divergence: { '*/*': 'official required, DRZL optional' },
+    drzl: 'as pg/n_vector',
+    official: 'as pg/n_vector',
+    filed: 'as sqlite/s_int_ts_ms: integer({ mode: timestamp_ms }) has no arm on 0.4x',
+  },
+  // No `pg/n_bit` entry, and its absence is the reason SELECT_OPTIONAL exists next to this map:
+  // official's TypeBox schema throws on the object with that key omitted rather than reporting it
+  // missing, so this differential comparison has no verdict to differ from. `s_n_custom` is absent
+  // for the opposite reason: official emits the same union DRZL does, so the two agree.
 };
 
 // A field lookup that throws yields nothing, and nothing is not read as agreement anywhere below:
@@ -6628,6 +6875,24 @@ const THREW: Record<string, Crash> = {
     // either, so official's Postgres TypeBox schema has no satisfiable object. See PRESENCE_BARREN.
     absentModes: [],
   },
+  // The nullable twin, and the same upstream defect. Two things differ and both follow from the
+  // column being nullable: DRZL's answer is `accept` because the analyzer cannot name the column on
+  // this major and an unknown takes everything, and Postgres agrees with that answer here rather
+  // than refusing it, because the subject table this run builds carries the column's own
+  // nullability. `absentModes` is select alone: insert and update make the key optional, so TypeBox
+  // skips the property instead of reaching the length check.
+  'pg/typebox/n_bit': {
+    side: 'official',
+    modes: ['select', 'insert', 'update'],
+    values: ['null', 'undefined'],
+    why: 'as pg/typebox/c_bit',
+    drzl: { '*/null': 'accept', '*/undefined': 'accept' },
+    arbiter: {
+      null: 'postgres accepts it',
+      undefined: 'postgres accepts the column omitted from the insert',
+    },
+    absentModes: ['select'],
+  },
 };
 
 /**
@@ -6660,6 +6925,11 @@ const UNNAMED: Record<string, string> = {
   // `notNull`, which is the only thing that differs between the two.
   'mysql/nullable.m_n_enum': 'as mysql/matrix.m_enum',
   'sqlite/nullable.s_n_blob': 'as sqlite/matrix.s_blob_buf',
+  'sqlite/nullable.s_n_ts_ms': 'as sqlite/matrix.s_int_ts_ms',
+  // Unnamed on both majors rather than on this one, and correctly so: a customType's JavaScript
+  // type exists at compile time and nowhere else. It is here because this list is the absolute
+  // record of what the analyzer cannot name, not of what it names differently per major.
+  'sqlite/nullable.s_n_custom': 'a customType has no runtime shape to read; official emits an unknown for it too',
 };
 
 // Two tables per dialect, for the reason the v1 pass has two: every column of `matrix` is
@@ -6745,8 +7015,8 @@ const DIALECTS = [
 const PREFIX: Record<string, string> = { select: 'Select', insert: 'Insert', update: 'Update' };
 
 /**
- * Every column of every fixture, in every library and every mode: 39 + 15 Postgres, 28 + 12 MySQL
- * and 14 + 11 SQLite columns, `matrix` and `nullable`, times four libraries, times three modes.
+ * Every column of every fixture, in every library and every mode: 39 + 17 Postgres, 28 + 12 MySQL
+ * and 14 + 13 SQLite columns, `matrix` and `nullable`, times four libraries, times three modes.
  *
  * The Postgres numbers are one lower than the v1 pass on both tables, and for the same reason both
  * times: 0.45.2's pg-core has no `bytea` export, so `c_bytea` and `c_bytea_null` are both deleted
@@ -6758,7 +7028,7 @@ const PREFIX: Record<string, string> = { select: 'Select', insert: 'Insert', upd
  * against 0.45.2 and was green throughout. A fixture that grows a column fails here and has to be
  * re-measured, which is the intended cost.
  */
-const EXPECTED_COMPARISONS = (39 + 15 + 28 + 12 + 14 + 11) * 4 * 3;
+const EXPECTED_COMPARISONS = (39 + 17 + 28 + 12 + 14 + 13) * 4 * 3;
 
 // Read off disk rather than through `require.resolve`, whose `exports` map has no `./package.json`
 // entry for drizzle-orm. Reading it is also the point: this reports the version of the tree the
@@ -6839,6 +7109,8 @@ async function main() {
   let presenceCrashed = 0;
   let presenceUnreadable = 0;
   const usedBarren = new Set<string>();
+  const usedSelectOptional = new Set<string>();
+  const selectOptionalProblems: string[] = [];
   const presenceProblems: string[] = [];
   const presenceObserved = new Map<string, Seen>();
   const presenceThrew = new Map<string, { sides: Set<string>; modes: Set<string> }>();
@@ -6982,6 +7254,14 @@ async function main() {
         for (const k of Object.keys(oShape)) {
           const a = oPres.verdicts.get(k);
           const b = mPres.verdicts.get(k);
+          // The absolute half, read off DRZL's side alone and before the two are compared. See the
+          // note on SELECT_OPTIONAL: `pg/typebox/n_bit` reaches this line and reaches nothing else,
+          // because official crashes on that omission rather than answering it.
+          if (mode === 'select' && b === 'optional') {
+            const abs = `${d.name}/${libName}/${k}`;
+            if (SELECT_OPTIONAL[abs]) usedSelectOptional.add(abs);
+            else selectOptionalProblems.push(`${abs}: DRZL's select schema lets this key be missing, and nothing declares it`);
+          }
           // Never a skip, and never silently: every column lands in exactly one of the three
           // counters, and the three have to add up to the pairing count further down.
           if (!a || !b) {
@@ -7030,6 +7310,10 @@ async function main() {
     Object.values(e.divergence).some((s) => s.split('|')[0].replace(/^L:/, '').trim() !== '')
   ).length;
   console.log(`    ${totalCompared} column comparisons across ${pairings} pairings`);
+  console.log(
+    `    ${Object.keys(SELECT_OPTIONAL).length} column(s) whose key DRZL's select schema lets go ` +
+      `missing, all declared: ${Object.keys(SELECT_OPTIONAL).join(', ')}`
+  );
   console.log(
     `    ${presenceCompared} key-presence comparisons asked of the object rather than the field, ` +
       `${presenceCrashed} where a side crashed on the omission and ${presenceUnreadable} with no ` +
@@ -7112,9 +7396,17 @@ async function main() {
       }
     }
   }
+  // Each entry carries its own measured detail, because the two maps it is drawn from are keyed
+  // the same way and a lookup in the wrong one reads as undefined. It did: the first version built
+  // bare keys and printed `observed.get(k)!.detail`, which threw on a presence-only key and turned
+  // a reportable finding into a stack trace.
   const unledgered = [
-    ...[...observed.keys()].filter((k) => !ALLOWED[k] && !DEFECTS[k]),
-    ...[...presenceObserved.keys()].filter((k) => !PRESENCE[k]).map((k) => `${k} (key presence)`),
+    ...[...observed.entries()]
+      .filter(([k]) => !ALLOWED[k] && !DEFECTS[k])
+      .map(([k, seen]) => `${k}: ${seen.detail.join('; ')}`),
+    ...[...presenceObserved.entries()]
+      .filter(([k]) => !PRESENCE[k])
+      .map(([k, seen]) => `${k} (key presence): ${seen.detail.join('; ')}`),
   ];
 
   // The presence axis, held to the same denominator as the value axis, and to the same THREW
@@ -7129,6 +7421,11 @@ async function main() {
   for (const key of Object.keys(PRESENCE_BARREN)) {
     if (!usedBarren.has(key)) {
       presenceProblems.push(`PRESENCE_BARREN[${key}] names a column that accepts a pool value now, so delete it`);
+    }
+  }
+  for (const key of Object.keys(SELECT_OPTIONAL)) {
+    if (!usedSelectOptional.has(key)) {
+      selectOptionalProblems.push(`SELECT_OPTIONAL[${key}] requires its key on select now, so delete it`);
     }
   }
   for (const [key, seen] of presenceThrew) {
@@ -7439,7 +7736,7 @@ async function main() {
   {
     // Both Postgres tables, so a crash site on a `nullable` column reaches the same database.
     const pgColumns = [pgTable, pgNullable].flatMap(
-      (t) => getTableConfig(t as never).columns as { name: string; getSQLType: () => string }[]
+      (t) => getTableConfig(t as never).columns as { name: string; notNull: boolean; getSQLType: () => string }[]
     );
     const wanted: { key: string; label: string; value: unknown; dialect: string; column: string }[] = [];
     for (const [key, e] of Object.entries(THREW)) {
@@ -7468,7 +7765,14 @@ async function main() {
       }
       // The pool's `undefined` is an absence and is carried to the database as one: the statement
       // never names the column, rather than binding a NULL where it would have gone.
-      probes.push({ key: w.key, sqlType: col.getSQLType(), label: w.label, absent: w.value === undefined, value: w.value });
+      probes.push({
+        key: w.key,
+        sqlType: col.getSQLType(),
+        notNull: col.notNull,
+        label: w.label,
+        absent: w.value === undefined,
+        value: w.value,
+      });
     }
     const { engine, answers } = await askPostgres(probes);
     // A run where the database answered nothing would otherwise leave every site reading as
@@ -7555,7 +7859,7 @@ async function main() {
     console.error('    FAIL: these columns differ from the official 0.4x module and are in neither');
     console.error('          map. A difference that is deliberate goes in ALLOWED with its reason,');
     console.error('          and one that is a DRZL defect goes in DEFECTS naming what it is:');
-    for (const k of unledgered) console.error(`      ${k}: ${observed.get(k)!.detail.join('; ')}`);
+    for (const k of unledgered) console.error(`      ${k}`);
   }
   if (ledgerProblems.length) {
     console.error('    FAIL: the ledger no longer describes this run. If a defect was fixed, delete');
@@ -7606,6 +7910,12 @@ async function main() {
     console.error('          sentence used to claim. Ask the database which side is right, then');
     console.error('          put the answer in ALLOWED with its measurement, or fix the generator.');
   }
+  if (selectOptionalProblems.length) {
+    console.error('    FAIL: a select schema lets a key go missing. A select row carries every');
+    console.error('          column, so an optional key there is wrong however many libraries agree');
+    console.error('          about it:');
+    for (const p of selectOptionalProblems) console.error(`      ${p}`);
+  }
   if (presenceProblems.length) {
     console.error('    FAIL: the key-presence axis could not measure what it claims to. A column no');
     console.error('          side accepts a value for, an object a side refuses despite being built');
@@ -7622,6 +7932,7 @@ async function main() {
     unnamedProblems.length ||
     capProblems.length ||
     presenceProblems.length ||
+    selectOptionalProblems.length ||
     totalCompared !== EXPECTED_COMPARISONS
   ) {
     process.exit(1);
