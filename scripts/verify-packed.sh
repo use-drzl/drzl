@@ -735,6 +735,47 @@ export const arrays = pgTable('arrays', {
   a_bigint_arr_null: bigint({ mode: 'bigint' }).array(),
 });
 
+/**
+ * The nullable path, which is what most real schemas are made of and which no differential
+ * comparison had ever looked at: every column of `matrix` is `notNull`, so both passes measured
+ * 0 of 40 Postgres, 0 of 29 MySQL and 0 of 14 SQLite columns without one.
+ *
+ * Every generator emits a different construction for a nullable column, and each of them is a
+ * place a constraint can be lost: zod appends `.nullable()` after the refinement, valibot wraps
+ * in `v.nullable`, arktype builds a `(T | null)` union whose narrow has to guard the null itself,
+ * and TypeBox emits `Type.Union([T, Type.Null()])`. None of those had been compared with the
+ * first-party module for any column.
+ *
+ * Its own table rather than more columns on `matrix`, for the reason `arrays` above has one: the
+ * arktype output for a 40-column table of narrowed fields is already at the edge of TS2589.
+ *
+ * The combinations are chosen rather than sampled. A default and a CHECK, because both attach to
+ * the column and both have to survive being wrapped; an array and an enum, because both are
+ * rebuilt rather than wrapped; and one column of each `shape` the analyzer distinguishes, which
+ * is buffer, json, tuple and numberVector. `custom` is the fifth and has no column here: a
+ * customType's JavaScript type exists only at compile time, so a fixture cannot carry one that
+ * both majors agree about.
+ */
+export const nullable = pgTable('nullable', {
+  n_text: text(),
+  n_varchar: varchar({ length: 10 }),
+  n_int: integer(),
+  n_real: real(),
+  n_bigint: bigint({ mode: 'bigint' }),
+  n_bool: boolean(),
+  n_enum: moodEnum(),
+  n_json: jsonb(),
+  n_ts: timestamp({ mode: 'date' }),
+  n_point: point(),
+  n_vector: vector({ dimensions: 3 }),
+  // Named for c_bytea so the 0.4x stage's edit takes both, on both of these lines.
+  c_bytea_null: bytea(),
+  n_text_arr: text().array(),
+  n_enum_arr: moodEnum().array(),
+  n_default: integer().default(7),
+  n_check: integer(),
+}, (t) => [check('n_check_c', sql`${t.n_check} BETWEEN 18 AND 100`)]);
+
 export const checked = pgTable('checked', {
   k_min: integer(),
   k_max: integer(),
@@ -809,6 +850,25 @@ export const matrix = mysqlTable('matrix', {
   m_blob: blob().notNull(),
 });
 
+// The nullable path on MySQL. Same reasoning as the Postgres `nullable` table above, minus the
+// arrays and the two Postgres-only shapes: MySQL has no array type, no point and no vector.
+// `m_n_tinytext` is here because a byte cap and a NULL meet on it, which is the pairing the
+// wrapping order can lose.
+export const nullable = mysqlTable('nullable', {
+  m_n_text: text(),
+  m_n_varchar: varchar({ length: 10 }),
+  m_n_tinytext: tinytext(),
+  m_n_int: int(),
+  m_n_float: float(),
+  m_n_bigint: bigint({ mode: 'bigint' }),
+  m_n_bool: boolean(),
+  m_n_enum: mysqlEnum(['a', 'b', 'c']),
+  m_n_json: json(),
+  m_n_datetime: datetime({ mode: 'date' }),
+  m_n_default: int().default(7),
+  m_n_check: int(),
+}, (t) => [check('m_n_check_c', sql`${t.m_n_check} BETWEEN 18 AND 100`)]);
+
 // Every CHECK form the parser reads, in MySQL's spelling. No cardinality(): MySQL has no arrays.
 export const checked = mysqlTable('checked', {
   k_min: int(),
@@ -865,6 +925,22 @@ export const matrix = sqliteTable('matrix', {
   s_blob_json: blob({ mode: 'json' }).notNull(),
   s_blob_bigint: blob({ mode: 'bigint' }).notNull(),
 });
+
+// The nullable path on SQLite. `s_n_blob` is the buffer shape and `s_n_json` the json one; SQLite
+// has no array, no tuple and no vector, and its enum is a text column carrying a member list.
+export const nullable = sqliteTable('nullable', {
+  s_n_text: text(),
+  s_n_text_enum: text({ enum: ['a', 'b'] }),
+  s_n_json: text({ mode: 'json' }),
+  s_n_int: integer(),
+  s_n_bool: integer({ mode: 'boolean' }),
+  s_n_ts: integer({ mode: 'timestamp' }),
+  s_n_real: real(),
+  s_n_blob: blob({ mode: 'buffer' }),
+  s_n_bigint: blob({ mode: 'bigint' }),
+  s_n_default: integer().default(7),
+  s_n_check: integer(),
+}, (t) => [check('s_n_check_c', sql`${t.s_n_check} BETWEEN 18 AND 100`)]);
 
 // The same CHECK forms as the Postgres fixture, minus the ones SQLite has no equivalent for:
 // no arrays and so no `cardinality()`, and no `char_length()`. SQLite enforces a CHECK exactly
@@ -1044,13 +1120,16 @@ export type Lib = { field: (s: any, k: string) => any; ok: (f: any, x: unknown) 
  *   deleting Symbol(TypeBox.Optional) from the property  changes 0 of 58 pool verdicts
  *
  * So on TypeBox, and only on TypeBox, a required field and an optional one compare identically on
- * every probe: this harness cannot tell them apart, in either direction, and would report parity
- * on a DRZL update schema that omitted an optional marker official carries. zod, valibot and
- * arktype put optionality on the field, where the `undefined` probe finds it, which is the whole
- * reason update mode moves by one probe on those three and not on TypeBox.
+ * every probe. That is not a fear, it is a demonstrated exploit, run both ways: stripping every
+ * `Type.Optional(` from `UpdatematrixSchema` in all three generated modules of both passes, 164
+ * of them, left the whole script at exit 0. The same edit now exits 1 naming 82 columns, one for
+ * every column of the three `matrix` tables the presence axis can read.
  *
- * It is recorded rather than fixed: closing it means comparing modifiers as well as verdicts,
- * which is a different comparison from the one this file makes.
+ * `askPresence` below is what closes it, for all four libraries rather than for the one that had
+ * the hole. It asks the *object* whether the key may be missing, which is a different question
+ * from whether the field takes `undefined`: zod's `.optional()` answers yes to both, TypeBox's
+ * `Type.Optional` answers yes only to the first, and a field typed `T | undefined` on a required
+ * key answers yes only to the second.
  */
 export const LIBS: Record<string, Lib> = {
   zod: { field: (s, k) => s.shape[k], ok: (f, x) => f.safeParse(x).success },
@@ -1088,6 +1167,110 @@ export const probe = (lib: Lib, f: any, x: unknown): Verdict => {
   } catch {
     return 'threw';
   }
+};
+
+/** Whether an object schema lets a key be missing altogether. Not a verdict about a value. */
+export type Presence = 'optional' | 'required';
+
+/**
+ * Does this schema require each key, asked of the object rather than of the extracted field?
+ *
+ * The field comparison above cannot ask it. A field carries the column's value rules; requiredness
+ * lives on the parent, and on TypeBox it lives there exclusively, which is the hole this closes:
+ * `Value.Check(property, undefined)` is false whether or not the property carries
+ * `Symbol(TypeBox.Optional)`, so a TypeBox schema that got optionality wrong in either direction
+ * gave every pool probe the same answer as a correct one.
+ *
+ * **An absence is asked as an absence.** The key is deleted from the object, not set to
+ * `undefined`. Measured on TypeBox, where the two differ:
+ * `Value.Check(Type.Object({ a: Type.Optional(Type.String()), b: Type.String() }), { b: 'x' })` is
+ * true and so is the same object carrying `a: undefined`, while the field-level
+ * `Value.Check(properties.a, undefined)` is false. Setting `undefined` would therefore be asking
+ * the value question in the place the absence question belongs.
+ *
+ * The object is built from values this side accepts one at a time, and each side builds its own.
+ * That is deliberate: two schemas can disagree so completely about a column's *type* that no pool
+ * value satisfies both, which is the state `mysql/m_binary` is in on 0.4x, where DRZL wants a
+ * Uint8Array and the official module wants a string. A shared object would then be refused by one
+ * side for every key and the whole pairing would read as "requires everything" on both. The
+ * question here is about the key, not about the value, so each side is asked with an object it
+ * agrees is otherwise valid, and the control below is what says it agrees.
+ *
+ * Nothing here is ever skipped quietly. A column this side accepts no pool value for, and an object
+ * this side refuses despite being built from its own accepted values, are both reported: the caller
+ * fails on them rather than comparing an absence with an absence.
+ *
+ * A crash is not an answer here either, and it happens: official's TypeBox module emits
+ * `{ type: 'RegExp', maxLength }` for a few columns, and its length check reads `value.length` with
+ * no type guard, so the object check throws when the key is missing rather than reporting it
+ * missing. Measured on `drizzle-typebox` 0.3.3 for `bit({ dimensions: 3 }).notNull()`: the full
+ * object is accepted, and the same object with the key omitted throws
+ * `Cannot read properties of undefined (reading 'length')`. Those columns come back in `crashed`
+ * and the caller holds them to the same THREW ledger the value pool's crashes go to.
+ *
+ * `barren` is the other way this can fail to be readable, and it is a real state rather than a
+ * hypothetical: official's TypeBox schema for a `uuid` column is `Type.String({ format: 'uuid' })`,
+ * and TypeBox fails a format it has no entry for, so that field accepts nothing at all. No object
+ * satisfying it exists, and where the column is also required no key of that object can be asked
+ * about. The caller declares those and counts what they cost rather than reporting the pairing as
+ * agreement.
+ */
+export type PresenceReading = {
+  verdicts: Map<string, Presence>;
+  /** Columns where this side crashed on the omission instead of answering. */
+  crashed: string[];
+  /** Columns this side accepts no pool value for, so no object satisfying it can be built. */
+  barren: string[];
+  /** Empty when the object built from this side's own accepted values was accepted. */
+  control: string;
+};
+
+export const askPresence = (lib: Lib, schema: any, cols: string[]): PresenceReading => {
+  const crashed: string[] = [];
+  const barren: string[] = [];
+  const verdicts = new Map<string, Presence>();
+  const base: Record<string, unknown> = {};
+  for (const k of cols) {
+    let f: unknown;
+    try {
+      f = lib.field(schema, k);
+    } catch {
+      f = undefined;
+    }
+    if (!f) {
+      barren.push(k);
+      continue;
+    }
+    const hit = POOL.find(([, x]) => x !== undefined && probe(lib, f, x) === 'accept');
+    if (!hit) {
+      barren.push(k);
+      continue;
+    }
+    base[k] = hit[1];
+  }
+  const control = probe(lib, schema, base);
+  if (control !== 'accept') {
+    return {
+      verdicts,
+      crashed,
+      barren,
+      control:
+        `answers ${control} to an object built entirely from values it accepts one at a time, so ` +
+        'removing a key from that object measures nothing',
+    };
+  }
+  for (const k of cols) {
+    if (!(k in base)) continue;
+    const without = { ...base };
+    delete without[k];
+    const got = probe(lib, schema, without);
+    if (got === 'threw') {
+      crashed.push(k);
+      continue;
+    }
+    verdicts.set(k, got === 'accept' ? 'optional' : 'required');
+  }
+  return { verdicts, crashed, barren, control: '' };
 };
 
 /**
@@ -1286,11 +1469,21 @@ import {
 import { readFileSync } from 'node:fs';
 import { constants } from 'node:buffer';
 import { getTableConfig } from 'drizzle-orm/pg-core';
-import { POOL, LIBS, probe, askPostgres, type DbProbe, type Lib, type Verdict } from './pool.js';
+import {
+  POOL,
+  LIBS,
+  probe,
+  askPostgres,
+  askPresence,
+  type DbProbe,
+  type Lib,
+  type Presence,
+  type Verdict,
+} from './pool.js';
 
-import { matrix as pgTable } from './schema.js';
-import { matrix as myTable } from './schema-mysql.js';
-import { matrix as sqTable } from './schema-sqlite.js';
+import { matrix as pgTable, nullable as pgNullable } from './schema.js';
+import { matrix as myTable, nullable as myNullable } from './schema-mysql.js';
+import { matrix as sqTable, nullable as sqNullable } from './schema-sqlite.js';
 
 const OFFICIAL: Record<string, Record<string, (t: any) => any>> = {
   zod: { select: createSelectSchema, insert: createInsertSchema, update: createUpdateSchema },
@@ -1350,6 +1543,12 @@ type Crash = {
   drzl: Record<string, string>;
   /** What settles that answer, keyed by value. Computed by the run and compared with this. */
   arbiter: Record<string, string>;
+  /**
+   * The modes in which the same side crashes on the *object* with this key omitted, rather than
+   * reporting the key missing. Empty where that does not happen, and asserted in both directions
+   * like everything else here, so a crash the presence axis meets is either declared or a failure.
+   */
+  absentModes: string[];
 };
 const THREW: Record<string, Crash> = {
   // Three columns, one cause, and the set is derived rather than collected: official's TypeBox
@@ -1379,6 +1578,10 @@ const THREW: Record<string, Crash> = {
       // questions, three answers, and this entry is the answer to the middle one.
       undefined: 'postgres refuses the column omitted from the insert (SQLSTATE 23502)',
     },
+    // No omission ever reaches this column: `c_uuid` on the same object accepts nothing, so
+    // official's Postgres TypeBox schema has no satisfiable object for the presence axis to take a
+    // key out of. See PRESENCE_BARREN.
+    absentModes: [],
   },
   'mysql/typebox/m_binary': {
     side: 'official',
@@ -1400,6 +1603,7 @@ const THREW: Record<string, Crash> = {
       null: 'no in-process mysql engine',
       undefined: 'no in-process mysql engine',
     },
+    absentModes: ['select', 'insert'],
   },
   'mysql/typebox/m_varbinary': {
     side: 'official',
@@ -1411,6 +1615,7 @@ const THREW: Record<string, Crash> = {
       null: 'no in-process mysql engine',
       undefined: 'no in-process mysql engine',
     },
+    absentModes: ['select', 'insert'],
   },
 };
 // `at` is every `<side>/<mode>/<value>` that crashed, so the printed figure is a count rather than
@@ -1691,6 +1896,66 @@ const ALLOWED: Record<string, Waiver> = {
   // same hole on `c_bit` only because that column has a `minLength` an array cannot satisfy.
   'mysql/typebox/m_binary': { libs: ['typebox'], modes: MODE_NAMES, why: 'official Type.RegExp accepts a non-string whose string form matches', divergence: { '*/*': `L:  | T: []` } },
   'mysql/typebox/m_varbinary': { libs: ['typebox'], modes: MODE_NAMES, why: 'as mysql/typebox/m_binary', divergence: { '*/*': `L:  | T: []` } },
+  // ---- the nullable table ---------------------------------------------------------------------
+  // Every divergence below is the one its `notNull` twin in `matrix` already carries, measured
+  // again through the wrapper each generator puts round a nullable column. That is the point: the
+  // wrapping is where a constraint gets lost, and a signature identical to the twin's is the
+  // evidence that nothing was lost. Two of them have no twin, and they are marked.
+  'pg/n_real': { libs: LIB_NAMES, modes: MODE_NAMES, why: 'as pg/c_real, through the nullable wrapper', divergence: { '*/*': `L: 9000000, 2147483648, 9007199254740993, 3.4028235e38 | T: ` } },
+  'pg/c_bytea_null': { libs: LIB_NAMES, modes: MODE_NAMES, why: 'as pg/c_bytea, through the nullable wrapper', divergence: { '*/*': `L: Uint8Array | T: ` } },
+  'pg/valibot/n_json': { libs: ['valibot'], modes: MODE_NAMES, why: 'as pg/valibot/c_json', divergence: { '*/*': `L:  | T: Infinity, Date, Buffer, Uint8Array` } },
+  'pg/valibot/n_point': { libs: ['valibot'], modes: MODE_NAMES, why: 'as pg/valibot/c_point', divergence: { '*/*': `L:  | T: [1,2,3]` } },
+  'pg/n_ts': {
+    libs: LIB_NAMES,
+    modes: WRITE,
+    why: 'as pg/c_ts_d',
+    divergence: {
+      '*/zod': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', '12.5', '0101', '010' | T: `,
+      '*/valibot,arktype,typebox': `L: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010' | T: `,
+    },
+  },
+  // The first divergence in either pass that comes from a CHECK, because `matrix` carries none and
+  // the `checked` table is not in this comparison. DRZL reads the constraint and emits it; no
+  // first-party module reads one at all, so official accepts values the column cannot hold.
+  //
+  // The database is the arbiter and it has already answered, in this same script: the CHECK
+  // ground-truth stage runs 53 probes against a real Postgres over the `checked` table and reports
+  // rows Postgres rejects and the validator accepts as DRZL 0, drizzle-orm 22.
+  //
+  // `BETWEEN 18 AND 100` rather than a one-sided bound, and the reason is the ledger rather than
+  // the coverage: on SQLite a one-sided `>= 18` leaves the column's own upper bound in place, and
+  // that upper bound is a filed defect on 0.4x, so the column carried a deliberate difference and a
+  // defect at once and could not go in one map honestly. A two-sided CHECK replaces both bounds and
+  // leaves this entry about the CHECK alone.
+  'pg/n_check': { libs: LIB_NAMES, modes: MODE_NAMES, why: 'DRZL enforces the column CHECK; no first-party module reads one', divergence: { '*/*': `L:  | T: 0, 1, -1, 200, 40000, 9000000, 1900, 2000, 2500` } },
+  'mysql/m_n_text': { libs: LIB_NAMES, modes: MODE_NAMES, why: 'as mysql/m_text', divergence: { '*/*': `L:  | T: 22000 cjk` } },
+  'mysql/m_n_tinytext': { libs: LIB_NAMES, modes: MODE_NAMES, why: 'as mysql/m_tinytext', divergence: { '*/*': `L:  | T: 100 emoji` } },
+  'mysql/m_n_float': { libs: LIB_NAMES, modes: MODE_NAMES, why: 'as mysql/m_float', divergence: { '*/*': `L: 9000000, 2147483648, 9007199254740993 | T: ` } },
+  'mysql/valibot/m_n_json': { libs: ['valibot'], modes: MODE_NAMES, why: 'as pg/valibot/c_json', divergence: { '*/*': `L:  | T: Infinity, Date, Buffer, Uint8Array` } },
+  'mysql/m_n_datetime': {
+    libs: LIB_NAMES,
+    modes: WRITE,
+    why: 'as pg/c_date_d',
+    divergence: {
+      '*/zod': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', '12.5', '0101', '010' | T: `,
+      '*/valibot,arktype,typebox': `L: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010' | T: `,
+    },
+  },
+  'mysql/m_n_check': { libs: LIB_NAMES, modes: MODE_NAMES, why: 'as pg/n_check, in MySQL spelling', divergence: { '*/*': `L:  | T: 0, 1, -1, 200, 40000, 9000000, 1900, 2000, 2500` } },
+  'sqlite/s_n_real': { libs: LIB_NAMES, modes: MODE_NAMES, why: 'as sqlite/s_real', divergence: { '*/zod,typebox': `L: 9007199254740993, 3.4028235e38 | T: `, '*/valibot,arktype': `L: 9007199254740993, 3.4028235e38, Infinity | T: ` } },
+  'sqlite/s_n_blob': { libs: LIB_NAMES, modes: MODE_NAMES, why: 'as sqlite/s_blob_buf', divergence: { '*/*': `L: Uint8Array | T: ` } },
+  'sqlite/valibot/s_n_json': { libs: ['valibot'], modes: MODE_NAMES, why: 'as pg/valibot/c_json', divergence: { '*/*': `L:  | T: Infinity, Date, Buffer, Uint8Array` } },
+  'sqlite/s_n_ts': {
+    libs: LIB_NAMES,
+    modes: WRITE,
+    why: 'as sqlite/s_int_ts',
+    divergence: {
+      '*/zod': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', '12.5', '0101', '010' | T: `,
+      '*/valibot,arktype,typebox': `L: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010' | T: `,
+    },
+  },
+  'sqlite/s_n_check': { libs: LIB_NAMES, modes: MODE_NAMES, why: "as pg/n_check; the extra label is official's SQLite integer bound being the safe-integer range where its Postgres one is int32", divergence: { '*/*': `L:  | T: 0, 1, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500` } },
+
   // No arktype bigint entry. There were three, reading "ArkType cannot bound a bigint in its
   // string DSL", and only half of that was true: the DSL cannot state the bound, but a narrow can,
   // and this generator already used narrows for every character cap. The generator now bounds
@@ -1715,6 +1980,51 @@ const allowed = (dialect: string, lib: string, col: string, mode: string, signat
     seen.set(`${mode}/${lib}`, signature);
     waived.set(key, seen);
     return ALLOWED[key].why;
+  }
+  return undefined;
+};
+
+/**
+ * Presence differences that are deliberate: DRZL and official disagree about whether a key may be
+ * missing, and DRZL is right to.
+ *
+ * A separate map from ALLOWED because it answers a separate question and its signature has a
+ * separate shape: `official <optional|required>, DRZL <the same two>`, one per pairing. Keyed and
+ * asserted exactly like ALLOWED, in both directions, so an entry that suppresses nothing fails and
+ * an entry whose pairings have moved fails with the measured reading printed.
+ */
+const PRESENCE_ALLOWED: Record<string, Waiver> = {};
+
+/**
+ * Where the presence axis cannot read a side at all, because that side's schema for the column
+ * accepts nothing in the pool and so no object satisfying it exists.
+ *
+ * One entry, and it is the same fact `ALLOWED[pg/typebox/c_uuid]` already records from the other
+ * end: official emits `Type.String({ format: 'uuid' })`, TypeBox fails a format it has no entry
+ * for, and no `FormatRegistry` is populated here. So that field refuses every value including a
+ * valid uuid, which is what makes DRZL's pattern the usable one and what makes this pairing
+ * unreadable. On select and insert the column is required, so the whole object goes with it; on
+ * update it is optional and only that one column is lost.
+ *
+ * Keyed `<dialect>/<library>/<column>` and asserted in both directions: an undeclared barren column
+ * fails, and a declaration that stops being barren fails too.
+ */
+const PRESENCE_BARREN: Record<string, string> = {
+  'pg/typebox/c_uuid': "official's Type.String({ format: 'uuid' }) refuses every value with no FormatRegistry",
+};
+const usedBarren = new Set<string>();
+let presenceUnreadable = 0;
+
+const usedPresenceWaivers = new Set<string>();
+const presenceWaived = new Map<string, Map<string, string>>();
+const presenceAllowed = (dialect: string, lib: string, col: string, mode: string, signature: string) => {
+  for (const key of [`${dialect}/${lib}/${col}`, `${dialect}/${col}`]) {
+    if (!PRESENCE_ALLOWED[key]) continue;
+    usedPresenceWaivers.add(key);
+    const seen = presenceWaived.get(key) ?? new Map<string, string>();
+    seen.set(`${mode}/${lib}`, signature);
+    presenceWaived.set(key, seen);
+    return PRESENCE_ALLOWED[key].why;
   }
   return undefined;
 };
@@ -1754,6 +2064,36 @@ const CROSS_ALLOWED: Record<string, { why: string; divergence: string }> = {
   'mysql/m_real': { why: 'as pg/c_double', divergence: `Infinity: valibot/arktype accept, zod/typebox reject` },
   'mysql/m_double': { why: 'as pg/c_double', divergence: `Infinity: valibot/arktype accept, zod/typebox reject` },
   'sqlite/s_real': { why: 'as pg/c_double', divergence: `Infinity: valibot/arktype accept, zod/typebox reject` },
+  // The same two splits on the nullable table, which is what says the wrapper each generator puts
+  // round a nullable column does not change which library can express what.
+  'pg/n_json': { why: 'as pg/c_json', divergence: `NaN: arktype accept, zod/valibot/typebox reject; Infinity: arktype accept, zod/valibot/typebox reject; Date: arktype accept, zod/valibot/typebox reject; Buffer: arktype accept, zod/valibot/typebox reject; Uint8Array: arktype accept, zod/valibot/typebox reject` },
+  'mysql/m_n_json': { why: 'as pg/c_json', divergence: `NaN: arktype accept, zod/valibot/typebox reject; Infinity: arktype accept, zod/valibot/typebox reject; Date: arktype accept, zod/valibot/typebox reject; Buffer: arktype accept, zod/valibot/typebox reject; Uint8Array: arktype accept, zod/valibot/typebox reject` },
+  'sqlite/s_n_json': { why: 'as pg/c_json', divergence: `NaN: arktype accept, zod/valibot/typebox reject; Infinity: arktype accept, zod/valibot/typebox reject; Date: arktype accept, zod/valibot/typebox reject; Buffer: arktype accept, zod/valibot/typebox reject; Uint8Array: arktype accept, zod/valibot/typebox reject` },
+  /**
+   * A split that exists on the nullable path and on no other, which is the whole reason this table
+   * is here. ArkType's `number` refuses NaN, and `number | null` accepts it. Four measurements,
+   * on arktype directly rather than through anything DRZL emits:
+   *
+   *   type('number')(NaN)                             rejected
+   *   type('(number | null)')(NaN)                    accepted
+   *   type('-100 <= number <= 100')(NaN)              rejected
+   *   type('(-100 <= number <= 100 | null)')(NaN)     accepted
+   *
+   * So a bound does not hold it back and the union is what admits it. `number.integer | null` still
+   * refuses NaN, which is why the nullable integer columns do not split.
+   *
+   * This is not DRZL asking for something odd, and the parity pass proves it: official's own
+   * `drizzle-orm/arktype` produces the same acceptance, so `n_real` reports parity against official
+   * on arktype while disagreeing with its three siblings here.
+   *
+   * The database is on arktype's side. Asked through PGlite: `NaN` inserts into `real` and into
+   * `double precision`, and is refused by `integer` with 22P02. So the three that reject it are the
+   * strict ones, exactly as with `Infinity` on the 8 byte floats above, and the honest description
+   * of a Postgres float column still needs a union in every generator rather than a range.
+   */
+  'pg/n_real': { why: "arktype's number refuses NaN and its (number | null) accepts one, as Postgres does", divergence: `NaN: arktype accept, zod/valibot/typebox reject` },
+  'mysql/m_n_float': { why: 'as pg/n_real', divergence: `NaN: arktype accept, zod/valibot/typebox reject` },
+  'sqlite/s_n_real': { why: 'as pg/n_real on NaN, and as pg/c_double on Infinity, which no bound holds back here', divergence: `NaN: arktype accept, zod/valibot/typebox reject; Infinity: valibot/arktype accept, zod/typebox reject` },
   // No bigint entry either, for the reason given in ALLOWED: arktype now bounds a bigint with a
   // narrow, so the four generators agree about `c_bigint_b`, `m_bigint_b` and `s_blob_bigint`.
   // No `c_char` entry. There was one, reading "zod and valibot count code points; TypeBox and
@@ -1776,39 +2116,92 @@ const crossAllowed = (dialect: string, col: string, rows: string[]) => {
   return true;
 };
 
+/**
+ * Two tables per dialect, not one.
+ *
+ * `matrix` holds every column type and every one of them is `notNull`, so for as long as it was the
+ * only table here the comparison covered 0 nullable columns of 83. `nullable` is the other half,
+ * and it is a separate table for the reason it is a separate table in the fixture: the arktype
+ * output for a 40-column table of narrowed fields is at the edge of TS2589.
+ */
 const DIALECTS = [
   {
     name: 'pg',
-    table: pgTable,
     libs: ['zod', 'valibot', 'arktype', 'typebox'],
-    mods: {
-      zod: () => import('./gen/pg/zod/matrix.zod.js'),
-      valibot: () => import('./gen/pg/valibot/matrix.valibot.js'),
-      arktype: () => import('./gen/pg/arktype/matrix.arktype.js'),
-      typebox: () => import('./gen/pg/typebox/matrix.typebox.js'),
-    } as Record<string, () => Promise<any>>,
+    tables: [
+      {
+        name: 'matrix',
+        table: pgTable,
+        mods: {
+          zod: () => import('./gen/pg/zod/matrix.zod.js'),
+          valibot: () => import('./gen/pg/valibot/matrix.valibot.js'),
+          arktype: () => import('./gen/pg/arktype/matrix.arktype.js'),
+          typebox: () => import('./gen/pg/typebox/matrix.typebox.js'),
+        } as Record<string, () => Promise<any>>,
+      },
+      {
+        name: 'nullable',
+        table: pgNullable,
+        mods: {
+          zod: () => import('./gen/pg/zod/nullable.zod.js'),
+          valibot: () => import('./gen/pg/valibot/nullable.valibot.js'),
+          arktype: () => import('./gen/pg/arktype/nullable.arktype.js'),
+          typebox: () => import('./gen/pg/typebox/nullable.typebox.js'),
+        } as Record<string, () => Promise<any>>,
+      },
+    ],
   },
   {
     name: 'mysql',
-    table: myTable,
     libs: ['zod', 'valibot', 'arktype', 'typebox'],
-    mods: {
-      zod: () => import('./gen/mysql/zod/matrix.zod.js'),
-      valibot: () => import('./gen/mysql/valibot/matrix.valibot.js'),
-      arktype: () => import('./gen/mysql/arktype/matrix.arktype.js'),
-      typebox: () => import('./gen/mysql/typebox/matrix.typebox.js'),
-    } as Record<string, () => Promise<any>>,
+    tables: [
+      {
+        name: 'matrix',
+        table: myTable,
+        mods: {
+          zod: () => import('./gen/mysql/zod/matrix.zod.js'),
+          valibot: () => import('./gen/mysql/valibot/matrix.valibot.js'),
+          arktype: () => import('./gen/mysql/arktype/matrix.arktype.js'),
+          typebox: () => import('./gen/mysql/typebox/matrix.typebox.js'),
+        } as Record<string, () => Promise<any>>,
+      },
+      {
+        name: 'nullable',
+        table: myNullable,
+        mods: {
+          zod: () => import('./gen/mysql/zod/nullable.zod.js'),
+          valibot: () => import('./gen/mysql/valibot/nullable.valibot.js'),
+          arktype: () => import('./gen/mysql/arktype/nullable.arktype.js'),
+          typebox: () => import('./gen/mysql/typebox/nullable.typebox.js'),
+        } as Record<string, () => Promise<any>>,
+      },
+    ],
   },
   {
     name: 'sqlite',
-    table: sqTable,
     libs: ['zod', 'valibot', 'arktype', 'typebox'],
-    mods: {
-      zod: () => import('./gen/sqlite/zod/matrix.zod.js'),
-      valibot: () => import('./gen/sqlite/valibot/matrix.valibot.js'),
-      arktype: () => import('./gen/sqlite/arktype/matrix.arktype.js'),
-      typebox: () => import('./gen/sqlite/typebox/matrix.typebox.js'),
-    } as Record<string, () => Promise<any>>,
+    tables: [
+      {
+        name: 'matrix',
+        table: sqTable,
+        mods: {
+          zod: () => import('./gen/sqlite/zod/matrix.zod.js'),
+          valibot: () => import('./gen/sqlite/valibot/matrix.valibot.js'),
+          arktype: () => import('./gen/sqlite/arktype/matrix.arktype.js'),
+          typebox: () => import('./gen/sqlite/typebox/matrix.typebox.js'),
+        } as Record<string, () => Promise<any>>,
+      },
+      {
+        name: 'nullable',
+        table: sqNullable,
+        mods: {
+          zod: () => import('./gen/sqlite/zod/nullable.zod.js'),
+          valibot: () => import('./gen/sqlite/valibot/nullable.valibot.js'),
+          arktype: () => import('./gen/sqlite/arktype/nullable.arktype.js'),
+          typebox: () => import('./gen/sqlite/typebox/nullable.typebox.js'),
+        } as Record<string, () => Promise<any>>,
+      },
+    ],
   },
 ];
 
@@ -1816,15 +2209,35 @@ const PREFIX = { select: 'Select', insert: 'Insert', update: 'Update' } as const
 let findings = 0;
 
 /**
- * Every column of every fixture, in every library and every mode: 40 Postgres, 29 MySQL and 14
- * SQLite columns, times four libraries, times three modes.
+ * Every column of every fixture, in every library and every mode: 40 + 16 Postgres, 29 + 12 MySQL
+ * and 14 + 11 SQLite columns, `matrix` and `nullable`, times four libraries, times three modes.
  *
  * Written out rather than derived from the arrays above, which would make it true by construction
  * and say nothing. The 0.4x stage has carried this since it was written; this pass had only the
  * per-pairing guard, which cannot see a whole dialect quietly dropping out.
  */
-const EXPECTED_COMPARISONS = (40 + 29 + 14) * 4 * 3;
+const EXPECTED_COMPARISONS = (40 + 16 + 29 + 12 + 14 + 11) * 4 * 3;
 let totalCompared = 0;
+/**
+ * The same denominator for the presence axis, counted separately.
+ *
+ * Presence is asked of the object and the value pool is asked of the field, so one can go quiet
+ * while the other keeps reporting: the two counters are what makes that visible. This one is the
+ * whole point of the axis, because the state it guards against is the one that existed before it,
+ * where the number of optionality comparisons was zero and every pairing still printed `parity`.
+ */
+let presenceCompared = 0;
+/** Column pairings the presence axis could not read because a side crashed on the omission. */
+let presenceCrashed = 0;
+const presenceProblems: string[] = [];
+// Which sides crashed on an omission, keyed `<dialect>/<library>/<column>`, held to THREW below.
+const presenceThrew = new Map<string, { sides: Set<string>; modes: Set<string> }>();
+const recordPresenceCrash = (key: string, side: string, mode: string) => {
+  const seen = presenceThrew.get(key) ?? { sides: new Set<string>(), modes: new Set<string>() };
+  seen.sides.add(side);
+  seen.modes.add(mode);
+  presenceThrew.set(key, seen);
+};
 
 /**
  * Which drizzle-orm this tree actually resolved.
@@ -1845,25 +2258,29 @@ if (typeof drizzleVersion !== 'string' || drizzleVersion.split('.')[0] !== '1') 
 console.log(`    drizzle-orm ${drizzleVersion}, with its own zod, valibot, arktype and typebox-legacy modules`);
 
 for (const d of DIALECTS) {
-  const loaded: Record<string, any> = {};
-  for (const lib of d.libs) loaded[lib] = await d.mods[lib]();
+  const loaded: Record<string, Record<string, any>> = {};
+  for (const t of d.tables) {
+    loaded[t.name] = {};
+    for (const lib of d.libs) loaded[t.name][lib] = await t.mods[lib]();
+  }
 
+  for (const t of d.tables) {
   for (const mode of ['select', 'insert', 'update'] as const) {
     for (const libName of d.libs) {
       const off = OFFICIAL[libName]?.[mode];
       if (!off) continue;
       const lib = LIBS[libName];
-      const official = off(d.table as never);
-      const mine = loaded[libName][`${PREFIX[mode]}matrixSchema`];
+      const official = off(t.table as never);
+      const mine = loaded[t.name][libName][`${PREFIX[mode]}${t.name}Schema`];
       if (!mine) {
-        console.log(`    ${d.name}/${libName}/${mode}: no ${PREFIX[mode]}matrixSchema exported`);
+        console.log(`    ${d.name}/${libName}/${mode}: no ${PREFIX[mode]}${t.name}Schema exported`);
         findings++;
         continue;
       }
 
       // Column names come from the zod schema regardless of library: every generator emits the
       // same set, and zod is the one whose shape is trivially enumerable.
-      const oShape = OFFICIAL.zod[mode](d.table as never).shape;
+      const oShape = OFFICIAL.zod[mode](t.table as never).shape;
       const rows: string[] = [];
       let waivedCount = 0;
       // Columns where both sides yielded a field and the pool was actually pushed through them.
@@ -1948,6 +2365,51 @@ for (const d of DIALECTS) {
         );
       }
 
+      /**
+       * The other axis: whether each side lets the key be missing.
+       *
+       * Kept apart from the pool loop above rather than folded into it as one more probe, because
+       * an absence is not a value and the signatures in ALLOWED are lists of values. Folding it in
+       * would also move the `every probe official rejects` shorthand on every column that carries
+       * it, which describes what the two schemas do with the pool.
+       */
+      const oPres = askPresence(lib, official, Object.keys(oShape));
+      const mPres = askPresence(lib, mine, Object.keys(oShape));
+      const readSide = (r: typeof oPres, side: string) => {
+        for (const k of r.barren) {
+          const key = `${d.name}/${libName}/${k}`;
+          if (PRESENCE_BARREN[key]) { usedBarren.add(key); continue; }
+          presenceProblems.push(
+            `${d.name}/${t.name}/${mode}/${libName} ${side} accepts no pool value for ${k}, so no ` +
+              'object satisfying it can be built, and nothing declares that'
+          );
+        }
+        // A control that failed with no barren column behind it is a state nothing here explains.
+        if (r.control && !r.barren.length) {
+          presenceProblems.push(`${d.name}/${t.name}/${mode}/${libName} ${side} ${r.control}`);
+        }
+      };
+      readSide(oPres, 'official');
+      readSide(mPres, 'DRZL');
+      for (const k of oPres.crashed) recordPresenceCrash(`${d.name}/${libName}/${k}`, 'official', mode);
+      for (const k of mPres.crashed) recordPresenceCrash(`${d.name}/${libName}/${k}`, 'drzl', mode);
+      for (const k of Object.keys(oShape)) {
+        const a = oPres.verdicts.get(k);
+        const b = mPres.verdicts.get(k);
+        // Never a skip, and never silently: every column lands in exactly one of the three
+        // counters, and the three have to add up to the pairing count further down.
+        if (!a || !b) {
+          if (oPres.crashed.includes(k) || mPres.crashed.includes(k)) presenceCrashed++;
+          else presenceUnreadable++;
+          continue;
+        }
+        presenceCompared++;
+        if (a === b) continue;
+        const signature = `official ${a}, DRZL ${b}`;
+        if (presenceAllowed(d.name, libName, k, mode, signature)) { waivedCount++; continue; }
+        rows.push(`        ${k}: the key is ${a} for official and ${b} for DRZL`);
+      }
+
       totalCompared += compared;
       // A run that compared no column at all would otherwise print `parity` and pass. That is the
       // shape of failure this file has been bitten by most: the stage was green because it had
@@ -1957,7 +2419,7 @@ for (const d of DIALECTS) {
       }
 
       console.log(
-        `    ${d.name.padEnd(7)} ${libName.padEnd(8)} ${mode.padEnd(7)} ` +
+        `    ${d.name.padEnd(7)} ${t.name.padEnd(8)} ${libName.padEnd(8)} ${mode.padEnd(7)} ` +
           `${compared}/${Object.keys(oShape).length} cols compared  ${rows.length ? 'DIFFERS' : 'parity'}` +
           `${waivedCount ? ` (${waivedCount} waived)` : ''}`
       );
@@ -1967,14 +2429,16 @@ for (const d of DIALECTS) {
       }
     }
   }
+  }
 
   // Pass 2, on every dialect that has all four generators, which is now all three.
   if (d.libs.length === 4) {
-    const oShape = OFFICIAL.zod.select(d.table as never).shape;
     const disagreements: string[] = [];
+    for (const t of d.tables) {
+    const oShape = OFFICIAL.zod.select(t.table as never).shape;
     for (const k of Object.keys(oShape)) {
       const fields: Record<string, any> = {};
-      for (const lib of d.libs) fields[lib] = safeField(LIBS[lib], loaded[lib].SelectmatrixSchema, k);
+      for (const lib of d.libs) fields[lib] = safeField(LIBS[lib], loaded[t.name][lib][`Select${t.name}Schema`], k);
       const found: string[] = [];
       const absent = Object.entries(fields).filter(([, f]) => !f).map(([n]) => n);
       if (absent.length) {
@@ -2001,6 +2465,7 @@ for (const d of DIALECTS) {
       // the four generators agree about sat there indefinitely, and `pg/c_char` was one.
       if (crossAllowed(d.name, k, found)) continue;
       disagreements.push(...found);
+    }
     }
     // Printed rather than implied, because the line below used to claim universal agreement while
     // seven columns disagreed on five values each and were being discarded unread.
@@ -2101,12 +2566,16 @@ const capProblems: string[] = [];
 const capMeasured: string[] = [];
 const capUnreachable: string[] = [];
 {
+  // The `matrix` table specifically: `m_tinytext` and its siblings are declared there, and the
+  // `nullable` table's `m_n_tinytext` is a different column with its own cap. Named rather than
+  // taken as the first table, so this stage cannot start measuring a different one by accident.
   const mysql = DIALECTS.find((d) => d.name === 'mysql');
-  if (!mysql) {
-    capProblems.push('the MySQL dialect is not in this pass, so no byte cap was measured');
+  const mysqlMatrix = mysql?.tables.find((t) => t.name === 'matrix');
+  if (!mysql || !mysqlMatrix) {
+    capProblems.push('the MySQL matrix table is not in this pass, so no byte cap was measured');
   } else {
     const loaded: Record<string, any> = {};
-    for (const lib of mysql.libs) loaded[lib] = await mysql.mods[lib]();
+    for (const lib of mysql.libs) loaded[lib] = await mysqlMatrix.mods[lib]();
     for (const [col, cap] of Object.entries(TEXT_CAPS)) {
       const wide = Math.floor(cap / 3);
       const rest = cap - wide * 3;
@@ -2131,7 +2600,7 @@ const capUnreachable: string[] = [];
       for (const mode of ['select', 'insert', 'update'] as const) {
         for (const libName of mysql.libs) {
           const lib = LIBS[libName];
-          const o = safeField(lib, OFFICIAL[libName][mode](mysql.table as never), col);
+          const o = safeField(lib, OFFICIAL[libName][mode](mysqlMatrix.table as never), col);
           const m = safeField(lib, loaded[libName][`${PREFIX[mode]}matrixSchema`], col);
           if (!o || !m) {
             capProblems.push(`${col} has no field on ${mode}/${libName}, so no cap was measured`);
@@ -2215,6 +2684,53 @@ if (totalCompared !== EXPECTED_COMPARISONS) {
 }
 console.log(`    ${totalCompared} column comparisons`);
 
+// The presence axis, held to the same denominator. It is a separate counter because it is a
+// separate question asked of a separate object, and because the state it exists to end is one where
+// this number was zero and every pairing still printed `parity`.
+if (presenceCompared + presenceCrashed + presenceUnreadable !== EXPECTED_COMPARISONS) {
+  presenceProblems.push(
+    `${presenceCompared} key-presence comparisons plus ${presenceCrashed} crashed and ` +
+      `${presenceUnreadable} unreadable, which is not the ${EXPECTED_COMPARISONS} column pairings ` +
+      'the value pool is pushed through'
+  );
+}
+for (const key of Object.keys(PRESENCE_BARREN)) {
+  if (!usedBarren.has(key)) {
+    presenceProblems.push(`PRESENCE_BARREN[${key}] names a column that accepts a pool value now, so delete it`);
+  }
+}
+console.log(
+  `    ${presenceCompared} key-presence comparisons asked of the object rather than the field, ` +
+    `${presenceCrashed} where a side crashed on the omission and ${presenceUnreadable} with no ` +
+    `object to ask about (${Object.keys(PRESENCE_BARREN).join(', ')})`
+);
+
+// The omission crashes, held to THREW from both ends, exactly as the value crashes are.
+for (const [key, seen] of presenceThrew) {
+  const e = THREW[key];
+  if (!e) {
+    presenceProblems.push(
+      `${key}: ${[...seen.sides].sort().join('/')} crashed on the object with the key omitted in ` +
+        `${[...seen.modes].sort().join(', ')}, and is in no list`
+    );
+    continue;
+  }
+  const gotSides = [...seen.sides].sort().join(',');
+  if (gotSides !== e.side) {
+    presenceProblems.push(`THREW[${key}] declares side ${e.side}, and the omission crashed on ${gotSides}`);
+  }
+  const gotModes = [...seen.modes].sort().join(',');
+  const wantModes = [...e.absentModes].sort().join(',');
+  if (gotModes !== wantModes) {
+    presenceProblems.push(`THREW[${key}] declares absentModes ${wantModes || 'none'}, measured ${gotModes}`);
+  }
+}
+for (const [key, e] of Object.entries(THREW)) {
+  if (e.absentModes.length && !presenceThrew.has(key)) {
+    presenceProblems.push(`THREW[${key}] declares absentModes ${e.absentModes.join(',')} and no omission crashed there`);
+  }
+}
+
 /**
  * How many waivers run each way, counted from the map rather than stated in a sentence.
  *
@@ -2246,6 +2762,9 @@ console.log(
 const deadWaivers = [
   ...Object.keys(ALLOWED).filter((k) => !usedWaivers.has(k)).map((k) => `ALLOWED[${k}]`),
   ...Object.keys(CROSS_ALLOWED).filter((k) => !usedCrossWaivers.has(k)).map((k) => `CROSS_ALLOWED[${k}]`),
+  ...Object.keys(PRESENCE_ALLOWED)
+    .filter((k) => !usedPresenceWaivers.has(k))
+    .map((k) => `PRESENCE_ALLOWED[${k}]`),
 ];
 
 // The exact divergence each waiver covers, compared with what it actually suppressed. Every
@@ -2253,8 +2772,12 @@ const deadWaivers = [
 // every declaration has to claim at least one pairing. This is what "suppressed something" cannot
 // say: stripping the length caps off `m_tinytext` still suppresses something, just something else.
 const waiverProblems: string[] = [];
-for (const [key, seen] of waived) {
-  const entry = ALLOWED[key];
+// One routine for both maps, so the presence axis cannot end up held to a weaker rule than the
+// value axis. The 0.4x pass had exactly that shape for a round: two ledgers side by side, one
+// asserted in both directions and one only checked for additions.
+const checkWaivers = (map: Record<string, Waiver>, seenAll: Map<string, Map<string, string>>, name: string) => {
+for (const [key, seen] of seenAll) {
+  const entry = map[key];
   // Which pairings carry the divergence, not only what it looks like. A signature alone is
   // satisfied by any non-empty subset: deleting the `m_tinytext` byte cap on insert and update
   // and leaving select alone left this pass green, four pairings matching where twelve should,
@@ -2263,12 +2786,12 @@ for (const [key, seen] of waived) {
   const gotModes = [...new Set([...seen.keys()].map((x) => x.split('/')[0]))].sort().join(',');
   const wantLibs = [...entry.libs].sort().join(',');
   const wantModes = [...entry.modes].sort().join(',');
-  if (gotLibs !== wantLibs) waiverProblems.push(`ALLOWED[${key}] declares libs ${wantLibs}, measured ${gotLibs}`);
-  if (gotModes !== wantModes) waiverProblems.push(`ALLOWED[${key}] declares modes ${wantModes}, measured ${gotModes}`);
+  if (gotLibs !== wantLibs) waiverProblems.push(`${name}[${key}] declares libs ${wantLibs}, measured ${gotLibs}`);
+  if (gotModes !== wantModes) waiverProblems.push(`${name}[${key}] declares modes ${wantModes}, measured ${gotModes}`);
   const wantPairings = entry.libs.length * entry.modes.length;
   if (seen.size !== wantPairings) {
     waiverProblems.push(
-      `ALLOWED[${key}] declares ${wantPairings} pairings, measured ${seen.size}: ` +
+      `${name}[${key}] declares ${wantPairings} pairings, measured ${seen.size}: ` +
         [...seen.keys()].sort().join(', ')
     );
   }
@@ -2277,7 +2800,7 @@ for (const [key, seen] of waived) {
     const hits = Object.keys(entry.divergence).filter((d) => pairingMatches(d, pairing));
     if (hits.length !== 1) {
       waiverProblems.push(
-        `ALLOWED[${key}] has ${hits.length} declarations for ${pairing}, needs exactly one. ` +
+        `${name}[${key}] has ${hits.length} declarations for ${pairing}, needs exactly one. ` +
           `Measured there: ${sig}`
       );
       continue;
@@ -2286,13 +2809,16 @@ for (const [key, seen] of waived) {
     const want = entry.divergence[hits[0]];
     if (want === sig) continue;
     waiverProblems.push(
-      `ALLOWED[${key}] on ${pairing} declares\n        ${want}\n      and measured\n        ${sig}`
+      `${name}[${key}] on ${pairing} declares\n        ${want}\n      and measured\n        ${sig}`
     );
   }
   for (const d of Object.keys(entry.divergence)) {
-    if (!claimed.has(d)) waiverProblems.push(`ALLOWED[${key}] declaration '${d}' matched no pairing`);
+    if (!claimed.has(d)) waiverProblems.push(`${name}[${key}] declaration '${d}' matched no pairing`);
   }
 }
+};
+checkWaivers(ALLOWED, waived, 'ALLOWED');
+checkWaivers(PRESENCE_ALLOWED, presenceWaived, 'PRESENCE_ALLOWED');
 if (waiverProblems.length) {
   console.error('FAIL: a waiver no longer covers the divergence it was written for. Re-measure it');
   console.error('      and update the signature, or delete it. A waiver that says only "something');
@@ -2397,7 +2923,12 @@ for (const [key, seen] of crashVerdict) {
  */
 const arbiterProblems: string[] = [];
 {
-  const pgColumns = getTableConfig(pgTable as never).columns as { name: string; getSQLType: () => string }[];
+  // Every Postgres table in the comparison, not only `matrix`: a crash site on a `nullable` column
+  // has to reach the same database this one does, and a lookup over one table would report it as a
+  // column no DDL can be built for.
+  const pgColumns = [pgTable, pgNullable].flatMap(
+    (t) => getTableConfig(t as never).columns as { name: string; getSQLType: () => string }[]
+  );
   const wanted: { key: string; label: string; value: unknown; dialect: string; column: string }[] = [];
   for (const [key, e] of Object.entries(THREW)) {
     const [dialect, , column] = key.split('/');
@@ -2517,6 +3048,13 @@ if (findings) {
   console.error('      the answer in ALLOWED with its measurement, or fix the generator.');
 }
 
+if (presenceProblems.length) {
+  console.error('FAIL: the key-presence axis could not measure what it claims to. A column no side');
+  console.error('      accepts a value for, or an object a side refuses despite being built from');
+  console.error('      its own accepted values, is not a reading and must not be compared as one:');
+  for (const p of presenceProblems) console.error(`      ${p}`);
+}
+
 // Counted separately and exited on together, so one run reports both rather than hiding the
 // second behind the first. A dead waiver is not a looser schema and must not be described as one.
 if (
@@ -2527,6 +3065,7 @@ if (
   waiverProblems.length ||
   crossProblems.length ||
   capProblems.length ||
+  presenceProblems.length ||
   totalCompared !== EXPECTED_COMPARISONS
 ) {
   process.exit(1);
@@ -2615,7 +3154,7 @@ CONFIG
   # `components.ts` are not the `<table>.<lib>.ts` shape the loop above assumes, and a kind that
   # emitted nothing at all would otherwise be found only by an import failing much further down.
   if [ "$dialect" = pg ]; then
-    for f in matrix.schema.ts checked.schema.ts defaulted.schema.ts components.ts index.ts; do
+    for f in matrix.schema.ts nullable.schema.ts checked.schema.ts defaulted.schema.ts components.ts index.ts; do
       if [ ! -e "src/gen/pg/json-schema/$f" ]; then
         echo "FAIL: the json-schema generator produced no src/gen/pg/json-schema/$f." >&2
         exit 1
@@ -2623,6 +3162,7 @@ CONFIG
     done
   fi
 done
+
 
 # ---------------------------------------------------------------------------------------------
 # Does the parity matrix output compile?
@@ -4462,10 +5002,15 @@ MYSQL_TEXT
 # Read out of the parity tree rather than re-typed, so widening that fixture widens this
 # comparison instead of leaving a copy of it behind to drift.
 #
-# One column comes out: 0.4x's pg-core has no `bytea` export at all, so a fixture carrying it
+# Two columns come out: 0.4x's pg-core has no `bytea` export at all, so a fixture carrying one
 # cannot even be imported there. That is asserted in check-old.ts rather than trusted, and the
 # edit below is checked for having changed something, since a `sed` that matches nothing is the
 # quiet way to end up analyzing the wrong file.
+#
+# The second is `c_bytea_null`, on the `nullable` table, and it is named for the first so that the
+# same line-delete takes it. The check that no line mentioning the type survives is what holds
+# that, which is also why no comment in the fixture may mention the type without the `c_` prefix:
+# such a line survives the delete and fails the check.
 [ -f "$PARITY/src/schema.ts" ] || {
   echo "FAIL: the parity fixture is not where this stage expects it, so there is nothing to" >&2
   echo "      analyze under both majors." >&2
@@ -4658,6 +5203,7 @@ const DEFECTS: Record<string, string> = {
   'matrix.c_date_d.dbType': 'as rows.day.dbType',
   'matrix.c_date_s.dbType': 'as rows.day.dbType',
   'matrix.c_varchar_arr.dbType': 'as rows.name.dbType',
+  'nullable.n_varchar.dbType': 'as rows.name.dbType',
   'matrix.c_inet.dbType': 'label only: PgInet is named TEXT on 0.4x',
   'matrix.c_cidr.dbType': 'as matrix.c_inet.dbType',
   'matrix.c_macaddr.dbType': 'as matrix.c_inet.dbType',
@@ -4688,6 +5234,11 @@ const DEFECTS: Record<string, string> = {
   'matrix.c_vector.tsType': 'unnamed on 0.4x: no PgVector arm in the class-name path',
   'matrix.c_vector.dbType': 'as matrix.c_vector.tsType',
   'matrix.c_vector.shape': 'as matrix.c_vector.tsType',
+  // The nullable twin of the third, which is what says the gap is about the class rather than
+  // about the `notNull` the two columns differ by.
+  'nullable.n_vector.tsType': 'as matrix.c_vector.tsType',
+  'nullable.n_vector.dbType': 'as matrix.c_vector.tsType',
+  'nullable.n_vector.shape': 'as matrix.c_vector.tsType',
 
   // ---- MySQL's text family carries no character cap on 0.4x ----------------------------------
   // v1's `MySqlText` states `length` equal to the type's cap, 255 for `tinytext` and 65535 for
@@ -4886,7 +5437,7 @@ for (const t of tables) {
 // sites are MySQL-gated, so "set only on MySQL" is the part of the old sentence that held.
 const REQUIRED = [
   'rows', 'parents', 'children', 'pairs', 'notes', 'mtext', 'matrix', 'arrays', 'defaulted',
-  'checked',
+  'checked', 'nullable',
 ];
 const missing = REQUIRED.filter((t) => !a.tables[t] || !b.tables[t]);
 if (missing.length) {
@@ -5023,6 +5574,10 @@ const KNOWN_UNNAMED: Record<string, string> = {
   'matrix.c_geometry': 'no PgGeometry arm in the class-name path',
   'matrix.c_bit': 'no PgBinaryVector arm, the class a bit column uses',
   'matrix.c_vector': 'no PgVector arm in the class-name path',
+  // The nullable twin of the third, in the table the same fixture now carries. Same class, same
+  // missing arm, and listing it is what says the gap is about the class rather than about the
+  // `notNull` the two columns differ by.
+  'nullable.n_vector': 'as matrix.c_vector',
 };
 
 // `npm init -y` leaves the project CommonJS, where tsx refuses a top-level await.
@@ -5212,6 +5767,7 @@ CONFIG
   done
 done
 
+
 cat > parity-0-4x.ts <<'PARITY_0_4X'
 /**
  * Differential parity for DRZL's validator generators on drizzle-orm 0.4x.
@@ -5262,7 +5818,17 @@ import { readFileSync } from 'node:fs';
 import { constants } from 'node:buffer';
 import { getTableConfig } from 'drizzle-orm/pg-core';
 import { SchemaAnalyzer } from '@drzl/analyzer';
-import { POOL, LIBS, probe, askPostgres, type DbProbe, type Lib, type Verdict } from './src/pool.js';
+import {
+  POOL,
+  LIBS,
+  probe,
+  askPostgres,
+  askPresence,
+  type DbProbe,
+  type Lib,
+  type Presence,
+  type Verdict,
+} from './src/pool.js';
 
 import {
   createSelectSchema as zSelect,
@@ -5285,9 +5851,9 @@ import {
   createUpdateSchema as tUpdate,
 } from 'drizzle-typebox';
 
-import { matrix as pgTable } from './src/matrix.js';
-import { matrix as myTable } from './src/matrix-mysql.js';
-import { matrix as sqTable } from './src/matrix-sqlite.js';
+import { matrix as pgTable, nullable as pgNullable } from './src/matrix.js';
+import { matrix as myTable, nullable as myNullable } from './src/matrix-mysql.js';
+import { matrix as sqTable, nullable as sqNullable } from './src/matrix-sqlite.js';
 
 const OFFICIAL: Record<string, Record<string, (t: any) => any>> = {
   zod: { select: zSelect, insert: zInsert, update: zUpdate },
@@ -5581,6 +6147,31 @@ const ALLOWED: Record<string, Entry> = {
   'mysql/m_real': { libs: LIB_NAMES, modes: MODE_NAMES, divergence: { '*/zod,typebox': `L: 9007199254740993, 3.4028235e38 | T: `, '*/valibot,arktype': `L: 9007199254740993, 3.4028235e38, Infinity | T: ` }, drzl: 'as pg/c_double', official: 'as pg/c_double', filed: 'as pg/c_real' },
   'mysql/m_double': { libs: LIB_NAMES, modes: MODE_NAMES, divergence: { '*/zod,typebox': `L: 9007199254740993, 3.4028235e38 | T: `, '*/valibot,arktype': `L: 9007199254740993, 3.4028235e38, Infinity | T: ` }, drzl: 'as pg/c_double', official: 'as pg/c_double', filed: 'as pg/c_real' },
   'sqlite/s_real': { libs: LIB_NAMES, modes: MODE_NAMES, divergence: { '*/zod,typebox': `L: 9007199254740993, 3.4028235e38 | T: `, '*/valibot,arktype': `L: 9007199254740993, 3.4028235e38, Infinity | T: ` }, drzl: 'as pg/c_double', official: 'as pg/c_double', filed: 'as pg/c_real' },
+
+  // ---- the nullable table --------------------------------------------------------------------
+  // Each of these is the divergence its `notNull` twin in `matrix` already carries, measured again
+  // through the wrapper each generator puts round a nullable column. A signature identical to the
+  // twin's is the evidence that the wrapping loses nothing. `n_check` is the exception and has no
+  // twin: no column of `matrix` carries a CHECK, and no first-party module reads one at all.
+  'pg/n_real': { libs: LIB_NAMES, modes: MODE_NAMES, divergence: { '*/*': `L: 9000000, 2147483648, 9007199254740993, 3.4028235e38 | T: ` }, drzl: 'as pg/c_real', official: 'as pg/c_real', filed: 'as pg/c_real' },
+  'pg/n_json': { libs: ['valibot'], modes: MODE_NAMES, divergence: { '*/*': `L:  | T: Infinity, Date, Buffer, Uint8Array` }, drzl: 'as pg/c_json', official: 'as pg/c_json', filed: 'as pg/c_json' },
+  'pg/n_point': { libs: ['valibot'], modes: MODE_NAMES, divergence: { '*/*': `L:  | T: [1,2,3]` }, drzl: 'as pg/c_point', official: 'as pg/c_point', filed: 'as pg/c_point' },
+  'pg/n_ts': { libs: LIB_NAMES, modes: WRITE, divergence: { '*/zod': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', '12.5', '0101', '010' | T: `, '*/valibot,arktype,typebox': `L: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010' | T: ` }, drzl: 'as pg/c_date_d', official: 'as pg/c_date_d', filed: 'as pg/c_date_d' },
+  // The database has already answered this one in this same script: the CHECK ground-truth stage
+  // runs 53 probes over the `checked` table against a real Postgres and reports rows Postgres
+  // rejects and the validator accepts as DRZL 0, drizzle-orm 22. `n_check` is
+  // `integer CHECK (n_check >= 18)` and 0, 1 and -1 are the pool values under 18.
+  'pg/n_check': { libs: LIB_NAMES, modes: MODE_NAMES, divergence: { '*/*': `L:  | T: 0, 1, -1, 200, 40000, 9000000, 1900, 2000, 2500` }, drzl: 'the column CHECK, as a bound', official: 'no CHECK at all: no first-party module reads one', filed: 'not a defect: this is what DRZL is for' },
+  'mysql/m_n_text': { libs: LIB_NAMES, modes: MODE_NAMES, divergence: { '*/*': `L:  | T: 22000 cjk` }, drzl: 'as mysql/m_text', official: 'as mysql/m_text', filed: 'as mysql/m_text' },
+  'mysql/m_n_tinytext': { libs: LIB_NAMES, modes: MODE_NAMES, divergence: { '*/*': `L:  | T: 100 emoji` }, drzl: 'as mysql/m_tinytext', official: 'as mysql/m_tinytext', filed: 'as mysql/m_tinytext' },
+  'mysql/m_n_float': { libs: LIB_NAMES, modes: MODE_NAMES, divergence: { '*/*': `L: 9000000, 2147483648, 9007199254740993 | T: ` }, drzl: 'as mysql/m_float', official: 'as mysql/m_float', filed: 'as pg/c_real' },
+  'mysql/m_n_json': { libs: ['valibot'], modes: MODE_NAMES, divergence: { '*/*': `L:  | T: Infinity, Date, Buffer, Uint8Array` }, drzl: 'as pg/c_json', official: 'as pg/c_json', filed: 'as pg/c_json' },
+  'mysql/m_n_datetime': { libs: LIB_NAMES, modes: WRITE, divergence: { '*/zod': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', '12.5', '0101', '010' | T: `, '*/valibot,arktype,typebox': `L: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010' | T: ` }, drzl: 'as pg/c_date_d', official: 'as pg/c_date_d', filed: 'as pg/c_date_d' },
+  'mysql/m_n_check': { libs: LIB_NAMES, modes: MODE_NAMES, divergence: { '*/*': `L:  | T: 0, 1, -1, 200, 40000, 9000000, 1900, 2000, 2500` }, drzl: 'as pg/n_check', official: 'as pg/n_check', filed: 'as pg/n_check' },
+  'sqlite/s_n_real': { libs: LIB_NAMES, modes: MODE_NAMES, divergence: { '*/zod,typebox': `L: 9007199254740993, 3.4028235e38 | T: `, '*/valibot,arktype': `L: 9007199254740993, 3.4028235e38, Infinity | T: ` }, drzl: 'as pg/c_double', official: 'as pg/c_double', filed: 'as pg/c_real' },
+  'sqlite/s_n_json': { libs: ['valibot'], modes: MODE_NAMES, divergence: { '*/*': `L:  | T: Infinity, Date, Buffer, Uint8Array` }, drzl: 'as pg/c_json', official: 'as pg/c_json', filed: 'as pg/c_json' },
+  'sqlite/s_n_ts': { libs: LIB_NAMES, modes: WRITE, divergence: { '*/zod': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', '12.5', '0101', '010' | T: `, '*/valibot,arktype,typebox': `L: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010' | T: ` }, drzl: 'as pg/c_date_d', official: 'as pg/c_date_d', filed: 'as pg/c_date_d' },
+  'sqlite/s_n_check': { libs: LIB_NAMES, modes: MODE_NAMES, divergence: { '*/*': `L:  | T: 0, 1, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500` }, drzl: 'as pg/n_check', official: 'as pg/n_check', filed: 'as pg/n_check' },
 };
 
 /**
@@ -5828,6 +6419,123 @@ const DEFECTS: Record<string, Entry> = {
     official: 'a bigint within the signed 64-bit range',
     filed: 'new',
   },
+
+  // ---- the nullable table, where the same 0.4x defects show up again -------------------------
+  // Each of these is its `matrix` twin's defect measured through a nullable wrapper, which is what
+  // says the defect is in the analysis of the column rather than in one emitted shape.
+  'pg/n_vector': {
+    libs: LIB_NAMES,
+    modes: MODE_NAMES,
+    divergence: {
+      'select/*': allProbes(56, ['null', '[1,2,3]']),
+      'insert,update/zod,valibot,arktype': allProbes(55, ['null', 'undefined', '[1,2,3]']),
+      'insert,update/typebox': allProbes(56, ['null', '[1,2,3]']),
+    },
+    drzl: 'unknown, which accepts every value in the pool',
+    official: 'an array of exactly 3 numbers, or null',
+    filed: 'as pg/c_vector: no PgVector arm in the class-name path',
+  },
+  'sqlite/s_n_blob': {
+    libs: LIB_NAMES,
+    modes: MODE_NAMES,
+    divergence: {
+      'select/*': allProbes(56, ['null', 'Buffer']),
+      'insert,update/zod,valibot,arktype': allProbes(55, ['null', 'undefined', 'Buffer']),
+      'insert,update/typebox': allProbes(56, ['null', 'Buffer']),
+    },
+    drzl: 'unknown, which accepts every value in the pool',
+    official: 'a Buffer, or null',
+    filed: 'as sqlite/s_blob_buf: no SQLiteBlobBuffer arm in the class-name path',
+  },
+  'sqlite/s_n_int': {
+    libs: ['valibot', 'arktype', 'typebox'],
+    modes: MODE_NAMES,
+    divergence: { '*/*': `L: 9007199254740993 | T: ` },
+    drzl: 'as sqlite/s_int',
+    official: 'as sqlite/s_int',
+    filed: 'as sqlite/s_int',
+  },
+  // The same column type with a default on it, which is why it carries the same defect. Its
+  // divergence is exactly `sqlite/s_n_int`'s and not the default's: `applyDefaults` is off in this
+  // config, so neither side fills anything in.
+  'sqlite/s_n_default': {
+    libs: ['valibot', 'arktype', 'typebox'],
+    modes: MODE_NAMES,
+    divergence: { '*/*': `L: 9007199254740993 | T: ` },
+    drzl: 'as sqlite/s_int',
+    official: 'as sqlite/s_int',
+    filed: 'as sqlite/s_int',
+  },
+  'sqlite/s_n_bigint': {
+    libs: LIB_NAMES,
+    modes: MODE_NAMES,
+    divergence: { '*/*': `L: 2n**70n | T: ` },
+    drzl: 'as sqlite/s_blob_bigint',
+    official: 'as sqlite/s_blob_bigint',
+    filed: 'as sqlite/s_blob_bigint',
+  },
+};
+
+/**
+ * Where DRZL and the official 0.4x module disagree about whether a key may be missing.
+ *
+ * A ledger of its own, because it answers a question of its own: the maps above are about what a
+ * schema does with a value, and this is about whether the object needs the key at all. Same shape
+ * and same both-directions assertion, with the signature `official <required|optional>, DRZL <the
+ * same two>` per pairing.
+ *
+ * Both entries are the same defect wearing a different coat. On 0.4x the analyzer cannot name these
+ * columns, so DRZL emits an unknown for them, and on TypeBox a *nullable* unknown is
+ * `Type.Union([Type.Unknown(), Type.Null()])`, which lets the key be missing. Three measurements on
+ * TypeBox itself, not on anything DRZL emits:
+ *
+ *   Type.Object({ k: Type.Unknown(), other })          the key omitted   rejected
+ *   Type.Object({ k: Union([Unknown, Null]), other })  the key omitted   accepted
+ *   the same object with the key present                                 accepted
+ *
+ * So it is the nullable form and not the unknown that opens it, which is why the six columns
+ * `matrix` cannot name are not here. Three of them are `sqlite/s_blob`, `s_blob_buf` and
+ * `s_int_ts_ms`, and this run reads their keys as required on both sides, which is what an entry
+ * for them failing as dead says. The other three are the Postgres ones, and they are not read at
+ * all: `PRESENCE_BARREN` below makes that whole pairing unreadable. A row that never mentions the
+ * column validates against the two entries that are here, and the field-level comparison cannot
+ * see it, because TypeBox keeps requiredness on the parent.
+ *
+ * Only TypeBox. zod, valibot and arktype all keep the key required for their nullable unknown, and
+ * this run measures that rather than assuming it: an entry naming another library fails, and a
+ * library that starts doing it and is not named fails too.
+ */
+/**
+ * Where the presence axis cannot read a side at all, because that side's schema for the column
+ * accepts nothing in the pool and so no object satisfying it exists.
+ *
+ * The same one column as the v1 pass, for the same reason `ALLOWED[pg/c_uuid]` above records:
+ * official emits `Type.String({ format: 'uuid' })` and TypeBox fails a format it has no entry for,
+ * so that field refuses every value. On select and insert the column is required, so no object
+ * satisfying official's Postgres TypeBox schema exists and no key of it can be asked about; on
+ * update it is optional and only that column is lost. Asserted in both directions.
+ */
+const PRESENCE_BARREN: Record<string, string> = {
+  'pg/typebox/c_uuid': "official's Type.String({ format: 'uuid' }) refuses every value with no FormatRegistry",
+};
+
+const PRESENCE: Record<string, Entry> = {
+  'pg/n_vector': {
+    libs: ['typebox'],
+    modes: ['select'],
+    divergence: { '*/*': 'official required, DRZL optional' },
+    drzl: 'Type.Union([Type.Unknown(), Type.Null()]), whose key TypeBox lets go missing',
+    official: 'a required key on select; on insert a nullable column is optional on both sides',
+    filed: 'as pg/c_vector: no PgVector arm in the class-name path',
+  },
+  'sqlite/s_n_blob': {
+    libs: ['typebox'],
+    modes: ['select'],
+    divergence: { '*/*': 'official required, DRZL optional' },
+    drzl: 'as pg/n_vector',
+    official: 'as pg/n_vector',
+    filed: 'as sqlite/s_blob_buf: no SQLiteBlobBuffer arm in the class-name path',
+  },
 };
 
 // A field lookup that throws yields nothing, and nothing is not read as agreement anywhere below:
@@ -5879,6 +6587,12 @@ type Crash = {
   drzl: Record<string, string>;
   /** What settles that answer, keyed by value. Computed by the run and compared with this. */
   arbiter: Record<string, string>;
+  /**
+   * The modes in which the same side crashes on the *object* with this key omitted, rather than
+   * reporting the key missing. Same upstream cause as the value crashes above: the length check
+   * reads `value.length` of the absent property. Asserted in both directions.
+   */
+  absentModes: string[];
 };
 const THREW: Record<string, Crash> = {
   // Official emits `{ type: 'RegExp', source: '^[01]+$', maxLength: 3 }`, and TypeBox's length
@@ -5910,6 +6624,9 @@ const THREW: Record<string, Crash> = {
       // is what keeps that from being the NULL answer under another name.
       undefined: 'postgres refuses the column omitted from the insert (SQLSTATE 23502)',
     },
+    // No omission reaches this column: `c_uuid` on the same object accepts nothing on this major
+    // either, so official's Postgres TypeBox schema has no satisfiable object. See PRESENCE_BARREN.
+    absentModes: [],
   },
 };
 
@@ -5938,46 +6655,102 @@ const UNNAMED: Record<string, string> = {
   // So the emitted validator is right, the comparison above reports parity, and nothing but this
   // line records that the analyzer still cannot describe the column. Filed as addendum Z.
   'mysql/matrix.m_enum': 'no MySqlEnumColumn arm; the generators recover the values from enumValues',
+  // The nullable table's share of the same two gaps. Both are the same class as their `matrix`
+  // twin, so listing them is the check that the gap is about the column class rather than about
+  // `notNull`, which is the only thing that differs between the two.
+  'mysql/nullable.m_n_enum': 'as mysql/matrix.m_enum',
+  'sqlite/nullable.s_n_blob': 'as sqlite/matrix.s_blob_buf',
 };
 
+// Two tables per dialect, for the reason the v1 pass has two: every column of `matrix` is
+// `notNull`, so until `nullable` arrived neither pass had compared a nullable column at all.
 const DIALECTS = [
   {
     name: 'pg',
-    table: pgTable,
-    mods: {
-      zod: () => import('./src/gen-0-4x/pg/zod/matrix.zod.js'),
-      valibot: () => import('./src/gen-0-4x/pg/valibot/matrix.valibot.js'),
-      arktype: () => import('./src/gen-0-4x/pg/arktype/matrix.arktype.js'),
-      typebox: () => import('./src/gen-0-4x/pg/typebox/matrix.typebox.js'),
-    } as Record<string, () => Promise<any>>,
+    tables: [
+      {
+        name: 'matrix',
+        table: pgTable,
+        mods: {
+          zod: () => import('./src/gen-0-4x/pg/zod/matrix.zod.js'),
+          valibot: () => import('./src/gen-0-4x/pg/valibot/matrix.valibot.js'),
+          arktype: () => import('./src/gen-0-4x/pg/arktype/matrix.arktype.js'),
+          typebox: () => import('./src/gen-0-4x/pg/typebox/matrix.typebox.js'),
+        } as Record<string, () => Promise<any>>,
+      },
+      {
+        name: 'nullable',
+        table: pgNullable,
+        mods: {
+          zod: () => import('./src/gen-0-4x/pg/zod/nullable.zod.js'),
+          valibot: () => import('./src/gen-0-4x/pg/valibot/nullable.valibot.js'),
+          arktype: () => import('./src/gen-0-4x/pg/arktype/nullable.arktype.js'),
+          typebox: () => import('./src/gen-0-4x/pg/typebox/nullable.typebox.js'),
+        } as Record<string, () => Promise<any>>,
+      },
+    ],
   },
   {
     name: 'mysql',
-    table: myTable,
-    mods: {
-      zod: () => import('./src/gen-0-4x/mysql/zod/matrix.zod.js'),
-      valibot: () => import('./src/gen-0-4x/mysql/valibot/matrix.valibot.js'),
-      arktype: () => import('./src/gen-0-4x/mysql/arktype/matrix.arktype.js'),
-      typebox: () => import('./src/gen-0-4x/mysql/typebox/matrix.typebox.js'),
-    } as Record<string, () => Promise<any>>,
+    tables: [
+      {
+        name: 'matrix',
+        table: myTable,
+        mods: {
+          zod: () => import('./src/gen-0-4x/mysql/zod/matrix.zod.js'),
+          valibot: () => import('./src/gen-0-4x/mysql/valibot/matrix.valibot.js'),
+          arktype: () => import('./src/gen-0-4x/mysql/arktype/matrix.arktype.js'),
+          typebox: () => import('./src/gen-0-4x/mysql/typebox/matrix.typebox.js'),
+        } as Record<string, () => Promise<any>>,
+      },
+      {
+        name: 'nullable',
+        table: myNullable,
+        mods: {
+          zod: () => import('./src/gen-0-4x/mysql/zod/nullable.zod.js'),
+          valibot: () => import('./src/gen-0-4x/mysql/valibot/nullable.valibot.js'),
+          arktype: () => import('./src/gen-0-4x/mysql/arktype/nullable.arktype.js'),
+          typebox: () => import('./src/gen-0-4x/mysql/typebox/nullable.typebox.js'),
+        } as Record<string, () => Promise<any>>,
+      },
+    ],
   },
   {
     name: 'sqlite',
-    table: sqTable,
-    mods: {
-      zod: () => import('./src/gen-0-4x/sqlite/zod/matrix.zod.js'),
-      valibot: () => import('./src/gen-0-4x/sqlite/valibot/matrix.valibot.js'),
-      arktype: () => import('./src/gen-0-4x/sqlite/arktype/matrix.arktype.js'),
-      typebox: () => import('./src/gen-0-4x/sqlite/typebox/matrix.typebox.js'),
-    } as Record<string, () => Promise<any>>,
+    tables: [
+      {
+        name: 'matrix',
+        table: sqTable,
+        mods: {
+          zod: () => import('./src/gen-0-4x/sqlite/zod/matrix.zod.js'),
+          valibot: () => import('./src/gen-0-4x/sqlite/valibot/matrix.valibot.js'),
+          arktype: () => import('./src/gen-0-4x/sqlite/arktype/matrix.arktype.js'),
+          typebox: () => import('./src/gen-0-4x/sqlite/typebox/matrix.typebox.js'),
+        } as Record<string, () => Promise<any>>,
+      },
+      {
+        name: 'nullable',
+        table: sqNullable,
+        mods: {
+          zod: () => import('./src/gen-0-4x/sqlite/zod/nullable.zod.js'),
+          valibot: () => import('./src/gen-0-4x/sqlite/valibot/nullable.valibot.js'),
+          arktype: () => import('./src/gen-0-4x/sqlite/arktype/nullable.arktype.js'),
+          typebox: () => import('./src/gen-0-4x/sqlite/typebox/nullable.typebox.js'),
+        } as Record<string, () => Promise<any>>,
+      },
+    ],
   },
 ];
 
 const PREFIX: Record<string, string> = { select: 'Select', insert: 'Insert', update: 'Update' };
 
 /**
- * Every column of every fixture, in every library and every mode: 39 Postgres, 28 MySQL and 14
- * SQLite columns, times four libraries, times three modes.
+ * Every column of every fixture, in every library and every mode: 39 + 15 Postgres, 28 + 12 MySQL
+ * and 14 + 11 SQLite columns, `matrix` and `nullable`, times four libraries, times three modes.
+ *
+ * The Postgres numbers are one lower than the v1 pass on both tables, and for the same reason both
+ * times: 0.45.2's pg-core has no `bytea` export, so `c_bytea` and `c_bytea_null` are both deleted
+ * from this fixture by the edit above.
  *
  * Written out rather than derived from the arrays above, which would make it true by construction
  * and say nothing. It is the check that this stage cannot pass by comparing nothing, and it is not
@@ -5985,7 +6758,7 @@ const PREFIX: Record<string, string> = { select: 'Select', insert: 'Insert', upd
  * against 0.45.2 and was green throughout. A fixture that grows a column fails here and has to be
  * re-measured, which is the intended cost.
  */
-const EXPECTED_COMPARISONS = (39 + 28 + 14) * 4 * 3;
+const EXPECTED_COMPARISONS = (39 + 15 + 28 + 12 + 14 + 11) * 4 * 3;
 
 // Read off disk rather than through `require.resolve`, whose `exports` map has no `./package.json`
 // entry for drizzle-orm. Reading it is also the point: this reports the version of the tree the
@@ -6060,23 +6833,39 @@ async function main() {
   const findings: string[] = [];
   let totalCompared = 0;
   let pairings = 0;
+  // The presence axis, counted apart from the value axis for the reason the v1 pass counts it
+  // apart: one can go quiet while the other keeps reporting, and this is the one that was at zero.
+  let presenceCompared = 0;
+  let presenceCrashed = 0;
+  let presenceUnreadable = 0;
+  const usedBarren = new Set<string>();
+  const presenceProblems: string[] = [];
+  const presenceObserved = new Map<string, Seen>();
+  const presenceThrew = new Map<string, { sides: Set<string>; modes: Set<string> }>();
+  const recordPresenceCrash = (key: string, side: string, mode: string) => {
+    const seen = presenceThrew.get(key) ?? { sides: new Set<string>(), modes: new Set<string>() };
+    seen.sides.add(side);
+    seen.modes.add(mode);
+    presenceThrew.set(key, seen);
+  };
 
   for (const d of DIALECTS) {
+    for (const t of d.tables) {
     const loaded: Record<string, any> = {};
-    for (const lib of LIB_NAMES) loaded[lib] = await d.mods[lib]();
+    for (const lib of LIB_NAMES) loaded[lib] = await t.mods[lib]();
 
     for (const mode of MODE_NAMES) {
       // Column names come from the official zod schema regardless of library: every module emits
       // the same set, and zod is the one whose shape is trivially enumerable. Built once per mode
       // rather than once per library, which was four builds of the same object.
-      const oShape = OFFICIAL.zod[mode](d.table as never).shape;
+      const oShape = OFFICIAL.zod[mode](t.table as never).shape;
       for (const libName of LIB_NAMES) {
         pairings++;
         const lib = LIBS[libName];
-        const official = OFFICIAL[libName][mode](d.table as never);
-        const mine = loaded[libName][`${PREFIX[mode]}matrixSchema`];
+        const official = OFFICIAL[libName][mode](t.table as never);
+        const mine = loaded[libName][`${PREFIX[mode]}${t.name}Schema`];
         if (!mine) {
-          findings.push(`${d.name}/${libName}/${mode}: no ${PREFIX[mode]}matrixSchema exported`);
+          findings.push(`${d.name}/${libName}/${mode}: no ${PREFIX[mode]}${t.name}Schema exported`);
           continue;
         }
         const rows: string[] = [];
@@ -6163,13 +6952,66 @@ async function main() {
           );
         }
 
+        /**
+         * The other axis: whether each side lets the key be missing.
+         *
+         * Kept apart from the pool loop above rather than folded in as one more probe, because an
+         * absence is not a value and every signature in both ledgers is a list of values. Folding
+         * it in would also move the `every probe official rejects` shorthand on the six columns
+         * that carry it, which is a statement about what the two schemas do with the pool.
+         */
+        const oPres = askPresence(lib, official, Object.keys(oShape));
+        const mPres = askPresence(lib, mine, Object.keys(oShape));
+        const readSide = (r: typeof oPres, side: string) => {
+          for (const k of r.barren) {
+            const key = `${d.name}/${libName}/${k}`;
+            if (PRESENCE_BARREN[key]) { usedBarren.add(key); continue; }
+            presenceProblems.push(
+              `${d.name}/${t.name}/${mode}/${libName} ${side} accepts no pool value for ${k}, so ` +
+                'no object satisfying it can be built, and nothing declares that'
+            );
+          }
+          if (r.control && !r.barren.length) {
+            presenceProblems.push(`${d.name}/${t.name}/${mode}/${libName} ${side} ${r.control}`);
+          }
+        };
+        readSide(oPres, 'official');
+        readSide(mPres, 'DRZL');
+        for (const k of oPres.crashed) recordPresenceCrash(`${d.name}/${libName}/${k}`, 'official', mode);
+        for (const k of mPres.crashed) recordPresenceCrash(`${d.name}/${libName}/${k}`, 'drzl', mode);
+        for (const k of Object.keys(oShape)) {
+          const a = oPres.verdicts.get(k);
+          const b = mPres.verdicts.get(k);
+          // Never a skip, and never silently: every column lands in exactly one of the three
+          // counters, and the three have to add up to the pairing count further down.
+          if (!a || !b) {
+            if (oPres.crashed.includes(k) || mPres.crashed.includes(k)) presenceCrashed++;
+            else presenceUnreadable++;
+            continue;
+          }
+          presenceCompared++;
+          if (a === b) continue;
+          const key = `${d.name}/${k}`;
+          const seen: Seen =
+            presenceObserved.get(key) ??
+            { libs: new Set(), modes: new Set(), signatures: new Map(), pairings: 0, detail: [] };
+          seen.libs.add(libName);
+          seen.modes.add(mode);
+          seen.pairings++;
+          seen.signatures.set(`${mode}/${libName}`, `official ${a}, DRZL ${b}`);
+          seen.detail.push(`${mode}/${libName} official ${a} DRZL ${b}`);
+          presenceObserved.set(key, seen);
+          if (PRESENCE[key]) { ledgered++; continue; }
+          rows.push(`${k}: the key is ${a} for official and ${b} for DRZL`);
+        }
+
         // A run that compared no column at all would otherwise print `parity` and pass.
         if (compared === 0) {
           rows.push('no column was compared on both sides, so this pairing measured nothing');
         }
         totalCompared += compared;
         console.log(
-          `    ${d.name.padEnd(7)} ${libName.padEnd(8)} ${mode.padEnd(7)} ` +
+          `    ${d.name.padEnd(7)} ${t.name.padEnd(8)} ${libName.padEnd(8)} ${mode.padEnd(7)} ` +
             `${compared}/${Object.keys(oShape).length} cols compared  ` +
             `${rows.length ? 'DIFFERS' : 'parity'}${ledgered ? ` (${ledgered} in the ledger)` : ''}`
         );
@@ -6179,6 +7021,7 @@ async function main() {
         }
       }
     }
+    }
   }
 
   const filedAlready = Object.values(DEFECTS).filter((e) => e.filed.startsWith('AC:')).length;
@@ -6187,6 +7030,12 @@ async function main() {
     Object.values(e.divergence).some((s) => s.split('|')[0].replace(/^L:/, '').trim() !== '')
   ).length;
   console.log(`    ${totalCompared} column comparisons across ${pairings} pairings`);
+  console.log(
+    `    ${presenceCompared} key-presence comparisons asked of the object rather than the field, ` +
+      `${presenceCrashed} where a side crashed on the omission and ${presenceUnreadable} with no ` +
+      `object to ask about (${Object.keys(PRESENCE_BARREN).join(', ')}); ` +
+      `${Object.keys(PRESENCE).length} column(s) where the two disagree`
+  );
   console.log(
     `    ${Object.keys(ALLOWED).length} documented divergence(s), ${looserWaivers} of them with ` +
       `DRZL accepting something official refuses; ` +
@@ -6205,9 +7054,15 @@ async function main() {
   // an entry whose libraries or modes have moved is describing a different defect from the one
   // that is there now.
   const ledgerProblems: string[] = [];
-  for (const [map, name] of [[ALLOWED, 'ALLOWED'], [DEFECTS, 'DEFECTS']] as const) {
+  for (const [map, name, from] of [
+    [ALLOWED, 'ALLOWED', observed],
+    [DEFECTS, 'DEFECTS', observed],
+    // Held to the identical rule, in the identical loop. Two ledgers side by side under different
+    // rules is the state this stage was in for a round, and the weaker one absorbed a regression.
+    [PRESENCE, 'PRESENCE', presenceObserved],
+  ] as const) {
     for (const [key, entry] of Object.entries(map)) {
-      const seen = observed.get(key);
+      const seen = from.get(key);
       if (!seen) {
         ledgerProblems.push(`${name}[${key}] suppressed nothing on this run`);
         continue;
@@ -6257,7 +7112,51 @@ async function main() {
       }
     }
   }
-  const unledgered = [...observed.keys()].filter((k) => !ALLOWED[k] && !DEFECTS[k]);
+  const unledgered = [
+    ...[...observed.keys()].filter((k) => !ALLOWED[k] && !DEFECTS[k]),
+    ...[...presenceObserved.keys()].filter((k) => !PRESENCE[k]).map((k) => `${k} (key presence)`),
+  ];
+
+  // The presence axis, held to the same denominator as the value axis, and to the same THREW
+  // ledger for the omissions official crashes on rather than answers.
+  if (presenceCompared + presenceCrashed + presenceUnreadable !== EXPECTED_COMPARISONS) {
+    presenceProblems.push(
+      `${presenceCompared} key-presence comparisons plus ${presenceCrashed} crashed and ` +
+        `${presenceUnreadable} unreadable, which is not the ${EXPECTED_COMPARISONS} column ` +
+        'pairings the value pool is pushed through'
+    );
+  }
+  for (const key of Object.keys(PRESENCE_BARREN)) {
+    if (!usedBarren.has(key)) {
+      presenceProblems.push(`PRESENCE_BARREN[${key}] names a column that accepts a pool value now, so delete it`);
+    }
+  }
+  for (const [key, seen] of presenceThrew) {
+    const e = THREW[key];
+    if (!e) {
+      presenceProblems.push(
+        `${key}: ${[...seen.sides].sort().join('/')} crashed on the object with the key omitted ` +
+          `in ${[...seen.modes].sort().join(', ')}, and is in no list`
+      );
+      continue;
+    }
+    const gotSides = [...seen.sides].sort().join(',');
+    if (gotSides !== e.side) {
+      presenceProblems.push(`THREW[${key}] declares side ${e.side}, and the omission crashed on ${gotSides}`);
+    }
+    const gotModes = [...seen.modes].sort().join(',');
+    const wantModes = [...e.absentModes].sort().join(',');
+    if (gotModes !== wantModes) {
+      presenceProblems.push(`THREW[${key}] declares absentModes ${wantModes || 'none'}, measured ${gotModes}`);
+    }
+  }
+  for (const [key, e] of Object.entries(THREW)) {
+    if (e.absentModes.length && !presenceThrew.has(key)) {
+      presenceProblems.push(
+        `THREW[${key}] declares absentModes ${e.absentModes.join(',')} and no omission crashed there`
+      );
+    }
+  }
 
   /**
    * The MySQL text caps, bracketed rather than stepped past.
@@ -6325,12 +7224,14 @@ async function main() {
   const capMeasured: string[] = [];
   const capUnreachable: string[] = [];
   {
-    const mysql = DIALECTS.find((d) => d.name === 'mysql');
-    if (!mysql) {
-      capProblems.push('the MySQL dialect is not in this stage, so no byte cap was measured');
+    // The `matrix` table by name: `m_tinytext` and its siblings live there, and `nullable` carries
+    // its own `m_n_tinytext` with its own cap.
+    const mysqlMatrix = DIALECTS.find((d) => d.name === 'mysql')?.tables.find((t) => t.name === 'matrix');
+    if (!mysqlMatrix) {
+      capProblems.push('the MySQL matrix table is not in this stage, so no byte cap was measured');
     } else {
       const loaded: Record<string, any> = {};
-      for (const lib of LIB_NAMES) loaded[lib] = await mysql.mods[lib]();
+      for (const lib of LIB_NAMES) loaded[lib] = await mysqlMatrix.mods[lib]();
       for (const [col, cap] of Object.entries(TEXT_CAPS)) {
         const wide = Math.floor(cap / 3);
         const rest = cap - wide * 3;
@@ -6355,7 +7256,7 @@ async function main() {
         for (const mode of MODE_NAMES) {
           for (const libName of LIB_NAMES) {
             const lib = LIBS[libName];
-            const o = safeField(lib, OFFICIAL[libName][mode](mysql.table as never), col);
+            const o = safeField(lib, OFFICIAL[libName][mode](mysqlMatrix.table as never), col);
             const m = safeField(lib, loaded[libName][`${PREFIX[mode]}matrixSchema`], col);
             if (!o || !m) {
               capProblems.push(`${col} has no field on ${mode}/${libName}, so no cap was measured`);
@@ -6536,7 +7437,10 @@ async function main() {
    */
   const arbiterProblems: string[] = [];
   {
-    const pgColumns = getTableConfig(pgTable as never).columns as { name: string; getSQLType: () => string }[];
+    // Both Postgres tables, so a crash site on a `nullable` column reaches the same database.
+    const pgColumns = [pgTable, pgNullable].flatMap(
+      (t) => getTableConfig(t as never).columns as { name: string; getSQLType: () => string }[]
+    );
     const wanted: { key: string; label: string; value: unknown; dialect: string; column: string }[] = [];
     for (const [key, e] of Object.entries(THREW)) {
       const [dialect, , column] = key.split('/');
@@ -6702,6 +7606,13 @@ async function main() {
     console.error('          sentence used to claim. Ask the database which side is right, then');
     console.error('          put the answer in ALLOWED with its measurement, or fix the generator.');
   }
+  if (presenceProblems.length) {
+    console.error('    FAIL: the key-presence axis could not measure what it claims to. A column no');
+    console.error('          side accepts a value for, an object a side refuses despite being built');
+    console.error('          from its own accepted values, and an omission a side crashes on are');
+    console.error('          none of them readings, and must not be compared as ones:');
+    for (const p of presenceProblems) console.error(`      ${p}`);
+  }
   if (
     findings.length ||
     ledgerProblems.length ||
@@ -6710,6 +7621,7 @@ async function main() {
     arbiterProblems.length ||
     unnamedProblems.length ||
     capProblems.length ||
+    presenceProblems.length ||
     totalCompared !== EXPECTED_COMPARISONS
   ) {
     process.exit(1);
