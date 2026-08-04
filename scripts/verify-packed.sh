@@ -1004,6 +1004,70 @@ export const probe = (lib: Lib, f: any, x: unknown): Verdict => {
     return 'threw';
   }
 };
+
+/**
+ * A real Postgres, asked directly whether a column takes a value.
+ *
+ * Here because of the hole a crash left. A probe official crashes on cannot be compared, and it
+ * used to be dropped, so DRZL's verdict on it was measured by nothing: making the v1 typebox
+ * Insert and Update schemas for `c_bit` accept `null` on a `bit(3) NOT NULL` column left that
+ * whole run byte identical to green. Pinning DRZL's verdict closes the hole; this is what settles
+ * whether the pinned verdict is the right one, on the dialect that has an engine in this process.
+ *
+ * The DDL comes from the fixture's own column object rather than being written down here, so a
+ * column that changes type changes what the database is asked about it.
+ *
+ * Two tables per column, differing only in the constraint. The nullable twin is the control and it
+ * has to take a NULL before the NOT NULL twin's answer is read as anything: without it a refusal
+ * could as easily be a missing relation, and it would be scored as a verdict about the value.
+ * Measured, not supposed: an insert into a table that does not exist fails with SQLSTATE 42P01, a
+ * NULL into the NOT NULL twin fails with 23502, and a bit string of the wrong width fails with
+ * 22026. So a refusal is reported with its SQLSTATE rather than as a boolean, and "refused by the
+ * constraint" is a different answer from "refused by the type".
+ */
+export type DbProbe = { key: string; sqlType: string; label: string; value: unknown };
+export type DbAnswer = { verdict: 'accept' | 'refuse'; code: string; control: string };
+
+export const askPostgres = async (probes: DbProbe[]): Promise<Map<string, DbAnswer>> => {
+  const { PGlite } = await import('@electric-sql/pglite');
+  const db = new PGlite();
+  const out = new Map<string, DbAnswer>();
+  try {
+    const insert = async (table: string, value: unknown): Promise<{ verdict: 'accept' | 'refuse'; code: string }> => {
+      try {
+        await db.query(`insert into ${table} (c) values ($1)`, [value]);
+        return { verdict: 'accept', code: '' };
+      } catch (e: unknown) {
+        // A refusal with no SQLSTATE did not come from Postgres, so it is not reported as one.
+        const code = (e as { code?: unknown } | null)?.code;
+        return { verdict: 'refuse', code: typeof code === 'string' && code ? code : 'no SQLSTATE' };
+      }
+    };
+    const tables = new Map<string, { nn: string; nullable: string }>();
+    for (const p of probes) {
+      if (tables.has(p.key)) continue;
+      const t = { nn: `probe_nn_${tables.size}`, nullable: `probe_null_${tables.size}` };
+      await db.exec(`create table ${t.nn} (c ${p.sqlType} not null); create table ${t.nullable} (c ${p.sqlType})`);
+      tables.set(p.key, t);
+    }
+    for (const p of probes) {
+      const t = tables.get(p.key)!;
+      const control = await insert(t.nullable, null);
+      const got = await insert(t.nn, p.value);
+      out.set(`${p.key}/${p.label}`, {
+        verdict: got.verdict,
+        code: got.code,
+        control:
+          control.verdict === 'accept'
+            ? ''
+            : `the nullable twin of ${p.sqlType} refused a NULL (${control.code}), so this table cannot isolate the constraint`,
+      });
+    }
+  } finally {
+    await db.close();
+  }
+  return out;
+};
 PARITY_POOL
 cp "$WORK/parity-pool.ts" src/pool.ts
 
@@ -1047,7 +1111,9 @@ import {
 // The pool and the accessors come from a file the 0.4x pass reads as well, so both majors are
 // asked the same question with the same values.
 import { readFileSync } from 'node:fs';
-import { POOL, LIBS, probe, type Lib, type Verdict } from './pool.js';
+import { constants } from 'node:buffer';
+import { getTableConfig } from 'drizzle-orm/pg-core';
+import { POOL, LIBS, probe, askPostgres, type DbProbe, type Lib, type Verdict } from './pool.js';
 
 import { matrix as pgTable } from './schema.js';
 import { matrix as myTable } from './schema-mysql.js';
@@ -1077,9 +1143,38 @@ const safeField = (lib: Lib, s: any, k: string) => {
  * as one. Declared exactly, and asserted in both directions like every other list here: an
  * undeclared crash fails this script, and a declared one that no longer happens fails it too.
  *
+ * A crash used to end the story for that value: it was dropped from the comparison, so nothing
+ * measured DRZL on it at all. That made a crashing official module a licence for DRZL to do
+ * anything. Demonstrated rather than feared: making the typebox Insert and Update schemas for
+ * `c_bit` accept `null`, on a `bit(3).notNull()` column, left this whole run byte identical to
+ * green. Doing it to the Select arm as well is caught at once, by the cross-generator pass below
+ * printing `c_bit on null: typebox accept, zod/valibot/arktype reject`, and that is the whole of
+ * the old coverage: that pass reads `SelectmatrixSchema` and nothing else.
+ *
+ * So two more fields, and both are asserted:
+ *
+ *   `drzl`     what DRZL answers on the crashed value, keyed `<mode-or-*>/<value>`. Every crashed
+ *              probe has to be claimed by exactly one declaration and match it, and every
+ *              declaration has to claim at least one probe. This is the part that fails when
+ *              DRZL's answer moves.
+ *   `arbiter`  who settles that DRZL's answer is the right one, keyed by value, and computed by
+ *              the run rather than believed: a real Postgres through PGlite where the value can be
+ *              handed to one, and the reason it cannot be otherwise. A value the database refuses
+ *              and DRZL accepts is a finding unless the column carries a waiver naming it.
+ *
  * Keyed `<dialect>/<library>/<column>`.
  */
-const THREW: Record<string, { side: string; modes: string[]; values: string[]; why: string }> = {
+type Crash = {
+  side: string;
+  modes: string[];
+  values: string[];
+  why: string;
+  /** What DRZL answers where official crashed, keyed `<mode-or-*>/<value>`. */
+  drzl: Record<string, string>;
+  /** What settles that answer, keyed by value. Computed by the run and compared with this. */
+  arbiter: Record<string, string>;
+};
+const THREW: Record<string, Crash> = {
   // Three columns, one cause, and the set is derived rather than collected: official's TypeBox
   // module emits `{ type: 'RegExp', maxLength }` for exactly these three on this major, and
   // TypeBox's length check reads `value.length` with no type guard. Enumerating the `type: RegExp`
@@ -1092,23 +1187,57 @@ const THREW: Record<string, { side: string; modes: string[]; values: string[]; w
     modes: ['select', 'insert', 'update'],
     values: ['null', 'undefined'],
     why: 'official Type.RegExp with maxLength reads .length of a null value',
+    drzl: { '*/null': 'reject', '*/undefined': 'reject' },
+    arbiter: {
+      // A real Postgres, built from this column's own `getSQLType()`, refuses a NULL into
+      // `bit(3) not null` with a not-null violation, and its nullable twin takes one.
+      null: 'postgres refuses it (SQLSTATE 23502)',
+      // Not a gap that better tooling would close. `undefined` is an absence, and the driver turns
+      // it into a NULL on the way to the server: the same insert comes back 23502, which is the
+      // answer for `null`, not an answer about absence. So the database cannot be asked this
+      // question, and DRZL's verdict is pinned instead.
+      undefined: 'no database can be handed an absence',
+    },
   },
   'mysql/typebox/m_binary': {
     side: 'official',
     modes: ['select', 'insert', 'update'],
     values: ['null', 'undefined'],
     why: 'as pg/typebox/c_bit',
+    drzl: { '*/null': 'reject', '*/undefined': 'reject' },
+    arbiter: {
+      // PGlite is a Postgres and cannot answer for a MySQL column, and there is no MySQL that runs
+      // in this process. Asked out of band, a real MySQL 8.4.11 refuses a NULL into
+      // `binary(4) not null` and into `varbinary(16) not null` with ERROR 1048 "Column cannot be
+      // null", while the same insert carrying values stores 4 and 2 bytes. That is not this run's
+      // evidence, so it is not this run's claim, and the pinned verdict is what gates here.
+      null: 'no in-process mysql engine',
+      undefined: 'no database can be handed an absence',
+    },
   },
   'mysql/typebox/m_varbinary': {
     side: 'official',
     modes: ['select', 'insert', 'update'],
     values: ['null', 'undefined'],
     why: 'as pg/typebox/c_bit',
+    drzl: { '*/null': 'reject', '*/undefined': 'reject' },
+    arbiter: {
+      null: 'no in-process mysql engine',
+      undefined: 'no database can be handed an absence',
+    },
   },
 };
 // `at` is every `<side>/<mode>/<value>` that crashed, so the printed figure is a count rather than
 // a cross product that happens to equal one while the pattern is a rectangle.
 const threwSeen = new Map<string, { sides: Set<string>; modes: Set<string>; values: Set<string>; at: Set<string> }>();
+// DRZL's own verdict on a value official crashed on, keyed by crash site then `<mode>/<value>`.
+// The comparison cannot use it, which is not the same thing as nobody looking at it.
+const crashVerdict = new Map<string, Map<string, string>>();
+const recordCrashVerdict = (key: string, mode: string, label: string, verdict: Verdict) => {
+  const seen = crashVerdict.get(key) ?? new Map<string, string>();
+  seen.set(`${mode}/${label}`, verdict);
+  crashVerdict.set(key, seen);
+};
 const recordThrow = (key: string, side: string, mode: string, value: string) => {
   const seen =
     threwSeen.get(key) ?? { sides: new Set<string>(), modes: new Set<string>(), values: new Set<string>(), at: new Set<string>() };
@@ -1270,15 +1399,13 @@ const ALLOWED: Record<string, Waiver> = {
   //
   // Which columns the pool reaches is arithmetic, not luck. A separating probe is over the cap in
   // bytes and not over it in UTF-16 units, and UTF-8 spends at most 3 bytes per unit, so it needs
-  // more than cap/3 units: 86 for `tinytext` and 21846 for `text`, both in the pool, 5592406 for
-  // `mediumtext`, and 1431655766 for `longtext`, more units than V8 will put in a string.
+  // more than cap/3 units. That is 86 for `tinytext` and 21846 for `text` and `blob`, all three in
+  // the pool, against 5592406 for `mediumtext` and 1431655766 for `longtext`, which are not.
   //
-  // The two the pool cannot reach are measured by the byte-cap stage further down this same file,
-  // against these modules and this official package. An earlier version of this sentence said the
-  // 0.4x stage measured `mediumtext` "on its own", which was a coverage claim about a different
-  // object: that stage probes the 0.4x modules against `drizzle-zod@0.8.3`, and those modules emit
-  // no character cap at all. `m_mediumtext` really did diverge here, unwaived and unmeasured,
-  // while that sentence stood.
+  // Which of them anything measures is not stated here at all any more, because both previous
+  // attempts at that sentence were false and the second was written by the fix for the first. It is
+  // computed per column and asserted in CAP_COVERAGE further down this file, so a claim about
+  // coverage fails when it stops being true instead of being re-read as true.
   'mysql/m_tinytext': { libs: LIB_NAMES, modes: MODE_NAMES, why: 'MySQL caps TEXT in bytes; official caps it in UTF-16 units, and takes 400 bytes into a 255 byte column', divergence: { '*/*': `L:  | T: 100 emoji` } },
   'mysql/m_text': { libs: LIB_NAMES, modes: MODE_NAMES, why: 'as mysql/m_tinytext, 66000 bytes against a 65535 byte budget', divergence: { '*/*': `L:  | T: 22000 cjk` } },
   // The blob half of the same table, which only this pass reaches: 0.4x's mysql-core has no `blob`
@@ -1509,6 +1636,11 @@ for (const d of DIALECTS) {
           if (a === 'threw' || b === 'threw') {
             if (a === 'threw') recordThrow(`${d.name}/${libName}/${k}`, 'official', mode, label);
             if (b === 'threw') recordThrow(`${d.name}/${libName}/${k}`, 'drzl', mode, label);
+            // Not compared, and not unmeasured either: DRZL's answer is pinned against the crash
+            // entry below and arbitrated against a real database where one can be handed the
+            // value. Dropping it here and doing nothing else is what let a null-accepting insert
+            // schema on a NOT NULL column sit under a green line.
+            recordCrashVerdict(`${d.name}/${libName}/${k}`, mode, label, b);
             continue;
           }
           officialTook ||= a === 'accept';
@@ -1613,7 +1745,7 @@ for (const d of DIALECTS) {
 }
 
 /**
- * The MySQL byte caps, measured once each instead of on every pairing.
+ * The MySQL byte caps, bracketed rather than stepped past.
  *
  * Same stage as the 0.4x tree carries, and it is here because that one does not cover this pass:
  * it probes `src/gen-0-4x/mysql/*` against `drizzle-zod@0.8.3`, which is a different object twice
@@ -1622,17 +1754,33 @@ for (const d of DIALECTS) {
  * for this pass; it never did, and `m_mediumtext` was a live divergence sitting under a green
  * parity line the whole time.
  *
- * A separating probe has to be over the cap in bytes and not over it in UTF-16 units, and UTF-8
- * spends at most 3 bytes per unit, so it needs more than cap/3 units and is built from three-byte
- * characters. The pool carries the two small ones; `mediumtext` needs a 10.7 MiB string, cheap
- * once and far too heavy on every pairing; `longtext` needs more units than V8 will put in a
- * string, so it has no probe at all and this says so rather than leaving a filed field looking
- * covered.
+ * Two probes per column, not one. One string over the cap only ever proves the cap is below it, so
+ * the single probe this replaced pinned `tinytext` to the interval [36, 257] rather than to 255:
+ * 36 is the largest pool string under the cap and 257 is where a probe built out of three-byte
+ * characters lands. Measured rather than reasoned, by moving the emitted cap and re-running: 257
+ * and 36 both left this pass byte identical to green, 258 and 35 both failed it. The same
+ * construction left `text` free over [400, 65537] and `mediumtext` over about 16.7 million values.
+ *
+ * The pair brackets it. `floor(cap/3)` three-byte characters plus `cap mod 3` ASCII ones is exactly
+ * `cap` bytes and roughly a third of that in UTF-16 units, so DRZL has to take it; one more ASCII
+ * character is exactly `cap + 1` bytes, so DRZL has to refuse it. Together they pin the byte cap to
+ * a single value, and both stay far under any character cap, so neither is answering a question
+ * about characters.
+ *
+ * A real MySQL 8.4.11 on a utf8mb4 client agrees with both halves, which is what makes them the
+ * right expectations rather than today's behaviour written down: for `tinytext`, `text`, `blob` and
+ * `mediumtext` alike, the at-cap string inserts and `octet_length` reads back exactly the cap,
+ * while the one-byte-longer string fails with ERROR 1406 "Data too long".
+ *
+ * `longtext` has no probe at all, and CAP_COVERAGE below is where that is asserted rather than
+ * described.
  *
  * `m_blob` is here and not on the 0.4x side because 0.45.2's mysql-core has no `blob` export, so
  * that fixture cannot carry the column.
  */
-const MAX_JS_STRING = 536870888;
+// Read off the runtime rather than written down, so a V8 with a different limit is described
+// correctly instead of being asserted about.
+const MAX_JS_STRING = constants.MAX_STRING_LENGTH;
 const TEXT_CAPS: Record<string, number> = {
   m_tinytext: 255,
   m_text: 65535,
@@ -1640,6 +1788,30 @@ const TEXT_CAPS: Record<string, number> = {
   m_longtext: 4294967295,
   m_blob: 65535,
 };
+
+/**
+ * Where each MySQL text column's byte cap is actually measured.
+ *
+ * Computed by this run and compared with the declaration in both directions, because a sentence
+ * about who measures what is exactly the kind that goes quietly false. Two of them already have on
+ * this branch, and the second was introduced by the fix for the first: one said the 0.4x stage
+ * measured `mediumtext` for this pass, and its replacement said both pool-unreachable columns were
+ * measured by the byte-cap stage. `m_longtext` is measured by nothing at all, and deleting every
+ * one of its caps from all four generated modules in all three modes leaves both passes byte
+ * identical to green.
+ *
+ * `the pool` means the pool holds a string this column's byte cap refuses and its UTF-16 count does
+ * not, which is the only kind of string the parity comparison above can tell the two counts apart
+ * with. `the byte-cap stage` means the bracketing pair below was built and pushed through.
+ */
+const CAP_COVERAGE: Record<string, string> = {
+  m_tinytext: 'the pool and the byte-cap stage',
+  m_text: 'the pool and the byte-cap stage',
+  m_blob: 'the pool and the byte-cap stage',
+  m_mediumtext: 'the byte-cap stage alone',
+  m_longtext: 'nothing',
+};
+
 const capProblems: string[] = [];
 const capMeasured: string[] = [];
 const capUnreachable: string[] = [];
@@ -1651,12 +1823,26 @@ const capUnreachable: string[] = [];
     const loaded: Record<string, any> = {};
     for (const lib of mysql.libs) loaded[lib] = await mysql.mods[lib]();
     for (const [col, cap] of Object.entries(TEXT_CAPS)) {
-      const units = Math.floor(cap / 3) + 1;
-      if (units > MAX_JS_STRING) {
-        capUnreachable.push(`${col} (needs ${units} units, over the ${MAX_JS_STRING} maximum)`);
+      const wide = Math.floor(cap / 3);
+      const rest = cap - wide * 3;
+      const units = wide + rest;
+      if (units + 1 > MAX_JS_STRING) {
+        capUnreachable.push(`${col} (a probe needs ${units + 1} units, over this V8's ${MAX_JS_STRING})`);
+        // UTF-8 spends at most 3 bytes per UTF-16 unit, checked over every code point, so no JS
+        // string here can carry more than this many bytes. When that is under the cap the cap
+        // cannot be exceeded at all, which is a stronger statement than this construction being
+        // too long, and it is the one `longtext` is in. Anything else means a different
+        // construction might reach the column and this list is hiding it.
+        if (MAX_JS_STRING * 3 >= cap) {
+          capProblems.push(
+            `${col} is listed as unprobeable, but a JS string here can carry ${MAX_JS_STRING * 3} ` +
+              `bytes, which is over its ${cap} byte cap. Some construction reaches it and this one does not.`
+          );
+        }
         continue;
       }
-      const probeValue = '\u4E00'.repeat(units);
+      const atCap = '\u4E00'.repeat(wide) + 'x'.repeat(rest);
+      const overCap = `${atCap}x`;
       for (const mode of ['select', 'insert', 'update'] as const) {
         for (const libName of mysql.libs) {
           const lib = LIBS[libName];
@@ -1666,18 +1852,18 @@ const capUnreachable: string[] = [];
             capProblems.push(`${col} has no field on ${mode}/${libName}, so no cap was measured`);
             continue;
           }
-          const ov = probe(lib, o, probeValue);
-          const mv = probe(lib, m, probeValue);
-          capMeasured.push(`${col}/${mode}/${libName}`);
-          // Today's state, and the only one that is not a finding. Official counts UTF-16 units
-          // and takes it, DRZL counts bytes and refuses it, and MySQL 8.4 refuses it too: the
-          // same 22000 CJK string is rejected by `text` and `blob` with "Data too long" while
-          // `mediumtext` in the same table stores its 66000 bytes.
-          if (ov === 'accept' && mv === 'reject') continue;
+          const at = { o: probe(lib, o, atCap), m: probe(lib, m, atCap) };
+          const over = { o: probe(lib, o, overCap), m: probe(lib, m, overCap) };
+          capMeasured.push(`${col}/${mode}/${libName}/at`, `${col}/${mode}/${libName}/over`);
+          // Today's state and the only one that is not a finding, on both halves. Official counts
+          // UTF-16 units, so it takes both. DRZL counts bytes, so the cap is where MySQL puts it:
+          // `cap` bytes in, `cap + 1` bytes out.
+          if (at.o === 'accept' && at.m === 'accept' && over.o === 'accept' && over.m === 'reject') continue;
           capProblems.push(
-            `${col} on ${mode}/${libName}: official ${ov}, DRZL ${mv}, for ${units} units and ` +
-              `${units * 3} bytes against a ${cap} byte cap. Expected official to accept and DRZL ` +
-              'to refuse.'
+            `${col} on ${mode}/${libName}: at ${cap} bytes (${units} units) official ${at.o}, ` +
+              `DRZL ${at.m}; at ${cap + 1} bytes (${units + 1} units) official ${over.o}, ` +
+              `DRZL ${over.m}. Expected both accepted and DRZL alone refusing the second, which is ` +
+              'where MySQL 8.4.11 puts the boundary.'
           );
         }
       }
@@ -1685,10 +1871,38 @@ const capUnreachable: string[] = [];
   }
 }
 if (!capMeasured.length) capProblems.push('no MySQL text column had its byte cap measured');
+
+// The coverage claim, computed rather than asserted in a comment nobody re-runs.
+const poolSeparates = (cap: number) =>
+  POOL.some(([, x]) => typeof x === 'string' && Buffer.byteLength(x, 'utf8') > cap && x.length <= cap);
+const coverageSeen: string[] = [];
+for (const [col, cap] of Object.entries(TEXT_CAPS)) {
+  const byPool = poolSeparates(cap);
+  const byStage = capMeasured.some((probed) => probed.startsWith(`${col}/`));
+  const got = byPool && byStage
+    ? 'the pool and the byte-cap stage'
+    : byPool
+      ? 'the pool alone'
+      : byStage
+        ? 'the byte-cap stage alone'
+        : 'nothing';
+  coverageSeen.push(`${col} ${got}`);
+  if (CAP_COVERAGE[col] === got) continue;
+  capProblems.push(
+    `${col} is declared as measured by ${CAP_COVERAGE[col] ?? 'nothing, being absent from CAP_COVERAGE'}` +
+      `, and this run measured it by ${got}`
+  );
+}
+for (const col of Object.keys(CAP_COVERAGE)) {
+  if (col in TEXT_CAPS) continue;
+  capProblems.push(`CAP_COVERAGE names ${col}, which has no cap in TEXT_CAPS, so it describes nothing`);
+}
+
 console.log(
-  `    ${capMeasured.length} byte-cap probe(s) on ${Object.keys(TEXT_CAPS).length - capUnreachable.length} ` +
+  `    ${capMeasured.length} byte-cap probe(s) bracketing ${Object.keys(TEXT_CAPS).length - capUnreachable.length} ` +
     `MySQL text column(s); ${capUnreachable.length} cannot be probed at all: ${capUnreachable.join(', ')}`
 );
+console.log(`    byte caps are measured by: ${coverageSeen.join('; ')}`);
 if (capProblems.length) {
   console.error('FAIL: a MySQL text column no longer separates a byte budget from a character');
   console.error('      count the way it is documented to:');
@@ -1808,10 +2022,143 @@ for (const [key, seen] of threwSeen) {
 for (const key of Object.keys(THREW)) {
   if (!threwSeen.has(key)) throwProblems.push(`THREW[${key}] saw no crash on this run`);
 }
+
+/**
+ * What DRZL answered where official could not, held to the declaration in both directions.
+ *
+ * Without this a crashing official validator is a licence for DRZL to do anything on that value.
+ * `pg/typebox/c_bit` is `bit({ dimensions: 3 }).notNull()`, and its Insert and Update schemas were
+ * made to accept `null` with this pass staying byte identical to green.
+ */
+const declMatches = (decl: string, mode: string, label: string) => {
+  const cut = decl.indexOf('/');
+  return (decl.slice(0, cut) === '*' || decl.slice(0, cut) === mode) && decl.slice(cut + 1) === label;
+};
+for (const [key, seen] of crashVerdict) {
+  const e = THREW[key];
+  // An undeclared crash is already a failure above; reporting the same site twice adds nothing.
+  if (!e) continue;
+  const want = e.modes.length * e.values.length;
+  if (seen.size !== want) {
+    throwProblems.push(
+      `THREW[${key}] declares ${want} crashed probe(s), measured ${seen.size}: ${[...seen.keys()].sort().join(', ')}`
+    );
+  }
+  const claimed = new Set<string>();
+  for (const [at, verdict] of seen) {
+    const cut = at.indexOf('/');
+    const hits = Object.keys(e.drzl).filter((decl) => declMatches(decl, at.slice(0, cut), at.slice(cut + 1)));
+    if (hits.length !== 1) {
+      throwProblems.push(`THREW[${key}].drzl has ${hits.length} declarations for ${at}, needs exactly one. Measured there: ${verdict}`);
+      continue;
+    }
+    claimed.add(hits[0]);
+    if (e.drzl[hits[0]] === verdict) continue;
+    throwProblems.push(`THREW[${key}].drzl declares ${e.drzl[hits[0]]} on ${at}, measured ${verdict}`);
+  }
+  for (const decl of Object.keys(e.drzl)) {
+    if (!claimed.has(decl)) throwProblems.push(`THREW[${key}].drzl declaration '${decl}' matched no crashed probe`);
+  }
+}
+
+/**
+ * And who says those answers are the right ones.
+ *
+ * A pinned verdict stops DRZL's behaviour moving unseen; it does not say the pinned value is
+ * correct. A real Postgres does, for the values it can be handed: the table is built from the
+ * fixture column's own `getSQLType()`, and its nullable twin has to take a NULL before the NOT NULL
+ * twin's refusal counts as anything.
+ *
+ * The two reasons a value is not arbitrated here are computed, not asserted. `undefined` is an
+ * absence rather than a value and the driver turns it into a NULL on the way to the server, so the
+ * question cannot be put; and PGlite is a Postgres, so it cannot answer for the MySQL columns.
+ */
+const arbiterProblems: string[] = [];
+{
+  const pgColumns = getTableConfig(pgTable as never).columns as { name: string; getSQLType: () => string }[];
+  const wanted: { key: string; label: string; value: unknown; dialect: string; column: string }[] = [];
+  for (const [key, e] of Object.entries(THREW)) {
+    const [dialect, , column] = key.split('/');
+    const declared = Object.keys(e.arbiter).sort().join(',');
+    const values = [...e.values].sort().join(',');
+    if (declared !== values) {
+      arbiterProblems.push(`THREW[${key}].arbiter covers ${declared || 'nothing'}, and the crash values are ${values}`);
+    }
+    for (const label of e.values) {
+      const found = POOL.find(([l]) => l === label);
+      if (!found) {
+        arbiterProblems.push(`THREW[${key}] names the value ${label}, which is not in POOL, so nothing can be asked about it`);
+        continue;
+      }
+      wanted.push({ key, label, value: found[1], dialect, column });
+    }
+  }
+  const probes: DbProbe[] = [];
+  for (const w of wanted) {
+    if (w.value === undefined || w.dialect !== 'pg') continue;
+    const col = pgColumns.find((c) => c.name === w.column);
+    if (!col) {
+      arbiterProblems.push(`THREW[${w.key}] names a column the Postgres fixture does not have, so no DDL can be built for it`);
+      continue;
+    }
+    probes.push({ key: w.key, sqlType: col.getSQLType(), label: w.label, value: w.value });
+  }
+  const answers = probes.length ? await askPostgres(probes) : new Map();
+  // A run where the database answered nothing would otherwise leave every site reading as
+  // deliberately unarbitrated.
+  if (!probes.length) arbiterProblems.push('no crash site reached a database on this run, so nothing was arbitrated');
+  let arbitrated = 0;
+  for (const w of wanted) {
+    const e = THREW[w.key];
+    const verdicts = [...new Set(
+      [...(crashVerdict.get(w.key) ?? new Map<string, string>())]
+        .filter(([at]) => at.slice(at.indexOf('/') + 1) === w.label)
+        .map(([, v]) => v)
+    )].sort();
+    let got: string;
+    if (w.value === undefined) {
+      got = 'no database can be handed an absence';
+    } else if (w.dialect !== 'pg') {
+      got = `no in-process ${w.dialect} engine`;
+    } else {
+      const a = answers.get(`${w.key}/${w.label}`);
+      if (!a) {
+        arbiterProblems.push(`${w.key}/${w.label} was sent to the database and came back with no answer`);
+        continue;
+      }
+      if (a.control) {
+        arbiterProblems.push(`${w.key}/${w.label}: ${a.control}`);
+        continue;
+      }
+      arbitrated++;
+      got = a.verdict === 'accept' ? 'postgres accepts it' : `postgres refuses it (SQLSTATE ${a.code})`;
+      // The one rule the declaration cannot talk its way out of. A value the database refuses and
+      // DRZL takes is a schema admitting a row the server will not.
+      if (a.verdict === 'refuse' && verdicts.includes('accept') && !ALLOWED[`${w.dialect}/${w.column}`]) {
+        arbiterProblems.push(
+          `${w.key}/${w.label}: postgres refuses this value and DRZL accepts it, and no waiver names ` +
+            `${w.dialect}/${w.column}`
+        );
+      }
+    }
+    if (e.arbiter[w.label] === got) continue;
+    arbiterProblems.push(`THREW[${w.key}].arbiter declares '${e.arbiter[w.label]}' for ${w.label}, and this run got '${got}'`);
+  }
+  console.log(
+    `    ${arbitrated} crash probe(s) arbitrated against a real Postgres, of ` +
+      `${wanted.length} across ${Object.keys(THREW).length} crash site(s)`
+  );
+}
+if (arbiterProblems.length) {
+  console.error('FAIL: a crash site is no longer settled the way it is declared to be. A value');
+  console.error('      official crashes on is still a value DRZL answers, and something has to');
+  console.error('      say whether that answer is right:');
+  for (const a of arbiterProblems) console.error(`      ${a}`);
+}
 console.log(
   `    ${[...threwSeen.values()].reduce((n, s) => n + s.at.size, 0)} probe(s) crashed ` +
     `instead of returning a verdict, on ${threwSeen.size} column(s) against ` +
-    `${Object.keys(THREW).length} declared`
+    `${Object.keys(THREW).length} declared, with DRZL's own verdict on each pinned above`
 );
 if (throwProblems.length) {
   console.error('FAIL: a probe crashed where the list above does not say one does. A crash is not');
@@ -1836,6 +2183,7 @@ if (
   findings ||
   deadWaivers.length ||
   throwProblems.length ||
+  arbiterProblems.length ||
   waiverProblems.length ||
   crossProblems.length ||
   capProblems.length ||
@@ -1855,9 +2203,14 @@ PARITY_HARNESS
 # typescript, because this tree's generated output is now compiled as well as executed. It was
 # only ever run, and a nullable bigint array reached a released generator emitting `>=` against a
 # `bigint[]`, which no amount of running it can notice.
+#
+# @electric-sql/pglite arrives here rather than further down because the parity pass now needs a
+# real Postgres of its own: where the official validator crashes on a value there is nothing left
+# to compare DRZL against, and a database is what settles whether DRZL's answer is right. The
+# ground-truth stage in this same tree used to install it on its own line and now inherits it.
 npm install --no-audit --no-fund --loglevel=error \
   "$TARS"/*.tgz drizzle-orm@1.0.0-rc.4 zod valibot arktype @sinclair/typebox tsx typescript \
-  ajv@^8.17.1 ajv-formats@^3.0.1 >/dev/null
+  ajv@^8.17.1 ajv-formats@^3.0.1 @electric-sql/pglite >/dev/null
 
 for dialect in pg mysql sqlite; do
   case "$dialect" in
@@ -2617,7 +2970,9 @@ if (drzlOnly.length) {
 await db.close();
 GROUND_TRUTH
 
-npm install --no-audit --no-fund --loglevel=error @electric-sql/pglite >/dev/null
+# @electric-sql/pglite is installed with the rest of this tree, far above, because the parity pass
+# needs a Postgres too now. It had its own install line here, which was a second install of the
+# same package into the same tree.
 if ! npx tsx src/ground-truth.ts; then
   echo "FAIL: a generated schema disagrees with Postgres itself." >&2
   exit 1
@@ -4417,9 +4772,13 @@ fi
 # reach is indistinguishable from one that passes.
 # ---------------------------------------------------------------------------------------------
 echo "==> differential parity against the official 0.4x validators"
+# @electric-sql/pglite for the same reason the v1 tree has it: where the official validator crashes
+# on a value there is nothing left to compare DRZL against, and a real Postgres is what says
+# whether DRZL's answer to that value is the right one. It ships a CommonJS build, which this tree
+# needs and the v1 one does not.
 npm install --no-audit --no-fund --loglevel=error \
   drizzle-zod@0.8.3 drizzle-valibot@0.4.2 drizzle-arktype@0.1.3 drizzle-typebox@0.3.3 \
-  valibot arktype @sinclair/typebox >/dev/null
+  valibot arktype @sinclair/typebox @electric-sql/pglite >/dev/null
 
 cp "$WORK/parity-pool.ts" src/pool.ts
 
@@ -4532,8 +4891,10 @@ cat > parity-0-4x.ts <<'PARITY_0_4X'
  * split into two entries, which the key format does not allow.
  */
 import { readFileSync } from 'node:fs';
+import { constants } from 'node:buffer';
+import { getTableConfig } from 'drizzle-orm/pg-core';
 import { SchemaAnalyzer } from '@drzl/analyzer';
-import { POOL, LIBS, probe, type Lib, type Verdict } from './src/pool.js';
+import { POOL, LIBS, probe, askPostgres, type DbProbe, type Lib, type Verdict } from './src/pool.js';
 
 import {
   createSelectSchema as zSelect,
@@ -5066,8 +5427,34 @@ const safeField = (lib: Lib, s: any, k: string) => {
  * A crash is not a verdict, so the value it happened on is not compared for that column. It is
  * recorded here instead, which is what stops a swallowed exception from being scored as the other
  * side's answer.
+ *
+ * Not comparing it is not the same as not measuring it, and for a while it was: the value was
+ * dropped and nothing looked at DRZL's answer, which made a crashing official module a licence for
+ * DRZL to do anything on that value. So two more fields, both asserted:
+ *
+ *   `drzl`     what DRZL answers on the crashed value, keyed `<mode-or-*>/<value>`. Every crashed
+ *              probe has to be claimed by exactly one declaration and match it, and every
+ *              declaration has to claim at least one probe.
+ *   `arbiter`  what settles that DRZL's answer is the right one, keyed by value, computed by the
+ *              run rather than believed. A real Postgres through PGlite where the value can be
+ *              handed to one; and where it cannot, the reason, also computed.
+ *
+ * On this major `c_bit` is one of the six columns the analyzer cannot name, so DRZL takes every
+ * value including a NULL for a NOT NULL column. That is the filed defect DEFECTS[pg/c_bit] carries,
+ * and the arbitration says so out loud rather than passing over it: the database refuses the value,
+ * DRZL accepts it, and the waiver-or-defect entry naming the column is what keeps that from being a
+ * hard failure here as well.
  */
-type Crash = { side: string; modes: string[]; values: string[]; why: string };
+type Crash = {
+  side: string;
+  modes: string[];
+  values: string[];
+  why: string;
+  /** What DRZL answers where official crashed, keyed `<mode-or-*>/<value>`. */
+  drzl: Record<string, string>;
+  /** What settles that answer, keyed by value. Computed by the run and compared with this. */
+  arbiter: Record<string, string>;
+};
 const THREW: Record<string, Crash> = {
   // Official emits `{ type: 'RegExp', source: '^[01]+$', maxLength: 3 }`, and TypeBox's length
   // check reads `value.length` with no type guard, so `null` and `undefined` crash it rather than
@@ -5083,6 +5470,20 @@ const THREW: Record<string, Crash> = {
     modes: ['select', 'insert', 'update'],
     values: ['null', 'undefined'],
     why: 'official Type.RegExp with maxLength reads .length of a null value',
+    // Every probe, because the analyzer names no type for this column on 0.4x. The other three
+    // libraries report the same thing through the ALL_PROBES signature in DEFECTS[pg/c_bit]; this
+    // is the fourth, which the comparison cannot reach.
+    drzl: { '*/null': 'accept', '*/undefined': 'accept' },
+    arbiter: {
+      // A real Postgres, built from this column's own `getSQLType()`, refuses a NULL into
+      // `bit(3) not null` with a not-null violation, and its nullable twin takes one.
+      null: 'postgres refuses it (SQLSTATE 23502)',
+      // Not a gap better tooling would close. `undefined` is an absence, and the driver turns it
+      // into a NULL on the way to the server: the same insert comes back 23502, which is the
+      // answer for `null` rather than an answer about absence. So the database cannot be asked
+      // this, and DRZL's verdict is pinned instead.
+      undefined: 'no database can be handed an absence',
+    },
   },
 };
 
@@ -5212,6 +5613,14 @@ async function main() {
   // crashes rather than `modes.size * values.size`, which is the same number only while the
   // pattern is a rectangle. It is one today, and the assertion is on the sets either way.
   const crashed = new Map<string, { sides: Set<string>; modes: Set<string>; values: Set<string>; at: Set<string> }>();
+  // DRZL's own verdict on a value official crashed on, keyed by crash site then `<mode>/<value>`.
+  // The comparison cannot use it, which is not the same thing as nobody looking at it.
+  const crashVerdict = new Map<string, Map<string, string>>();
+  const recordCrashVerdict = (key: string, mode: string, label: string, verdict: Verdict) => {
+    const seen = crashVerdict.get(key) ?? new Map<string, string>();
+    seen.set(`${mode}/${label}`, verdict);
+    crashVerdict.set(key, seen);
+  };
   const recordCrash = (key: string, side: string, mode: string, value: string) => {
     const seen =
       crashed.get(key) ??
@@ -5276,6 +5685,11 @@ async function main() {
             if (a === 'threw' || b === 'threw') {
               if (a === 'threw') recordCrash(`${d.name}/${libName}/${k}`, 'official', mode, label);
               if (b === 'threw') recordCrash(`${d.name}/${libName}/${k}`, 'drzl', mode, label);
+              // Not compared, and not unmeasured either: DRZL's answer is pinned against the crash
+              // entry and arbitrated against a real database where one can be handed the value.
+              // Dropping it here and doing nothing else is what let a null-accepting insert schema
+              // on a NOT NULL column sit under a green line on the other pass.
+              recordCrashVerdict(`${d.name}/${libName}/${k}`, mode, label, b);
               continue;
             }
             officialTook ||= a === 'accept';
@@ -5412,25 +5826,60 @@ async function main() {
   const unledgered = [...observed.keys()].filter((k) => !ALLOWED[k] && !DEFECTS[k]);
 
   /**
-   * The MySQL text caps the pool cannot carry, measured once each instead of on every pairing.
+   * The MySQL text caps, bracketed rather than stepped past.
    *
-   * A separating probe has to be over the cap in bytes and not over it in UTF-16 units, and UTF-8
-   * spends at most 3 bytes per UTF-16 unit, so it needs more than cap/3 units and has to be built
-   * from three-byte characters. The pool carries the two small ones. `mediumtext` needs a 10.7 MiB
-   * string, which is far too heavy to push through 972 comparisons and perfectly cheap to push
-   * through four, and `longtext` needs more units than V8 will put in a string, so it has no probe
-   * at all and this says so rather than leaving a filed field looking covered.
+   * Two probes per column, not one. One string over the cap only ever proves the cap is below it,
+   * so the single probe this replaced pinned `tinytext` to the interval [36, 257] rather than to
+   * 255: 36 is the largest pool string under the cap and 257 is where a probe built out of
+   * three-byte characters lands. Measured rather than reasoned, by moving the emitted cap and
+   * re-running: 257 and 36 both left the run byte identical to green, 258 and 35 both failed it.
+   * The same construction left `text` free over [400, 65537] and `mediumtext` over about 16.7
+   * million values.
    *
-   * The string is derived from each column's own cap rather than written down, so a cap that moves
-   * moves the probe with it.
+   * The pair brackets it. `floor(cap/3)` three-byte characters plus `cap mod 3` ASCII ones is
+   * exactly `cap` bytes and roughly a third of that in UTF-16 units, so DRZL has to take it; one
+   * more ASCII character is exactly `cap + 1` bytes, so DRZL has to refuse it. Both stay far under
+   * any character cap, so neither is answering a question about characters, and together they pin
+   * the byte cap to a single value.
+   *
+   * A real MySQL 8.4.11 on a utf8mb4 client agrees with both halves, which is what makes them the
+   * right expectations rather than today's behaviour written down: for `tinytext`, `text` and
+   * `mediumtext` alike, the at-cap string inserts and `octet_length` reads back exactly the cap,
+   * while the one-byte-longer string fails with ERROR 1406 "Data too long".
+   *
+   * Both strings are derived from each column's own cap rather than written down, so a cap that
+   * moves moves the pair with it.
    */
-  const MAX_JS_STRING = 536870888;
+  // Read off the runtime rather than written down, so a V8 with a different limit is described
+  // correctly instead of being asserted about.
+  const MAX_JS_STRING = constants.MAX_STRING_LENGTH;
   const TEXT_CAPS: Record<string, number> = {
     m_tinytext: 255,
     m_text: 65535,
     m_mediumtext: 16777215,
     m_longtext: 4294967295,
   };
+
+  /**
+   * Where each MySQL text column's byte cap is actually measured.
+   *
+   * Computed by this run and compared with the declaration in both directions, because a sentence
+   * about who measures what is exactly the kind that goes quietly false. Two of them already have
+   * on this branch, and the second was introduced by the fix for the first. `m_longtext` is
+   * measured by nothing at all, and deleting every one of its caps from all four generated modules
+   * in all three modes leaves both passes byte identical to green.
+   *
+   * `the pool` means the pool holds a string this column's byte cap refuses and its UTF-16 count
+   * does not, which is the only kind of string the comparison above can tell the two counts apart
+   * with. `the byte-cap stage` means the bracketing pair below was built and pushed through.
+   */
+  const CAP_COVERAGE: Record<string, string> = {
+    m_tinytext: 'the pool and the byte-cap stage',
+    m_text: 'the pool and the byte-cap stage',
+    m_mediumtext: 'the byte-cap stage alone',
+    m_longtext: 'nothing',
+  };
+
   const capProblems: string[] = [];
   const capMeasured: string[] = [];
   const capUnreachable: string[] = [];
@@ -5442,12 +5891,26 @@ async function main() {
       const loaded: Record<string, any> = {};
       for (const lib of LIB_NAMES) loaded[lib] = await mysql.mods[lib]();
       for (const [col, cap] of Object.entries(TEXT_CAPS)) {
-        const units = Math.floor(cap / 3) + 1;
-        if (units > MAX_JS_STRING) {
-          capUnreachable.push(`${col} (needs ${units} units, over the ${MAX_JS_STRING} maximum)`);
+        const wide = Math.floor(cap / 3);
+        const rest = cap - wide * 3;
+        const units = wide + rest;
+        if (units + 1 > MAX_JS_STRING) {
+          capUnreachable.push(`${col} (a probe needs ${units + 1} units, over this V8's ${MAX_JS_STRING})`);
+          // UTF-8 spends at most 3 bytes per UTF-16 unit, checked over every code point, so no JS
+          // string here can carry more than this many bytes. When that is under the cap the cap
+          // cannot be exceeded at all, which is stronger than this construction being too long,
+          // and it is the state `longtext` is in. Anything else means some other construction
+          // reaches the column and this list is hiding it.
+          if (MAX_JS_STRING * 3 >= cap) {
+            capProblems.push(
+              `${col} is listed as unprobeable, but a JS string here can carry ${MAX_JS_STRING * 3} ` +
+                `bytes, which is over its ${cap} byte cap. Some construction reaches it and this one does not.`
+            );
+          }
           continue;
         }
-        const probeValue = '\u4E00'.repeat(units);
+        const atCap = '\u4E00'.repeat(wide) + 'x'.repeat(rest);
+        const overCap = `${atCap}x`;
         for (const mode of MODE_NAMES) {
           for (const libName of LIB_NAMES) {
             const lib = LIBS[libName];
@@ -5457,16 +5920,18 @@ async function main() {
               capProblems.push(`${col} has no field on ${mode}/${libName}, so no cap was measured`);
               continue;
             }
-            const ov = probe(lib, o, probeValue);
-            const mv = probe(lib, m, probeValue);
-            capMeasured.push(`${col}/${mode}/${libName}`);
-            // Today's state, and the only one that is not a finding: official counts units and
-            // takes it, DRZL counts bytes and refuses it, and MySQL refuses it too.
-            if (ov === 'accept' && mv === 'reject') continue;
+            const at = { o: probe(lib, o, atCap), m: probe(lib, m, atCap) };
+            const over = { o: probe(lib, o, overCap), m: probe(lib, m, overCap) };
+            capMeasured.push(`${col}/${mode}/${libName}/at`, `${col}/${mode}/${libName}/over`);
+            // Today's state and the only one that is not a finding, on both halves. Official counts
+            // UTF-16 units, so it takes both. DRZL counts bytes, so the cap is where MySQL puts it:
+            // `cap` bytes in, `cap + 1` bytes out.
+            if (at.o === 'accept' && at.m === 'accept' && over.o === 'accept' && over.m === 'reject') continue;
             capProblems.push(
-              `${col} on ${mode}/${libName}: official ${ov}, DRZL ${mv}, for ${units} units and ` +
-                `${units * 3} bytes against a ${cap} byte cap. Expected official to accept and ` +
-                'DRZL to refuse.'
+              `${col} on ${mode}/${libName}: at ${cap} bytes (${units} units) official ${at.o}, ` +
+                `DRZL ${at.m}; at ${cap + 1} bytes (${units + 1} units) official ${over.o}, ` +
+                `DRZL ${over.m}. Expected both accepted and DRZL alone refusing the second, which ` +
+                'is where MySQL 8.4.11 puts the boundary.'
             );
           }
         }
@@ -5474,10 +5939,38 @@ async function main() {
     }
   }
   if (!capMeasured.length) capProblems.push('no MySQL text column had its byte cap measured');
+
+  // The coverage claim, computed rather than asserted in a comment nobody re-runs.
+  const poolSeparates = (cap: number) =>
+    POOL.some(([, x]) => typeof x === 'string' && Buffer.byteLength(x, 'utf8') > cap && x.length <= cap);
+  const coverageSeen: string[] = [];
+  for (const [col, cap] of Object.entries(TEXT_CAPS)) {
+    const byPool = poolSeparates(cap);
+    const byStage = capMeasured.some((probed) => probed.startsWith(`${col}/`));
+    const got = byPool && byStage
+      ? 'the pool and the byte-cap stage'
+      : byPool
+        ? 'the pool alone'
+        : byStage
+          ? 'the byte-cap stage alone'
+          : 'nothing';
+    coverageSeen.push(`${col} ${got}`);
+    if (CAP_COVERAGE[col] === got) continue;
+    capProblems.push(
+      `${col} is declared as measured by ${CAP_COVERAGE[col] ?? 'nothing, being absent from CAP_COVERAGE'}` +
+        `, and this run measured it by ${got}`
+    );
+  }
+  for (const col of Object.keys(CAP_COVERAGE)) {
+    if (col in TEXT_CAPS) continue;
+    capProblems.push(`CAP_COVERAGE names ${col}, which has no cap in TEXT_CAPS, so it describes nothing`);
+  }
+
   console.log(
-    `    ${capMeasured.length} byte-cap probe(s) on ${Object.keys(TEXT_CAPS).length - capUnreachable.length} ` +
+    `    ${capMeasured.length} byte-cap probe(s) bracketing ${Object.keys(TEXT_CAPS).length - capUnreachable.length} ` +
       `MySQL text column(s); ${capUnreachable.length} cannot be probed at all: ${capUnreachable.join(', ')}`
   );
+  console.log(`    byte caps are measured by: ${coverageSeen.join('; ')}`);
 
   // The absolute half: what the analyzer makes of these two fixtures on its own.
   const unnamedProblems: string[] = [];
@@ -5541,11 +6034,141 @@ async function main() {
   for (const key of Object.keys(THREW)) {
     if (!crashed.has(key)) crashProblems.push(`THREW[${key}] saw no crash on this run`);
   }
+
+  /**
+   * What DRZL answered where official could not, held to the declaration in both directions.
+   *
+   * Without this a crashing official validator is a licence for DRZL to do anything on that value.
+   * `c_bit` is `bit({ dimensions: 3 }).notNull()`, and on the v1 pass its Insert and Update schemas
+   * were made to accept `null` with that pass staying byte identical to green.
+   */
+  const declMatches = (decl: string, mode: string, label: string) => {
+    const cut = decl.indexOf('/');
+    return (decl.slice(0, cut) === '*' || decl.slice(0, cut) === mode) && decl.slice(cut + 1) === label;
+  };
+  for (const [key, seen] of crashVerdict) {
+    const e = THREW[key];
+    // An undeclared crash is already a failure above; reporting the same site twice adds nothing.
+    if (!e) continue;
+    const want = e.modes.length * e.values.length;
+    if (seen.size !== want) {
+      crashProblems.push(
+        `THREW[${key}] declares ${want} crashed probe(s), measured ${seen.size}: ${[...seen.keys()].sort().join(', ')}`
+      );
+    }
+    const claimed = new Set<string>();
+    for (const [at, verdict] of seen) {
+      const cut = at.indexOf('/');
+      const hits = Object.keys(e.drzl).filter((decl) => declMatches(decl, at.slice(0, cut), at.slice(cut + 1)));
+      if (hits.length !== 1) {
+        crashProblems.push(`THREW[${key}].drzl has ${hits.length} declarations for ${at}, needs exactly one. Measured there: ${verdict}`);
+        continue;
+      }
+      claimed.add(hits[0]);
+      if (e.drzl[hits[0]] === verdict) continue;
+      crashProblems.push(`THREW[${key}].drzl declares ${e.drzl[hits[0]]} on ${at}, measured ${verdict}`);
+    }
+    for (const decl of Object.keys(e.drzl)) {
+      if (!claimed.has(decl)) crashProblems.push(`THREW[${key}].drzl declaration '${decl}' matched no crashed probe`);
+    }
+  }
+
+  /**
+   * And what says those answers are the right ones.
+   *
+   * A pinned verdict stops DRZL's behaviour moving unseen; it does not say the pinned value is
+   * correct, and on this major it is not: the analyzer cannot name `c_bit`, so DRZL takes a NULL
+   * for a NOT NULL column. A real Postgres is what says so, for the values it can be handed. The
+   * table is built from the fixture column's own `getSQLType()`, and the nullable twin has to take
+   * a NULL before the NOT NULL twin's refusal counts as anything.
+   *
+   * The reason a value is not arbitrated here is computed too. `undefined` is an absence rather
+   * than a value, and the driver turns it into a NULL on the way to the server, so the question
+   * cannot be put at all.
+   */
+  const arbiterProblems: string[] = [];
+  {
+    const pgColumns = getTableConfig(pgTable as never).columns as { name: string; getSQLType: () => string }[];
+    const wanted: { key: string; label: string; value: unknown; dialect: string; column: string }[] = [];
+    for (const [key, e] of Object.entries(THREW)) {
+      const [dialect, , column] = key.split('/');
+      const declared = Object.keys(e.arbiter).sort().join(',');
+      const values = [...e.values].sort().join(',');
+      if (declared !== values) {
+        arbiterProblems.push(`THREW[${key}].arbiter covers ${declared || 'nothing'}, and the crash values are ${values}`);
+      }
+      for (const label of e.values) {
+        const found = POOL.find(([l]) => l === label);
+        if (!found) {
+          arbiterProblems.push(`THREW[${key}] names the value ${label}, which is not in POOL, so nothing can be asked about it`);
+          continue;
+        }
+        wanted.push({ key, label, value: found[1], dialect, column });
+      }
+    }
+    const probes: DbProbe[] = [];
+    for (const w of wanted) {
+      if (w.value === undefined || w.dialect !== 'pg') continue;
+      const col = pgColumns.find((c) => c.name === w.column);
+      if (!col) {
+        arbiterProblems.push(`THREW[${w.key}] names a column the Postgres fixture does not have, so no DDL can be built for it`);
+        continue;
+      }
+      probes.push({ key: w.key, sqlType: col.getSQLType(), label: w.label, value: w.value });
+    }
+    const answers = probes.length ? await askPostgres(probes) : new Map();
+    // A run where the database answered nothing would otherwise leave every site reading as
+    // deliberately unarbitrated.
+    if (!probes.length) arbiterProblems.push('no crash site reached a database on this run, so nothing was arbitrated');
+    let arbitrated = 0;
+    for (const w of wanted) {
+      const e = THREW[w.key];
+      const verdicts = [...new Set(
+        [...(crashVerdict.get(w.key) ?? new Map<string, string>())]
+          .filter(([at]) => at.slice(at.indexOf('/') + 1) === w.label)
+          .map(([, v]) => v)
+      )].sort();
+      let got: string;
+      if (w.value === undefined) {
+        got = 'no database can be handed an absence';
+      } else if (w.dialect !== 'pg') {
+        got = `no in-process ${w.dialect} engine`;
+      } else {
+        const a = answers.get(`${w.key}/${w.label}`);
+        if (!a) {
+          arbiterProblems.push(`${w.key}/${w.label} was sent to the database and came back with no answer`);
+          continue;
+        }
+        if (a.control) {
+          arbiterProblems.push(`${w.key}/${w.label}: ${a.control}`);
+          continue;
+        }
+        arbitrated++;
+        got = a.verdict === 'accept' ? 'postgres accepts it' : `postgres refuses it (SQLSTATE ${a.code})`;
+        // The one rule the declaration cannot talk its way out of. A value the database refuses and
+        // DRZL takes is a schema admitting a row the server will not, and it is only not a failure
+        // here because the ledger already names it as a defect.
+        if (a.verdict === 'refuse' && verdicts.includes('accept') && !ALLOWED[`${w.dialect}/${w.column}`] && !DEFECTS[`${w.dialect}/${w.column}`]) {
+          arbiterProblems.push(
+            `${w.key}/${w.label}: postgres refuses this value and DRZL accepts it, and neither map names ` +
+              `${w.dialect}/${w.column}`
+          );
+        }
+      }
+      if (e.arbiter[w.label] === got) continue;
+      arbiterProblems.push(`THREW[${w.key}].arbiter declares '${e.arbiter[w.label]}' for ${w.label}, and this run got '${got}'`);
+    }
+    console.log(
+      `    ${arbitrated} crash probe(s) arbitrated against a real Postgres, of ` +
+        `${wanted.length} across ${Object.keys(THREW).length} crash site(s)`
+    );
+  }
+
   const crashCount = [...crashed.values()].reduce((n, c) => n + c.at.size, 0);
   console.log(
     `    ${crashCount} probe(s) crashed instead of returning a verdict, on ${crashed.size} ` +
-      `column(s) against ${Object.keys(THREW).length} declared, and were compared as neither ` +
-      'accept nor reject'
+      `column(s) against ${Object.keys(THREW).length} declared, compared as neither accept nor ` +
+      "reject, and DRZL's own verdict on each pinned above"
   );
 
   if (unledgered.length) {
@@ -5576,9 +6199,16 @@ async function main() {
   }
   if (crashProblems.length) {
     console.error('    FAIL: a probe crashed where the THREW list does not say one does, or a');
-    console.error('          declared crash stopped happening. A crash is not a verdict and must');
-    console.error('          not be compared as one:');
+    console.error('          declared crash stopped happening, or DRZL answered something else');
+    console.error('          where it did. A crash is not a verdict and must not be compared as');
+    console.error('          one, and it is not a reason to stop measuring DRZL either:');
     for (const c of crashProblems) console.error(`      ${c}`);
+  }
+  if (arbiterProblems.length) {
+    console.error('    FAIL: a crash site is no longer settled the way it is declared to be. A');
+    console.error('          value official crashes on is still a value DRZL answers, and');
+    console.error('          something has to say whether that answer is right:');
+    for (const a of arbiterProblems) console.error(`      ${a}`);
   }
   if (unnamedProblems.length) {
     console.error('    FAIL: the unnamed-column list does not describe this run:');
@@ -5598,6 +6228,7 @@ async function main() {
     ledgerProblems.length ||
     unledgered.length ||
     crashProblems.length ||
+    arbiterProblems.length ||
     unnamedProblems.length ||
     capProblems.length ||
     totalCompared !== EXPECTED_COMPARISONS
@@ -5827,7 +6458,9 @@ echo "    same way by the analyzer under both drizzle-orm majors, bar the differ
 echo "    names one at a time, three of which are columns 0.4x leaves unnamed. The same column by"
 echo "    column comparison runs a second time against the first-party validators for 0.45.2,"
 echo "    where the columns known to differ are counted and named above, each with what DRZL"
-echo "    emits, what official emits and which filing it is. The JSON Schema"
+echo "    emits, what official emits and which filing it is. Where an official validator crashes"
+echo "    instead of answering, DRZL's own verdict on that value is pinned rather than dropped,"
+echo "    and settled against a real Postgres for the values one can be handed. The JSON Schema"
 echo "    output compiles under ajv in strict mode, agrees with Postgres wherever the zod output"
 echo "    does, and speaks as a fifth voice on every CHECK. Every tarball holds the files its"
 echo "    manifest names and nothing from the working tree, and every package npm is serving"

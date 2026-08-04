@@ -53,3 +53,32 @@ cannot hide behind a matching select; the v1 pass has the byte-cap stage, which 
 cross-generator waivers carry signatures too, so the line claiming all four generators agree on
 every column and value now says how many documented differences it is standing on. That line was
 false at HEAD: seven columns disagree on five values each, and every row was being discarded unread.
+
+A crash is no longer the end of the story for the value it happened on. Not comparing a probe
+official crashed on is right; dropping it entirely was not, because nothing then measured DRZL on
+that value at all. Making the typebox Insert and Update schemas for `c_bit` accept `null`, on a
+`bit(3).notNull()` column, left the whole v1 run byte identical to green. Each crash entry now pins
+what DRZL answers, keyed by mode and value and asserted in both directions, and a real Postgres
+through PGlite settles whether the pinned answer is right: the table is built from the fixture
+column's own `getSQLType()`, its nullable twin has to take a NULL before the NOT NULL twin's refusal
+counts as anything, and a refusal carries its SQLSTATE so "refused by the constraint" is a different
+answer from "refused by the type". A value the database refuses and DRZL accepts fails the stage
+unless the ledger already names that column. Where no database can be handed the value, the reason
+is computed rather than declared: `undefined` is an absence and every driver turns it into a NULL on
+the way to the server, and PGlite cannot answer for a MySQL column.
+
+The MySQL byte caps are bracketed instead of stepped past. One probe over a cap only ever proves the
+cap is below it, so a cap moved anywhere in [36, 257] for `tinytext` or [400, 65537] for `text` was
+invisible, measured by moving the emitted cap and re-running. Two probes per column close both ends:
+`floor(cap/3)` three-byte characters plus `cap mod 3` ASCII ones is exactly `cap` bytes and must be
+accepted, and one more ASCII character is exactly `cap + 1` bytes and must be refused. A real MySQL
+8.4.11 puts the boundary in the same place for all four columns, storing exactly `cap` bytes and
+failing the next one with ERROR 1406. The invisible window is now one byte wide.
+
+And the claim about which of those columns anything measures is executed rather than written down.
+Two versions of that sentence have been false on this branch and the second was introduced by the
+fix for the first. Each column now declares what measures its byte cap, the run computes the same
+thing from the pool and from what the byte-cap stage probed, and the two are compared in both
+directions and printed. `m_longtext` is measured by nothing, and deleting every one of its caps from
+all four generated modules leaves both passes byte identical to green, which is exactly what the
+stage now prints.
