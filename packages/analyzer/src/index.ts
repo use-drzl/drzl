@@ -988,9 +988,12 @@ export class SchemaAnalyzer {
    * `integer: false` travels with every entry, bound or not, and what it decides depends on which.
    * `isIntegerColumn` falls back to "declares both bounds" when the flag is absent, so on a bounded
    * entry the flag is the only thing stopping the emitted schema calling `.int()` and refusing 1.5.
-   * On an unbounded one it decides nothing, measured both ways in
-   * floats-and-tuples-0.4x.spec.ts. It is stated there because it is true of the column, not
-   * because it guards anything.
+   * On an unbounded one it decides nothing, measured both ways against the real function in
+   * `@drzl/validation-core`'s integer-column.spec.ts. It is stated there because it is true of the
+   * column, not because it guards anything. That spec is where the measurement moved when the
+   * analyzer's copy of it turned out to be a closed loop; this sentence went on naming
+   * floats-and-tuples-0.4x.spec.ts, which asserts the flag is present and nothing about what it
+   * decides.
    *
    * The widths are the type's, not the name's: MySQL and SingleStore `real` is a synonym for
    * `double` unless REAL_AS_FLOAT is set, and SQLite `real` is an 8 byte IEEE float. Both are

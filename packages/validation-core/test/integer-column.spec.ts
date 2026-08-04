@@ -8,8 +8,11 @@
  * measures the copy.
  *
  * So the assertion lives here, where the function does. Deleting
- * `if (typeof c.integer === 'boolean') return c.integer;` from `src/index.ts` fails the first two
- * cases below.
+ * `if (typeof c.integer === 'boolean') return c.integer;` from `src/index.ts` fails two cases, run
+ * rather than counted: `is not an integer, because the flag says so` and `lets an explicit true
+ * through as well, not only false`, which are the first and the last of the eight. An earlier
+ * version of this sentence said "the first two", and the second case is the control for the first:
+ * it asserts the fallback, which is all the deletion leaves, so it passes by construction.
  *
  * What the analyzer states, and why each case matters:
  *

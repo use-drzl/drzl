@@ -139,7 +139,9 @@ describe('numeric range', () => {
     // Number.MAX_VALUE and returned identical. Any finite bound would refuse a value the column
     // stores. It still states `integer: false`, and on this column that decides nothing: it is
     // true of the column and it is what makes the *bounded* case work, which the flag test in
-    // floats-and-tuples-0.4x.spec.ts measures from both ends.
+    // validation-core's integer-column.spec.ts measures from both ends against the real
+    // `isIntegerColumn`. It named floats-and-tuples-0.4x.spec.ts until the measurement moved out
+    // of there, and that file now asserts the flag's presence alone.
     //
     // `real` is bounded, at the one magnitude the database does refuse: PGlite takes
     // 3.4028234663852886e38 and answers `out of range for type real` to 3.4028236e38.
