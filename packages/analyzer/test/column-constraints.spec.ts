@@ -137,8 +137,9 @@ describe('numeric range', () => {
     // `doublePrecision` carries no range. float8 is the JavaScript number's own format, so
     // Postgres takes every finite JS number into one, measured through PGlite to
     // Number.MAX_VALUE and returned identical. Any finite bound would refuse a value the column
-    // stores. It still states `integer: false`, because an absent range is not a statement and
-    // `isIntegerColumn` would otherwise be free to read a CHECK-derived pair as an integer range.
+    // stores. It still states `integer: false`, and on this column that decides nothing: it is
+    // true of the column and it is what makes the *bounded* case work, which the flag test in
+    // floats-and-tuples-0.4x.spec.ts measures from both ends.
     //
     // `real` is bounded, at the one magnitude the database does refuse: PGlite takes
     // 3.4028234663852886e38 and answers `out of range for type real` to 3.4028236e38.

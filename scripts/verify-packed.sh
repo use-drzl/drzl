@@ -601,11 +601,17 @@ fi
 echo "    all $doc_total documented configs generate and typecheck"
 
 echo "==> differential parity against the official drizzle-orm validators"
-# The claim DRZL makes is that its generated schemas are at least as strict as the first-party
-# `drizzle-orm/{zod,valibot,arktype}` modules. That is a claim about behaviour, so it is measured
-# by behaviour: generate for the same table, then push the same pool of values through both
-# schemas column by column and compare the verdicts. Reading the emitted source cannot do this,
-# because a schema that parses and a schema that validates look identical as text.
+# What DRZL claims is that every difference between its generated schemas and the first-party
+# `drizzle-orm/{zod,valibot,arktype,typebox}` modules is known and named. Not that it is at least as
+# strict: this comment said that for a long time and it was never true, since Postgres takes three
+# emoji into a `char(3)` and a Uint8Array into a `bytea` and official refuses both. Where the two
+# disagree the database decides which is right, and the answer goes in ALLOWED with its
+# measurement.
+#
+# That is a claim about behaviour, so it is measured by behaviour: generate for the same table,
+# then push the same pool of values through both schemas column by column and compare the verdicts.
+# Reading the emitted source cannot do this, because a schema that parses and a schema that
+# validates look identical as text.
 #
 # Three dialects and all three modes, because the gaps cluster in the corners: MySQL owns the
 # narrow integer widths and the text/blob caps, SQLite owns the blob modes, and insert and update
@@ -1532,9 +1538,17 @@ const ALLOWED: Record<string, Waiver> = {
   'sqlite/valibot/s_blob': { libs: ['valibot'], modes: MODE_NAMES, why: 'as pg/valibot/c_json; a bare blob() is Drizzle json mode', divergence: { '*/*': `L:  | T: Infinity, Date, Buffer, Uint8Array` } },
   'pg/valibot/c_point': { libs: ['valibot'], modes: MODE_NAMES, why: 'v.strictTuple rejects a third element; official v.tuple ignores extras', divergence: { '*/*': `L:  | T: [1,2,3]` } },
   'pg/valibot/c_geometry': { libs: ['valibot'], modes: MODE_NAMES, why: 'as pg/valibot/c_point', divergence: { '*/*': `L:  | T: [1,2,3]` } },
-  // Looser than official on purpose, and the only entries in either pass that run that way, so
-  // they are the ones to read carefully. The database is the arbiter here, not the first-party
-  // module, and it was asked directly through PGlite on each column's own SQL type.
+  // Looser than official on purpose. An earlier version of this sentence called these the only
+  // entries in either pass that run that way, and the map around it refutes that: the run prints
+  // how many waivers have DRZL accepting something official refuses, and it is most of them.
+  // `pg/c_char` takes three emoji into a `char(3)`, `pg/c_bytea` takes a Uint8Array, `pg/c_uuid`
+  // takes a uuid TypeBox refuses without a FormatRegistry, and Postgres accepts all three.
+  //
+  // What is unusual about these six is narrower and worth reading for: they are looser on a
+  // *numeric range*, which is the kind of divergence this gate was built to catch, and they got
+  // that way by moving off the first-party module's numbers rather than by never having had any.
+  // The database is the arbiter here, not the first-party module, and it was asked directly
+  // through PGlite on each column's own SQL type.
   //
   // `real` / float4. Official bounds it at +/-8388607, and the column stores 8388608, 9000000,
   // 1e9 and 2147483648 and returns every one of them unchanged, and holds every integer exactly
@@ -1551,11 +1565,11 @@ const ALLOWED: Record<string, Waiver> = {
   // microsecond epoch.
   //
   // DRZL was on official's numbers for one release and this is the correction. The failure text
-  // this gate prints for an unwaived difference, "a generated schema looser than the first-party
-  // module accepts rows the database will reject", is exactly the equivalence that does not hold
+  // this gate prints for an unwaived difference used to gloss "looser than the first-party module"
+  // as "accepts rows the database will reject", which is exactly the equivalence that does not hold
   // for these six: the database accepts every value in these signatures except the ones noted
-  // below. That is what makes them ALLOWED rather than DEFECTS, and the note is here because the
-  // sentence would otherwise read as an admission.
+  // below. That sentence has been rewritten rather than caveated, because it was already false of
+  // five waived columns before these six arrived.
   //
   // Two values in these signatures the database is not on DRZL's side about:
   //   9007199254740993   the JS literal is 9007199254740992, which a float8 holds exactly and a
@@ -2091,6 +2105,27 @@ if (totalCompared !== EXPECTED_COMPARISONS) {
 }
 console.log(`    ${totalCompared} column comparisons`);
 
+/**
+ * How many waivers run each way, counted from the map rather than stated in a sentence.
+ *
+ * `L:` is the half of a signature listing what DRZL accepts and official refuses, so a non-empty
+ * one is a waiver where DRZL is the looser side. Three comments in this file have now claimed a
+ * number for that, and the count is printed here instead so a claim about it cannot go stale: the
+ * float waivers added when the bounds moved to the database's were described as "the only entries
+ * in either pass that run that way", and they are not, by an order of magnitude.
+ *
+ * Being looser than official is not by itself a defect and this line is not a warning. Postgres
+ * takes three emoji into a `char(3)`, a Uint8Array into a `bytea` and a uuid into a `uuid`, and
+ * official refuses all three. What the gate holds is the sentence at the end of this file.
+ */
+const looserSide = (e: { divergence: Record<string, string> }) =>
+  Object.values(e.divergence).some((s) => s.split('|')[0].replace(/^L:/, '').trim() !== '');
+const looserWaivers = Object.values(ALLOWED).filter(looserSide).length;
+console.log(
+  `    ${Object.keys(ALLOWED).length} documented divergence(s), ${looserWaivers} of them with ` +
+    `DRZL accepting something official refuses`
+);
+
 // A waiver that suppresses nothing is not harmless. It is a sentence claiming a divergence exists
 // and is fine, sitting next to the divergences that really do, and the next person to widen this
 // file reads it as covered ground. Every key above has to earn its place on this run or be
@@ -2362,8 +2397,12 @@ if (deadWaivers.length) {
 }
 
 if (findings) {
-  console.error(`FAIL: ${findings} parity finding(s). A generated schema looser than the`);
-  console.error('      first-party module accepts rows the database will reject.');
+  console.error(`FAIL: ${findings} parity finding(s): a generated schema differs from the`);
+  console.error('      first-party module on a value, and no waiver names that difference.');
+  console.error('      Looser is not automatically wrong and this sentence used to say it was:');
+  console.error('      Postgres takes three emoji into a char(3) and a Uint8Array into a bytea,');
+  console.error('      and official refuses both. Ask the database which side is right, then put');
+  console.error('      the answer in ALLOWED with its measurement, or fix the generator.');
 }
 
 // Counted separately and exited on together, so one run reports both rather than hiding the
@@ -5277,10 +5316,13 @@ const ALLOWED: Record<string, Entry> = {
     official: 'v.tuple, which ignores a third element the column then drops',
     filed: 'not a defect: DRZL is stricter, and Postgres truncates what official accepts',
   },
-  // Looser than official, on purpose, and these six are the only entries in either pass that run
-  // that way. The reasoning, the PGlite measurements and the two caveats are written out once at
-  // the same six keys in the v1 pass near the top of this file, because both majors now take the
-  // database's answer and moving one without the other is what the cross-major diff catches.
+  // Looser than official, on purpose, and looser on a numeric range rather than on a format or a
+  // length, which is the part worth reading for. An earlier version of this sentence called these
+  // six the only entries in either pass running that way; they are not, and the run now counts and
+  // prints how many waivers do. The reasoning, the PGlite measurements and the two caveats are
+  // written out once at the same six keys in the v1 pass near the top of this file, because both
+  // majors now take the database's answer and moving one without the other is what the cross-major
+  // diff catches.
   //
   // They were in DEFECTS below for one release, filed as "DRZL emits an unbounded number, official
   // emits a number within +/-8388607". The fix that closed that filed the wrong way: it adopted
@@ -5871,9 +5913,14 @@ async function main() {
   }
 
   const filedAlready = Object.values(DEFECTS).filter((e) => e.filed.startsWith('AC:')).length;
+  // As in the v1 pass: which side each waiver runs on, counted rather than asserted.
+  const looserWaivers = Object.values(ALLOWED).filter((e) =>
+    Object.values(e.divergence).some((s) => s.split('|')[0].replace(/^L:/, '').trim() !== '')
+  ).length;
   console.log(`    ${totalCompared} column comparisons across ${pairings} pairings`);
   console.log(
-    `    ${Object.keys(ALLOWED).length} documented divergence(s); ` +
+    `    ${Object.keys(ALLOWED).length} documented divergence(s), ${looserWaivers} of them with ` +
+      `DRZL accepting something official refuses; ` +
       `${Object.keys(DEFECTS).length} known-defect column(s), ${filedAlready} already filed and ` +
       `${Object.keys(DEFECTS).length - filedAlready} first seen by this stage`
   );
@@ -6383,8 +6430,11 @@ async function main() {
     for (const c of capProblems) console.error(`      ${c}`);
   }
   if (findings.length) {
-    console.error(`    FAIL: ${findings.length} parity finding(s). A generated schema looser than`);
-    console.error('          the first-party module accepts rows the database will reject.');
+    console.error(`    FAIL: ${findings.length} parity finding(s): a generated schema differs from`);
+    console.error('          the first-party module on a value, and no waiver names that');
+    console.error('          difference. Looser is not automatically wrong, which is what this');
+    console.error('          sentence used to claim. Ask the database which side is right, then');
+    console.error('          put the answer in ALLOWED with its measurement, or fix the generator.');
   }
   if (
     findings.length ||
@@ -6612,9 +6662,13 @@ fi
 cd "$APP"
 
 echo "OK: $count packages packed, installed into an empty project, generated, and the output"
-echo "    typechecks under bundler, node16 and nodenext, and validates at least as strictly as"
-echo "    all four first-party drizzle-orm validator modules on each of three dialects and three"
-echo "    modes, with the four generators cross-checked against each other on every dialect,"
+echo "    typechecks under bundler, node16 and nodenext, and is compared column by column and value"
+echo "    by value against all four first-party drizzle-orm validator modules on each of three"
+echo "    dialects and three modes. Every difference either fails this run or is waived by name,"
+echo "    and each waiver pins the exact set of probes it covers, in both directions. That"
+echo "    comparison is the guarantee, and it is not \"at least as strict\": most waivers have DRZL"
+echo "    accepting something official refuses, the run counts them above, and each says why."
+echo "    The four generators are cross-checked against each other on every dialect,"
 echo "    checked against a real Postgres, a real SQLite and, where MYSQL_URL is set, a real"
 echo "    MySQL, with applyDefaults compared against what the database writes, and described the"
 echo "    same way by the analyzer under both drizzle-orm majors, bar the differences that stage"

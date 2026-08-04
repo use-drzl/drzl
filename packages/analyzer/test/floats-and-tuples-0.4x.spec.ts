@@ -33,12 +33,17 @@ const dir = path.resolve(__dirname, 'fixtures');
 /** The largest finite float32, which is the only magnitude Postgres refuses on a `real` column. */
 const FLOAT4_MAX = '340282346638528859811704183484516925440';
 
-async function columnsOf(name: string, source: string) {
+async function tableOf(name: string, source: string) {
   await fs.mkdir(dir, { recursive: true });
   const file = path.join(dir, `${name}.mjs`);
   await fs.writeFile(file, source, 'utf8');
   const a = await new SchemaAnalyzer(path.relative(process.cwd(), file)).analyze({});
-  return Object.fromEntries((a.tables[0]?.columns ?? []).map((c) => [c.name, c]));
+  return a.tables[0];
+}
+
+async function columnsOf(name: string, source: string) {
+  const t = await tableOf(name, source);
+  return Object.fromEntries((t?.columns ?? []).map((c) => [c.name, c]));
 }
 
 describe('a postgres point or line column on 0.4x', () => {
@@ -215,17 +220,63 @@ describe('an inexact numeric column on 0.4x', () => {
     expect(cols.d.max).toBeUndefined();
   });
 
-  it('is not an integer, so the bounds cannot be read as one', async () => {
-    // `isIntegerColumn` falls back to "declares both bounds" when `integer` is absent, so a
-    // float that gained a range without the flag would start refusing 1.5.
-    const cols = await columnsOf(
-      'pg-float-not-integer-0.4x',
+  it('states integer:false, which decides the bounded case and nothing on the unbounded one', () => {
+    // Three comments claimed `integer: false` was on the unbounded columns to stop
+    // `isIntegerColumn` reading a CHECK-derived pair of bounds as an integer range. Review asked
+    // for the experiment and it disproves the claim: a CHECK never becomes a column bound at all.
+    // The generators fold checks into the emitted range as they emit, and nothing writes them back
+    // onto the Column, so `min` and `max` on a `doublePrecision` carrying two bracketing CHECKs
+    // are still undefined.
+    //
+    // `isIntegerColumn` is reimplemented here in its three lines rather than imported, because
+    // `@drzl/validation-core` is not a dependency of this package. That is a real weakness of this
+    // test: it would not notice that function changing. What it does pin is the input, which is
+    // the half this package owns, and generator-zod's structured-columns spec runs the real one.
+    const isIntegerColumn = (c: {
+      integer?: boolean;
+      dbType?: string;
+      min?: string;
+      max?: string;
+    }) => {
+      if (typeof c.integer === 'boolean') return c.integer;
+      return c.dbType === 'INTEGER' || (c.min !== undefined && c.max !== undefined);
+    };
+    const bounded = { integer: false, dbType: 'REAL', min: `-${FLOAT4_MAX}`, max: FLOAT4_MAX };
+    const unbounded = { integer: false, dbType: 'DOUBLE' };
+    const without = <T extends object>(o: T) => {
+      const { integer: _drop, ...rest } = o as T & { integer?: boolean };
+      return rest;
+    };
+    // On the bounded column the flag is the whole answer: without it the two bounds are read as an
+    // integer range and the emitted schema starts refusing 1.5.
+    expect(isIntegerColumn(bounded)).toBe(false);
+    expect(isIntegerColumn(without(bounded)), 'the flag is load-bearing here').toBe(true);
+    // On the unbounded one it decides nothing, which is what the removed comments got wrong.
+    expect(isIntegerColumn(unbounded)).toBe(false);
+    expect(isIntegerColumn(without(unbounded)), 'and inert here').toBe(false);
+  });
+
+  it('never turns a CHECK into a column bound, on a float or anything else', async () => {
+    // The other half of the same disproof, through the real analyzer: two bracketing CHECKs on a
+    // `doublePrecision` column leave its range untouched.
+    const table = await tableOf(
+      'pg-float-check-bounds-0.4x',
       `
-      import { pgTable, real } from 'drizzle-orm/pg-core';
-      export const t = pgTable('t', { r: real() });
+      import { pgTable, doublePrecision, real, check } from 'drizzle-orm/pg-core';
+      import { sql } from 'drizzle-orm';
+      export const t = pgTable('t', { d: doublePrecision(), r: real() }, (x) => [
+        check('lo', sql\`\${x.d} >= 0\`),
+        check('hi', sql\`\${x.d} <= 100\`),
+      ]);
       `
     );
-    expect(cols.r.integer).toBe(false);
+    // The checks were read, so an absent bound below is the analyzer's answer and not a fixture
+    // that quietly lost them. A verification that can succeed by matching nothing is not one.
+    expect(table.checks?.map((c) => c.expression)).toEqual(['d >= 0', 'd <= 100']);
+    const cols = Object.fromEntries(table.columns.map((c) => [c.name, c]));
+    expect(cols.d.min, 'a CHECK is not a column bound').toBeUndefined();
+    expect(cols.d.max).toBeUndefined();
+    expect(cols.d.integer).toBe(false);
   });
 
   it('carries the database limit, not drizzle-zod, and the limit is the largest float4', async () => {

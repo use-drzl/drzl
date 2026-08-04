@@ -282,9 +282,15 @@ const MYSQL_TEXT_CAPS: Record<string, number> = {
  * There is deliberately no `double` entry. float8 is the JavaScript number's own format, so
  * every finite JS number round-trips through it by construction, measured to
  * `Number.MAX_VALUE`, and any finite bound on an 8 byte float column would refuse a value the
- * column stores. `integer: false` is still stated for those columns, because an absent range is
- * not a statement and `isIntegerColumn` reads a bare absence as "not bounded" rather than as
- * "not an integer".
+ * column stores.
+ *
+ * `integer: false` is still stated for those columns, and on an unbounded one it decides nothing:
+ * measured on a `doublePrecision` column carrying two bracketing CHECKs, `isIntegerColumn` answers
+ * false with the flag and false with the flag deleted, because a CHECK never becomes a column
+ * bound. The generators fold checks into the emitted range at emit time and nothing writes them
+ * back here. It is stated because it is true of the column and because the same flag is what
+ * decides the *bounded* case: on a `real`, deleting it flips `isIntegerColumn` to true and the
+ * emitted schema starts refusing 1.5.
  *
  * What no range can express either way is `Infinity` and `NaN`. Postgres stores and returns both
  * in `real` and in `double precision`; a `>=`/`<=` pair refuses them whatever the numbers are, and
@@ -964,8 +970,8 @@ export class SchemaAnalyzer {
    * Only drizzle v1 states this outright, as a `float` or `double` semantic on `dataType`. On
    * 0.4x the same columns reach the analyzer by class name, `INT_RANGES` was the only range table
    * on that path, and so nothing said anything about them at all: not the range, and not that
-   * they are inexact, which left `isIntegerColumn` free to read a `CHECK`-derived pair of bounds
-   * as an integer column.
+   * they are inexact. That made DRZL looser than the first-party validator for the same major on
+   * every one of these columns, which is what the parity gate exists to forbid.
    *
    * `null` is a value in this table and is not the same as a class it does not name. It says the
    * column is inexact and that no finite magnitude bound is truthful for it, which is the case for
@@ -973,9 +979,12 @@ export class SchemaAnalyzer {
    * finite JS number into one, measured to `Number.MAX_VALUE`. Read with an own-property test for
    * that reason, and because a plain object answers to `constructor` and `toString`.
    *
-   * `integer: false` travels with every entry, bound or not, and is not decoration.
-   * `isIntegerColumn` falls back to "declares both bounds" when the flag is absent, so a range
-   * arriving on its own turns the emitted schema into an integer one and it starts refusing 1.5.
+   * `integer: false` travels with every entry, bound or not, and what it decides depends on which.
+   * `isIntegerColumn` falls back to "declares both bounds" when the flag is absent, so on a bounded
+   * entry the flag is the only thing stopping the emitted schema calling `.int()` and refusing 1.5.
+   * On an unbounded one it decides nothing, measured both ways in
+   * floats-and-tuples-0.4x.spec.ts. It is stated there because it is true of the column, not
+   * because it guards anything.
    *
    * The widths are the type's, not the name's: MySQL and SingleStore `real` is a synonym for
    * `double` unless REAL_AS_FLOAT is set, and SQLite `real` is an 8 byte IEEE float. Both are
