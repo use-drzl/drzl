@@ -137,9 +137,9 @@ describe('structured columns', () => {
     expect(accepts(f, 'abc'), 'a string').toBe(false);
   });
 
-  it('bounds an inexact numeric column without turning it into an integer', async () => {
-    // What the analyzer now emits for a `real` column on drizzle-orm 0.4x, where it used to emit
-    // no range at all and DRZL was looser than drizzle-zod@0.8.3 on the same major.
+  it('bounds a 4 byte float at the magnitude the database refuses', async () => {
+    // What the analyzer emits for a `real` column. The bound is a measured Postgres edge: PGlite
+    // takes 3.4028234663852886e38 and answers `out of range for type real` to 3.4028236e38.
     //
     // `integer` has to travel with the bounds. `isIntegerColumn` falls back to "declares both
     // bounds" when the flag is absent, so a range arriving on its own would make the emitted
@@ -148,17 +148,41 @@ describe('structured columns', () => {
       col('ratio', {
         tsType: 'number',
         dbType: 'REAL',
-        min: '-8388608',
-        max: '8388607',
+        min: '-340282346638528859811704183484516925440',
+        max: '340282346638528859811704183484516925440',
         integer: false,
       }),
     ]);
     const f = m.SelecttSchema.shape.ratio;
     expect(accepts(f, 1.5), 'a fraction, which is the point of the column').toBe(true);
-    expect(accepts(f, 8388607), 'the bound itself').toBe(true);
-    expect(accepts(f, 8388608), 'one past the bound').toBe(false);
-    expect(accepts(f, -8388609), 'one below the bound').toBe(false);
-    expect(accepts(f, Infinity), 'a value Postgres takes and a finite bound cannot').toBe(false);
+    expect(accepts(f, 3.4028234663852886e38), 'the bound itself').toBe(true);
+    expect(accepts(f, 3.4028236e38), 'past the largest float32').toBe(false);
+    expect(accepts(f, -3.4028236e38), 'and below the smallest').toBe(false);
+    // Values a shipped release refused and the column stores exactly. The bound used to be
+    // drizzle-zod's +/-8388607 and this is what that cost.
+    expect(accepts(f, 8388608)).toBe(true);
+    expect(accepts(f, 1e9)).toBe(true);
+    expect(accepts(f, 2147483648)).toBe(true);
+    // Filed, not fixed: Postgres stores Infinity and NaN in a real column and no range admits
+    // either. `z.number()` refuses both with no bound at all, so a range is not what would fix it.
+    expect(accepts(f, Infinity)).toBe(false);
+    expect(accepts(f, NaN)).toBe(false);
+  });
+
+  it('keeps an 8 byte float unbounded and still not an integer', async () => {
+    // The absence of a range is the statement here: float8 is the JavaScript number's own format,
+    // so Postgres takes every finite JS number into a `double precision` column, measured to
+    // Number.MAX_VALUE. `integer: false` is what stops `isIntegerColumn` reading the bare absence
+    // as anything, and this executes that rather than reading the three lines of it.
+    const m = await schemasFor([
+      col('reading', { tsType: 'number', dbType: 'DOUBLE', integer: false }),
+    ]);
+    const f = m.SelecttSchema.shape.reading;
+    expect(accepts(f, 1.5), 'a fraction, so no .int() was emitted').toBe(true);
+    expect(accepts(f, 1.75e15), 'a microsecond epoch, refused by the old bound').toBe(true);
+    expect(accepts(f, 1e300), 'refused by the old bound and stored by the column').toBe(true);
+    expect(accepts(f, Number.MAX_VALUE)).toBe(true);
+    expect(accepts(f, 'x'), 'still a number').toBe(false);
   });
 
   it('holds a json column to values that survive a round trip', async () => {

@@ -1532,6 +1532,45 @@ const ALLOWED: Record<string, Waiver> = {
   'sqlite/valibot/s_blob': { libs: ['valibot'], modes: MODE_NAMES, why: 'as pg/valibot/c_json; a bare blob() is Drizzle json mode', divergence: { '*/*': `L:  | T: Infinity, Date, Buffer, Uint8Array` } },
   'pg/valibot/c_point': { libs: ['valibot'], modes: MODE_NAMES, why: 'v.strictTuple rejects a third element; official v.tuple ignores extras', divergence: { '*/*': `L:  | T: [1,2,3]` } },
   'pg/valibot/c_geometry': { libs: ['valibot'], modes: MODE_NAMES, why: 'as pg/valibot/c_point', divergence: { '*/*': `L:  | T: [1,2,3]` } },
+  // Looser than official on purpose, and the only entries in either pass that run that way, so
+  // they are the ones to read carefully. The database is the arbiter here, not the first-party
+  // module, and it was asked directly through PGlite on each column's own SQL type.
+  //
+  // `real` / float4. Official bounds it at +/-8388607, and the column stores 8388608, 9000000,
+  // 1e9 and 2147483648 and returns every one of them unchanged, and holds every integer exactly
+  // to 16777216. So official's bound refuses rows the column hands back, and a select schema that
+  // did the same refused its own rows. DRZL bounds it where the database does instead:
+  // 3.4028234663852886e38 is accepted and 3.4028236e38 answers
+  // `"3.4028236e+38" is out of range for type real`. That is why 9007199254740993 is in the
+  // signature and 1e300 is not: the first is inside the float4 magnitude and the second is not.
+  //
+  // `double precision` / float8 and everything else backed by an 8 byte float. No bound at all,
+  // because there is no finite one that is true: float8 is the JavaScript number's own format and
+  // Postgres accepted every finite JS number into one, measured to Number.MAX_VALUE and returned
+  // identical. Official bounds it at +/-140737488355327, which refuses 1.75e15, an ordinary
+  // microsecond epoch.
+  //
+  // DRZL was on official's numbers for one release and this is the correction. The failure text
+  // this gate prints for an unwaived difference, "a generated schema looser than the first-party
+  // module accepts rows the database will reject", is exactly the equivalence that does not hold
+  // for these six: the database accepts every value in these signatures except the ones noted
+  // below. That is what makes them ALLOWED rather than DEFECTS, and the note is here because the
+  // sentence would otherwise read as an admission.
+  //
+  // Two values in these signatures the database is not on DRZL's side about:
+  //   9007199254740993   the JS literal is 9007199254740992, which a float8 holds exactly and a
+  //                      float4 rounds. Postgres stores it in both. It is here because no bound
+  //                      excludes it, not because a bound was chosen to admit it.
+  //   Infinity           Postgres stores and returns it in both types, so accepting it is right;
+  //                      only valibot and arktype do, because `z.number()` and `Type.Number()`
+  //                      refuse it with no bound at all. Filed: describing that column honestly
+  //                      needs a union in every generator rather than a range.
+  'pg/c_real': { libs: LIB_NAMES, modes: MODE_NAMES, why: 'bounded at the float4 magnitude Postgres refuses rather than at drizzle-zod +/-8388607, which refuses rows the column returns', divergence: { '*/*': `L: 9000000, 2147483648, 9007199254740993 | T: ` } },
+  'mysql/m_float': { libs: LIB_NAMES, modes: MODE_NAMES, why: 'as pg/c_real; MySQL FLOAT is the same 4 byte width', divergence: { '*/*': `L: 9000000, 2147483648, 9007199254740993 | T: ` } },
+  'pg/c_double': { libs: LIB_NAMES, modes: MODE_NAMES, why: 'no finite bound is true of an 8 byte float, which holds every finite JS number', divergence: { '*/zod,typebox': `L: 9007199254740993 | T: `, '*/valibot,arktype': `L: 9007199254740993, Infinity | T: ` } },
+  'mysql/m_real': { libs: LIB_NAMES, modes: MODE_NAMES, why: 'as pg/c_double; MySQL REAL is a synonym for DOUBLE', divergence: { '*/zod,typebox': `L: 9007199254740993 | T: `, '*/valibot,arktype': `L: 9007199254740993, Infinity | T: ` } },
+  'mysql/m_double': { libs: LIB_NAMES, modes: MODE_NAMES, why: 'as pg/c_double', divergence: { '*/zod,typebox': `L: 9007199254740993 | T: `, '*/valibot,arktype': `L: 9007199254740993, Infinity | T: ` } },
+  'sqlite/s_real': { libs: LIB_NAMES, modes: MODE_NAMES, why: 'as pg/c_double; SQLite REAL is an 8 byte IEEE float', divergence: { '*/zod,typebox': `L: 9007199254740993 | T: `, '*/valibot,arktype': `L: 9007199254740993, Infinity | T: ` } },
   // Official emits `Type.RegExp`, whose check runs `RegExp.prototype.test` against the raw value,
   // and `test` stringifies what it is given: `[]` becomes '' and matches `^[01]*$`. So official
   // accepts an empty array for a binary column. This generator emits a `string` carrying a
@@ -1584,6 +1623,19 @@ const CROSS_ALLOWED: Record<string, { why: string; divergence: string }> = {
   'sqlite/s_text_json': { why: 'as pg/c_json', divergence: `NaN: arktype accept, zod/valibot/typebox reject; Infinity: arktype accept, zod/valibot/typebox reject; Date: arktype accept, zod/valibot/typebox reject; Buffer: arktype accept, zod/valibot/typebox reject; Uint8Array: arktype accept, zod/valibot/typebox reject` },
   'sqlite/s_blob_json': { why: 'as pg/c_json', divergence: `NaN: arktype accept, zod/valibot/typebox reject; Infinity: arktype accept, zod/valibot/typebox reject; Date: arktype accept, zod/valibot/typebox reject; Buffer: arktype accept, zod/valibot/typebox reject; Uint8Array: arktype accept, zod/valibot/typebox reject` },
   'sqlite/s_blob': { why: 'as pg/c_json; a bare blob() is Drizzle json mode', divergence: `NaN: arktype accept, zod/valibot/typebox reject; Infinity: arktype accept, zod/valibot/typebox reject; Date: arktype accept, zod/valibot/typebox reject; Buffer: arktype accept, zod/valibot/typebox reject; Uint8Array: arktype accept, zod/valibot/typebox reject` },
+  // The four generators split on `Infinity` for every 8 byte float column, and only since those
+  // columns stopped carrying a magnitude bound. That is not a difference in what DRZL asked for:
+  // all four are handed the same column, with `integer: false` and no range, and `z.number()` and
+  // `Type.Number()` refuse a non-finite number on their own while `v.number()` and arktype's
+  // `number` accept one. Postgres stores and returns Infinity in `real` and `double precision`
+  // alike, so valibot and arktype are the two that agree with the database here.
+  //
+  // No `real` entry: the float4 bound refuses Infinity in all four, so they agree there for a
+  // reason that has nothing to do with the libraries.
+  'pg/c_double': { why: 'z.number() and Type.Number() refuse a non-finite number with no bound; v.number() and arktype number accept one, as Postgres does', divergence: `Infinity: valibot/arktype accept, zod/typebox reject` },
+  'mysql/m_real': { why: 'as pg/c_double', divergence: `Infinity: valibot/arktype accept, zod/typebox reject` },
+  'mysql/m_double': { why: 'as pg/c_double', divergence: `Infinity: valibot/arktype accept, zod/typebox reject` },
+  'sqlite/s_real': { why: 'as pg/c_double', divergence: `Infinity: valibot/arktype accept, zod/typebox reject` },
   // No bigint entry either, for the reason given in ALLOWED: arktype now bounds a bigint with a
   // narrow, so the four generators agree about `c_bigint_b`, `m_bigint_b` and `s_blob_bigint`.
   // No `c_char` entry. There was one, reading "zod and valibot count code points; TypeBox and
@@ -5225,6 +5277,40 @@ const ALLOWED: Record<string, Entry> = {
     official: 'v.tuple, which ignores a third element the column then drops',
     filed: 'not a defect: DRZL is stricter, and Postgres truncates what official accepts',
   },
+  // Looser than official, on purpose, and these six are the only entries in either pass that run
+  // that way. The reasoning, the PGlite measurements and the two caveats are written out once at
+  // the same six keys in the v1 pass near the top of this file, because both majors now take the
+  // database's answer and moving one without the other is what the cross-major diff catches.
+  //
+  // They were in DEFECTS below for one release, filed as "DRZL emits an unbounded number, official
+  // emits a number within +/-8388607". The fix that closed that filed the wrong way: it adopted
+  // official's bound, which refuses 8388608, 9000000, 1e9 and 2147483648 on a column that stores
+  // and returns all four. Review measured the cost against the ground-truth pool at ten probes
+  // Postgres stores and both DRZL and official refused. The bound is the database's now.
+  //
+  // `pg/c_numeric_n` is deliberately not among them. Its bound is the safe-integer range, which is
+  // about what a JS number can carry rather than about the column, official emits the same one,
+  // and Postgres is stricter than both: it refuses 2147483648 into a `numeric(10,2)`.
+  'pg/c_real': {
+    libs: LIB_NAMES,
+    modes: MODE_NAMES,
+    divergence: { '*/*': `L: 9000000, 2147483648, 9007199254740993 | T: ` },
+    drzl: 'a number within the float4 magnitude Postgres accepts',
+    official: 'a number within +/-8388607, which refuses rows the column returns',
+    filed: 'not a defect: the database is the arbiter, see the same key in the v1 pass',
+  },
+  'mysql/m_float': { libs: LIB_NAMES, modes: MODE_NAMES, divergence: { '*/*': `L: 9000000, 2147483648, 9007199254740993 | T: ` }, drzl: 'as pg/c_real', official: 'as pg/c_real', filed: 'as pg/c_real' },
+  'pg/c_double': {
+    libs: LIB_NAMES,
+    modes: MODE_NAMES,
+    divergence: { '*/zod,typebox': `L: 9007199254740993 | T: `, '*/valibot,arktype': `L: 9007199254740993, Infinity | T: ` },
+    drzl: 'an unbounded number, because no finite bound is true of an 8 byte float',
+    official: 'a number within +/-140737488355327, which refuses an ordinary microsecond epoch',
+    filed: 'not a defect: as pg/c_real',
+  },
+  'mysql/m_real': { libs: LIB_NAMES, modes: MODE_NAMES, divergence: { '*/zod,typebox': `L: 9007199254740993 | T: `, '*/valibot,arktype': `L: 9007199254740993, Infinity | T: ` }, drzl: 'as pg/c_double', official: 'as pg/c_double', filed: 'as pg/c_real' },
+  'mysql/m_double': { libs: LIB_NAMES, modes: MODE_NAMES, divergence: { '*/zod,typebox': `L: 9007199254740993 | T: `, '*/valibot,arktype': `L: 9007199254740993, Infinity | T: ` }, drzl: 'as pg/c_double', official: 'as pg/c_double', filed: 'as pg/c_real' },
+  'sqlite/s_real': { libs: LIB_NAMES, modes: MODE_NAMES, divergence: { '*/zod,typebox': `L: 9007199254740993 | T: `, '*/valibot,arktype': `L: 9007199254740993, Infinity | T: ` }, drzl: 'as pg/c_double', official: 'as pg/c_double', filed: 'as pg/c_real' },
 };
 
 /**
@@ -5238,13 +5324,21 @@ const ALLOWED: Record<string, Entry> = {
  * plus four MySQL text columns, so no MySQL binary, no MySQL year and no SQLite column of any
  * kind had ever been described under both majors.
  *
- * Nine entries have left this map, which is what it is for. `pg/c_real`, `pg/c_double`,
- * `pg/c_numeric_n`, `mysql/m_real`, `mysql/m_double`, `mysql/m_float` and `sqlite/s_real` were
- * the class-name path carrying no bound at all for an inexact numeric column, and `pg/c_point`
- * and `pg/c_line` were it answering `string` for a value the driver hands back as a tuple. Both
- * are fixed in the analyzer rather than filed now, and removing an entry before the fix is what
- * showed the entry was covering the defect: taking these nine out on their own failed this stage
- * with 108 parity findings naming exactly those nine columns.
+ * Nine entries have left this map, which is what it is for, and they left by two different doors.
+ *
+ * `pg/c_point` and `pg/c_line` were the class-name path answering `string` for a value the driver
+ * hands back as a tuple. Fixed in the analyzer, and gone from both maps except for the valibot
+ * strict-tuple entry above, which is DRZL being the stricter one.
+ *
+ * `pg/c_real`, `pg/c_double`, `mysql/m_real`, `mysql/m_double`, `mysql/m_float` and
+ * `sqlite/s_real` were an inexact numeric column carrying no bound at all. They are in ALLOWED
+ * above now rather than gone: they are still divergences, in the opposite direction, because the
+ * bound DRZL adopted is the database's and not official's. `pg/c_numeric_n` is the one that is
+ * simply gone, since its safe-integer bound is what official emits too.
+ *
+ * Removing an entry before the fix is what showed the entry was covering the defect: taking the
+ * nine out on their own failed this stage with 108 parity findings naming exactly those nine
+ * columns.
  *
  * Two kinds of filed defect are not in this map, and they are not there for different reasons.
  *

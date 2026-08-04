@@ -88,6 +88,30 @@ describe('structured values', () => {
     });
   });
 
+  it('DEFECT: calls the object modes tuples too, and they are objects', () => {
+    // `point({ mode: 'xy' })` is `object point` with codec `point` on v1, and hands back
+    // `{ x, y }`; `line({ mode: 'abc' })` is `object line` and hands back `{ a, b, c }`. Both
+    // reach the same `case 'point'` and `case 'line'` arms above and come back as tuples, so a v1
+    // select schema for either rejects every row the driver returns. That is the same class of
+    // defect as typing a `point` as a string was, and it is worse than 0.4x's answer rather than
+    // better: 0.4x calls them strings, which is also wrong.
+    //
+    // Filed rather than fixed. Describing `{ x, y }` needs a `ColumnShape` no generator has, and
+    // no fixture in either parity pass carries an object-mode column, so there is no gate to turn
+    // red first. Pinned here so a change to those arms has to say what it did to these two: the
+    // 0.4x half is pinned in floats-and-tuples-0.4x.spec.ts and this is the v1 half, which had
+    // none.
+    expect(describeV1Column(col('object point', 'point'))?.shape).toEqual({
+      kind: 'tuple',
+      length: 2,
+    });
+    expect(describeV1Column(col('object line', 'line'))?.shape).toEqual({
+      kind: 'tuple',
+      length: 3,
+    });
+    expect(describeV1Column(col('object point', 'point'))?.tsType).toBe('[number, number]');
+  });
+
   it('carries the declared width of a vector and a bit string', () => {
     expect(describeV1Column(col('array vector', 'vector', { length: 3 }))?.shape).toEqual({
       kind: 'numberVector',

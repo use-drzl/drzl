@@ -131,26 +131,38 @@ describe('numeric range', () => {
     expect(String(Number(c.b.max))).not.toBe(c.b.max);
   });
 
-  it('bounds a float by its width and leaves a string numeric alone', async () => {
-    // This used to assert that neither carried a bound, on the reasoning that a float has no
-    // integer range. It has an inexact one, drizzle v1 states it, `drizzle-zod@0.8.3` emits it
-    // on this same major, and leaving it off made DRZL looser than the module it exists to
-    // improve on. A `numeric` in its default string mode really does stay unbounded: a min and a
-    // max on a string say nothing a validator can use, and its `format` carries the check.
+  it('states that a float is inexact, bounds only the width that has one', async () => {
+    // Three answers here, and the middle one is the point.
+    //
+    // `doublePrecision` carries no range. float8 is the JavaScript number's own format, so
+    // Postgres takes every finite JS number into one, measured through PGlite to
+    // Number.MAX_VALUE and returned identical. Any finite bound would refuse a value the column
+    // stores. It still states `integer: false`, because an absent range is not a statement and
+    // `isIntegerColumn` would otherwise be free to read a CHECK-derived pair as an integer range.
+    //
+    // `real` is bounded, at the one magnitude the database does refuse: PGlite takes
+    // 3.4028234663852886e38 and answers `out of range for type real` to 3.4028236e38.
+    //
+    // A `numeric` in its default string mode stays unbounded: a min and a max on a string say
+    // nothing a validator can use, and its `format` carries the check instead.
     const c = await columns(
       'cons-float',
       `
-      import { pgTable, doublePrecision, numeric } from 'drizzle-orm/pg-core';
+      import { pgTable, real, doublePrecision, numeric } from 'drizzle-orm/pg-core';
       export const t = pgTable('t', {
+        r: real('r'),
         d: doublePrecision('d'),
         n: numeric('n', { precision: 10, scale: 2 }),
       });
       `
     );
-    expect(c.d).toMatchObject({
+    expect(c.d).toMatchObject({ tsType: 'number', integer: false });
+    expect(c.d.min).toBeUndefined();
+    expect(c.d.max).toBeUndefined();
+    expect(c.r).toMatchObject({
       tsType: 'number',
-      min: '-140737488355328',
-      max: '140737488355327',
+      min: '-340282346638528859811704183484516925440',
+      max: '340282346638528859811704183484516925440',
       integer: false,
     });
     expect(c.n.tsType).toBe('string');

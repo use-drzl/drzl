@@ -251,29 +251,49 @@ const MYSQL_TEXT_CAPS: Record<string, number> = {
 };
 
 /**
- * Bounds `drizzle-orm/zod` puts on the inexact numeric types, matched deliberately.
+ * The largest magnitude a 4 byte float column holds, which is the only bound the database draws.
  *
- * Neither the column's range nor its precision limit, and the sentence that used to stand here
- * said it was the second. Asked of a real Postgres through PGlite, on each column's own SQL type:
+ * Measured through PGlite, on a real `real` column, and it is a hard edge rather than a taste:
  *
- *   real              takes 8388608, 9000000, 2147483648, Infinity and NaN; holds every integer
- *                     exactly up to 16777216, and gives 16777217 back as 16777216
- *   double precision  takes all of the above and returns each one unchanged
+ *   3.4028234663852886e38   accepted, returned identical
+ *   3.4028236e38            refused, `"3.4028236e+38" is out of range for type real`
+ *   1e300                   refused, the same way
  *
- * So `real` represents consecutive integers to twice the bound below and `double precision` to
- * 2^53, and the database refuses none of it. Drizzle picked the signed 24 bit and 48 bit ranges
- * instead, and DRZL matches them: a generated schema that disagreed with the first-party module
- * about the same column would be the more surprising outcome. What that costs is stated rather
- * than hidden, because it is a real cost: a schema built here turns away a value the column
- * stores and returns unchanged, and Infinity is the plainest case of it.
+ * It is also exactly where JavaScript's own float32 rounding stops:
+ * `Math.fround(3.4028234663852886e38)` is itself and `Math.fround(3.4028236e38)` is `Infinity`.
+ * Both facts are asserted in floats-and-tuples-0.4x.spec.ts rather than left as this paragraph.
  *
- * Used on both drizzle majors. v1 reaches it by `dataType` semantic; 0.4x has no codec to read
- * and reaches it by class name through `INEXACT_RANGES`.
+ * Spelled in full decimal, like every other bound here, and not as `3.4028234663852886e38`. That
+ * is not a style choice: the generators paste these strings into their own syntax, and ArkType's
+ * string DSL cannot resolve an exponent literal. The parity stage crashed on
+ * `ParseError: '-3.4028234663852886e38' is unresolvable` before this was written out. The two
+ * spellings are the same double, asserted in the spec.
+ *
+ * `drizzle-orm/zod` bounds the same column at +/-8388607, and DRZL matched that for a release.
+ * The database was asked and disagreed: a `real` column stores 8388608, 9000000, 1e9 and
+ * 2147483648 and returns every one of them unchanged, and holds every integer exactly up to
+ * 16777216. A select schema is a description of what the column hands back, so a bound of
+ * 8388607 refused the column's own rows, which is the same defect as typing a `point` as a
+ * string and was introduced by the commit that fixed that one. The brief this work runs under
+ * says the database is the arbiter and official is only evidence that DRZL is wrong, so the
+ * bound is the database's and the divergence from official is waived in both parity passes with
+ * this measurement attached.
+ *
+ * There is deliberately no `double` entry. float8 is the JavaScript number's own format, so
+ * every finite JS number round-trips through it by construction, measured to
+ * `Number.MAX_VALUE`, and any finite bound on an 8 byte float column would refuse a value the
+ * column stores. `integer: false` is still stated for those columns, because an absent range is
+ * not a statement and `isIntegerColumn` reads a bare absence as "not bounded" rather than as
+ * "not an integer".
+ *
+ * What no range can express either way is `Infinity` and `NaN`. Postgres stores and returns both
+ * in `real` and in `double precision`; a `>=`/`<=` pair refuses them whatever the numbers are, and
+ * `z.number()` and `Type.Number()` refuse them with no bound at all. Describing that column
+ * honestly needs a union rather than a range, in every generator, which is filed rather than done
+ * here.
  */
-const FLOAT_BOUNDS: Record<string, [string, string]> = {
-  float: ['-8388608', '8388607'], // real / float4, 2^23
-  double: ['-140737488355328', '140737488355327'], // double precision / float8, 2^47
-};
+const FLOAT4_MAX = '340282346638528859811704183484516925440';
+const FLOAT4_RANGE: [string, string] = [`-${FLOAT4_MAX}`, FLOAT4_MAX];
 
 /**
  * The range a JS number holds every integer of.
@@ -395,7 +415,10 @@ export function describeV1Column(column: any): Partial<Column> | null {
       break;
     case 'float':
     case 'double': {
-      [out.min, out.max] = FLOAT_BOUNDS[semantic]!;
+      // Only the 4 byte width has a magnitude the database will refuse. Both majors take the same
+      // answer here on purpose: the bound moved off `drizzle-orm/zod`'s and onto the database's,
+      // and moving one major without the other is what the cross-major diff exists to catch.
+      if (semantic === 'float') [out.min, out.max] = FLOAT4_RANGE;
       out.integer = false;
       out.tsType = 'number';
       out.dbType = semantic === 'float' ? 'REAL' : 'DOUBLE';
@@ -936,37 +959,43 @@ export class SchemaAnalyzer {
   };
 
   /**
-   * The same, for the numeric types that are not exact, keyed off the Drizzle column class.
+   * The numeric column classes that are not exact, and the magnitude each one can really hold.
    *
-   * Only drizzle v1 states these outright, as a `float` or `double` semantic on `dataType`. On
+   * Only drizzle v1 states this outright, as a `float` or `double` semantic on `dataType`. On
    * 0.4x the same columns reach the analyzer by class name, `INT_RANGES` was the only range table
-   * on that path, and so nothing bounded them at all: DRZL was looser than `drizzle-zod@0.8.3`,
-   * the first-party validator for that same major, which is the one direction this repository's
-   * parity gate exists to forbid. Measured, before the fix: DRZL's `real` schema accepted
-   * 9000000, 2147483648 and 9007199254740993 where official refused all three.
+   * on that path, and so nothing said anything about them at all: not the range, and not that
+   * they are inexact, which left `isIntegerColumn` free to read a `CHECK`-derived pair of bounds
+   * as an integer column.
    *
-   * `integer: false` travels with every entry and is not decoration. `isIntegerColumn` falls back
-   * to "declares both bounds" when the flag is absent, so a range arriving on its own turns the
-   * emitted schema into an integer one and it starts refusing 1.5.
+   * `null` is a value in this table and is not the same as a class it does not name. It says the
+   * column is inexact and that no finite magnitude bound is truthful for it, which is the case for
+   * every 8 byte float: float8 is the JavaScript number's own format, so Postgres accepts every
+   * finite JS number into one, measured to `Number.MAX_VALUE`. Read with an own-property test for
+   * that reason, and because a plain object answers to `constructor` and `toString`.
+   *
+   * `integer: false` travels with every entry, bound or not, and is not decoration.
+   * `isIntegerColumn` falls back to "declares both bounds" when the flag is absent, so a range
+   * arriving on its own turns the emitted schema into an integer one and it starts refusing 1.5.
    *
    * The widths are the type's, not the name's: MySQL and SingleStore `real` is a synonym for
    * `double` unless REAL_AS_FLOAT is set, and SQLite `real` is an 8 byte IEEE float. Both are
    * `number double` on drizzle v1, which is where these pairings come from.
    */
-  private static readonly INEXACT_RANGES: Record<string, [string, string]> = {
-    // 24 bit: Postgres `real`/float4 and the MySQL family's `float`
-    PgReal: FLOAT_BOUNDS.float,
-    MySqlFloat: FLOAT_BOUNDS.float,
-    SingleStoreFloat: FLOAT_BOUNDS.float,
-    // 48 bit: everything backed by an 8 byte float
-    PgDoublePrecision: FLOAT_BOUNDS.double,
-    MySqlDouble: FLOAT_BOUNDS.double,
-    MySqlReal: FLOAT_BOUNDS.double,
-    SQLiteReal: FLOAT_BOUNDS.double,
-    SingleStoreDouble: FLOAT_BOUNDS.double,
-    SingleStoreReal: FLOAT_BOUNDS.double,
+  private static readonly INEXACT_RANGES: Record<string, [string, string] | null> = {
+    // 4 byte floats, whose magnitude Postgres does refuse past FLOAT4_MAX
+    PgReal: FLOAT4_RANGE,
+    MySqlFloat: FLOAT4_RANGE,
+    SingleStoreFloat: FLOAT4_RANGE,
+    // 8 byte floats, which hold every finite JS number
+    PgDoublePrecision: null,
+    MySqlDouble: null,
+    MySqlReal: null,
+    SQLiteReal: null,
+    SingleStoreDouble: null,
+    SingleStoreReal: null,
     // `numeric({ mode: 'number' })`, which v1 reaches through the bare-number arm of
-    // `describeV1Column` and bounds by what a JS number can carry.
+    // `describeV1Column`. This one is about what a JS number can carry rather than about the
+    // column, which Postgres caps far lower: it refuses 2147483648 into a `numeric(10,2)`.
     PgNumericNumber: JS_SAFE_INTEGER_BOUNDS,
   };
 
@@ -994,12 +1023,19 @@ export class SchemaAnalyzer {
       out.integer = true;
     }
 
-    // Disjoint from the table above by construction, and asserted as such by the analyzer tests
-    // rather than left to reading: no class appears in both, so the order of these two blocks
-    // cannot decide an answer.
-    const inexact = SchemaAnalyzer.INEXACT_RANGES[ctor];
-    if (inexact) {
-      [out.min, out.max] = inexact;
+    // The two tables must name no class in common, or the order of these two blocks would decide
+    // an answer. floats-and-tuples-0.4x.spec.ts intersects the two key sets directly, all 19 and
+    // 10 of them. An earlier comment here said the same thing and pointed at a test that built
+    // seven Postgres columns and touched neither table, which is the shape of false-mechanism
+    // comment this line of work keeps producing.
+    //
+    // An own-property test rather than a truthiness one, because `null` is a value in that table
+    // and means "inexact, and no finite bound on it is truthful". `hasOwnProperty` through
+    // `Object.prototype` rather than `Object.hasOwn`, which this package's `lib` setting does not
+    // have: it needs ES2022 and the build fails with TS2550.
+    if (Object.prototype.hasOwnProperty.call(SchemaAnalyzer.INEXACT_RANGES, ctor)) {
+      const inexact = SchemaAnalyzer.INEXACT_RANGES[ctor];
+      if (inexact) [out.min, out.max] = inexact;
       out.integer = false;
     }
 
