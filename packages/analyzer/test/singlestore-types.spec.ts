@@ -81,7 +81,10 @@ export { table as things };
     expect(get('big53')).toBe('number');
     expect(get('big64')).toBe('bigint');
     expect(get('flag')).toBe('boolean');
-    expect(get('price')).toBe('number');
+    // `decimal()` with no mode builds a `SingleStoreDecimal`, and its driver value is a string.
+    // The other two mode classes are not in this hand-written list at all, which is why
+    // `decimal-modes.spec.ts` builds them from `singlestoreTable` instead.
+    expect(get('price')).toBe('string');
     expect(get('dbl')).toBe('number');
     expect(get('rl')).toBe('number');
     expect(get('name')).toBe('string');
