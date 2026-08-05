@@ -1,5 +1,140 @@
 # @drzl/analyzer
 
+## 1.16.0
+
+### Minor Changes
+
+- bfda92d: A view in your schema now produces schemas on drizzle-orm 0.x, as it already did on 1.0.0.
+
+  On every 0.x release a view answers `undefined` to `drizzle:Columns`, `drizzle:Name` and
+  `drizzle:Schema`; its columns and its name live only in `Symbol.for('drizzle:ViewBaseConfig')`. On
+  1.0.0 `View` declares all three as getters over that same config. The analyzer identifies a
+  table-like export by asking for `drizzle:Columns`, so on 0.x it skipped every view, and said
+  nothing about it. `@drzl/analyzer` and `@drzl/cli` both depend on `drizzle-orm@^0.45.2`, so the
+  broken major was the default one.
+
+  Probed with a fresh install of each: invisible on 0.29.5, 0.33.0, 0.36.4, 0.39.3, 0.44.7, 0.45.0
+  and 0.45.2; visible on 1.0.0-beta.1, beta.24, rc.1 and rc.4. Every dialect with a view API is
+  affected: `pgView`, `pgMaterializedView`, `mysqlView` and `sqliteView`, in their query-builder,
+  explicit-column-list, `.existing()` and schema-qualified forms alike.
+
+  **What changes for you.** On 0.x, a schema file with views now emits a module per view and a line
+  per view in the barrel, where it emitted nothing before. A fixture of 2 tables and 7 views went
+  from 3 emitted files to 10. A file of nothing but views also stops reporting
+  `dialect: unknown` with a spurious `DRZL_ANL_DIALECT` warning, because the loop that identifies
+  the dialect read the raw symbol rather than going through the resolver, and was the one read site
+  a fallback in the resolver did not reach.
+
+  The measured target was parity, and it is met: on a fixture covering join, aggregate, `.existing()`,
+  schema-qualified and materialized views, 0.45.2's analysis is byte-identical to 1.0.0-rc.4's, and
+  so is the emitted zod. 1.0.0-rc.4's own analysis is unchanged by this release.
+
+  **A SQLite view is now read-only.** SQLite refuses every write to a view, measured with
+  `node:sqlite`: `insert`, `update` and `delete` all fail with `cannot modify <name> because it is a
+view`. That is the argument `readOnly` already makes for a materialized view, so a `sqliteView` now
+  carries it too and gets a select schema and nothing else. Postgres and MySQL both accept a write to
+  a simple auto-updatable view, verified against a real server on each, so their plain views are
+  unchanged.
+
+  **Two things a view inherits from Drizzle that the server does not agree with**, both already
+  present on 1.0.0 and neither addressed here. A view's columns keep the base column's `notNull` and
+  its `primary`, because that is what Drizzle records in `selectedFields`. Postgres reports every view
+  column nullable, so `SelectuserOrdersSchema` rejects `{"userId":2,"userName":"bob","total":null}`,
+  a row PGlite really returned from a `LEFT JOIN` view. MySQL agrees for the join column and disagrees
+  for the simple view's, computing nullability per column. Neither reports a primary key on a view,
+  while DRZL reports one for the join view and the service and oRPC generators build by-id, update and
+  delete endpoints on it. Both are filed.
+
+  New export: `isDrizzleView(val)`, which asks `drizzle:ViewBaseConfig` rather than
+  `drizzle:IsDrizzleView`; the latter looks like the obvious question and was only introduced in
+  drizzle-orm 0.39.0.
+
+### Patch Changes
+
+- 2dccd51: Seven Gel column types are described from what a live Gel server actually returns.
+
+  `boolean()` had no case in the analyzer's Gel arm at all and fell off the end to `unknown`, so every
+  generator emitted a field that refused nothing. The six `cal::` and duration columns were typed
+  `string`, which is worse: a wrong type rejects every row rather than accepting every value.
+
+  Measured on a live Gel 7.1 (`geldata/gel:7`, `sys::get_version_as_str()` -> `7.1+08db576`) through
+  `drizzle-orm/gel` 0.45.2 on `gel@2.2.0`, writing one row and reading it back:
+
+  ```
+  column        gel-core declares        SELECT hands back    INSERT accepts
+  boolean       boolean                  boolean  true        -
+  timestamp     LocalDateTime            LocalDateTime        LocalDateTime
+  localDate     LocalDate                LocalDate            LocalDate
+  localTime     LocalTime                LocalTime            LocalTime
+  dateDuration  DateDuration             RelativeDuration     DateDuration
+  relDuration   RelativeDuration         RelativeDuration     RelativeDuration
+  duration      Duration                 RelativeDuration     Duration
+  timestamptz   Date        (control)    Date                 -
+  decimal       string      (control)    string  '12.34'      -
+  ```
+
+  A string is refused on insert by all six and returned by none, so `string` was wrong in both
+  directions, not merely loose. `dateDuration` and `duration` contradict drizzle's own `.d.ts` on the
+  way out and agree with it on the way in; the server is the arbiter for both halves.
+
+  **What changes for you.** A Gel `boolean()` column now emits a real boolean check: `'yes'`, `12345`
+  and `{ a: 1 }` were accepted before and are rejected now. The six temporal columns now report
+  `tsType: 'unknown'`, so their emitted field goes from a string check that rejected every row to one
+  that accepts the value the driver hands back, and each raises a `DRZL_ANL_UNKNOWN_COLUMN` warning
+  naming its Gel type (`cal::local_datetime`, `cal::local_date`, `cal::local_time`, `dateDuration`,
+  `edgedbt.relative_duration_t`, `duration`).
+
+  **Why `unknown` and not a class name.** The value is an instance of a class from the `gel` package,
+  which DRZL cannot import, so no generator can emit a check for it. A tsType naming the class would
+  also suppress the unknown-column warning, which fires on `unknown`. Stating nothing and saying so is
+  the honest answer; the check itself stays open and is tracked separately.
+
+  **What does not change.** `integer`, `smallint`, `bigintT`, `bigint`, `text`, `uuid`, `json`, `real`,
+  `doublePrecision`, `decimal`, `bytes`, `timestamptz` and `.array()` are all unaffected, and every one
+  of them was read out of the same row.
+
+- 194eb72: `mssql` and `cockroach` columns no longer lose their boolean and string families to `unknown`.
+
+  Both cores arrived with Drizzle v1 and neither had a fixture anywhere in this repository. Measured
+  by running the real analyzer over a real `mssqlTable` and a real `cockroachTable` on
+  drizzle-orm 1.0.0-rc.4: **7 of 23 mssql columns and 6 of 27 cockroach columns came back
+  `tsType: 'unknown'`**, and all thirteen were booleans or strings.
+
+  ```
+  mssql       flag(bit) name(varchar) nname(nvarchar) code(char) ncode(nchar) body(text) nbody(ntext)
+  cockroach   flag(boolean) name(varchar) code(char) body(text) str(string) tags(text[])
+  ```
+
+  `describeV1Column` recognised a v1 column by its `codec` or by the semantic half of its `dataType`.
+  Swept across every column builder the two cores export, 22 and 27 of them, **not one states a
+  codec**, and those thirteen state a bare `dataType` with no semantic half either: a `bit` says
+  `boolean`, and `varchar`/`nvarchar`/`char`/`nchar`/`text`/`ntext`/`string` all say `string`. That is
+  indistinguishable from a Drizzle 0.4x column, so all thirteen fell to the class-name path, which has
+  arms for Pg, MySql, SingleStore and Gel and none for these two. `drizzle:entityKind` is now a third
+  v1 marker, sound for exactly these two because `mssql-core` and `cockroach-core` ship only on v1:
+  the strings `MsSql` and `Cockroach` appear nowhere in the installed 0.45.2 package.
+
+  The emitted validators accepted every value for those columns. Executed, not read, across all five
+  generators, against values two real servers handed back or refused: 25 of 50 mssql probes and 25 of
+  60 cockroach probes were wrong before, and 0 of each after. SQL Server 2022 refuses `'yes'` for a
+  `bit` and refuses a 121st character in a `varchar(120)`; CockroachDB v24.3 refuses `1` for a `bool`
+  and refuses a bare string for a `string[]`. Every one of those was accepted by the generated select
+  and insert schemas in zod, valibot, arktype, typebox and JSON Schema.
+
+  A cockroach `real` is also now bounded where Postgres bounds one rather than where MySQL does.
+  `information_schema` reports its `crdb_sql_type` as `FLOAT4` and it speaks the Postgres wire
+  protocol, so it carries the Postgres read-back this package already records: measured on v24.3,
+  inserting the largest finite float32 makes the column hand back `3.4028235e+38`, a _larger_ double,
+  so the MySQL bound refused a row the column had just returned. MSSQL keeps MySQL's bound, which is
+  where falling through already put it and which SQL Server 2022 confirms: a `real` stores
+  `3.4028234663852886e38` and refuses the next candidate up with an arithmetic overflow.
+
+  **What changes for you.** If you generate from an mssql or cockroach schema, those columns now
+  produce a real validator instead of one that accepts anything, and the `DRZL_ANL_UNKNOWN_COLUMN`
+  warning they raised is gone. Input that only ever validated because nothing was checking it will
+  now be rejected, which is the point. No other dialect is affected: the new marker only matches
+  class names those two cores own.
+
 ## 1.15.0
 
 ### Minor Changes
