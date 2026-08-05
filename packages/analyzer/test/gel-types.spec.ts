@@ -1,3 +1,15 @@
+/**
+ * The `/^Gel/i` name-matching arm, driven by hand-written classes.
+ *
+ * This file is deliberately NOT the coverage that matters. It builds a table out of
+ * `class GelInteger {}` and friends, so all it can ever show is that the arm agrees with a class
+ * list someone typed out, and a type drizzle ships that nobody thought to type out is invisible
+ * to it: `GelBoolean` was missing here for exactly that reason, and a real `boolean()` column
+ * came back `unknown`. `uncovered-dialects.spec.ts` runs the same arm against a real `gelTable`
+ * and is where an expectation traced to a live server lives. What is left here is the ordering
+ * of the regexes, which a class list does exercise: `GelTimestampTz` must not be caught by the
+ * `Timestamp` case, and `GelLocalDateString` must not be caught by the `Text` one.
+ */
 import { describe, it, expect } from 'vitest';
 import { SchemaAnalyzer } from '../src/index';
 import { promises as fs } from 'node:fs';
@@ -20,6 +32,7 @@ class GelReal {}
 class GelDoublePrecision {}
 class GelDecimal {}
 class GelBytes {}
+class GelBoolean {}
 class GelTimestamp {}
 class GelTimestampTz {}
 class GelLocalDateString {}
@@ -42,6 +55,7 @@ table[Symbol.for('drizzle:Columns')] = {
   dp: new GelDoublePrecision(),
   dec: new GelDecimal(),
   b: new GelBytes(),
+  flag: new GelBoolean(),
   ts: new GelTimestamp(),
   tstz: new GelTimestampTz(),
   ld: new GelLocalDateString(),
@@ -70,13 +84,19 @@ export { table as gel_table };
     expect(get('dp')).toBe('number');
     expect(get('dec')).toBe('string');
     expect(get('b')).toBe('Uint8Array');
-    expect(get('ts')).toBe('string');
+    expect(get('flag')).toBe('boolean');
+    // `GelTimestampTz` is a `Date` and must be matched before the `Timestamp` case, which is why
+    // both are here and not just one.
     expect(get('tstz')).toBe('Date');
-    expect(get('ld')).toBe('string');
-    expect(get('lt')).toBe('string');
-    expect(get('dd')).toBe('string');
-    expect(get('rd')).toBe('string');
-    expect(get('d')).toBe('string');
+    // The `cal::` and duration family. Each one's value is an instance of a class from the `gel`
+    // package, which DRZL cannot import and therefore cannot check; see the live-server
+    // measurement in `uncovered-dialects.spec.ts` for what each one really returns.
+    expect(get('ts')).toBe('unknown');
+    expect(get('ld')).toBe('unknown');
+    expect(get('lt')).toBe('unknown');
+    expect(get('dd')).toBe('unknown');
+    expect(get('rd')).toBe('unknown');
+    expect(get('d')).toBe('unknown');
   });
 });
 
