@@ -276,11 +276,14 @@ describe('Gel, against a real gelTable', () => {
     expect(analysis.dialect).toBe('gel');
   });
 
-  it('types every column it is given except the boolean', async () => {
-    // 20 columns tried, 1 `unknown`.
+  it('types every column whose JavaScript type it can state', async () => {
+    // 20 columns tried. The six `unknown` ones are the `cal::` and duration family, whose value
+    // is an instance of a class from the `gel` package: see the test below for the measurement
+    // and for why stating nothing is the honest answer there. `flag` used to be a seventh, for
+    // no reason at all.
     const { analysis, unknowns } = await columnsOf('real-gel', GEL_SOURCE);
     expect(analysis.tables[0].columns).toHaveLength(20);
-    expect(unknowns).toEqual(['flag']);
+    expect(unknowns).toEqual(['ts', 'ld', 'lt', 'dd', 'rd', 'd']);
   });
 
   it('describes the scalar families correctly', async () => {
@@ -301,40 +304,72 @@ describe('Gel, against a real gelTable', () => {
     expect(ts('tstz')).toBe('Date'); // timestamptz.d.ts data: Date
   });
 
-  it('DEFECT: types the whole cal:: and duration family as string, which the driver never returns', async () => {
-    // Six columns, all of the same species as the SingleStore `decimal` defect below: the
-    // analyzer states a JS type the driver does not produce, so a select validator rejects
-    // every row the database returns.
+  it('states nothing for the cal:: and duration family, whose value is a gel class', async () => {
+    // Six columns whose value is an instance of a class from the `gel` package. DRZL cannot
+    // import that package, so it cannot express the check, and it says so rather than guessing.
+    // The guess it used to make was `string`, which is refused in both directions.
     //
-    // Drizzle declares each one's `data` as a class from the `gel` package, and none of these
-    // six defines a `mapFromDriverValue`, so the instance reaches the caller untouched. Only
-    // `bigintT`, `custom` and `doublePrecision` define one anywhere in `gel-core/columns`.
+    // GROUND TRUTH, a live Gel 7.1 (`geldata/gel:7`, sys::get_version_as_str() -> 7.1+08db576)
+    // read and written through `drizzle-orm/gel` 0.45.2 on `gel@2.2.0`:
     //
-    //   column        gel-core declares          DRZL says   correct answer
-    //   timestamp     data: LocalDateTime        string      LocalDateTime
-    //   localDate     data: LocalDate            string      LocalDate
-    //   localTime     data: LocalTime            string      LocalTime
-    //   dateDuration  data: DateDuration         string      DateDuration
-    //   relDuration   data: RelativeDuration     string      RelativeDuration
-    //   duration      data: Duration             string      Duration
+    //   column        gel-core declares        SELECT hands back    INSERT accepts
+    //   timestamp     data: LocalDateTime      LocalDateTime        LocalDateTime
+    //   localDate     data: LocalDate          LocalDate            LocalDate
+    //   localTime     data: LocalTime          LocalTime            LocalTime
+    //   dateDuration  data: DateDuration       RelativeDuration     DateDuration
+    //   relDuration   data: RelativeDuration   RelativeDuration     RelativeDuration
+    //   duration      data: Duration           RelativeDuration     Duration
     //
-    // Measured against real instances from `gel@2.2.0` through the emitted schemas: all six
-    // are rejected by all five generators, and all six accept a string the driver never hands
-    // back. `timestamptz` and `decimal` were probed the same way in the same run and are
-    // correct, which is why they stay in the test above.
+    // The last two lines are the server disagreeing with drizzle's own `.d.ts`, and the server
+    // is the arbiter: `dateDuration` and `duration` come back as a `RelativeDuration` and take a
+    // `DateDuration`/`Duration` on the way in, refusing a `RelativeDuration` there. An earlier
+    // version of this comment recorded `DateDuration` and `Duration` as the SELECT answers,
+    // taken from `gel-core/columns/*.d.ts` rather than from a server.
     //
-    // The first version of this file asserted all six as correct under a test named
-    // "describes the scalar and temporal families correctly", with a comment claiming
-    // `timestamp` "arrives as a string". That was a type assumption written down as a
-    // measurement, and `string` is exactly what the `/^Gel/i` arm happens to return.
-    const { byName } = await columnsOf('real-gel', GEL_SOURCE);
+    // A string is refused by that server on INSERT for all six ('2020-01-01T12:00:00',
+    // '2020-01-01', '01:02:03', 'P1Y', 'P1Y', 'PT1H' each rejected outright) and returned by it
+    // for none, so `string` was not a loose answer here, it was a wrong one in both directions.
+    //
+    // `timestamptz` and `decimal` were read from the same row and really are a `Date` and a
+    // string, which is why they stay in the test above.
+    const { byName, analysis } = await columnsOf('real-gel', GEL_SOURCE);
     const ts = (n: string) => byName.get(n)?.tsType;
-    expect(ts('ts')).toBe('string');
-    expect(ts('ld')).toBe('string');
-    expect(ts('lt')).toBe('string');
-    expect(ts('dd')).toBe('string');
-    expect(ts('rd')).toBe('string');
-    expect(ts('d')).toBe('string');
+    for (const n of ['ts', 'ld', 'lt', 'dd', 'rd', 'd']) {
+      expect(ts(n), n).toBe('unknown');
+      // Not silent. The analyzer's own warning names the column and carries `getSQLType()`, so
+      // the absence is reported as an absence rather than papered over.
+      expect(
+        analysis.issues.some(
+          (i) => i.code === 'DRZL_ANL_UNKNOWN_COLUMN' && i.message.includes(`"${n}"`)
+        ),
+        `no unknown-column warning for ${n}`
+      ).toBe(true);
+    }
+    expect(
+      analysis.issues.find((i) => i.message.includes('"ts"'))?.message,
+      'the warning identifies the Gel type, not just the column'
+    ).toContain('cal::local_datetime');
+  });
+
+  it('DEFECT: the "ends in At" heuristic turns one of those six into a Date', async () => {
+    // Pre-existing and not introduced here, but newly reachable: `analyzeTable` rewrites any
+    // `unknown` column whose name ends in `At` to `Date`, and a Gel `timestamp('createdAt')` is
+    // now `unknown` where it used to be `string`. Both answers are refused by the same server
+    // (it hands back a `LocalDateTime` and takes one), so nothing got worse; what is lost is the
+    // unknown-column warning, which the heuristic suppresses by supplying a value for an
+    // absence. Pinned so the day the heuristic is scoped, this test names the consequence.
+    const { byName, analysis } = await columnsOf(
+      'real-gel-at',
+      GEL_SOURCE.replace(
+        "ts: timestamp('ts'),",
+        "ts: timestamp('ts'), createdAt: timestamp('createdAt'),"
+      )
+    );
+    expect(byName.get('createdAt')?.tsType).toBe('Date');
+    expect(
+      analysis.issues.some((i) => i.message.includes('"createdAt"')),
+      'the heuristic suppresses the warning the other five get'
+    ).toBe(false);
   });
 
   it('gives a uuid column its format', async () => {
@@ -355,57 +390,57 @@ describe('Gel, against a real gelTable', () => {
     expect(byName.get('tags')).toMatchObject({ tsType: 'string', arrayDimensions: 1 });
   });
 
-  it('DEFECT: seven holes in total, and a partial fix must not look green', async () => {
-    // The boolean plus the six temporal columns, each pinned to the type DRZL returns today
-    // and commented with the type drizzle declares. Keyed by column rather than counted, so
-    // fixing any single one fails this test naming that column.
+  it('answers every one of the seven that used to be wrong, and no others', async () => {
+    // Every column of the fixture, keyed by name rather than counted, so a fix that repairs one
+    // and breaks another fails here naming both. The seven that changed are marked.
     //
-    // The first version of this test was `wrong.filter((n) => byName.has(n))`, which reads
-    // only whether the fixture still defines those seven columns and never looks at a type at
-    // all. Its comment claimed it was the thing stopping a partial fix from looking green.
-    // Measured: applying the full gel fix, a boolean case plus all six temporal arms, failed
-    // three tests in this file and left that one passing. A vacuous assertion, an expectation
-    // traced to the fixture's own column list instead of to ground truth, and a comment
-    // promising a property the code did not provide, in six lines.
-    const TODAY: Record<string, string> = {
-      flag: 'unknown', // boolean.d.ts             data: boolean
-      ts: 'string', //    timestamp.d.ts           data: LocalDateTime
-      ld: 'string', //    localdate.d.ts           data: LocalDate
-      lt: 'string', //    localtime.d.ts           data: LocalTime
-      dd: 'string', //    date-duration.d.ts       data: DateDuration
-      rd: 'string', //    relative-duration.d.ts   data: RelativeDuration
-      d: 'string', //     duration.d.ts            data: Duration
+    // An earlier version of this test was `wrong.filter((n) => byName.has(n))`, which reads only
+    // whether the fixture still defines those columns and never looks at a type at all, while
+    // its comment claimed it was the thing stopping a partial fix from looking green. Measured
+    // at the time: applying the full gel fix failed three tests in this file and left that one
+    // passing.
+    const EXPECTED: Record<string, string> = {
+      i: 'number',
+      si: 'number',
+      b64: 'bigint',
+      i53: 'number',
+      flag: 'boolean', // was `unknown`;  boolean.d.ts  data: boolean, and the server returns one
+      name: 'string',
+      u: 'string',
+      payload: 'any',
+      r: 'number',
+      dp: 'number',
+      dec: 'string',
+      b: 'Uint8Array',
+      ts: 'unknown', // was `string`;  the server returns a LocalDateTime
+      tstz: 'Date',
+      ld: 'unknown', // was `string`;  the server returns a LocalDate
+      lt: 'unknown', // was `string`;  the server returns a LocalTime
+      dd: 'unknown', // was `string`;  the server returns a RelativeDuration
+      rd: 'unknown', // was `string`;  the server returns a RelativeDuration
+      d: 'unknown', //  was `string`;  the server returns a RelativeDuration
+      tags: 'string', // the element type; `arrayDimensions` carries the rest
     };
     const { byName } = await columnsOf('real-gel', GEL_SOURCE);
-    const actual = Object.fromEntries(
-      Object.keys(TODAY).map((n) => [n, byName.get(n)?.tsType])
-    );
-    expect(actual).toEqual(TODAY);
-
-    // And "seven" is the whole count, not just seven of an unknown number: no column outside
-    // that list comes back `unknown` either.
-    const named = new Set(Object.keys(TODAY));
-    const otherUnknowns = [...byName.values()]
-      .filter((c) => !named.has(c.name) && c.tsType === 'unknown')
-      .map((c) => c.name);
-    expect(otherUnknowns).toEqual([]);
+    const actual = Object.fromEntries([...byName.values()].map((c) => [c.name, c.tsType]));
+    expect(actual).toEqual(EXPECTED);
   });
 
-  it('DEFECT: types a boolean column as unknown, so its validator refuses nothing', async () => {
-    // The `/^Gel/i` arm has cases for integers, floats, decimal, uuid, json, text, bytes and
-    // the whole temporal family, and no case for a boolean at all, so `GelBoolean` falls off
-    // the end to `unknown`. Measured through the emitted zod schema: this column accepts
-    // 'yes', 12345 and { a: 1 }. All four validator generators and the JSON Schema generator
-    // behave the same way.
+  it('types a boolean column as a boolean, so its validator refuses what is not one', async () => {
+    // The `/^Gel/i` arm had cases for integers, floats, decimal, uuid, json, text, bytes and the
+    // whole temporal family, and no case for a boolean at all, so `GelBoolean` fell off the end
+    // to `unknown` and the emitted field was `z.unknown()`: measured through the emitted zod
+    // schema, the column accepted 'yes', 12345 and { a: 1 }. All four validator generators and
+    // the JSON Schema generator behaved the same way. A live Gel 7.1 hands back a JS `true`.
     //
-    // `gel-types.spec.ts` does not catch it because its hand-written class list has no
+    // `gel-types.spec.ts` did not catch it because its hand-written class list has no
     // `GelBoolean` in it. A boolean is the least exotic type a schema can have, which is the
     // point: a fixture written from the implementation can only ever confirm the implementation.
     const { byName, analysis } = await columnsOf('real-gel', GEL_SOURCE);
-    expect(byName.get('flag')?.tsType).toBe('unknown');
-    expect(byName.get('flag')?.dbType).toBe('UNKNOWN');
+    expect(byName.get('flag')?.tsType).toBe('boolean');
+    expect(byName.get('flag')?.dbType).toBe('BOOLEAN');
     expect(
       analysis.issues.some((i) => i.code === 'DRZL_ANL_UNKNOWN_COLUMN' && /"flag"/.test(i.message))
-    ).toBe(true);
+    ).toBe(false);
   });
 });

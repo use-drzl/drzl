@@ -1329,12 +1329,46 @@ export class SchemaAnalyzer {
           // Bytes
           if (/Bytes/i.test(ctor)) return { tsType: 'Uint8Array', dbType: 'BLOB' };
 
+          // Boolean. There was no case for one at all, so `GelBoolean` fell off the end of this
+          // arm to `unknown` and every generator emitted a field that refused nothing: measured
+          // through the emitted zod schema, a `boolean()` column accepted 'yes', 12345 and
+          // { a: 1 }. A live Gel 7.1 hands back a JS `true`.
+          if (/Bool/i.test(ctor)) return { tsType: 'boolean', dbType: 'BOOLEAN' };
+
           // Temporal and calendar types
           if (/TimestampTz/i.test(ctor)) return { tsType: 'Date', dbType: 'TIMESTAMPTZ' };
-          if (/Timestamp/i.test(ctor)) return { tsType: 'string', dbType: 'TIMESTAMP' };
-          if (/LocalDateString|LocalTime/i.test(ctor)) return { tsType: 'string', dbType: 'TEXT' };
-          if (/DateDuration|RelDuration|Duration/i.test(ctor))
-            return { tsType: 'string', dbType: 'TEXT' };
+
+          // The `cal::` and duration family, whose value is an instance of a class from the
+          // `gel` package. These said `string`, which the server refuses in both directions.
+          //
+          // Measured on a live Gel 7.1 (`geldata/gel:7`) through `drizzle-orm/gel` 0.45.2 on
+          // `gel@2.2.0`, one row written and read back:
+          //
+          //   column        gel-core declares        SELECT returns      INSERT accepts
+          //   timestamp     data: LocalDateTime      LocalDateTime       LocalDateTime
+          //   localDate     data: LocalDate          LocalDate           LocalDate
+          //   localTime     data: LocalTime          LocalTime           LocalTime
+          //   dateDuration  data: DateDuration       RelativeDuration    DateDuration
+          //   relDuration   data: RelativeDuration   RelativeDuration    RelativeDuration
+          //   duration      data: Duration           RelativeDuration    Duration
+          //
+          // The bottom two lines are the server contradicting drizzle's own `.d.ts`, and the
+          // server is the arbiter. A string was rejected outright on insert by all six and
+          // returned by none.
+          //
+          // `unknown` rather than a class name: DRZL cannot import `gel`, so no generator can
+          // emit a check for these, and a tsType no generator handles would also lose the
+          // `DRZL_ANL_UNKNOWN_COLUMN` warning, which fires on `unknown` and carries
+          // `getSQLType()`. Saying nothing and saying so is the honest answer; saying `string`
+          // was a guess that turned every one of these columns into a validator that rejected
+          // every row.
+          //
+          // This arm returns what falling off the end of the block returns, verified by deleting
+          // it and rerunning `gel-types.spec.ts` and `uncovered-dialects.spec.ts`, both of which
+          // stayed green. It is here so the six read as measured and decided rather than
+          // forgotten, which is how they came to be `string`.
+          if (/Timestamp|LocalDateString|LocalTime|DateDuration|RelDuration|Duration/i.test(ctor))
+            return { tsType: 'unknown', dbType: 'UNKNOWN' };
         }
         return { tsType: 'unknown', dbType: 'UNKNOWN' };
     }
