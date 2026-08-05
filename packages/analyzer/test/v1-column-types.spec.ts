@@ -115,28 +115,44 @@ describe('structured values', () => {
     });
   });
 
-  it('DEFECT: calls the object modes tuples too, and they are objects', () => {
-    // `point({ mode: 'xy' })` is `object point` with codec `point` on v1, and hands back
-    // `{ x, y }`; `line({ mode: 'abc' })` is `object line` and hands back `{ a, b, c }`. Both
-    // reach the same `case 'point'` and `case 'line'` arms above and come back as tuples, so a v1
-    // select schema for either rejects every row the driver returns. That is the same class of
-    // defect as typing a `point` as a string was, and it is worse than 0.4x's answer rather than
-    // better: 0.4x calls them strings, which is also wrong.
+  it('separates the object modes, which v1 spells in the dataType it already states', () => {
+    // `point({ mode: 'xy' })` is `object point` with codec `point` on v1 and hands back `{ x, y }`;
+    // `line({ mode: 'abc' })` is `object line` and hands back `{ a, b, c }`. Both used to reach the
+    // same `case 'point'` and `case 'line'` arms as the tuple modes and come back as tuples, so a
+    // v1 select schema for either rejected every row the driver returns. Read back through PGlite
+    // on 1.0.0-rc.4: `{ x: 1, y: 2 }` inserts and returns as `{ x: 1, y: 2 }`, while `[1, 2]` and
+    // `'1,2'` both map to the literal `(undefined,undefined)` and Postgres answers `invalid input
+    // syntax for type point`.
     //
-    // Filed rather than fixed. Describing `{ x, y }` needs a `ColumnShape` no generator has, and
-    // no fixture in either parity pass carries an object-mode column, so there is no gate to turn
-    // red first. Pinned here so a change to those arms has to say what it did to these two: the
-    // 0.4x half is pinned in floats-and-tuples-0.4x.spec.ts and this is the v1 half, which had
-    // none.
+    // The discriminator is the JS half of the dataType, not the codec. Both halves were read off
+    // real 1.0.0-rc.4 columns: the tuple modes state `array point` / `array line` with codecs
+    // `point:tuple` / `line:tuple`, and the object modes state `object point` / `object line` with
+    // codecs `point` / `line`. `js` says the same thing without depending on the codec, which
+    // three dialects leave undefined elsewhere in this file.
     expect(describeV1Column(col('object point', 'point'))?.shape).toEqual({
+      kind: 'numberObject',
+      fields: ['x', 'y'],
+    });
+    expect(describeV1Column(col('object line', 'line'))?.shape).toEqual({
+      kind: 'numberObject',
+      fields: ['a', 'b', 'c'],
+    });
+    expect(describeV1Column(col('object point', 'point'))?.tsType).toBe('{ x: number; y: number }');
+    expect(describeV1Column(col('object line', 'line'))?.tsType).toBe(
+      '{ a: number; b: number; c: number }'
+    );
+    // `geometry({ type: 'point', mode: 'xy' })` is `object geometry` on the same major, measured
+    // on a real column, and reaches the same arm. It hands back `{ x, y }` like the others.
+    expect(describeV1Column(col('object geometry', 'geometry(point)'))?.shape).toEqual({
+      kind: 'numberObject',
+      fields: ['x', 'y'],
+    });
+    // And the tuple modes are untouched by the split, which is what makes it a split rather than
+    // a replacement.
+    expect(describeV1Column(col('array point', 'point:tuple'))?.shape).toEqual({
       kind: 'tuple',
       length: 2,
     });
-    expect(describeV1Column(col('object line', 'line'))?.shape).toEqual({
-      kind: 'tuple',
-      length: 3,
-    });
-    expect(describeV1Column(col('object point', 'point'))?.tsType).toBe('[number, number]');
   });
 
   it('carries the declared width of a vector and a bit string', () => {

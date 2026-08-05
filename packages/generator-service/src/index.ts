@@ -48,6 +48,12 @@ function tsTypeOf(c: Column): string {
   if (c.shape?.kind === 'tuple') {
     return `[${Array.from({ length: c.shape.length }, () => 'number').join(', ')}]`;
   }
+  // The object modes of the same builders, built from the analyzer's field list for the same
+  // reason. `point({ mode: 'xy' })` hands back `{ x, y }` and `line({ mode: 'abc' })` hands back
+  // `{ a, b, c }`, and an object of numbers is ordinary TypeScript.
+  if (c.shape?.kind === 'numberObject') {
+    return `{ ${c.shape.fields.map((f) => `${f}: number`).join('; ')} }`;
+  }
   switch (c.tsType) {
     case 'number':
     case 'string':

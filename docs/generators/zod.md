@@ -117,7 +117,9 @@ every row the database returns:
 | Column                      | Runtime value              | Emitted                                 |
 | --------------------------- | -------------------------- | --------------------------------------- |
 | `point()`                   | `[number, number]`         | `z.tuple([z.number(), z.number()])`     |
+| `point({ mode: 'xy' })`     | `{ x, y }`                 | `z.object({ x: z.number(), y: z.number() })` |
 | `line()`                    | `[number, number, number]` | `z.tuple([...])`                        |
+| `line({ mode: 'abc' })`     | `{ a, b, c }`              | `z.object({ a, b, c })`                 |
 | `geometry()`                | `[number, number]`         | `z.tuple([z.number(), z.number()])`     |
 | `vector({ dimensions: 3 })` | `number[]`                 | `z.array(z.number()).length(3)`         |
 | `bit({ dimensions: 3 })`    | `'010'`                    | `z.string().regex(/^[01]*$/).length(3)` |
@@ -134,6 +136,13 @@ parity gate had already contradicted: that gate waives each difference from the 
 with the exact values measured, and prints on every run how many of them are DRZL accepting
 something official refuses. The float bounds described above are wider on six columns across the
 three dialects, and every one of those is waived too.
+
+The object modes are objects, not tuples, and every generator here says so. Asked of a real
+Postgres through both drizzle majors: `point({ mode: 'xy' })` stores `{ x: 1.5, y: -2.25 }` as
+`(1.5,-2.25)` and reads it back unchanged, while `[1, 2]` and `'1,2'` are both rendered
+`(undefined,undefined)` by drizzle and refused with `invalid input syntax for type point`. The
+emitted object is not strict, because the column is not: an unlisted key is ignored and the row
+`{ x: 1, y: 2, z: 3 }` stores `(1,2)`.
 
 A CHECK constraint naming an array or a structured column is skipped rather than folded in, since
 the comparison is against a scalar literal and describes neither.

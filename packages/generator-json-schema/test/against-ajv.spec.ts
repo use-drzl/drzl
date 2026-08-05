@@ -213,6 +213,31 @@ describe('values as they survive JSON', () => {
     expect(v({ p: ['a', 'b'] })).toBe(false);
     expect((selectOf(t, 'openapi-3.0') as any).properties.p.prefixItems).toBeUndefined();
   });
+
+  it('describes an object-mode point and line by their named number fields', () => {
+    // The other mode of the same two builders, which returns `{ x, y }` and `{ a, b, c }`.
+    // Measured on PGlite through drizzle 0.45.2 and again through 1.0.0-rc.4.
+    const t = table([
+      col('p', { shape: { kind: 'numberObject', fields: ['x', 'y'] } as never }),
+      col('l', { shape: { kind: 'numberObject', fields: ['a', 'b', 'c'] } as never }),
+    ]);
+    const v = compile(selectOf(t));
+    expect(v({ p: { x: 1.5, y: -2.25 }, l: { a: 1, b: 2, c: 3 } })).toBe(true);
+    expect(v({ p: [1, 2], l: { a: 1, b: 2, c: 3 } }), 'the tuple mode value').toBe(false);
+    expect(v({ p: '(1,2)', l: { a: 1, b: 2, c: 3 } }), 'the string it used to be').toBe(false);
+    expect(v({ p: { x: 1 }, l: { a: 1, b: 2, c: 3 } }), 'a missing field').toBe(false);
+    expect(v({ p: { x: '1', y: '2' }, l: { a: 1, b: 2, c: 3 } }), 'strings').toBe(false);
+    // No `additionalProperties: false`: the column itself ignores an unlisted key, storing (1,2).
+    expect(v({ p: { x: 1, y: 2, z: 3 }, l: { a: 1, b: 2, c: 3 } })).toBe(true);
+    // The same document under the older target, where `type: 'object'` and `required` both exist
+    // and mean the same thing. Compiled rather than read.
+    const v30 = compile({
+      ...(selectOf(t, 'openapi-3.0') as Record<string, unknown>),
+      $schema: 'https://json-schema.org/draft/2020-12/schema',
+    });
+    expect(v30({ p: { x: 1, y: 2 }, l: { a: 1, b: 2, c: 3 } })).toBe(true);
+    expect(v30({ p: [1, 2], l: { a: 1, b: 2, c: 3 } })).toBe(false);
+  });
 });
 
 describe('the target', () => {

@@ -88,6 +88,37 @@ describe('structured columns', () => {
     expect(accepts(m.SelecttSchema, 'p', '(1,2)')).toBe(false);
   });
 
+  it('holds an object-mode point and line to their named number fields', async () => {
+    // The other mode of the same two builders. Every value below was measured on PGlite through
+    // drizzle 0.45.2 and again through 1.0.0-rc.4.
+    const m = await schemasFor(
+      [
+        col('p', {
+          tsType: '{ x: number; y: number }',
+          dbType: 'POINT',
+          shape: { kind: 'numberObject', fields: ['x', 'y'] },
+        }),
+        col('l', {
+          tsType: '{ a: number; b: number; c: number }',
+          dbType: 'LINE',
+          shape: { kind: 'numberObject', fields: ['a', 'b', 'c'] },
+        }),
+      ],
+      'point-object'
+    );
+    const s = m.SelecttSchema;
+    expect(accepts(s, 'p', { x: 1.5, y: -2.25 }), 'the row the column handed back').toBe(true);
+    expect(accepts(s, 'l', { a: 1, b: 2, c: 3 })).toBe(true);
+    expect(accepts(s, 'p', [1, 2]), 'the tuple the other mode returns').toBe(false);
+    expect(accepts(s, 'p', '(1,2)'), 'the string form it used to be typed as').toBe(false);
+    expect(accepts(s, 'p', { x: 1 }), 'a missing field, which renders (1,undefined)').toBe(false);
+    expect(accepts(s, 'p', null)).toBe(false);
+    // `v.object` ignores unlisted entries, which is what the column does with them: drizzle reads
+    // `.x` and `.y` and the server stores `(1,2)`. `v.strictObject` would refuse a write it takes.
+    expect(accepts(s, 'p', { x: 1, y: 2, z: 3 }), 'an unlisted key the column ignores').toBe(true);
+    expect(accepts(s, 'p', { a: 1, b: 2, c: 3 })).toBe(false);
+  });
+
   it('holds a vector to its declared width', async () => {
     const m = await schemasFor(
       [

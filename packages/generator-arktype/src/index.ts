@@ -129,6 +129,13 @@ function atShapeType(c: Column): string | undefined {
       // ceiling out and a byte budget in, and `string <= n` is a third measurement that agrees
       // with neither, so the cap goes to `atCapNarrows` where an exact count can be written.
       return 'string';
+    case 'numberObject':
+      // The one shape with no string form at all: `type({ p: '{ x: number, y: number }' })` throws
+      // `'{' is unresolvable`, measured. It is emitted as a Type instance instead, by
+      // `atNumberObjectField`, which is why this returns nothing rather than an approximation.
+      // Answering `unknown` here would be the same loosening this generator already refuses for a
+      // tuple: it accepts a string, an array and null on a NOT NULL column.
+      return undefined;
   }
 }
 
@@ -225,6 +232,77 @@ function atCardinality(c: Column, cardinalities: CardinalityCheck[]): { lower?: 
   return { lower, upper, equals };
 }
 
+/**
+ * The whole field line for an object-mode `point` or `line`, as a Type instance.
+ *
+ * The one column this generator cannot describe in the string DSL: ArkType parses `{` in a
+ * definition string as an alias and throws `'{' is unresolvable`, measured, and it throws at
+ * import, so an approximation here is a module nothing can load. `type({ x: 'number', y: 'number' })`
+ * as the field value does work, and every wrapper the DSL path applies has an instance form that
+ * was run rather than assumed:
+ *
+ *   `.array()` per dimension, `.or("null")` for a nullable column, `?` on the key for an optional
+ *   one, `.atLeastLength`/`.moreThanLength`/`.atMostLength`/`.lessThanLength`/`.exactlyLength` for
+ *   a cardinality CHECK, and `.default(() => (...))` for an applied default.
+ *
+ * The default is the one place this is deliberately narrower than the DSL path. ArkType validates
+ * a default against the type at build time and throws when it does not fit, so a default that is
+ * not an object of the declared number fields would make the emitted module unloadable. Those fall
+ * back to an optional key, which is what the column without `applyDefaults` already emits. Not a
+ * hole this shape introduced: the DSL path throws outright today for a tuple column carrying an
+ * array default, `Expected an expression before '[0,0]'`, which is the same defect one step worse
+ * and is reported separately.
+ */
+function atNumberObjectField(
+  c: Column,
+  mode: Mode,
+  applyDefaults: boolean,
+  cardinalities: CardinalityCheck[]
+): string | undefined {
+  const s = c.shape;
+  if (s?.kind !== 'numberObject') return undefined;
+  let expr = `type({ ${s.fields.map((f) => `${JSON.stringify(f)}: "number"`).join(', ')} })`;
+  for (let i = 0; i < (c.arrayDimensions ?? 0); i++) expr += '.array()';
+  const card = atCardinality(c, cardinalities);
+  // A whole number or nothing: these methods take a length, and a spliced non-numeric literal
+  // would be a syntax error in the emitted module rather than a missing constraint.
+  const len = (v: string) => (/^\d+$/.test(v) ? v : undefined);
+  const LOWER = { '>=': 'atLeastLength', '>': 'moreThanLength' } as const;
+  const UPPER = { '<=': 'atMostLength', '<': 'lessThanLength' } as const;
+  if (card.equals !== undefined) {
+    const n = len(card.equals);
+    if (n) expr += `.exactlyLength(${n})`;
+  } else {
+    for (const [b, table] of [
+      [card.lower, LOWER],
+      [card.upper, UPPER],
+    ] as const) {
+      if (!b) continue;
+      const n = len(b.value);
+      const method = (table as Record<string, string>)[b.op];
+      if (n && method) expr += `.${method}(${n})`;
+    }
+  }
+  if (c.nullable) expr += '.or("null")';
+  let optional = false;
+  if (mode !== 'select') {
+    const d = c.defaultValue;
+    const fits =
+      mode === 'insert' &&
+      applyDefaults &&
+      d !== undefined &&
+      (c.arrayDimensions
+        ? false
+        : d === null
+          ? c.nullable
+          : typeof d === 'object' &&
+            s.fields.every((f) => typeof (d as Record<string, unknown>)[f] === 'number'));
+    if (fits) expr += d === null ? '.default(null)' : `.default(() => (${JSON.stringify(d)}))`;
+    else if (mode === 'update' || c.nullable || c.hasDefault) optional = true;
+  }
+  return `  ${JSON.stringify(optional ? `${c.name}?` : c.name)}: ${expr},`;
+}
+
 function atField(
   c: Column,
   mode: Mode,
@@ -270,6 +348,11 @@ function renderObjectShape(
 ) {
   return cols
     .map((c) => {
+      // The one shape with no DSL form at all, emitted as a Type instance instead. It builds the
+      // whole line, key included, because ArkType marks optionality on the key when the value is a
+      // Type rather than with a `?` inside the definition.
+      const asType = atNumberObjectField(c, mode, applyDefaults, cardinalities);
+      if (asType) return asType;
       const dsl = atField(c, mode, coerceDates, checks, sets, applyDefaults, cardinalities);
       // A defaultable definition is only valid as an object property: `type("bigint = 7")` throws
       // "Defaultable definitions like 'number = 0' are only valid as properties in an object or

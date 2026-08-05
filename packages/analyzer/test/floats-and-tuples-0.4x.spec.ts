@@ -91,12 +91,15 @@ describe('a postgres point or line column on 0.4x', () => {
     expect(cols.l.constructor.name).toBe('PgLineTuple');
   });
 
-  it('still calls the object modes strings, which is a filed defect and not the intent', async () => {
-    // What else `/Point|Line/i` catches. `point({ mode: 'xy' })` is a `PgPointObject` and
-    // `line({ mode: 'abc' })` a `PgLineABC`, and both hand back an object rather than a string
-    // or a tuple. Left alone here on purpose: drizzle v1 describes them as tuples too, so this
-    // is a defect on both majors and fixing it needs a shape the generators do not have yet.
-    // Pinned so the next change to that arm has to say what it did to them.
+  it('describes the object modes as the objects they are, not as strings', async () => {
+    // What else `/Point|Line/i` used to catch. `point({ mode: 'xy' })` is a `PgPointObject` and
+    // `line({ mode: 'abc' })` a `PgLineABC`, and both hand back an object: asked of PGlite on
+    // 0.45.2, a row written as `{ x: 1.5, y: -2.25 }` is stored as `(1.5,-2.25)` and read back as
+    // `{ x: 1.5, y: -2.25 }`, and a line written as `{ a: 1, b: 2, c: 3 }` is stored as `{1,2,3}`
+    // and read back as `{ a: 1, b: 2, c: 3 }`. Neither takes a tuple or a string in the other
+    // direction: `mapToDriverValue` reads `.x`/`.y` off whatever it is given, so `[1, 2]` and
+    // `'1,2'` both become the literal `(undefined,undefined)` and Postgres answers
+    // `invalid input syntax for type point`.
     const cols = await columnsOf(
       'pg-tuple-object-modes-0.4x',
       `
@@ -104,8 +107,75 @@ describe('a postgres point or line column on 0.4x', () => {
       export const t = pgTable('t', { p: point({ mode: 'xy' }), l: line({ mode: 'abc' }) });
       `
     );
-    expect(cols.p).toMatchObject({ tsType: 'string', dbType: 'TEXT' });
-    expect(cols.l).toMatchObject({ tsType: 'string', dbType: 'TEXT' });
+    expect(cols.p).toMatchObject({
+      tsType: '{ x: number; y: number }',
+      dbType: 'POINT',
+      shape: { kind: 'numberObject', fields: ['x', 'y'] },
+    });
+    expect(cols.l).toMatchObject({
+      tsType: '{ a: number; b: number; c: number }',
+      dbType: 'LINE',
+      shape: { kind: 'numberObject', fields: ['a', 'b', 'c'] },
+    });
+  });
+
+  it('reaches the object-mode classes by the names 0.4x actually uses', async () => {
+    // Keyed on the constructor name like the tuple pair above, so the names are asserted rather
+    // than assumed. `line({ mode: 'abc' })` is a `PgLineABC` and not a `PgLineObject`, and the
+    // builders take any mode but `'tuple'` as the object one: `point({ mode: 'abc' })` is a
+    // `PgPointObject` and `line({ mode: 'xy' })` a `PgLineABC`.
+    const { pgTable, point, line } = await import('drizzle-orm/pg-core');
+    const t = pgTable('t', {
+      p: point({ mode: 'xy' }),
+      l: line({ mode: 'abc' }),
+    });
+    const cols = t[Symbol.for('drizzle:Columns') as never] as Record<
+      string,
+      { constructor: { name: string } }
+    >;
+    expect(cols.p.constructor.name).toBe('PgPointObject');
+    expect(cols.l.constructor.name).toBe('PgLineABC');
+  });
+
+  it('leaves no Pg class for the coarse name match to answer for', async () => {
+    // The four columns `/Point|Line/i` used to catch, all four now named outright. The regex is
+    // gone rather than narrowed, because every class it could still match is a class it would
+    // answer `string` for and every one of those four is not a string. Swept over every builder
+    // `pg-core` exports on 0.45.2, in every mode, rather than listed from memory.
+    const pg = (await import('drizzle-orm/pg-core')) as unknown as Record<string, unknown>;
+    const found = new Set<string>();
+    for (const fn of Object.values(pg)) {
+      if (typeof fn !== 'function') continue;
+      for (const args of [[], [{ mode: 'xy' }], [{ mode: 'abc' }], [{ mode: 'tuple' }]]) {
+        let ctor: string | undefined;
+        try {
+          const table = (pg.pgTable as (n: string, c: unknown) => Record<symbol, unknown>)('t', {
+            c: (fn as (...a: unknown[]) => unknown)(...args),
+          });
+          const cols = table[Symbol.for('drizzle:Columns')] as Record<string, { constructor: { name: string } }>;
+          ctor = cols?.c?.constructor?.name;
+        } catch {
+          continue;
+        }
+        if (ctor && /Point|Line/i.test(ctor)) found.add(ctor);
+      }
+    }
+    // A verification that can succeed by matching nothing is not one: the sweep has to have found
+    // the four before the list below means anything.
+    expect([...found].sort()).toEqual(['PgLineABC', 'PgLineTuple', 'PgPointObject', 'PgPointTuple']);
+    const cols = await columnsOf(
+      'pg-tuple-sweep-0.4x',
+      `
+      import { pgTable, point, line } from 'drizzle-orm/pg-core';
+      export const t = pgTable('t', {
+        pt: point(), po: point({ mode: 'xy' }), lt: line(), lo: line({ mode: 'abc' }),
+      });
+      `
+    );
+    for (const name of ['pt', 'po', 'lt', 'lo']) {
+      expect(cols[name].tsType, name).not.toBe('string');
+      expect(cols[name].shape, name).toBeDefined();
+    }
   });
 });
 

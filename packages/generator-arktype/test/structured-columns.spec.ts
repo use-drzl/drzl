@@ -102,6 +102,42 @@ describe('structured columns', () => {
     expect(accepts(m.SelecttSchema, 'p', '(1,2)')).toBe(false);
   });
 
+  it('holds an object-mode point and line to their named number fields', async () => {
+    // The other mode of the same two builders, and the one shape in this generator that cannot be
+    // written in the string DSL at all: `type({ p: '{ x: number, y: number }' })` throws
+    // `'{' is unresolvable`, so this field is emitted as a nested definition instead. That makes
+    // "the module imports at all" a real assertion here rather than a formality.
+    //
+    // Values measured on PGlite through drizzle 0.45.2 and again through 1.0.0-rc.4.
+    const m = await schemasFor(
+      [
+        col('p', {
+          tsType: '{ x: number; y: number }',
+          dbType: 'POINT',
+          shape: { kind: 'numberObject', fields: ['x', 'y'] },
+        }),
+        col('l', {
+          tsType: '{ a: number; b: number; c: number }',
+          dbType: 'LINE',
+          shape: { kind: 'numberObject', fields: ['a', 'b', 'c'] },
+          nullable: true,
+        }),
+      ],
+      'point-object'
+    );
+    const s = m.SelecttSchema;
+    expect(accepts(s, 'p', { x: 1.5, y: -2.25 }), 'the row the column handed back').toBe(true);
+    expect(accepts(s, 'l', { a: 1, b: 2, c: 3 })).toBe(true);
+    expect(accepts(s, 'l', null), 'a nullable column, so the union survived').toBe(true);
+    expect(accepts(s, 'p', [1, 2]), 'the tuple the other mode returns').toBe(false);
+    expect(accepts(s, 'p', '(1,2)')).toBe(false);
+    expect(accepts(s, 'p', { x: 1 }), 'a missing field').toBe(false);
+    expect(accepts(s, 'p', null), 'null on a NOT NULL column').toBe(false);
+    // An unlisted key is what the column ignores, so the definition is not exact.
+    expect(accepts(s, 'p', { x: 1, y: 2, z: 3 })).toBe(true);
+    expect(accepts(s, 'p', { a: 1, b: 2, c: 3 })).toBe(false);
+  });
+
   it('holds a bit column to binary digits of the declared length', async () => {
     const m = await schemasFor(
       [col('b', { dbType: 'BIT', shape: { kind: 'bitstring', length: 3 } })],

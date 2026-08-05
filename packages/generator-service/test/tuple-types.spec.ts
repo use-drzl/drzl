@@ -51,6 +51,28 @@ const analysis: Analysis = {
           isGenerated: false,
           shape: { kind: 'tuple', length: 3 },
         },
+        // The object modes of the same two builders, which return `{ x, y }` and `{ a, b, c }`
+        // rather than a tuple. Built from the field names for the same reason the arity is built
+        // from `shape.length`: the analyzer states them and an object of numbers is ordinary
+        // TypeScript.
+        {
+          name: 'corner',
+          tsType: '{ x: number; y: number }',
+          dbType: 'POINT',
+          nullable: false,
+          hasDefault: false,
+          isGenerated: false,
+          shape: { kind: 'numberObject', fields: ['x', 'y'] },
+        },
+        {
+          name: 'axis',
+          tsType: '{ a: number; b: number; c: number }',
+          dbType: 'LINE',
+          nullable: true,
+          hasDefault: false,
+          isGenerated: false,
+          shape: { kind: 'numberObject', fields: ['a', 'b', 'c'] },
+        },
         // The control. A column with no shape still falls to `unknown`, so this is not a blanket
         // pass-through of whatever `tsType` happens to say.
         {
@@ -89,5 +111,27 @@ describe('a tuple column in the generated types', () => {
 
   it('leaves a shape it cannot spell as unknown', async () => {
     expect(await emitted()).toContain('blob: unknown');
+  });
+
+  it('is an object of the named number fields for the object modes', async () => {
+    const src = await emitted();
+    expect(src).toContain('corner: { x: number; y: number }');
+    expect(src).toContain('axis: { a: number; b: number; c: number } | null');
+    expect(src).not.toContain('corner: unknown');
+  });
+
+  it('emits types that compile, which a pasted tsType need not', async () => {
+    // The field type is spliced into a `.ts` file, so a shape spelled wrong is a module the
+    // consumer cannot build. Compiled rather than read: `tsc` is the arbiter for TypeScript the
+    // same way the server is for a column.
+    const src = await emitted();
+    const ts = (await import('typescript')).default;
+    const out = ts.transpileModule(src, {
+      reportDiagnostics: true,
+      compilerOptions: { strict: true, target: ts.ScriptTarget.ES2022 },
+    });
+    expect(
+      out.diagnostics?.map((d) => ts.flattenDiagnosticMessageText(d.messageText, ' '))
+    ).toEqual([]);
   });
 });

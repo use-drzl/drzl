@@ -156,6 +156,7 @@ type says:
 | `timestamp` | `{ type: 'string', format: 'date-time' }` |
 | `json`, `jsonb` | `{}`, which is how the format spells "any JSON value" |
 | `point` | `prefixItems` of two numbers, with `minItems` and `maxItems` |
+| `point({ mode: 'xy' })` | `{ type: 'object', properties: { x, y }, required: ['x', 'y'] }`, with no `additionalProperties`, because the column ignores an unlisted key |
 
 `contentEncoding` is worth one warning. In draft 2020-12 and in OpenAPI 3.1 it is an **annotation**,
 not an assertion: a conforming validator records that the string is meant to be base64 and does not

@@ -121,7 +121,9 @@ scores: Type.Array(Type.Integer({ minimum: -32768, maximum: 32767 })),
 | Column                      | Emitted                                                           |
 | --------------------------- | ----------------------------------------------------------------- |
 | `point()`, `geometry()`     | `Type.Tuple([Type.Number(), Type.Number()])`                      |
+| `point({ mode: 'xy' })`     | `Type.Object({ x: Type.Number(), y: Type.Number() })`             |
 | `line()`                    | `Type.Tuple([...three...])`                                       |
+| `line({ mode: 'abc' })`     | `Type.Object({ a, b, c })`                                        |
 | `vector({ dimensions: 3 })` | `Type.Array(Type.Number(), { minItems: 3, maxItems: 3 })`         |
 | `bit({ dimensions: 3 })`    | `Type.String({ pattern: '^[01]*$', minLength: 3, maxLength: 3 })` |
 | `bytea()`                   | `Type.Uint8Array()`                                               |

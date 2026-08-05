@@ -108,7 +108,9 @@ names: type("string")
 | Column                      | Emitted                                           |
 | --------------------------- | ------------------------------------------------- |
 | `point()`, `geometry()`     | `"number[] == 2"`                                 |
+| `point({ mode: 'xy' })`     | `type({ "x": "number", "y": "number" })`          |
 | `line()`                    | `"number[] == 3"`                                 |
+| `line({ mode: 'abc' })`     | `type({ "a": ..., "b": ..., "c": ... })`          |
 | `vector({ dimensions: 3 })` | `"number[] == 3"`                                 |
 | `bit({ dimensions: 3 })`    | `"/^[01]*$/ & string == 3"`                       |
 | `bytea()`, SQLite `blob()`  | `"TypedArray.Uint8"`                              |
@@ -118,6 +120,12 @@ The tuple types are written as a length-constrained array rather than as `[numbe
 ArkType does accept a real tuple, but only as a nested array in the definition object, and this
 generator emits one string per field. Both reject an array of the wrong length; the tuple form
 would additionally give a static type of `[number, number]` rather than `number[]`.
+
+The object modes are the one column with no string form at all: `type({ p: '{ x: number, y: number }' })`
+throws `'{' is unresolvable`, and it throws at import, so an approximation there would be a module
+nothing can load. Those fields are emitted as a `type(...)` instance instead, with `.array()` per
+array dimension, `.or("null")` where the column is nullable, and `?` on the key where it is
+optional.
 
 ### One thing ArkType cannot state here
 
