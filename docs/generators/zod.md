@@ -469,9 +469,23 @@ A **materialized view** gets a select schema and nothing else. `INSERT INTO mv .
 `cannot change materialized view`, so an insert or update schema for one describes an operation
 the database will always refuse.
 
-An ordinary view keeps all three. Postgres accepts an `INSERT` into a simple auto-updatable view,
-and whether a given view qualifies depends on its query rather than on anything the schema file
-states, so refusing them all would take away something that works.
+An ordinary view keeps all three on Postgres and MySQL. Both accept an `INSERT` into a simple
+auto-updatable view, verified against a real server on each, and whether a given view qualifies
+depends on its query rather than on anything the schema file states, so refusing them all would
+take away something that works.
+
+A **SQLite view** gets a select schema and nothing else, materialized or not. SQLite refuses
+every write to a view: `insert`, `update` and `delete` all fail with
+`cannot modify <name> because it is a view`.
+
+::: warning A view's columns follow Drizzle, not the server
+The nullability and the primary key of a view's columns are inherited from the base columns the
+view selects, because that is what Drizzle records. No server agrees in full: Postgres reports
+every view column nullable, MySQL widens the nullable ones a join makes optional, and neither
+reports a primary key on a view. So a select schema for a view can reject a row the database
+really returns, and the service and oRPC generators build by-id endpoints on views that have no
+key to look up by.
+:::
 
 ## Custom names
 
