@@ -114,24 +114,23 @@ describe('SingleStore, against a real singlestoreTable', () => {
     expect(byName.get('payload')?.shape).toEqual({ kind: 'json' });
   });
 
-  it('DEFECT: types binary and varbinary as Uint8Array, and the driver returns a string', async () => {
-    // Not this task's to fix, and not specific to SingleStore: `mysql-types.spec.ts` and
-    // `sqlite-types.spec.ts` pin the same answer, and MySQL 0.4x behaves identically. It is
-    // recorded here because measuring the dialect and stating the truth was the task, and
-    // because this is a second reject-every-row case in the same measured spread.
-    //
-    // `SingleStoreBinary` and `SingleStoreVarBinary` both declare `data: string` and both
-    // define a `mapFromDriverValue` that turns the driver's Buffer into a string:
+  it('types binary and varbinary as the string the driver returns', async () => {
+    // This used to assert `Uint8Array` and was labelled DEFECT, which it was: the select schema
+    // accepted a Buffer and rejected the string in zod, valibot, arktype and typebox, so it
+    // rejected every row. `SingleStoreBinary` and `SingleStoreVarBinary` both declare
+    // `dataType: 'string'` and both define a `mapFromDriverValue` that decodes the driver's
+    // Buffer, verified by calling it:
     //
     //   mapFromDriverValue(Buffer.from('hi')) -> "hi"   (a string, not bytes)
     //
-    // Measured through the emitted schemas: the select schema accepts a Buffer and rejects
-    // the string in zod, valibot, arktype and typebox. The JSON Schema generator is the only
-    // one that accepts the real value, and only because it types every byte column as a
-    // string anyway.
+    // And end to end, over the MySQL wire protocol SingleStore speaks, on both drizzle majors:
+    // a row written as `<00 ff 41>` into a varbinary comes back as a 3 code point string with
+    // `instanceof Uint8Array` false.
     const { byName } = await columnsOf('real-singlestore', SINGLESTORE_SOURCE);
-    expect(byName.get('bin')?.tsType).toBe('Uint8Array');
-    expect(byName.get('vbin')?.tsType).toBe('Uint8Array');
+    expect(byName.get('bin')?.tsType).toBe('string');
+    expect(byName.get('vbin')?.tsType).toBe('string');
+    expect(byName.get('bin')?.shape).toEqual({ kind: 'byteString', length: 16 });
+    expect(byName.get('vbin')?.shape).toEqual({ kind: 'byteString', length: 32 });
   });
 
   it('carries the declared varchar and char lengths', async () => {

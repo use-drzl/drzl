@@ -114,6 +114,18 @@ function baseSchema(
           pattern: '^[01]*$',
           ...(s.length ? (s.exact ? { minLength: s.length, maxLength: s.length } : { maxLength: s.length }) : {}),
         };
+      case 'byteString':
+        // A MySQL/SingleStore `binary(n)`/`varbinary(n)`: any bytes at all, handed back as a
+        // string, so no pattern. `maxLength` counts code points, which is exactly what the column
+        // can return: a lossy decode of n bytes yields at most n of them, measured.
+        //
+        // The insert side is a byte budget and JSON Schema has no keyword that counts bytes, so
+        // the same code-point cap is emitted in every mode. It is a necessary condition there
+        // rather than the whole one, since every value the server accepts is at most n bytes and
+        // therefore at most n code points; it turns away no valid write, and lets through a value
+        // like three emoji that a varbinary(8) refuses. That incompleteness is the same one this
+        // generator already carries for MySQL's TEXT byte budget, which it cannot state at all.
+        return { type: 'string', ...(s.length ? { maxLength: s.length } : {}) };
     }
   }
 

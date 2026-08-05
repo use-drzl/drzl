@@ -138,7 +138,7 @@ const JSON_PREAMBLE = `const ${JSON_CONST} = Type.Recursive((This) =>
  * These used to land on `Type.Unknown()`, or for the tuple types on `Type.String()`, which
  * rejected every row: a `point` really arrives as `[number, number]`.
  */
-function tbShapeExpr(c: Column, typedJsonRef?: string): string | undefined {
+function tbShapeExpr(c: Column, mode: Mode, typedJsonRef?: string): string | undefined {
   const s = c.shape;
   if (!s) return undefined;
   switch (s.kind) {
@@ -159,11 +159,17 @@ function tbShapeExpr(c: Column, typedJsonRef?: string): string | undefined {
     case 'bitstring':
       // `pattern` rather than `format`, which TypeBox ignores unless the consuming project has
       // registered it on `FormatRegistry` first.
-      // Both bounds for a Postgres `bit(n)`, only the ceiling for a MySQL `binary(n)`.
+      // Both bounds for a Postgres `bit(n)`, only the ceiling for a Cockroach `varbit(n)`.
       if (!s.length) return `Type.String({ pattern: '^[01]*$' })`;
       return s.exact
         ? `Type.String({ pattern: '^[01]*$', minLength: ${s.length}, maxLength: ${s.length} })`
         : `Type.String({ pattern: '^[01]*$', maxLength: ${s.length} })`;
+    case 'byteString':
+      // See the zod generator: a MySQL/SingleStore binary column takes any bytes at all and hands
+      // them back as a string, so no pattern belongs here. `maxLength` counts UTF-16 units, which
+      // is neither the code points a select returns nor the bytes an insert is measured in, so
+      // the cap goes to the registered kind through `tbCapExpr`.
+      return tbCapExpr(c, 'Type.String()', mode);
   }
 }
 
@@ -200,7 +206,7 @@ function tbExprForColumn(
   typedJsonRef?: string,
   sets: ColumnSet[] = []
 ): string {
-  const shaped = tbShapeExpr(c, typedJsonRef);
+  const shaped = tbShapeExpr(c, mode, typedJsonRef);
   if (shaped) return shaped;
   // `CHECK (status IN ('a', 'b'))` is a union of literals. `Type.Literal` is the only form
   // TypeBox enforces: a `const` option parses and then accepts anything.
@@ -246,7 +252,7 @@ function tbExprForColumn(
       const base: Array<[string, string]> = formatPattern
         ? [['pattern', JSON.stringify(formatPattern)]]
         : [];
-      return tbCapExpr(c, `Type.String(${renderOptions(merged(base))})`);
+      return tbCapExpr(c, `Type.String(${renderOptions(merged(base))})`, mode);
     }
     case 'number': {
       const o = renderOptions(merged(tbBounds(c)));
@@ -529,12 +535,15 @@ const ROW_PREAMBLE = `TypeRegistry.Set('DrzlRowCheck', (schema: any, value: any)
  * not import it, so the module threw the moment anything loaded it.
  */
 function tbNeedsCapKind(c: Column): boolean {
+  // A byte-string column is the one shaped column that carries a cap, and it needs the kind for
+  // the same reason: its width is code points out and bytes in, and no keyword counts either.
+  if (c.shape?.kind === 'byteString') return !!c.shape.length;
   // Not excluded for an array column: the cap describes the *element*, and the array wraps it
   // after, so `varchar(50).array()` caps each entry.
   return c.tsType === 'string' && !c.shape && !!(c.maxLength || c.maxBytes);
 }
 
-function tbCapExpr(c: Column, base: string): string {
+function tbCapExpr(c: Column, base: string, mode: Mode): string {
   if (!tbNeedsCapKind(c)) return base;
   const branch = (desc: string, expr: string) => `Type.Unsafe<unknown>({
     [Kind]: 'DrzlRowCheck',
@@ -542,6 +551,15 @@ function tbCapExpr(c: Column, base: string): string {
     assert: (v: any) => v == null || ${expr},
   })`;
   const out: string[] = [];
+  if (c.shape?.kind === 'byteString') {
+    const n = c.shape.length!;
+    out.push(
+      mode === 'select'
+        ? branch(`at most ${n} characters`, `[...v].length <= ${n}`)
+        : branch(`at most ${n} bytes`, `new TextEncoder().encode(v).length <= ${n}`)
+    );
+    return `Type.Intersect([${base}, ${out.join(', ')}])`;
+  }
   if (c.maxLength) out.push(branch(`at most ${c.maxLength} characters`, `[...v].length <= ${c.maxLength}`));
   if (c.maxBytes) {
     out.push(branch(`at most ${c.maxBytes} bytes`, `new TextEncoder().encode(v).length <= ${c.maxBytes}`));

@@ -82,8 +82,13 @@ export { table as users };
     expect(map.get('dbl')).toBe('number');
     expect(map.get('rl')).toBe('number');
     expect(map.get('payload')).toBe('any');
+    // `MySqlBlob` is this fixture's invention: mysql-core exports no `blob` on 0.45.2, enumerated
+    // from the module's own exports. It stays on the coarse `/Blob/` arm, which nothing real
+    // reaches on this major.
     expect(map.get('data')).toBe('Uint8Array');
-    expect(map.get('bin')).toBe('Uint8Array');
-    expect(map.get('vbin')).toBe('Uint8Array');
+    // The two that do exist. Asked of MySQL 8.4 through drizzle on both majors: a
+    // `binary`/`varbinary` column hands the caller a string, so `Uint8Array` rejected every row.
+    expect(map.get('bin')).toBe('string');
+    expect(map.get('vbin')).toBe('string');
   });
 });

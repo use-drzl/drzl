@@ -120,9 +120,15 @@ function atShapeType(c: Column): string | undefined {
     case 'numberVector':
       return s.length ? `number[] == ${s.length}` : 'number[]';
     case 'bitstring':
-      // `== n` for a Postgres `bit(n)`, `<= n` for a MySQL `binary(n)`.
+      // `== n` for a Postgres `bit(n)`, `<= n` for a Cockroach `varbit(n)`.
       if (!s.length) return '/^[01]*$/';
       return `/^[01]*$/ & string ${s.exact ? '==' : '<='} ${s.length}`;
+    case 'byteString':
+      // See the zod generator: a MySQL/SingleStore binary column takes any bytes at all and hands
+      // them back as a string, so no pattern belongs here. The declared width is a code-point
+      // ceiling out and a byte budget in, and `string <= n` is a third measurement that agrees
+      // with neither, so the cap goes to `atCapNarrows` where an exact count can be written.
+      return 'string';
   }
 }
 
@@ -279,7 +285,7 @@ function renderObjectShape(
       // `.default(null)` does work and does keep the narrow. That is a change to the whole
       // applyDefaults path, which has two further defects of its own, and is tracked separately.
       const defaulted = mode === 'insert' && applyDefaults && c.defaultValue !== undefined;
-      const caps = atCapNarrows(c) + (defaulted ? '' : atBigintNarrow(c, checks));
+      const caps = atCapNarrows(c, mode) + (defaulted ? '' : atBigintNarrow(c, checks));
       if (!caps) return `  ${JSON.stringify(c.name)}: ${JSON.stringify(dsl)},`;
       // A Type instance rather than a DSL string, because neither cap is expressible in the DSL:
       // `string <= n` counts UTF-16 code units, which agrees with neither database. ArkType marks
@@ -428,7 +434,19 @@ function atBigintNarrow(c: Column, checks: ColumnCheck[]): string {
  * third measurement, agreeing with neither. Both databases count `varchar(n)` in characters and
  * MySQL counts `tinytext` in bytes, so both are written out here rather than approximated.
  */
-function atCapNarrows(c: Column): string {
+function atCapNarrows(c: Column, mode: Mode): string {
+  // A byte-string column is the one shaped column that carries a cap. It reaches this function
+  // rather than stating the cap in its own DSL because neither of its two measurements is
+  // expressible there, and because which one applies depends on the mode: n code points is what
+  // the column can return, n bytes is what the server accepts. Both were measured against MySQL
+  // 8.4; see the analyzer's `ColumnShape`.
+  if (c.shape?.kind === 'byteString') {
+    const n = c.shape.length;
+    if (!n) return '';
+    return mode === 'select'
+      ? atNarrow(c, (v) => `[...${v}].length <= ${n}`, `at most ${n} characters`)
+      : atNarrow(c, (v) => `new TextEncoder().encode(${v}).length <= ${n}`, `at most ${n} bytes`);
+  }
   if (c.tsType !== 'string' || c.shape) return '';
   const out: string[] = [];
   if (c.maxLength) {
