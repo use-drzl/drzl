@@ -212,9 +212,22 @@ export function insertColumns(table: Table): Column[] {
   return table.columns.filter((c) => !isGeneratedColumn(c));
 }
 
+/**
+ * Which columns belong in an update schema.
+ *
+ * A primary key identifies the row rather than changing it, and a generated column cannot be
+ * written at all. This asked only the first question, so every `generatedAlwaysAs` column landed
+ * in the patch type. Measured against real servers: all three refuse an UPDATE naming one with any
+ * value, including NULL. Postgres 428C9, MySQL 3105, SQLite "cannot UPDATE generated column". The
+ * one accepted form is `SET col = DEFAULT`, which no validator can express and no Drizzle `.set()`
+ * produces.
+ *
+ * `isGeneratedColumn` rather than `c.isGenerated`, so this and `insertColumns` cannot drift apart
+ * on what counts as generated.
+ */
 export function updateColumns(table: Table): Column[] {
   const pkCols = table.primaryKey?.columns ?? [];
-  return table.columns.filter((c) => !pkCols.includes(c.name));
+  return table.columns.filter((c) => !isGeneratedColumn(c) && !pkCols.includes(c.name));
 }
 
 export function selectColumns(table: Table): Column[] {
