@@ -26,6 +26,139 @@ TARS="$WORK/tars"
 APP="$WORK/consumer"
 mkdir -p "$TARS" "$APP/src/db"
 
+# ---------------------------------------------------------------------------------------------
+# Prose in this file that writes down a quantity a declaration in this file already holds.
+#
+# The whole design here is that quantities are asserted against a run or printed by one, and the
+# file has still collected sentences restating a ledger size, a rejection count or the length of
+# the pool. They go stale as a group rather than one at a time: adding a handful of pool values
+# falsified more than a dozen of them in a single edit, and each of the two rounds that swept them
+# out wrote a fresh one into the very paragraph doing the sweeping.
+#
+# A warning and not a gate, and that is measured rather than preferred. The broad formulation, a
+# cardinal standing next to a ledger noun, flags dozens of comment blocks in this file with the
+# sweep already done, almost all of them ordinary prose, and it still misses the survivors that
+# read "the counts printed below are N of M" and "N ALLOWED entries", because neither puts a
+# cardinal next to a noun such a pattern knows. A gate at that hit rate is waived into a no-op
+# within a week. This file already carries one warning that cries wolf, on columns the analyzer
+# cannot name, and it is filed as a defect rather than trusted.
+#
+# So what runs is the closed set of idioms these sentences are actually written in, and it is
+# deliberately not exhaustive. The form "the six columns in that state" is outside it, and was
+# left outside rather than covered at the cost of flagging every paragraph containing a number
+# word. Each hit is printed with its line range and the words that matched, so a reader settles it
+# rather than counts it, and nothing here is waivable: an idiom nobody wants flagged is a sentence
+# to rewrite, not an exemption to declare.
+#
+# Both directions were run rather than argued, and both are recorded in the round-4 section of
+# `.superpowers/sdd/2026-08-03-top-100/task-9-report.md`: a planted sentence of the species is
+# named inside the block it was planted in, and on the file as it stands this prints a short list
+# rather than nothing, with a verdict recorded there for every entry on it.
+# ---------------------------------------------------------------------------------------------
+echo "==> prose that writes down a number a declaration already holds"
+cat > "$WORK/prose-counts.mjs" <<'PROSE_COUNTS'
+import { readFileSync } from 'node:fs';
+
+/**
+ * Paragraphs of adjacent whole-line comments, not lines.
+ *
+ * Every stale count this was built from wrapped across a line break, so a line-scoped grep sees
+ * the sameness idiom on one line and the number it governs on the next and matches neither half.
+ * Consecutive comment lines are joined into one string and matched as a paragraph; a blank
+ * comment line or a line of code ends the paragraph, which is where a claim ends too.
+ *
+ * Whole-line comments only. Both of the comment syntaxes in this file are read, since it is a
+ * shell script whose payload is a stack of TypeScript heredocs, and the species has appeared in
+ * both.
+ */
+const payload = (line) => {
+  if (/^\s*#!/.test(line)) return null;
+  let m;
+  if ((m = /^\s*\/\/\s?(.*)$/.exec(line))) return m[1];
+  if ((m = /^\s*#\s?(.*)$/.exec(line))) return m[1];
+  if ((m = /^\s*\/\*\*?\s?(.*)$/.exec(line))) return m[1].replace(/\s*\*\/\s*$/, '');
+  if (/^\s*\*\/\s*$/.test(line)) return '';
+  if ((m = /^\s*\*\s?(.*)$/.exec(line))) return m[1].replace(/\s*\*\/\s*$/, '');
+  return null;
+};
+
+const CARD =
+  '(?:\\d+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|' +
+  'fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty|sixty|seventy|eighty|' +
+  'ninety)';
+const LEDGERS =
+  'ALLOWED|CROSS_ALLOWED|PRESENCE|PRESENCE_ALLOWED|PRESENCE_BARREN|DEFECTS|THREW|UNNAMED|' +
+  'KNOWN_UNNAMED|SELECT_OPTIONAL|POOL';
+
+/**
+ * The closed set, each entry a shape one of the removed sentences was written in.
+ *
+ * Widening any of these is how the check turns into the broad formulation that was measured and
+ * rejected above. Narrowing one to quieten a hit is worse: the hit is the finding.
+ */
+const IDIOMS = [
+  ['a span', new RegExp(`\\b${CARD} to ${CARD}\\b`, 'i')],
+  ['a ratio', new RegExp(`\\b${CARD} of ${CARD}\\b`, 'i')],
+  ['an unchanged quantity', new RegExp(`\\bat the same (?:count|${CARD})\\b`, 'i')],
+  ['a rejection count', new RegExp(`\\bfrom ${CARD} rejections\\b`, 'i')],
+  ['a level', new RegExp(`\\bare at ${CARD}\\b`, 'i')],
+  ['a per-mode count', new RegExp(`\\b${CARD} in all three modes\\b`, 'i')],
+  ['a ledger size', new RegExp(`\\b${CARD} (?:${LEDGERS}) entr(?:y|ies)\\b`)],
+];
+
+const file = process.argv[2];
+const lines = readFileSync(file, 'utf8').split('\n');
+const blocks = [];
+let cur = null;
+for (let i = 0; i < lines.length; i++) {
+  const p = payload(lines[i]);
+  if (p === null || p.trim() === '') {
+    cur = null;
+    continue;
+  }
+  if (!cur) blocks.push((cur = { start: i + 1, end: i + 1, text: p.trim() }));
+  else {
+    cur.end = i + 1;
+    cur.text += ` ${p.trim()}`;
+  }
+}
+
+const hits = [];
+for (const b of blocks) {
+  const matched = IDIOMS.map(([name, re]) => [name, re.exec(b.text)]).filter(([, m]) => m);
+  if (matched.length) hits.push({ b, matched });
+}
+
+const rel = file.replace(/^.*\/(scripts\/.*)$/, '$1');
+if (!hits.length) {
+  // Not a pass. The check cannot tell a clean file from a pattern that has stopped matching, and
+  // this line says which claim is being made.
+  console.log(`    no comment block in ${rel} matches the idioms a restated count is written in`);
+} else {
+  console.log(
+    `    WARN: ${hits.length} comment block(s) in ${rel} of ${blocks.length} state a quantity in ` +
+      'the idiom a restated one is written in. Not a gate, and not all of them are wrong: read'
+  );
+  console.log(
+    '          each one and check it against the declaration or printed line that holds the same'
+  );
+  console.log('          quantity, then delete the number or leave a verdict in the task report.');
+  for (const { b, matched } of hits) {
+    console.log(`      ${rel}:${b.start}-${b.end}`);
+    for (const [name, m] of matched) {
+      const from = Math.max(0, m.index - 55);
+      const to = Math.min(b.text.length, m.index + m[0].length + 55);
+      const snippet =
+        (from > 0 ? '...' : '') + b.text.slice(from, to) + (to < b.text.length ? '...' : '');
+      console.log(`          ${name}: ${snippet}`);
+    }
+  }
+}
+PROSE_COUNTS
+# Never a gate, including when node itself fails: a warning that can abort the run is a gate with
+# an undeclared failure mode, and this one runs before anything has been built.
+node "$WORK/prose-counts.mjs" "$ROOT/scripts/verify-packed.sh" || true
+
 echo "==> building"
 # A file in every dist that no build produces, checked for afterwards.
 #
@@ -735,8 +868,13 @@ export const arrays = pgTable('arrays', {
 
 /**
  * The nullable path, which is what most real schemas are made of and which no differential
- * comparison had ever looked at: every column of `matrix` is `notNull`, so both passes measured
- * 0 of 40 Postgres, 0 of 29 MySQL and 0 of 14 SQLite columns without one.
+ * comparison had ever looked at: every column of `matrix` is `notNull`, so neither pass compared
+ * a single nullable column on any of the three dialects. The zero is the whole claim, and the
+ * widths this sentence used to write beside it were the v1 pass's alone: the 0.4x pass deletes
+ * from this fixture and from the MySQL one every column whose type 0.4x has no export for, so it
+ * is narrower on two of the three dialects. Stated as a zero on both passes now, which is the
+ * part that is true of both. (No type name here: a comment in this file naming one that the 0.4x
+ * stage strips survives the strip and fails its check, which is what happened to this sentence.)
  *
  * Every generator emits a different construction for a nullable column, and each of them is a
  * place a constraint can be lost: zod appends `.nullable()` after the refinement, valibot wraps
@@ -1755,9 +1893,11 @@ const WRITE = ['insert', 'update'];
 // See the fuller note on the same constant in the 0.4x pass below, which is where the columns in
 // that state live.
 //
-// How many columns use it is printed by each run rather than written down here. Six sentences in
-// this file carried that number and one carried the length of the list it replaces, and adding
-// five pool values made all seven wrong in one edit, which is the argument for deriving it.
+// How many columns use it is printed by each run rather than written down here. Sentences in this
+// file used to carry that number, and others carried the length of the list it replaces; adding
+// five pool values made every one of them wrong in a single edit, which is the argument for
+// deriving it. The sentence that stood here counted both groups and got the second group wrong,
+// which is this species reproducing inside its own cure for the second time in one branch.
 const allProbes = (n: number, accepted: string[]) =>
   `every probe official rejects (${n} of them), and official accepts only: ` +
   (accepted.length ? accepted.join(', ') : 'nothing in the pool');
@@ -2900,12 +3040,14 @@ for (const [key, e] of Object.entries(THREW)) {
  * How many waivers run each way, counted from the map rather than stated in a sentence.
  *
  * `L:` is the half of a signature listing what DRZL accepts and official refuses, so a non-empty
- * one is a waiver where DRZL is the looser side. Three comments in this file have now claimed a
- * number for that, and the count is printed here instead so a claim about it cannot go stale: the
- * float waivers added when the bounds moved to the database's were described as "the only entries
- * in either pass that run that way", and they are not: the counts printed below are 18 of 35 here
- * and 15 of 24 in the 0.4x pass, against the six. An earlier version of this sentence said "by an
- * order of magnitude", which is 3x and 2.5x.
+ * one is a waiver where DRZL is the looser side. Comments in this file have claimed a number for
+ * that more than once, and the count is printed below instead so a claim about it cannot go
+ * stale: the float waivers added when the bounds moved to the database's were described as "the
+ * only entries in either pass that run that way", and they are not, on either pass.
+ *
+ * The sentence that stood here restated the printed counts and the ratio between them, having
+ * just said that writing them down was what went stale. The nullable twins on this branch
+ * falsified every figure in it in one edit, so it is gone and the printed line is the answer.
  *
  * Being looser than official is not by itself a defect and this line is not a warning. Postgres
  * takes three emoji into a `char(3)`, a Uint8Array into a `bytea` and a uuid into a `uuid`, and
@@ -2915,9 +3057,10 @@ const looserSide = (e: { divergence: Record<string, string> }) =>
   Object.values(e.divergence).some((s) => s.split('|')[0].replace(/^L:/, '').trim() !== '');
 const looserWaivers = Object.values(ALLOWED).filter(looserSide).length;
 // How many waivers state their divergence as a rejection count plus a complement rather than as a
-// list, read off the declarations. Six sentences in this file used to carry that number and the
-// length of the list it replaces; adding five pool values made all of them wrong in one edit, so it
-// is computed here instead. Zero on this pass today, and the line says so rather than a comment.
+// list, read off the declarations. Sentences in this file used to carry that number and the length
+// of the list it replaces; adding five pool values made every one of them wrong in a single edit,
+// so it is computed here instead. Zero on this pass today, and the line says so rather than a
+// comment.
 const SHORTHAND = /^every probe official rejects \((\d+) of them\), and official accepts only: (.*)$/;
 const shorthandCols = Object.entries(ALLOWED)
   .filter(([, e]) => Object.values(e.divergence).some((d) => SHORTHAND.test(d)))
@@ -5977,8 +6120,11 @@ cat > parity-0-4x.ts <<'PARITY_0_4X'
  *
  *   ALLOWED  DRZL and the official 0.4x module really do differ here, deliberately.
  *   DEFECTS  DRZL is wrong on 0.4x, whichever way the difference runs. Filed rather than fixed,
- *            and reported every run. Not "looser than official": six ALLOWED entries are looser
- *            and right, because the database says so.
+ *            and reported every run. Not "looser than official": ALLOWED entries are looser and
+ *            right too, because the database says so, and every run counts how many rather than
+ *            leaving a number here to go stale. Two copies of this sentence carried the same
+ *            number; the round that corrected it landed on the one over the map itself and left
+ *            this one behind, which is what a number in prose costs.
  *
  * Both are asserted exactly and in both directions. A difference in neither map fails the stage; an
  * entry that suppresses nothing fails it; and an entry whose libraries, modes, pairing count or
@@ -6309,7 +6455,7 @@ const ALLOWED: Record<string, Entry> = {
   // length, which is the part worth reading for. An earlier version of this sentence called these
   // six the only entries in either pass running that way; they are not, and the run now counts and
   // prints how many waivers do. The reasoning, the PGlite measurements and the two caveats are
-  // written out once at the same six keys in the v1 pass near the top of this file, because both
+  // written out once at the same keys in the v1 pass near the top of this file, because both
   // majors now take the database's answer and moving one without the other is what the cross-major
   // diff catches.
   //
@@ -6666,10 +6812,16 @@ const DEFECTS: Record<string, Entry> = {
       // that moves the count is not stated here, because the declarations on these three lines are
       // the count and a sentence beside them is one more thing that can go stale.
       //
-      // Two attempts at that sentence already have, and they said different things. The first, on
-      // `pg/c_bit` above, said "TypeBox refuses two fewer probes than the rest on `c_bit`", which
-      // reads as a rejection it never made. The second was written here, said "two lower in every
-      // mode", and was wrong about update. Neither number is repeated now, on either entry.
+      // Earlier attempts at that sentence already have, and no two of them said the same thing.
+      // At `5184b52` there were two, and neither lived on `pg/c_bit`: the `Entry.divergence`
+      // docstring said "two fewer probes than the other three on `c_bit`", and an inline comment
+      // repeated word for word on `pg/c_vector`, `sqlite/s_blob`, `sqlite/s_blob_buf` and
+      // `sqlite/s_int_ts_ms` said "TypeBox refuses two fewer probes than the rest on `c_bit`".
+      // Both read as a rejection TypeBox never made, and both were already wrong about update at
+      // that revision, where `pg/c_bit` declared one fewer for typebox rather than two. The last
+      // was written here at `fdcc627`, said `pg/c_bit` was "two lower in every mode", and was
+      // wrong about update again. A note that misplaces which entry carried a mistake is worth
+      // less than no note, so the sites are named. No number is repeated now, on any of them.
       '*/typebox': allProbes(60, ["'010'"]),
     },
     drzl: 'unknown, which accepts every value in the pool',
@@ -7392,8 +7544,8 @@ async function main() {
       `${Object.keys(PRESENCE).length} column(s) where the two disagree`
   );
   // Which columns use the rejection-count shorthand, and how many probes each of them stands for,
-  // both read off the declarations. Four sentences in this docstring block used to write those
-  // numbers down and adding five pool values made every one of them wrong at once.
+  // both read off the declarations. Sentences in the docstring block above used to write those
+  // numbers down, and adding five pool values made every one of them wrong at once.
   const SHORTHAND = /^every probe official rejects \((\d+) of them\), and official accepts only: (.*)$/;
   const shorthand = [...Object.entries(ALLOWED), ...Object.entries(DEFECTS)].flatMap(([k, e]) =>
     Object.values(e.divergence)
