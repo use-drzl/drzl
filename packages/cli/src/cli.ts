@@ -17,9 +17,10 @@ import {
 } from './config.js';
 import { diffSnapshots, restoreSnapshot, snapshotAll } from './drift.js';
 import { maybeShowSponsorMessage } from './sponsor.js';
+import { CLI_VERSION } from './version.js';
 
 const program = new Command();
-program.name('drzl').description('DRZL - Drizzle Developer Toolkit').version('0.0.1');
+program.name('drzl').description('DRZL - Drizzle Developer Toolkit').version(CLI_VERSION);
 program.addHelpText(
   'afterAll',
   `\nNeed a template, adapter, or generator DRZL doesn't ship yet?\n→ DM @omardulaimidev on X: https://x.com/omardulaimidev\n`
