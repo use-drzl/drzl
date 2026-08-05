@@ -1129,6 +1129,14 @@ export class SchemaAnalyzer {
       case 'SQLiteNumeric':
         // Drizzle returns numeric as a string; a JS number cannot hold arbitrary precision.
         return { tsType: 'string', dbType: 'NUMERIC' };
+      // The other two modes of the same column, which matched no arm here and no dialect regex
+      // below either, so both came back UNKNOWN and every generator emitted a schema that
+      // accepted anything at all. Read back through better-sqlite3 3.53.4 on a `numeric` column,
+      // `db.select()` hands back a number in number mode and a bigint in bigint mode.
+      case 'SQLiteNumericNumber':
+        return { tsType: 'number', dbType: 'NUMERIC' };
+      case 'SQLiteNumericBigInt':
+        return { tsType: 'bigint', dbType: 'NUMERIC' };
       case 'SQLiteBoolean':
         return { tsType: 'boolean', dbType: 'INTEGER' };
       // 0.4x gives an enum its own class, which had no arm here at all, so an enum column came
@@ -1177,6 +1185,15 @@ export class SchemaAnalyzer {
         // arbitrary precision. Typing them as numbers made the select validator reject every row
         // the database returned, and the insert validator reject the string the driver wants.
         return { tsType: 'string', dbType: 'NUMERIC' };
+      // The other two modes, each its own class. `PgNumericNumber` reached the coarse
+      // `/Numeric|Float|Double|Real/i` arm and got the right answer there; `PgNumericBigInt` got
+      // its `bigint` from the `/BigInt/i` arm meant for `bigint` columns, and the SQL label that
+      // comes with it, so a `numeric(20,0)` was reported as a BIGINT column. Read back through
+      // PGlite, `db.select()` hands back a number in number mode and a bigint in bigint mode.
+      case 'PgNumericNumber':
+        return { tsType: 'number', dbType: 'NUMERIC' };
+      case 'PgNumericBigInt':
+        return { tsType: 'bigint', dbType: 'NUMERIC' };
       case 'PgDoublePrecision':
         // These really are JS numbers.
         return { tsType: 'number', dbType: 'DOUBLE' };
@@ -1243,8 +1260,30 @@ export class SchemaAnalyzer {
           if (/BigInt53/i.test(ctor)) return { tsType: 'number', dbType: 'BIGINT' };
           if (/\bBigInt\b/i.test(ctor)) return { tsType: 'bigint', dbType: 'BIGINT' };
 
+          // `decimal` is three classes, one per mode, and the arm below matched all three and
+          // called every one a number. Read back through `db.select()` from a real MySQL 8.4.11
+          // over mysql2, on a `decimal(10,2)` holding '1234.56' and a `decimal(20,0)` holding
+          // '9007199254740993':
+          //
+          //   MySqlDecimal        (default, mode:'string')   '1234.56'          string
+          //   MySqlDecimalNumber  (mode:'number')            1234.56            number
+          //   MySqlDecimalBigInt  (mode:'bigint')            9007199254740993n  bigint
+          //
+          // Official drizzle-zod 0.8.3 accepts the same three types on the same three columns,
+          // and refuses the other two on each. So two of the three used to reject every row the
+          // database returns, and the number mode is right and must stay a number: a fix told
+          // only "decimal is a string" would break the one mode that worked.
+          //
+          // The mode is a suffix on the class name, so it is read as one. A `MySqlDecimal` that
+          // is neither is the string mode, which is what `decimal()` with no mode builds.
+          if (/Decimal/i.test(ctor)) {
+            if (/DecimalNumber$/.test(ctor)) return { tsType: 'number', dbType: 'NUMERIC' };
+            if (/DecimalBigInt$/.test(ctor)) return { tsType: 'bigint', dbType: 'NUMERIC' };
+            return { tsType: 'string', dbType: 'NUMERIC' };
+          }
+
           // Numeric/real numbers
-          if (/Decimal|Numeric|Float|Double|Real/i.test(ctor))
+          if (/Numeric|Float|Double|Real/i.test(ctor))
             return { tsType: 'number', dbType: 'NUMERIC' };
 
           // Integer family
@@ -1279,8 +1318,18 @@ export class SchemaAnalyzer {
           if (/BigInt64/i.test(ctor)) return { tsType: 'bigint', dbType: 'BIGINT' };
           if (/BigInt53/i.test(ctor)) return { tsType: 'number', dbType: 'BIGINT' };
 
+          // As MySQL above. SingleStore ships the same three classes, declaring the same three
+          // `data` types and defining the same three `mapFromDriverValue`s, and it is MySQL wire
+          // compatible; there is no in-process SingleStore to read a row back from, so MySQL's
+          // measurement is what stands behind this one.
+          if (/Decimal/i.test(ctor)) {
+            if (/DecimalNumber$/.test(ctor)) return { tsType: 'number', dbType: 'NUMERIC' };
+            if (/DecimalBigInt$/.test(ctor)) return { tsType: 'bigint', dbType: 'NUMERIC' };
+            return { tsType: 'string', dbType: 'NUMERIC' };
+          }
+
           // Numeric/real numbers
-          if (/Decimal|Numeric|Float|Double|Real/i.test(ctor))
+          if (/Numeric|Float|Double|Real/i.test(ctor))
             return { tsType: 'number', dbType: 'NUMERIC' };
 
           // Integer family
