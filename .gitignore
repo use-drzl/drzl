@@ -28,3 +28,14 @@ packages/*/test/.cmd-tmp
 # up until a new spec picked a directory nobody had added to it: 22 generated modules landed in a
 # merged commit, carrying a pid in the filename so they could never even be overwritten.
 packages/*/test/.tmp-*
+
+# Agent worktrees. Claude Code creates isolated checkouts here for parallel work.
+.claude/worktrees/
+
+# Scratch copies of a script, left in place when a run is interrupted. A killed reviewer left three
+# 440KB copies of verify-packed.sh sitting in scripts/, none of them ignored and all of them
+# committable. Same failure as the enumerated test-tmp list above: the leak lands where nobody
+# thought to look, so match a shape rather than a name.
+scripts/*-rr[0-9]*.sh
+scripts/*.tmp.sh
+scripts/vp-*.sh
