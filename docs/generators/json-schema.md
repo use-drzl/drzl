@@ -110,6 +110,40 @@ nothing pretends to enforce it:
 The four validation generators do enforce these. See
 [the ArkType generator](/generators/arktype) or [the valibot generator](/generators/valibot).
 
+### A byte budget
+
+MySQL's TEXT family is capped by the type in **bytes**, not by a declared length in characters:
+`tinytext` holds 255 bytes, `text` 65535, `mediumtext` 16777215, `longtext` 4294967295. No draft of
+JSON Schema has a byte-length keyword, and an invented one is not a constraint: a strict validator
+refuses to compile it and a lax one ignores it.
+
+So the budget is emitted as `maxLength`, which counts characters, with the part it cannot carry
+written beside it:
+
+```json
+{
+  "type": "string",
+  "maxLength": 255,
+  "description": "At most 255 bytes of UTF-8, which JSON Schema has no keyword for. maxLength counts characters: it refuses nothing the column accepts, and a string of multi-byte characters can satisfy it and still be too long for the column."
+}
+```
+
+UTF-8 spends at least one byte per character, so that cap **never refuses a value the column
+accepts**, and it catches every overflow made of one-byte characters. What it cannot catch is a
+string that fits the character count and not the budget. Asked of a real MySQL 8 on utf8mb4, on a
+`tinytext` column:
+
+| Value | Bytes | Characters | MySQL | This schema |
+| --- | --- | --- | --- | --- |
+| 255 ascii | 255 | 255 | accepts | accepts |
+| 256 ascii | 256 | 256 | refuses | refuses |
+| 63 emoji | 252 | 63 | accepts | accepts |
+| 64 emoji | 256 | 64 | refuses | accepts |
+
+The four validation generators encode the string and count the bytes, so they get the last row
+right. `varchar(n)` is genuinely characters in the same database and is unaffected: it keeps
+`maxLength` from its declared length.
+
 ## Values as they survive JSON
 
 The schema describes the value **after** `JSON.stringify`, which is not always what the TypeScript

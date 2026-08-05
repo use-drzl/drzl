@@ -133,6 +133,7 @@ function baseSchema(
       if (c.format === 'uuid') out.format = UUID_FORMAT;
       else if (c.format && COLUMN_FORMATS[c.format]) out.pattern = COLUMN_FORMATS[c.format];
       if (c.maxLength !== undefined) out.maxLength = c.maxLength;
+      applyByteCap(out, c);
       applyLengths(out, c, lengths);
       return out;
     }
@@ -155,6 +156,46 @@ function baseSchema(
     default:
       return {};
   }
+}
+
+/**
+ * A byte budget, as the strongest thing this format can say about one.
+ *
+ * MySQL's TEXT family is capped by the type in bytes rather than by a declared length in
+ * characters, so the analyzer carries it as `maxBytes` and the four validation generators encode
+ * the string and count the result. There is no keyword for that here. No draft has a byte length,
+ * and inventing one is worse than saying nothing: ajv in strict mode throws on `maxBytes`, and
+ * with strict mode off it ignores the keyword and takes a thousand byte string into a 255 byte
+ * column, which is a document that looks enforced and is not.
+ *
+ * `maxLength` counts characters, which is a different measurement of the same string. It is a
+ * true statement about a byte budget in one direction only: UTF-8 spends at least one byte per
+ * character, so a string inside the budget is always inside a character cap of the same number.
+ * The cap emitted here therefore refuses nothing the column accepts, and it catches every
+ * overflow made of one-byte characters. It cannot catch a multi-byte string that fits the count
+ * and not the budget, so that is written into `description` rather than left unsaid.
+ *
+ * Measured against a real MySQL 8 on utf8mb4 in STRICT_TRANS_TABLES, on `TINYTEXT`, over the same
+ * 150 seeded random strings before and after. Made of one-byte characters, the uncapped document
+ * took 20 strings the server refused and the capped one takes none. Made of mixed one, two, three
+ * and four byte characters, 88 becomes 68: what is left is the part the paragraph above says
+ * cannot be expressed. Neither document refused anything the server took.
+ * `test/byte-caps.spec.ts` has the targeted probes.
+ *
+ * The minimum rather than an assignment, so the smaller of the two caps a column carries is the
+ * one that survives. The two forms agree on every column the analyzer produces today, and not by
+ * luck: where a declared length and a byte budget arrive together the budget is the smaller of
+ * them or equal to it, which `scripts/verify-packed.sh` asserts per column on both drizzle-orm
+ * majors. The test asserting this one uses a column with a smaller character limit, where
+ * assignment would widen the cap and take an eleventh character.
+ *
+ * Before `applyLengths`, so a `CHECK (length(col) <= n)` narrower than the budget still wins:
+ * that one is reachable from a real schema, and it is asserted too.
+ */
+function applyByteCap(out: Schema, c: Column) {
+  if (!c.maxBytes) return;
+  out.maxLength = Math.min(Number(out.maxLength ?? Infinity), c.maxBytes);
+  out.description = `At most ${c.maxBytes} bytes of UTF-8, which JSON Schema has no keyword for. maxLength counts characters: it refuses nothing the column accepts, and a string of multi-byte characters can satisfy it and still be too long for the column.`;
 }
 
 /** `length(col) >= n` as `minLength` and `maxLength`, which count characters as SQL does. */

@@ -365,6 +365,28 @@ const TUPLE_CLASS_SHAPES: Record<string, ColumnShape> = {
 };
 
 /**
+ * Column families that arrived with Drizzle v1 and exist on no earlier release, by
+ * `drizzle:entityKind`.
+ *
+ * The third v1 marker, after the `codec` and the semantic half of `dataType`. Both of those are
+ * properties of a column, and mssql and cockroach columns have neither: swept across every column
+ * builder the two cores export, 22 and 27 of them, **not one states a codec**, and thirteen state
+ * a bare `dataType` with no semantic half either (`bit` says `boolean`; `varchar`, `nvarchar`,
+ * `char`, `nchar`, `text`, `ntext`, `string` all say `string`). Those thirteen are exactly the two
+ * dialects' boolean and string families, and they were indistinguishable from a 0.4x column, so
+ * every one of them fell to the class-name path, which has arms for Pg, MySql, SingleStore and Gel
+ * and none for these two, and came back `unknown`.
+ *
+ * The class name is the marker of last resort here rather than the first choice, and it is sound
+ * for exactly these two: `mssql-core` and `cockroach-core` ship only on v1. Checked rather than
+ * assumed, by grepping the whole installed 0.45.2 package: the strings `MsSql` and `Cockroach`
+ * appear in none of its files, so no 0.4x column can reach this.
+ *
+ * `drizzle:entityKind` rather than `constructor.name`, because it survives minification.
+ */
+const V1_ONLY_ENTITY_KINDS = /^(?:MsSql|Cockroach)/;
+
+/**
  * Everything Drizzle v1 states about a column outright, or `null` on an older Drizzle.
  *
  * v1 stamps each column with a `dataType` of the form `"<js type> <semantic>"` (`"number
@@ -393,12 +415,17 @@ export function describeV1Column(column: any): Partial<Column> | null {
     };
   }
 
+  const entityKind = String(column?.constructor?.[Symbol.for('drizzle:entityKind')] ?? '');
   const [js, semantic = ''] = dataType.split(' ');
   // SQLite columns carry a `dataType` but no `codec` at all, so gating on the codec alone left
   // the whole dialect on the class-name path: its json text and blob modes stayed `any`, its
   // buffer mode stayed `unknown`, and its bigint blob mode lost its range. A semantic half is
   // just as good a v1 marker, since 0.4x spells every dataType as a single bare word.
-  if (typeof codec !== 'string' && !semantic) return null;
+  //
+  // mssql and cockroach state neither, on their boolean and string families, so the two markers
+  // above left thirteen columns looking exactly like 0.4x ones. Their class names are the third
+  // marker; see `V1_ONLY_ENTITY_KINDS`.
+  if (typeof codec !== 'string' && !semantic && !V1_ONLY_ENTITY_KINDS.test(entityKind)) return null;
 
   const out: Partial<Column> = {};
 
@@ -449,21 +476,33 @@ export function describeV1Column(column: any): Partial<Column> | null {
       break;
     case 'float':
     case 'double': {
-      // Only the 4 byte width has a magnitude the database will refuse, and the two databases that
-      // have one refuse at different values, so the codec picks which. `float4` is Postgres's
-      // spelling and `float` is MySQL's. Three dialects state `number float` with no codec at all
-      // on 1.0.0-rc.4, measured: SingleStore, Cockroach and MSSQL. All three land on MySQL's bound
-      // by falling through, which is right for SingleStore and matches the answer its class-name
-      // entry gives on 0.4x, and is **wrong for Cockroach**, whose `real` is a Postgres `FLOAT4`
-      // over the Postgres wire. That is filed rather than fixed: Cockroach and MSSQL lose whole
-      // type families to `unknown` today, so a bound is not the defect worth fixing first, and
-      // neither dialect has a fixture in any gate that would prove a fix. The cross-major diff is
-      // what holds SingleStore's two answers together.
+      // Only the 4 byte width has a magnitude the database will refuse, and the databases that
+      // have one do not put the edge in the same place, so the codec picks which. `float4` is
+      // Postgres's spelling and `float` is MySQL's. Three dialects state `number float` with no
+      // codec at all on 1.0.0-rc.4, measured: SingleStore, Cockroach and MSSQL, so each needs
+      // deciding on something else.
+      //
+      // SingleStore and MSSQL take MySQL's, which is where falling through already put them.
+      // SingleStore is MySQL wire-compatible and matches the answer its class-name entry gives on
+      // 0.4x, which the cross-major diff holds together. MSSQL was measured on SQL Server 2022:
+      // a `real` column stores 3.4028234663852886e38, the largest finite float32 and MySQL's exact
+      // edge, and refuses the next candidate up with "Arithmetic overflow error for type real".
+      //
+      // Cockroach takes Postgres's, and falling through was wrong for it. `information_schema`
+      // reports its `real` as crdb_sql_type FLOAT4 and it speaks the Postgres wire protocol, so it
+      // inherits the Postgres defect this file already records at PG_FLOAT4_RANGE: measured on
+      // v24.3, inserting the largest finite float32 makes the column hand back 3.4028235e+38,
+      // which is a *larger* double, so a schema bounded at MySQL's edge refused a row the column
+      // had just returned. It does not refuse a magnitude at all, saturating to infinity instead,
+      // which no finite range can describe either way; the bound is set by what comes back.
       //
       // Both majors take the same answer here on purpose: the bound moved off `drizzle-orm/zod`'s
       // and onto the database's, and moving one major without the other is what that diff catches.
       if (semantic === 'float')
-        [out.min, out.max] = codec === 'float4' ? PG_FLOAT4_RANGE : MYSQL_FLOAT_RANGE;
+        [out.min, out.max] =
+          codec === 'float4' || entityKind.startsWith('Cockroach')
+            ? PG_FLOAT4_RANGE
+            : MYSQL_FLOAT_RANGE;
       out.integer = false;
       out.tsType = 'number';
       out.dbType = semantic === 'float' ? 'REAL' : 'DOUBLE';
@@ -635,15 +674,61 @@ function declaredLength(column: any): number | undefined {
   return typeof n === 'number' && Number.isFinite(n) && n > 0 ? n : undefined;
 }
 
-/** `getSymbol` as a free function, for the readers that live outside the class. */
-function getSymbolOf(target: any, key: string): unknown {
-  if (!target) return undefined;
+/**
+ * The three lookups a view answers on drizzle-orm 1.0.0 and on no 0.x release, and the field of
+ * `drizzle:ViewBaseConfig` each one comes from.
+ *
+ * On 1.0.0 `View` declares `drizzle:Name`, `drizzle:Schema` and `drizzle:Columns` as prototype
+ * getters over its `drizzle:ViewBaseConfig`, so a view answers all three exactly as a table does.
+ * On 0.x those getters do not exist and the config is the only place a view's columns and name
+ * are recorded, so every one of the three comes back undefined and a view looks like nothing.
+ *
+ * Probed with a fresh install of each: all three undefined on 0.29.5, 0.33.0, 0.36.4, 0.39.3,
+ * 0.44.7, 0.45.0 and 0.45.2, all three answered on 1.0.0-beta.1, beta.24, rc.1 and rc.4. The
+ * config itself is an own symbol on all eleven.
+ */
+const VIEW_CONFIG_FIELDS: Record<string, string> = {
+  'drizzle:Columns': 'selectedFields',
+  'drizzle:Name': 'name',
+  'drizzle:Schema': 'schema',
+};
+
+/** An own symbol by description. Separate from `getSymbolOf` so the view fallback cannot recur. */
+function ownSymbolOf(target: any, key: string): unknown {
   try {
     for (const sym of Object.getOwnPropertySymbols(target)) {
       if ((sym as any).description === key) return (target as any)[sym];
     }
   } catch {}
-  return (target as any)[Symbol.for(key)];
+  return undefined;
+}
+
+/** `getSymbol` as a free function, for the readers that live outside the class. */
+function getSymbolOf(target: any, key: string): unknown {
+  if (!target) return undefined;
+  const own = ownSymbolOf(target, key);
+  if (own !== undefined) return own;
+  const direct = (target as any)[Symbol.for(key)];
+  if (direct !== undefined) return direct;
+  // A 0.x view, whose columns and name are only in its config.
+  const field = VIEW_CONFIG_FIELDS[key];
+  if (!field) return undefined;
+  const cfg = ownSymbolOf(target, 'drizzle:ViewBaseConfig') as any;
+  return cfg ? cfg[field] : undefined;
+}
+
+/**
+ * Whether an export is a Drizzle view, of any dialect and on either major.
+ *
+ * Asked of `drizzle:ViewBaseConfig` rather than of `drizzle:IsDrizzleView`, which reads like the
+ * obvious question and is not there to be asked: the marker was introduced in 0.39.0, and a view
+ * built on 0.29.5, 0.33.0 or 0.36.4 answers undefined to it. The config is an own symbol on all
+ * eleven releases probed and on every view form measured, on both majors: the query-builder and
+ * explicit-column-list forms of pg view, pg materialized view, mysql view and sqlite view,
+ * `.existing()`, and the schema-qualified pg view and materialized view.
+ */
+export function isDrizzleView(val: any): boolean {
+  return !!val && typeof val === 'object' && !!getSymbolOf(val, 'drizzle:ViewBaseConfig');
 }
 
 /**
@@ -728,16 +813,9 @@ export class SchemaAnalyzer {
   constructor(private readonly schemaPath: string) {}
 
   private getSymbol(table: any, key: string) {
-    if (!table) return undefined;
-    try {
-      const syms = Object.getOwnPropertySymbols(table);
-      for (const s of syms) {
-        if ((s as any).description === key) {
-          return (table as any)[s];
-        }
-      }
-    } catch {}
-    return (table as any)[Symbol.for(key)];
+    // One resolver rather than two identical ones, so a fallback added to either is reached by
+    // every caller of both.
+    return getSymbolOf(table, key);
   }
 
   /**
@@ -1329,12 +1407,46 @@ export class SchemaAnalyzer {
           // Bytes
           if (/Bytes/i.test(ctor)) return { tsType: 'Uint8Array', dbType: 'BLOB' };
 
+          // Boolean. There was no case for one at all, so `GelBoolean` fell off the end of this
+          // arm to `unknown` and every generator emitted a field that refused nothing: measured
+          // through the emitted zod schema, a `boolean()` column accepted 'yes', 12345 and
+          // { a: 1 }. A live Gel 7.1 hands back a JS `true`.
+          if (/Bool/i.test(ctor)) return { tsType: 'boolean', dbType: 'BOOLEAN' };
+
           // Temporal and calendar types
           if (/TimestampTz/i.test(ctor)) return { tsType: 'Date', dbType: 'TIMESTAMPTZ' };
-          if (/Timestamp/i.test(ctor)) return { tsType: 'string', dbType: 'TIMESTAMP' };
-          if (/LocalDateString|LocalTime/i.test(ctor)) return { tsType: 'string', dbType: 'TEXT' };
-          if (/DateDuration|RelDuration|Duration/i.test(ctor))
-            return { tsType: 'string', dbType: 'TEXT' };
+
+          // The `cal::` and duration family, whose value is an instance of a class from the
+          // `gel` package. These said `string`, which the server refuses in both directions.
+          //
+          // Measured on a live Gel 7.1 (`geldata/gel:7`) through `drizzle-orm/gel` 0.45.2 on
+          // `gel@2.2.0`, one row written and read back:
+          //
+          //   column        gel-core declares        SELECT returns      INSERT accepts
+          //   timestamp     data: LocalDateTime      LocalDateTime       LocalDateTime
+          //   localDate     data: LocalDate          LocalDate           LocalDate
+          //   localTime     data: LocalTime          LocalTime           LocalTime
+          //   dateDuration  data: DateDuration       RelativeDuration    DateDuration
+          //   relDuration   data: RelativeDuration   RelativeDuration    RelativeDuration
+          //   duration      data: Duration           RelativeDuration    Duration
+          //
+          // The bottom two lines are the server contradicting drizzle's own `.d.ts`, and the
+          // server is the arbiter. A string was rejected outright on insert by all six and
+          // returned by none.
+          //
+          // `unknown` rather than a class name: DRZL cannot import `gel`, so no generator can
+          // emit a check for these, and a tsType no generator handles would also lose the
+          // `DRZL_ANL_UNKNOWN_COLUMN` warning, which fires on `unknown` and carries
+          // `getSQLType()`. Saying nothing and saying so is the honest answer; saying `string`
+          // was a guess that turned every one of these columns into a validator that rejected
+          // every row.
+          //
+          // This arm returns what falling off the end of the block returns, verified by deleting
+          // it and rerunning `gel-types.spec.ts` and `uncovered-dialects.spec.ts`, both of which
+          // stayed green. It is here so the six read as measured and decided rather than
+          // forgotten, which is how they came to be `string`.
+          if (/Timestamp|LocalDateString|LocalTime|DateDuration|RelDuration|Duration/i.test(ctor))
+            return { tsType: 'unknown', dbType: 'UNKNOWN' };
         }
         return { tsType: 'unknown', dbType: 'UNKNOWN' };
     }
@@ -1666,6 +1778,8 @@ export class SchemaAnalyzer {
     const enums: Enum[] = [];
     // Enums seen on a column, resolved against the exported ones once the loop below ends.
     const columnEnums: Enum[] = [];
+    // Views, held aside for the read-only pass that runs once the dialect is known.
+    const viewTables: Table[] = [];
 
     // Identify table-like exports by presence of Drizzle symbols
     for (const [name, val] of Object.entries(exportsObj)) {
@@ -1674,6 +1788,7 @@ export class SchemaAnalyzer {
         if (cols && typeof cols === 'object') {
           const table = this.analyzeTable(name, val, issues);
           tables.push(table);
+          if (isDrizzleView(val)) viewTables.push(table);
 
           // Enum capture is deliberately outside any relations guard. It used to sit inside
           // `if (opts.includeRelations)`, so a caller that only wanted tables silently lost
@@ -1751,7 +1866,13 @@ export class SchemaAnalyzer {
     let dialect: Dialect = 'unknown';
     const marks = new Set<string>();
     for (const [_, val] of Object.entries(exportsObj)) {
-      const cols = (val as any)?.[Symbol.for('drizzle:Columns')];
+      // Through the resolver, not `val[Symbol.for('drizzle:Columns')]`. This loop read the
+      // symbol itself, so it was the one site a fallback added to the resolver did not reach.
+      // Measured with the resolver fixed and this line left as it was, on a file of nothing but
+      // pg views: both views analysed, `dialect: unknown`, and a DRZL_ANL_DIALECT warning whose
+      // hint does not apply. The columns keep their types either way, since `analyzeTable` reads
+      // each column object and never consults the dialect.
+      const cols = this.getSymbol(val, 'drizzle:Columns');
       if (!cols) continue;
       for (const c of Object.values(cols) as any[]) {
         const kind = c?.constructor?.[Symbol.for('drizzle:entityKind')] as string | undefined;
@@ -1770,6 +1891,23 @@ export class SchemaAnalyzer {
     else if (/MySql|Mysql/i.test(names)) dialect = 'mysql';
     else if (/Pg|Postgres/i.test(names)) dialect = 'postgres';
     else if (/Gel/i.test(names)) dialect = 'gel';
+
+    // SQLite refuses every write to a view, so an insert or update schema for one describes an
+    // operation the database will always refuse. Measured with node:sqlite: insert, update and
+    // delete against a plain `create view` all fail with "cannot modify <name> because it is a
+    // view". That is the same argument `isReadOnlyRelation` already makes for a materialized
+    // view, and it holds for every SQLite view rather than for one construction of one.
+    //
+    // Only SQLite. Postgres and MySQL both accept a write to a simple auto-updatable view, and
+    // whether a given view qualifies depends on its query rather than on anything the schema
+    // file states.
+    //
+    // Decided here rather than in `isReadOnlyRelation` because the dialect is a fact about the
+    // schema and not about the export: a view selecting nothing but `sql` aliases carries no
+    // column that names a dialect, so asking the export alone gets no answer for it.
+    if (dialect === 'sqlite') {
+      for (const view of viewTables) view.readOnly = true;
+    }
 
     // No guessing from column storage classes. That fallback asked "does any column look like a
     // SQLite type", and every unrecognised column returns dbType UNKNOWN while the `/At$/`
