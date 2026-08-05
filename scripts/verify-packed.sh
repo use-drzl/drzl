@@ -1156,7 +1156,7 @@ export type Lib = { field: (s: any, k: string) => any; ok: (f: any, x: unknown) 
  *   the property carries Symbol(TypeBox.Kind) and Symbol(TypeBox.Optional)
  *   Value.Check(objectSchema, {}) with the key omitted   true
  *   Value.Check(property, undefined)                     false
- *   deleting Symbol(TypeBox.Optional) from the property  changes 0 of 58 pool verdicts
+ *   deleting Symbol(TypeBox.Optional) from the property  changes no pool verdict at all
  *
  * So on TypeBox, and only on TypeBox, a required field and an optional one compare identically on
  * every probe. That is not a fear, it is a demonstrated exploit, run both ways: stripping every
@@ -1717,9 +1717,9 @@ const recordThrow = (key: string, side: string, mode: string, value: string) => 
  * took the whole pool, how many official refused and exactly which ones it did not, and the two
  * `has it, omits it` strings say one side produced no field at all. That first one carries both a
  * count and a complement because each without the other is a shape: with neither, official
- * narrowing from 56 rejections to 2 left the signature unmoved; with the count alone, official
- * swapping which probes it refuses left it unmoved at the same 56. Both holes were measured on the
- * 0.4x pass, where the six columns in that state live. All three are what the run produces in
+ * narrowing its rejections to two left the signature unmoved; with the count alone, official
+ * swapping which probes it refuses left it unmoved at an unchanged count. Both holes were measured
+ * on the 0.4x pass, where the columns in that state live. All three are what the run produces in
  * those states, and no waiver declares any of them today, since no waived column on this major is
  * untyped or missing on one side. They are the shape a future one would take, not a claim about
  * the current list.
@@ -1751,9 +1751,13 @@ const WRITE = ['insert', 'update'];
 
 // A signature for a column DRZL accepts every probe of, stated as the count of official's
 // rejections plus the exact set it accepts instead. The complement is what makes it a set rather
-// than a shape, and it is one to three labels where the list it replaces is 55 to 57. See the
-// fuller note on the same constant in the 0.4x pass below, which is where the six columns in that
-// state live; no waiver in this pass is in that state today.
+// than a shape, and it is a handful of labels where the list it replaces is nearly the whole pool.
+// See the fuller note on the same constant in the 0.4x pass below, which is where the columns in
+// that state live.
+//
+// How many columns use it is printed by each run rather than written down here. Six sentences in
+// this file carried that number and one carried the length of the list it replaces, and adding
+// five pool values made all seven wrong in one edit, which is the argument for deriving it.
 const allProbes = (n: number, accepted: string[]) =>
   `every probe official rejects (${n} of them), and official accepts only: ` +
   (accepted.length ? accepted.join(', ') : 'nothing in the pool');
@@ -2910,9 +2914,18 @@ for (const [key, e] of Object.entries(THREW)) {
 const looserSide = (e: { divergence: Record<string, string> }) =>
   Object.values(e.divergence).some((s) => s.split('|')[0].replace(/^L:/, '').trim() !== '');
 const looserWaivers = Object.values(ALLOWED).filter(looserSide).length;
+// How many waivers state their divergence as a rejection count plus a complement rather than as a
+// list, read off the declarations. Six sentences in this file used to carry that number and the
+// length of the list it replaces; adding five pool values made all of them wrong in one edit, so it
+// is computed here instead. Zero on this pass today, and the line says so rather than a comment.
+const SHORTHAND = /^every probe official rejects \((\d+) of them\), and official accepts only: (.*)$/;
+const shorthandCols = Object.entries(ALLOWED)
+  .filter(([, e]) => Object.values(e.divergence).some((d) => SHORTHAND.test(d)))
+  .map(([k]) => k);
 console.log(
   `    ${Object.keys(ALLOWED).length} documented divergence(s), ${looserWaivers} of them with ` +
-    `DRZL accepting something official refuses`
+    `DRZL accepting something official refuses, ${shorthandCols.length} stated as a rejection ` +
+    `count and a complement${shorthandCols.length ? `: ${shorthandCols.join(', ')}` : ''}`
 );
 
 // A waiver that suppresses nothing is not harmless. It is a sentence claiming a divergence exists
@@ -6055,13 +6068,12 @@ type Entry = {
    * A signature is `L: <labels DRZL accepts and official refuses> | T: <the other way>`, in pool
    * order, and it has to match what the run measured character for character.
    * `every probe official rejects (N of them), and official accepts only: <labels>` states the
-   * same set from the other end, for the six columns DRZL accepts the whole pool of: the
-   * divergence is exactly official's rejections, N is how many those are, and the labels are the
-   * complement, which is one to three where the list they replace is 55 to 57. Naming the
-   * complement is what makes it a set. The count on its own was a shape, measured: with
-   * `c_vector` changed from `vector({ dimensions: 3 })` to `dimensions: 2`, official refuses
-   * `[1,2,3]` and accepts `[1,2]`, which is the opposite behaviour at the same count of 56, and
-   * the stage was green.
+   * same set from the other end, for the columns DRZL accepts the whole pool of: the divergence is
+   * exactly official's rejections, N is how many those are, and the labels are the complement,
+   * which is a handful where the list they replace is nearly the whole pool. Naming the complement
+   * is what makes it a set. The count on its own was a shape, measured: with `c_vector` changed
+   * from `vector({ dimensions: 3 })` to `dimensions: 2`, official refuses `[1,2,3]` and accepts
+   * `[1,2]`, which is the opposite behaviour at an unchanged count, and the stage was green.
    *
    * This replaced a `direction` field, which named only which way the disagreement ran. That
    * closed a reversal and nothing else, and three sabotages walked through it: capping `c_char` at
@@ -6086,23 +6098,24 @@ type Entry = {
 
 /**
  * A signature for a column DRZL accepts every probe of: official's rejection count, plus the exact
- * set official accepts instead. Six columns are in that state, all six of them columns the
- * class-name path cannot name at all, and the alternative is a list of 55 to 57 labels written out
- * once per pairing group.
+ * set official accepts instead. The columns in that state are the ones the class-name path cannot
+ * name at all, and the alternative is writing out nearly the whole pool once per pairing group.
+ * How many they are is printed by the run, off the ledgers themselves, rather than written here.
  *
  * Naming what official accepts names the divergence exactly, from the other end. DRZL accepted
  * every compared probe, so the probes that differ are exactly the ones official rejected, and that
- * is every compared probe except the ones listed here. One to three labels instead of 55 to 57.
+ * is every compared probe except the ones listed here: a handful of labels instead of nearly all
+ * of them.
  *
  * Both halves are here because each closed a hole the other left open, and both holes were live.
  *
  *   the count       the phrase alone pinned DRZL's side only. "DRZL accepts everything" fails the
  *                   moment DRZL stops accepting everything, but official was not mentioned, so
- *                   official narrowing from 57 rejections to 2 left the signature unmoved.
+ *                   official narrowing its rejections to two left the signature unmoved.
  *   the complement  the count pinned how many, not which. Measured: `c_vector` changed from
  *                   `vector({ dimensions: 3 })` to `dimensions: 2` in src/matrix.ts makes official
- *                   accept `[1,2]` and refuse `[1,2,3]`, the opposite behaviour, at the same count
- *                   of 57 on all 12 pairings. The stage exited 0 and went on printing "official
+ *                   accept `[1,2]` and refuse `[1,2,3]`, the opposite behaviour, at an unchanged
+ *                   count on all 12 pairings. The stage exited 0 and went on printing "official
  *                   emits an array of exactly 3 numbers". With the complement declared the same
  *                   edit exits 1 on all 12 pairings.
  *
@@ -6117,18 +6130,20 @@ type Entry = {
  *                                     `s.properties[k]`, where it is inert:
  *                                     `Value.Check(prop, undefined)` is false with
  *                                     `Symbol(TypeBox.Optional)` present on the property, and
- *                                     deleting that symbol changes 0 of 58 pool verdicts.
+ *                                     deleting that symbol changes no pool verdict at all.
  *   valibot on c_geometry             one fewer in every mode: official builds a `v.tuple`, which
  *                                     ignores extra items, so `[1,2,3]` and `[1,2,3,4]` both go
  *                                     into a 2-tuple and `[1,2,3]` is accepted alongside `[1,2]`.
- *   typebox on c_bit                  55 in all three modes, and not because it takes anything the
- *                                     other three refuse. Official's TypeBox schema throws on
- *                                     `null` and `undefined` for that column, so those two probes
- *                                     are not compared at all: they go to the THREW ledger and are
- *                                     arbitrated against a real Postgres. An earlier version of
- *                                     this note called it "TypeBox refuses two fewer probes",
- *                                     which reads as a rejection it never made, and which was also
- *                                     wrong about update, where the other three are at 56.
+ *   typebox on c_bit                  a count of its own in every mode, and not because it takes
+ *                                     anything the other three refuse. Official's TypeBox schema
+ *                                     throws on `null` and `undefined` for that column, so those
+ *                                     two probes are not compared at all: they go to the THREW
+ *                                     ledger and are arbitrated against a real Postgres. An
+ *                                     earlier version of this note said "TypeBox refuses two fewer
+ *                                     probes than the rest on `c_bit`", which reads as a rejection
+ *                                     it never made and was wrong about update as well. The
+ *                                     declarations below are the counts; no number is repeated
+ *                                     here, because the one that was went stale twice.
  */
 const allProbes = (n: number, accepted: string[]) =>
   `every probe official rejects (${n} of them), and official accepts only: ` +
@@ -6362,7 +6377,10 @@ const ALLOWED: Record<string, Entry> = {
  * Where DRZL is wrong on 0.4x, whichever way the difference runs.
  *
  * Not "looser than official", which is the neighbouring map's business as often as this one's:
- * ALLOWED above holds six columns where DRZL is looser and right, because the database says so.
+ * ALLOWED above holds columns where DRZL is looser and right, because the database says so, and
+ * the run prints how many of its entries run that way rather than a sentence here claiming a
+ * number. The sentence that used to stand here said six, and the nullable twins added since made
+ * it nine.
  * What puts an entry here is that DRZL's answer is wrong about the column.
  *
  * `filed: 'AC: ...'` names the fields the cross-major stage above already carries for the same
@@ -6646,10 +6664,12 @@ const DEFECTS: Record<string, Entry> = {
       // Not "typebox refuses more": official's TypeBox schema throws on `null` and `undefined`
       // here, so neither probe is compared in any mode and the THREW ledger holds both. How far
       // that moves the count is not stated here, because the declarations on these three lines are
-      // the count and a sentence beside them is one more thing that can go stale. Two attempts at
-      // that sentence already have, in this file, both of them saying "two lower in every mode":
-      // once on `pg/c_bit` above, where the `allProbes` docstring records the correction, and once
-      // here, where the fix for the first was copied without re-reading the numbers.
+      // the count and a sentence beside them is one more thing that can go stale.
+      //
+      // Two attempts at that sentence already have, and they said different things. The first, on
+      // `pg/c_bit` above, said "TypeBox refuses two fewer probes than the rest on `c_bit`", which
+      // reads as a rejection it never made. The second was written here, said "two lower in every
+      // mode", and was wrong about update. Neither number is repeated now, on either entry.
       '*/typebox': allProbes(60, ["'010'"]),
     },
     drzl: 'unknown, which accepts every value in the pool',
@@ -6859,7 +6879,7 @@ const safeField = (lib: Lib, s: any, k: string) => {
  *              run rather than believed. A real Postgres through PGlite wherever one runs for that
  *              dialect; and where none does, the reason, also computed.
  *
- * On this major `c_bit` is one of the six columns the analyzer cannot name, so DRZL takes every
+ * On this major `c_bit` is one of the columns the analyzer cannot name, so DRZL takes every
  * value including a NULL for a NOT NULL column, and takes the column being left out of the insert
  * as well. That is the filed defect DEFECTS[pg/c_bit] carries, and the arbitration prints a line
  * per probe saying so: the database refuses it, DRZL accepts it, and the map naming the column is
@@ -7274,8 +7294,8 @@ async function main() {
          *
          * Kept apart from the pool loop above rather than folded in as one more probe, because an
          * absence is not a value and every signature in both ledgers is a list of values. Folding
-         * it in would also move the `every probe official rejects` shorthand on the six columns
-         * that carry it, which is a statement about what the two schemas do with the pool.
+         * it in would also move the `every probe official rejects` shorthand on every column
+         * that carries it, which is a statement about what the two schemas do with the pool.
          */
         const oPres = askPresence(lib, official, Object.keys(oShape));
         const mPres = askPresence(lib, mine, Object.keys(oShape));
@@ -7371,12 +7391,35 @@ async function main() {
       `object to ask about (${Object.keys(PRESENCE_BARREN).join(', ')}); ` +
       `${Object.keys(PRESENCE).length} column(s) where the two disagree`
   );
+  // Which columns use the rejection-count shorthand, and how many probes each of them stands for,
+  // both read off the declarations. Four sentences in this docstring block used to write those
+  // numbers down and adding five pool values made every one of them wrong at once.
+  const SHORTHAND = /^every probe official rejects \((\d+) of them\), and official accepts only: (.*)$/;
+  const shorthand = [...Object.entries(ALLOWED), ...Object.entries(DEFECTS)].flatMap(([k, e]) =>
+    Object.values(e.divergence)
+      .map((d) => SHORTHAND.exec(d))
+      .filter((m): m is RegExpExecArray => m !== null)
+      .map((m) => ({
+        key: k,
+        rejected: Number(m[1]),
+        accepted: m[2] === 'nothing in the pool' ? 0 : m[2].split(', ').length,
+      }))
+  );
+  const shorthandCols = [...new Set(shorthand.map((x) => x.key))];
   console.log(
     `    ${Object.keys(ALLOWED).length} documented divergence(s), ${looserWaivers} of them with ` +
       `DRZL accepting something official refuses; ` +
       `${Object.keys(DEFECTS).length} known-defect column(s), ${filedAlready} already filed and ` +
       `${Object.keys(DEFECTS).length - filedAlready} first seen by this stage`
   );
+  if (shorthand.length) {
+    const span = (ns: number[]) => (Math.min(...ns) === Math.max(...ns) ? `${ns[0]}` : `${Math.min(...ns)} to ${Math.max(...ns)}`);
+    console.log(
+      `    ${shorthandCols.length} column(s) state their divergence as a rejection count and a ` +
+        `complement: ${span(shorthand.map((x) => x.rejected))} rejections against ` +
+        `${span(shorthand.map((x) => x.accepted))} label(s) named, which is why the shorthand exists`
+    );
+  }
   for (const [k, e] of Object.entries(DEFECTS)) {
     console.log(`      ${k}: DRZL emits ${e.drzl}, official emits ${e.official} [${e.filed}]`);
   }
