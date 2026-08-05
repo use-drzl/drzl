@@ -114,24 +114,23 @@ describe('SingleStore, against a real singlestoreTable', () => {
     expect(byName.get('payload')?.shape).toEqual({ kind: 'json' });
   });
 
-  it('DEFECT: types binary and varbinary as Uint8Array, and the driver returns a string', async () => {
-    // Not this task's to fix, and not specific to SingleStore: `mysql-types.spec.ts` and
-    // `sqlite-types.spec.ts` pin the same answer, and MySQL 0.4x behaves identically. It is
-    // recorded here because measuring the dialect and stating the truth was the task, and
-    // because this is a second reject-every-row case in the same measured spread.
-    //
-    // `SingleStoreBinary` and `SingleStoreVarBinary` both declare `data: string` and both
-    // define a `mapFromDriverValue` that turns the driver's Buffer into a string:
+  it('types binary and varbinary as the string the driver returns', async () => {
+    // This used to assert `Uint8Array` and was labelled DEFECT, which it was: the select schema
+    // accepted a Buffer and rejected the string in zod, valibot, arktype and typebox, so it
+    // rejected every row. `SingleStoreBinary` and `SingleStoreVarBinary` both declare
+    // `dataType: 'string'` and both define a `mapFromDriverValue` that decodes the driver's
+    // Buffer, verified by calling it:
     //
     //   mapFromDriverValue(Buffer.from('hi')) -> "hi"   (a string, not bytes)
     //
-    // Measured through the emitted schemas: the select schema accepts a Buffer and rejects
-    // the string in zod, valibot, arktype and typebox. The JSON Schema generator is the only
-    // one that accepts the real value, and only because it types every byte column as a
-    // string anyway.
+    // And end to end, over the MySQL wire protocol SingleStore speaks, on both drizzle majors:
+    // a row written as `<00 ff 41>` into a varbinary comes back as a 3 code point string with
+    // `instanceof Uint8Array` false.
     const { byName } = await columnsOf('real-singlestore', SINGLESTORE_SOURCE);
-    expect(byName.get('bin')?.tsType).toBe('Uint8Array');
-    expect(byName.get('vbin')?.tsType).toBe('Uint8Array');
+    expect(byName.get('bin')?.tsType).toBe('string');
+    expect(byName.get('vbin')?.tsType).toBe('string');
+    expect(byName.get('bin')?.shape).toEqual({ kind: 'byteString', length: 16 });
+    expect(byName.get('vbin')?.shape).toEqual({ kind: 'byteString', length: 32 });
   });
 
   it('carries the declared varchar and char lengths', async () => {
@@ -212,29 +211,21 @@ describe('SingleStore, against a real singlestoreTable', () => {
     expect(analysis.issues.some((i) => i.code === 'DRZL_ANL_UNKNOWN_COLUMN' && /"vec"/.test(i.message))).toBe(true);
   });
 
-  it('DEFECT: types every decimal mode as number, and only one of the three is a number', async () => {
-    // On drizzle 0.4x only. v1 gets all three right and is the reference for what a fix
-    // should produce.
+  it('types the default decimal mode as the string the driver returns', async () => {
+    // Was a DEFECT here: `/Decimal|Numeric|Float|Double|Real/i` matched all three mode classes
+    // and returned 'number' for each, so two of the three rejected every row.
     //
-    // `decimal` has three modes and the class-name arm cannot tell them apart, because
-    // `/Decimal|Numeric|Float|Double|Real/i` matches all three class names and returns
-    // 'number' for each. Measured through `mapFromDriverValue` on 0.4x, and through the real
-    // analyzer on v1:
+    //   mode          class                      driver returns   0.4x said   0.4x says
+    //   (default)     SingleStoreDecimal         '1.25' string    number      string
+    //   mode:'number' SingleStoreDecimalNumber   1.25   number    number      number
+    //   mode:'bigint' SingleStoreDecimalBigInt   125n   bigint    number      bigint
     //
-    //   mode          class                      driver returns   0.4x says   v1 says
-    //   (default)     SingleStoreDecimal         "1.25" string     number      string
-    //   mode:'number' SingleStoreDecimalNumber   1.25   number     number      number
-    //   mode:'bigint' SingleStoreDecimalBigInt   125n   bigint     number      bigint
-    //
-    // So two of the three reject every row. A fix told only "decimal should be a string"
-    // would break the number mode, which is correct today, and would still miss the bigint
-    // mode. MySQL 0.4x has the identical three classes and the identical problem, so this is
-    // shared with a covered dialect rather than specific to SingleStore.
-    //
-    // Only the default mode is in the fixture; the other two are recorded here because the
-    // fix has to cover all three and a one-column test would understate it.
+    // MySQL 0.4x ships the identical three classes and had the identical problem, and it is the
+    // dialect the row-by-row measurement was taken on, since there is no in-process SingleStore.
+    // All three modes on all four dialects that have them are pinned in `decimal-modes.spec.ts`,
+    // against those readings; this fixture carries the default mode alone.
     const { byName } = await columnsOf('real-singlestore', SINGLESTORE_SOURCE);
-    expect(byName.get('price')?.tsType).toBe('number');
+    expect(byName.get('price')?.tsType).toBe('string');
   });
 });
 
@@ -298,8 +289,9 @@ describe('Gel, against a real gelTable', () => {
     expect(ts('i53')).toBe('number');
     expect(ts('name')).toBe('string');
     expect(ts('b')).toBe('Uint8Array'); // bytes.d.ts     data: Uint8Array
-    // Gel's decimal really is a string, and here the analyzer gets it right where
-    // SingleStore's does not.
+    // Gel's decimal really is a string, and it is the one dialect that reached the right answer
+    // from the class name alone: `GelDecimal` has an arm of its own, where SingleStore's three
+    // mode classes shared one arm with the floats until that was split.
     expect(ts('dec')).toBe('string'); // decimal.d.ts   data: string
     expect(ts('tstz')).toBe('Date'); // timestamptz.d.ts data: Date
   });

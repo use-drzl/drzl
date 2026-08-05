@@ -148,15 +148,22 @@ The same rules apply, with each dialect's own widths:
 | MySQL `mediumint()`                     | `z.number().int().gte(-8388608).lte(8388607)`              |
 | MySQL `year()`                          | `z.number().int().gte(1901).lte(2155)`                     |
 | MySQL `serial()`                        | `z.number().int().gte(0)`, since it is unsigned            |
-| MySQL `text()`                          | `z.string().max(65535)`, the width the type itself implies |
-| MySQL `binary(4)`                       | `z.string().regex(/^[01]*$/).max(4)`                       |
+| MySQL `text()`                          | a string capped at 65535 **bytes**, the width the type implies |
+| MySQL `binary(4)`                       | a string, capped at 4 characters on select and 4 bytes on insert |
 | SQLite `blob({ mode: 'json' })`         | `z.json()`                                                 |
 | SQLite `blob({ mode: 'bigint' })`       | `z.bigint()` with the 64 bit range                         |
 | SQLite `integer({ mode: 'timestamp' })` | a date                                                     |
 
-MySQL's text and blob caps are byte counts and this is a character count, which is the same
-approximation `drizzle-orm/zod` makes: without knowing the column's charset it is the only one
-available. Postgres `text` has no cap and does not get one.
+MySQL's text and blob caps are byte counts. Postgres `text` has no cap and does not get one.
+
+A `binary(n)`/`varbinary(n)` is not a bit string, which is what an earlier release of this table
+said and what `drizzle-orm/zod` still emits on drizzle v1. Asked of MySQL 8.4 through drizzle on
+both majors: the column takes any bytes at all and hands them back as a string, so a `^[01]*$`
+pattern rejected every row. The two caps differ because the decode is lossy: `<ff ff ff>` out of a
+`varbinary(3)` is three characters that re-encode to nine bytes, so a byte cap on a select schema
+would refuse a row the column returned, while a `varbinary(8)` refuses three emoji, which is three
+characters and twelve bytes, so a character cap on an insert schema would promise a write the
+server refuses.
 
 ## Which columns appear on insert
 

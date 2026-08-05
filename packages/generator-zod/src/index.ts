@@ -185,7 +185,7 @@ function checkRefinements(c: Column, checks: ColumnCheck[]): string {
  * The string cases were the worst of the three: a `point` arrives as `[number, number]`, so the
  * emitted select schema rejected every row the database returned.
  */
-function shapeExpr(c: Column, typedJsonRef?: string): string | undefined {
+function shapeExpr(c: Column, mode: Mode, typedJsonRef?: string): string | undefined {
   const s = c.shape;
   if (!s) return undefined;
   switch (s.kind) {
@@ -223,12 +223,25 @@ function shapeExpr(c: Column, typedJsonRef?: string): string | undefined {
     case 'numberVector':
       return `z.array(z.number())${s.length ? `.length(${s.length})` : ''}`;
     case 'bitstring':
-      // `.length` for a Postgres `bit(n)`, `.max` for a MySQL `binary(n)`: the first is a fixed
-      // width, the second a ceiling, and `''` is valid only under the second.
+      // `.length` for a Postgres `bit(n)`, `.max` for a Cockroach `varbit(n)`: the first is a
+      // fixed width, the second a ceiling, and `''` is valid only under the second.
       return (
         'z.string().regex(/^[01]*$/)' +
         (s.length ? (s.exact ? `.length(${s.length})` : `.max(${s.length})`) : '')
       );
+    case 'byteString':
+      // A MySQL/SingleStore `binary(n)`/`varbinary(n)`, which holds bytes and returns a string.
+      // No pattern: the column takes any bytes at all, so `^[01]*$` rejected every row.
+      //
+      // The cap is the direction-dependent half. Measured against MySQL 8.4: a varbinary(3)
+      // holding `<ff ff ff>` returns 3 code points that re-encode to 9 UTF-8 bytes, so a byte cap
+      // on select refuses a row the column returned; and a varbinary(8) refuses 3 emoji, which is
+      // 3 code points and 12 bytes, so a character cap on insert accepts a write the server does
+      // not. Neither `.length` nor `.max` is either measurement: both count UTF-16 units.
+      if (!s.length) return 'z.string()';
+      return mode === 'select'
+        ? `z.string().refine((v) => [...v].length <= ${s.length}, { message: 'at most ${s.length} characters' })`
+        : `z.string().refine((v) => new TextEncoder().encode(v).length <= ${s.length}, { message: 'at most ${s.length} bytes' })`;
   }
 }
 
@@ -240,7 +253,7 @@ function zodExprForColumn(
   sets: ColumnSet[] = [],
   checks: ColumnCheck[] = []
 ): string {
-  const shaped = shapeExpr(c, typedJsonRef);
+  const shaped = shapeExpr(c, mode, typedJsonRef);
   if (shaped) return shaped;
   // `CHECK (status IN ('a', 'b'))` constrains the column to a set, which is what an enum is. It
   // takes the same shape here as a declared enum rather than becoming a predicate, so the static

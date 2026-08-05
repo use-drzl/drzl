@@ -2109,13 +2109,52 @@ const ALLOWED: Record<string, Waiver> = {
   'mysql/m_real': { libs: LIB_NAMES, modes: MODE_NAMES, why: 'as pg/c_double; MySQL REAL is a synonym for DOUBLE', divergence: { '*/zod,typebox': `L: 9007199254740993, 3.4028235e38 | T: `, '*/valibot,arktype': `L: 9007199254740993, 3.4028235e38, Infinity | T: ` } },
   'mysql/m_double': { libs: LIB_NAMES, modes: MODE_NAMES, why: 'as pg/c_double', divergence: { '*/zod,typebox': `L: 9007199254740993, 3.4028235e38 | T: `, '*/valibot,arktype': `L: 9007199254740993, 3.4028235e38, Infinity | T: ` } },
   'sqlite/s_real': { libs: LIB_NAMES, modes: MODE_NAMES, why: 'as pg/c_double; SQLite REAL is an 8 byte IEEE float', divergence: { '*/zod,typebox': `L: 9007199254740993, 3.4028235e38 | T: `, '*/valibot,arktype': `L: 9007199254740993, 3.4028235e38, Infinity | T: ` } },
-  // Official emits `Type.RegExp`, whose check runs `RegExp.prototype.test` against the raw value,
-  // and `test` stringifies what it is given: `[]` becomes '' and matches `^[01]*$`. So official
-  // accepts an empty array for a binary column. This generator emits a `string` carrying a
-  // `pattern`, which refuses a non-string before the pattern is consulted. Postgres masks the
-  // same hole on `c_bit` only because that column has a `minLength` an array cannot satisfy.
-  'mysql/typebox/m_binary': { libs: ['typebox'], modes: MODE_NAMES, why: 'official Type.RegExp accepts a non-string whose string form matches', divergence: { '*/*': `L:  | T: []` } },
-  'mysql/typebox/m_varbinary': { libs: ['typebox'], modes: MODE_NAMES, why: 'as mysql/typebox/m_binary', divergence: { '*/*': `L:  | T: []` } },
+  // ---- binary and varbinary, where official refuses rows the server returns --------------------
+  // Official emits `^[01]*$` capped at n for these columns on v1, which is a bit-string pattern on
+  // a column holding arbitrary bytes, so it rejects every ordinary string MySQL hands back. Asked
+  // of a live MySQL 8.4 through both majors: mysql2 hands up a Buffer and drizzle hands the
+  // CONSUMER a string, value for value identical, with `instanceof Uint8Array` false on all four
+  // builders. So DRZL emitting a plain string is the database's answer and official's pattern is
+  // the divergence.
+  //
+  // `T:` stays empty and `L:` carries the load. DRZL is looser here and right, which is the
+  // direction this ledger exists to record rather than forbid.
+  //
+  // Insert and update drop one value each against select, and that is the declared width doing its
+  // job rather than noise: '3 emoji' is 12 bytes over a `binary(4)` and '5 emoji' is 20 over a
+  // `varbinary(16)`, so DRZL refuses them on the way in and both sides agree.
+  //
+  // These were two typebox-only entries, because the `L:` half did not exist while DRZL emitted a
+  // Uint8Array and refused everything. Widening them to every library is what this change forces.
+  //
+  // The typebox-only reason SURVIVES, on the `T:` half, and a first draft of this comment claimed
+  // it had gone. The stage refuted that in one run: `L:` matched on all twelve pairings and typebox
+  // still measured `T: []`. Official emits `Type.RegExp`, whose check runs `RegExp.prototype.test`
+  // on the raw value, and `test` stringifies what it is given, so `[]` becomes '' and matches
+  // `^[01]*$`. DRZL emits a `string` carrying a `pattern` and refuses a non-string before the
+  // pattern is consulted. So typebox carries both halves and the other three carry only `L:`.
+  'mysql/m_binary': {
+    libs: LIB_NAMES,
+    modes: MODE_NAMES,
+    why: 'official emits a bit-string pattern for a byte column and refuses the strings MySQL returns',
+    divergence: {
+      'select/typebox': `L: 3 emoji, 'zzz', 'a', 'x', '12.5' | T: []`,
+      'select/zod,valibot,arktype': `L: 3 emoji, 'zzz', 'a', 'x', '12.5' | T: `,
+      'insert,update/typebox': `L: 'zzz', 'a', 'x', '12.5' | T: []`,
+      'insert,update/zod,valibot,arktype': `L: 'zzz', 'a', 'x', '12.5' | T: `,
+    },
+  },
+  'mysql/m_varbinary': {
+    libs: LIB_NAMES,
+    modes: MODE_NAMES,
+    why: 'as mysql/m_binary',
+    divergence: {
+      'select/typebox': `L: 'hello', 5-char, 3 emoji, 5 emoji, 'not-a-uuid', 'zzz', 'a', 'happy', 'x', '2020-01-01', '12:00:00', '25:99:99', '999.999.999.999', '10.0.0.1', '12.5' | T: []`,
+      'select/zod,valibot,arktype': `L: 'hello', 5-char, 3 emoji, 5 emoji, 'not-a-uuid', 'zzz', 'a', 'happy', 'x', '2020-01-01', '12:00:00', '25:99:99', '999.999.999.999', '10.0.0.1', '12.5' | T: `,
+      'insert,update/typebox': `L: 'hello', 5-char, 3 emoji, 'not-a-uuid', 'zzz', 'a', 'happy', 'x', '2020-01-01', '12:00:00', '25:99:99', '999.999.999.999', '10.0.0.1', '12.5' | T: []`,
+      'insert,update/zod,valibot,arktype': `L: 'hello', 5-char, 3 emoji, 'not-a-uuid', 'zzz', 'a', 'happy', 'x', '2020-01-01', '12:00:00', '25:99:99', '999.999.999.999', '10.0.0.1', '12.5' | T: `,
+    },
+  },
   // ---- the nullable table ---------------------------------------------------------------------
   // Every divergence below is the one its `notNull` twin in `matrix` already carries, measured
   // again through the wrapper each generator puts round a nullable column. That is the point: the
@@ -6536,6 +6575,21 @@ const ALLOWED: Record<string, Entry> = {
   'sqlite/s_n_json': { libs: ['valibot'], modes: MODE_NAMES, divergence: { '*/*': `L:  | T: Infinity, Date, Buffer, Uint8Array` }, drzl: 'as pg/c_json', official: 'as pg/c_json', filed: 'as pg/c_json' },
   'sqlite/s_n_ts': { libs: LIB_NAMES, modes: WRITE, divergence: { '*/zod': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', '12.5', '0101', '010', 17, 18, 50, 100, 101 | T: `, '*/valibot,arktype,typebox': `L: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010' | T: ` }, drzl: 'as pg/c_date_d', official: 'as pg/c_date_d', filed: 'as pg/c_date_d' },
   'sqlite/s_n_check': { libs: LIB_NAMES, modes: MODE_NAMES, divergence: { '*/*': `L:  | T: 0, 1, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, 17, 101` }, drzl: 'as pg/n_check', official: 'as pg/n_check', filed: 'as pg/n_check' },
+  // ---- binary and varbinary, where only DRZL enforces the declared width ----------------------
+  // These two were DEFECTS here until the analyzer stopped calling a byte string a Uint8Array. They
+  // are waivers now because DRZL is the stricter side and the server agrees with it.
+  //
+  // `L:` is empty in all twelve pairings, where it used to carry Buffer and Uint8Array: DRZL is no
+  // longer looser than official anywhere on this major. Official 0.4x emits a bare string with no
+  // cap at all, so every value in `T:` is one over the declared byte width that official takes and
+  // both DRZL and MySQL refuse.
+  //
+  // '3 emoji' on m_binary and '5 emoji' on m_varbinary sit in insert and update and not in select,
+  // which is the cap being direction-dependent rather than noise: 12 bytes does not fit a
+  // binary(4) and 20 does not fit a varbinary(16), while a value already in the column came from a
+  // server that had room for it.
+  'mysql/m_binary': { libs: LIB_NAMES, modes: MODE_NAMES, divergence: { 'select/*': `L:  | T: 'hello', 300-char, 70k-char, 5-char, 5 emoji, 'not-a-uuid', uuid, 'happy', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1'`, 'insert,update/*': `L:  | T: 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'happy', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1'` }, drzl: 'a string capped at the declared byte width', official: 'an uncapped string', filed: 'not a defect: DRZL is stricter here and the server agrees' },
+  'mysql/m_varbinary': { libs: LIB_NAMES, modes: MODE_NAMES, divergence: { 'select/*': `L:  | T: 300-char, 70k-char, uuid, '2020-01-01T00:00:00Z', 100 emoji, 22000 cjk`, 'insert,update/*': `L:  | T: 300-char, 70k-char, 5 emoji, uuid, '2020-01-01T00:00:00Z', 100 emoji, 22000 cjk` }, drzl: 'as mysql/m_binary', official: 'as mysql/m_binary', filed: 'as mysql/m_binary' },
 };
 
 /**
@@ -6691,62 +6745,16 @@ const DEFECTS: Record<string, Entry> = {
   },
 
   // ---- a wrong type on MySQL -----------------------------------------------------------------
-  // Both are the class-name path answering with the wrong JavaScript type rather than with
-  // nothing. `MySqlDecimal` is a string on both majors and DRZL calls it a number here; `binary`
-  // and `varbinary` are strings on both majors and DRZL calls them Uint8Array. Each shows up as
-  // DRZL refusing everything official takes and taking things official refuses.
-  'mysql/m_decimal': {
-    libs: LIB_NAMES,
-    modes: MODE_NAMES,
-    divergence: {
-      'insert/arktype': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 9007199254740993, 3.4028235e38, 1900, 2000, 2500, Infinity, 17, 18, 50, 100, 101 | T: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010'`,
-      'insert/typebox': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 9007199254740993, 3.4028235e38, 1900, 2000, 2500, 17, 18, 50, 100, 101 | T: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010'`,
-      'insert/valibot': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 9007199254740993, 3.4028235e38, 1900, 2000, 2500, Infinity, 17, 18, 50, 100, 101 | T: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010'`,
-      'insert/zod': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 9007199254740993, 3.4028235e38, 1900, 2000, 2500, 17, 18, 50, 100, 101 | T: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010'`,
-      'select/arktype': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 9007199254740993, 3.4028235e38, 1900, 2000, 2500, Infinity, 17, 18, 50, 100, 101 | T: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010'`,
-      'select/typebox': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 9007199254740993, 3.4028235e38, 1900, 2000, 2500, 17, 18, 50, 100, 101 | T: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010'`,
-      'select/valibot': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 9007199254740993, 3.4028235e38, 1900, 2000, 2500, Infinity, 17, 18, 50, 100, 101 | T: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010'`,
-      'select/zod': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 9007199254740993, 3.4028235e38, 1900, 2000, 2500, 17, 18, 50, 100, 101 | T: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010'`,
-      'update/arktype': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 9007199254740993, 3.4028235e38, 1900, 2000, 2500, NaN, Infinity, 17, 18, 50, 100, 101 | T: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010'`,
-      'update/typebox': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 9007199254740993, 3.4028235e38, 1900, 2000, 2500, 17, 18, 50, 100, 101 | T: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010'`,
-      'update/valibot': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 9007199254740993, 3.4028235e38, 1900, 2000, 2500, Infinity, 17, 18, 50, 100, 101 | T: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010'`,
-      'update/zod': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 9007199254740993, 3.4028235e38, 1900, 2000, 2500, 17, 18, 50, 100, 101 | T: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010'`,
-    },
-    drzl: 'a number',
-    official: 'a string',
-    filed: 'new: DRZL emits a string on v1, so the two majors disagree as well',
-  },
+  // The class-name path answering with the wrong JavaScript type rather than with nothing.
+  // `binary` and `varbinary` are strings on both majors and DRZL calls them Uint8Array, which
+  // shows up as DRZL refusing everything official takes and taking things official refuses.
+  //
+  // `MySqlDecimal` used to sit here as the second of two. It was fixed rather than waived: the
+  // analyzer now types each decimal mode as what the driver hands back, measured against a live
+  // MySQL 8.4. Its entry went with it, because a ledger entry that suppresses nothing fails this
+  // stage by design.
   // The two official majors do not agree about this column, so `official: a string` is only half
   // the picture and a reader needs the rest before acting on it. Measured on the column object and
-  // on both modules:
-  //
-  //                        0.4x                       v1
-  //   drizzle-orm          dataType 'string'          dataType 'string binary'
-  //   official validator   any string                 ^[01]*$ capped at the declared length
-  //   DRZL                 z.instanceof(Uint8Array)   the same capped string official v1 emits
-  //
-  // That settles which side is wrong without appealing to self-consistency: DRZL's 0.4x answer
-  // contradicts drizzle-orm's own declared `dataType` on the major it is measured on. Both
-  // wrong-direction repairs are already gated, so neither can be taken by accident: emitting
-  // `Uint8Array` on v1 breaks the v1 pass, and emitting `^[01]*$` on 0.4x breaks this one, since
-  // official 0.4x accepts 'zzz'.
-  'mysql/m_binary': {
-    libs: LIB_NAMES,
-    modes: MODE_NAMES,
-    divergence: { '*/*': `L: Buffer, Uint8Array | T: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010'` },
-    drzl: 'a Uint8Array',
-    official: "a bare string on 0.4x, where official v1 emits ^[01]*$ capped at 4",
-    filed: "new: drizzle-orm declares dataType 'string' on both majors",
-  },
-  'mysql/m_varbinary': {
-    libs: LIB_NAMES,
-    modes: MODE_NAMES,
-    divergence: { '*/*': `L: Buffer, Uint8Array | T: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010'` },
-    drzl: 'a Uint8Array',
-    official: "a bare string on 0.4x, where official v1 emits ^[01]*$ capped at 16",
-    filed: 'new: as mysql/m_binary',
-  },
-
   // ---- an integer range is missing or wrong on 0.4x ------------------------------------------
   // `sqlite/s_int` is three libraries rather than four, and the missing one is not an omission:
   // zod's `.int()` refuses a number outside the safe-integer range on its own, so zod reaches

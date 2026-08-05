@@ -81,7 +81,10 @@ export { table as things };
     expect(get('big53')).toBe('number');
     expect(get('big64')).toBe('bigint');
     expect(get('flag')).toBe('boolean');
-    expect(get('price')).toBe('number');
+    // `decimal()` with no mode builds a `SingleStoreDecimal`, and its driver value is a string.
+    // The other two mode classes are not in this hand-written list at all, which is why
+    // `decimal-modes.spec.ts` builds them from `singlestoreTable` instead.
+    expect(get('price')).toBe('string');
     expect(get('dbl')).toBe('number');
     expect(get('rl')).toBe('number');
     expect(get('name')).toBe('string');
@@ -94,8 +97,13 @@ export { table as things };
     expect(get('timeCol')).toBe('string');
     expect(get('yearCol')).toBe('number');
     expect(get('payload')).toBe('any');
-    expect(get('bin')).toBe('Uint8Array');
-    expect(get('vbin')).toBe('Uint8Array');
+    // The two the driver decodes for you. Asked of a server through drizzle on both majors: a
+    // `binary`/`varbinary` column hands the caller a string, so `Uint8Array` rejected every row.
+    expect(get('bin')).toBe('string');
+    expect(get('vbin')).toBe('string');
+    // `SingleStoreBlob` is this fixture's invention: singlestore-core exports no `blob` on 0.45.2,
+    // enumerated from the module's own exports. It stays on the coarse `/Blob/` arm, which nothing
+    // real reaches.
     expect(get('blob')).toBe('Uint8Array');
     expect(get('vec')).toBe('any');
   });

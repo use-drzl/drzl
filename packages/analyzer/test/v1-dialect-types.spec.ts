@@ -77,13 +77,15 @@ describe('the two meanings of "string binary"', () => {
     expect(describeV1Column(pgBit)?.shape).toEqual({ kind: 'bitstring', length: 3, exact: true });
   });
 
-  it('treats a MySQL binary as a ceiling, so the empty string is valid', () => {
-    // Sharing the Postgres arm made every MySQL binary column reject `''`, and anything that was
-    // not a run of 0s and 1s of exactly the declared width.
+  it('treats a MySQL binary as arbitrary bytes, which is not a bit string at all', () => {
+    // Sharing the Postgres arm made every MySQL binary column reject `''` and anything that was
+    // not a run of 0s and 1s. Loosening the width to a ceiling fixed the empty string and left
+    // the pattern, which still rejected every row the column returns: asked of MySQL 8.4 through
+    // drizzle 1.0.0-rc.4, a varbinary holding `<00 ff 41>` comes back as three code points that
+    // are not `0` or `1`. `binary-varbinary.spec.ts` carries the full measurement.
     expect(describeV1Column(my('string binary', 'varbinary', { length: 16 }))?.shape).toEqual({
-      kind: 'bitstring',
+      kind: 'byteString',
       length: 16,
-      exact: false,
     });
   });
 });
