@@ -140,13 +140,38 @@ export type ColumnShape =
    */
   | { kind: 'custom'; sqlType?: string }
   /**
-   * A string of `0`/`1`: Postgres `bit(n)`, MySQL `binary(n)`/`varbinary(n)`.
+   * A string of `0`/`1`: Postgres `bit(n)`, Cockroach `bit(n)`/`varbit(n)`.
    *
-   * `exact` separates the two. A Postgres `bit(3)` is always three digits, while a MySQL
-   * `varbinary(16)` is at most sixteen, so treating both as exact rejected the empty string on
-   * every MySQL binary column.
+   * `exact` separates the two. A Postgres `bit(3)` is always three digits, while a Cockroach
+   * `varbit(16)` is at most sixteen, so treating both as exact rejects the empty string on every
+   * varying column.
+   *
+   * MySQL `binary(n)`/`varbinary(n)` used to be listed here and is not a bit string at all; see
+   * `byteString`.
    */
-  | { kind: 'bitstring'; length?: number; exact?: boolean };
+  | { kind: 'bitstring'; length?: number; exact?: boolean }
+  /**
+   * MySQL/SingleStore `binary(n)`/`varbinary(n)`: arbitrary bytes, handed to the caller as a
+   * string.
+   *
+   * Asked of MySQL 8.4 through drizzle on both majors, on the same row of the same table: the
+   * driver hands up a Buffer, drizzle decodes it, and what the caller receives is a string on
+   * 0.45.2 and on 1.0.0-rc.4 alike. `instanceof Uint8Array` is false for all four column builders
+   * on both majors.
+   *
+   * `length` is the declared width and means two different things depending on direction, which
+   * is why it is carried raw here rather than as a `maxLength` or a `maxBytes`:
+   *
+   *   out   the decode is lossy, so n bytes become at most n code points. Measured: `<ff ff ff>`
+   *         in a varbinary(3) comes back as 3 code points that re-encode to 9 UTF-8 bytes, so a
+   *         byte cap applied to a select schema rejects a row the column itself returned.
+   *   in    the server counts the encoded bytes. Measured on varbinary(8): 8 ascii accepted, 9
+   *         refused, 2 emoji (8 bytes) accepted, 3 emoji (12 bytes) refused, so a code-point cap
+   *         applied to an insert schema accepts a write the server refuses.
+   *
+   * The generators pick which by mode.
+   */
+  | { kind: 'byteString'; length?: number };
 
 export interface Key {
   name?: string;
@@ -387,6 +412,24 @@ const TUPLE_CLASS_SHAPES: Record<string, ColumnShape> = {
 const V1_ONLY_ENTITY_KINDS = /^(?:MsSql|Cockroach)/;
 
 /**
+ * 0.4x classes whose value is a byte string, and the whole set of them.
+ *
+ * Enumerated from drizzle-orm 0.45.2's own exports rather than written down: `mysql-core` and
+ * `singlestore-core` each export `binary` and `varbinary` and no `blob` at all, so these four are
+ * every column builder on this major whose value is a run of arbitrary bytes handed over as a
+ * string. Gel's `bytes` really does hand back a Buffer and is not one of them.
+ *
+ * A shape rather than a `maxLength`, because the declared width is a byte budget on the way in and
+ * a code-point ceiling on the way out; see `ColumnShape`.
+ */
+const BYTE_STRING_CLASSES = new Set([
+  'MySqlBinary',
+  'MySqlVarBinary',
+  'SingleStoreBinary',
+  'SingleStoreVarBinary',
+]);
+
+/**
  * Everything Drizzle v1 states about a column outright, or `null` on an older Drizzle.
  *
  * v1 stamps each column with a `dataType` of the form `"<js type> <semantic>"` (`"number
@@ -563,21 +606,35 @@ export function describeV1Column(column: any): Partial<Column> | null {
       // `2020-01-01` into a macaddr, and requires cidr host bits to be zero on top of parsing.
       // Each candidate pattern turned away something the database takes.
       break;
-    case 'binary':
-      // Two unrelated families share this semantic and only the codec separates them. Postgres
-      // `bit(n)`, which the class calls `PgBinaryVector`, is a string of '0' and '1'. MySQL
-      // `binary(n)`/`varbinary(n)` hold arbitrary bytes. Treating both as bit strings made every
-      // MySQL binary column reject the empty string and anything not a run of 0s and 1s.
+    case 'binary': {
+      // Two unrelated families share this semantic. Postgres `bit(n)` and Cockroach
+      // `bit(n)`/`varbit(n)` are strings of '0' and '1'; MySQL and SingleStore
+      // `binary(n)`/`varbinary(n)` hold arbitrary bytes and hand the caller whatever the decode
+      // of those bytes produced. Treating the second family as the first made every MySQL and
+      // SingleStore binary column reject every row the database returns.
+      //
+      // Not the codec. Enumerated from drizzle's own exports on 1.0.0-rc.4, everything reaching
+      // this arm is: pg `bit` (codec 'bit'), mysql `binary`/`varbinary` (codecs 'binary' and
+      // 'varbinary'), singlestore `binary`/`varbinary` (no codec at all) and cockroach
+      // `bit`/`varbit` (no codec either). SingleStore and Cockroach are indistinguishable by
+      // codec, so `codec === 'binary' || codec === 'varbinary'` would silently leave both
+      // SingleStore columns on the bit-string path. `drizzle:entityKind` separates them, survives
+      // minification, and is what the rest of this file already discriminates on.
+      const entity = String(column?.constructor?.[Symbol.for('drizzle:entityKind')] ?? '');
+      const bytes = entity.startsWith('MySql') || entity.startsWith('SingleStore');
       out.tsType = 'string';
       out.dbType = codec === 'bit' ? 'BIT' : 'BINARY';
-      out.shape = {
-        kind: 'bitstring',
-        length: declaredLength(column),
-        // A Postgres `bit(3)` holds exactly three digits; a MySQL `binary(4)`/`varbinary(16)`
-        // holds at most that many, which is why `''` is valid there and not here.
-        exact: codec === 'bit',
-      };
+      out.shape = bytes
+        ? { kind: 'byteString', length: declaredLength(column) }
+        : {
+            kind: 'bitstring',
+            length: declaredLength(column),
+            // A Postgres `bit(3)` holds exactly three digits; a Cockroach `varbit(16)` holds at
+            // most that many, which is why `''` is valid there and not here.
+            exact: codec === 'bit',
+          };
       break;
+    }
     case 'point':
     case 'geometry':
       out.tsType = '[number, number]';
@@ -1295,6 +1352,16 @@ export class SchemaAnalyzer {
       case 'PgJson':
       case 'PgJsonb':
         return { tsType: 'any', dbType: ctor === 'PgJsonb' ? 'JSONB' : 'JSON' };
+      // The four builders in `BYTE_STRING_CLASSES`, which the coarse `/Blob|Binary|VarBinary/i`
+      // arms below would otherwise call a `Uint8Array` on the strength of the word "Binary" in
+      // the class name. Asked of MySQL 8.4 through drizzle 0.45.2 instead: the driver hands up a
+      // Buffer, `mapFromDriverValue` decodes it, and the caller receives a string. Every one of
+      // the four declares `dataType: 'string'` and every one of the four defines that method.
+      case 'MySqlBinary':
+      case 'MySqlVarBinary':
+      case 'SingleStoreBinary':
+      case 'SingleStoreVarBinary':
+        return { tsType: 'string', dbType: 'BINARY' };
       default:
         // SQLite timestamp mode fallback
         if (column?.config?.mode === 'timestamp' || column?.mode === 'timestamp') {
@@ -1609,10 +1676,18 @@ export class SchemaAnalyzer {
       // The shape the class-name path can state for itself, which until now was only ever the
       // json one. A `point` on 0.4x has no codec to read and needs a tuple here or the generators
       // emit a scalar for a value that is not one.
+      const ctorName = String((col as any)?.constructor?.name ?? '');
       const fallbackShape: ColumnShape | undefined =
         dbType === 'JSON' || dbType === 'JSONB' || (col as any)?.config?.mode === 'json'
           ? { kind: 'json' }
-          : TUPLE_CLASS_SHAPES[String((col as any)?.constructor?.name ?? '')];
+          : BYTE_STRING_CLASSES.has(ctorName)
+            ? { kind: 'byteString', length: declaredLength(col) }
+            : TUPLE_CLASS_SHAPES[ctorName];
+      // The same reason the v1 branch above drops it, reached from the other path: the declared
+      // `length` of a binary column is not a character limit, and `maxLength` is applied as one in
+      // every mode by every generator. Left in place the column carried the width twice under two
+      // meanings, and the wrong one is the one that renders.
+      if (fallbackShape?.kind === 'byteString') delete constraints.maxLength;
 
       // A column with no type is how two real bugs looked from the outside: `.array()` and
       // `pgEnum` columns on drizzle-orm 0.4x came back `unknown`, every generator emitted a

@@ -165,7 +165,7 @@ const ${JSON_CONST}: v.GenericSchema<${JSON_CONST}Type> = v.lazy(() =>
  * These used to fall through to `v.any()`/`v.unknown()`, or for the tuple types to `v.string()`,
  * which rejected every row since a `point` really arrives as `[number, number]`.
  */
-function vShapeExpr(c: Column): string | undefined {
+function vShapeExpr(c: Column, mode: Mode): string | undefined {
   const s = c.shape;
   if (!s) return undefined;
   switch (s.kind) {
@@ -187,11 +187,22 @@ function vShapeExpr(c: Column): string | undefined {
         ? `v.pipe(v.array(v.number()), v.length(${s.length}))`
         : 'v.array(v.number())';
     case 'bitstring': {
-      // `v.length` for a Postgres `bit(n)`, `v.maxLength` for a MySQL `binary(n)`.
+      // `v.length` for a Postgres `bit(n)`, `v.maxLength` for a Cockroach `varbit(n)`.
       const len = s.length
         ? `, ${s.exact ? `v.length(${s.length})` : `v.maxLength(${s.length})`}`
         : '';
       return `v.pipe(v.string(), v.regex(/^[01]*$/)${len})`;
+    }
+    case 'byteString': {
+      // See the zod generator: a MySQL/SingleStore binary column takes any bytes at all and hands
+      // them back as a string, and the declared width is code points out and bytes in. Not
+      // `v.maxLength`, which counts UTF-16 units and so is neither.
+      if (!s.length) return 'v.string()';
+      const check =
+        mode === 'select'
+          ? `v.check((val) => [...val].length <= ${s.length}, 'at most ${s.length} characters')`
+          : `v.check((val) => new TextEncoder().encode(val).length <= ${s.length}, 'at most ${s.length} bytes')`;
+      return `v.pipe(v.string(), ${check})`;
     }
   }
 }
@@ -255,7 +266,7 @@ function vExprForColumn(
   sets: ColumnSet[] = [],
   lengths: LengthCheck[] = []
 ): string {
-  const shaped = vShapeExpr(c);
+  const shaped = vShapeExpr(c, mode);
   if (shaped) return shaped;
   // `CHECK (status IN ('a', 'b'))` constrains the column to a set, which is what a picklist is.
   const set = sets.find((x) => x.column === c.name);
