@@ -144,13 +144,14 @@ if (!hits.length) {
   );
   console.log('          quantity, then delete the number or leave a verdict in the task report.');
   for (const { b, matched } of hits) {
-    console.log(`      ${rel}:${b.start}-${b.end}`);
-    for (const [name, m] of matched) {
-      const from = Math.max(0, m.index - 55);
-      const to = Math.min(b.text.length, m.index + m[0].length + 55);
-      const snippet =
-        (from > 0 ? '...' : '') + b.text.slice(from, to) + (to < b.text.length ? '...' : '');
-      console.log(`          ${name}: ${snippet}`);
+    console.log(`      ${rel}:${b.start}-${b.end}  [${matched.map(([n]) => n).join(', ')}]`);
+    // The whole block, not a window around the match. Two blocks were cleared as false positives
+    // by reading a 55-character excerpt while a stale count sat elsewhere in the same comment:
+    // "The other ten are new" three words outside one window, and a byte figure the run had
+    // moved on from outside the other. The idiom is what finds a block; it is not what makes the
+    // block wrong, so an excerpt is the wrong unit to adjudicate on.
+    for (const line of b.text.match(/.{1,96}(?:\s|$)/g) ?? [b.text]) {
+      console.log(`          ${line.trimEnd()}`);
     }
   }
 }
