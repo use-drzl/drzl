@@ -85,9 +85,13 @@ function renderTypes(table: Table) {
     .filter((c: Column) => !c.isGenerated && !pk.includes(c.name))
     .map((c: Column) => `  ${c.name}${c.nullable || c.hasDefault ? '?' : ''}: ${fieldType(c)};`)
     .join('\n');
-  // A patch names only the columns it changes, so every key is optional.
+  // A patch names only the columns it changes, so every key is optional. A generated column is
+  // not one of them: every server refuses an UPDATE that names one, and this file builds its own
+  // field list rather than calling `updateColumns`, so the fix there did not reach here. The
+  // emitted `update(id, data)` hands the patch straight to `db.update().set()`, so a key that
+  // should not exist becomes a query the database rejects.
   const updateFields = cols
-    .filter((c: Column) => !pk.includes(c.name))
+    .filter((c: Column) => !c.isGenerated && !pk.includes(c.name))
     .map((c: Column) => `  ${c.name}?: ${fieldType(c)};`)
     .join('\n');
   // A row read back carries every column. None is ever absent, whatever its default, so the
