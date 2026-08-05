@@ -45,6 +45,7 @@ const packagesDir = path.join(repoRoot, 'packages');
 
 interface Manifest {
   name: string;
+  version: string;
   private?: boolean;
   main?: string;
   bin?: Record<string, string>;
@@ -192,7 +193,12 @@ function requireBuilt(dir: string, file: string, declared: boolean) {
 }
 
 const cases = publishable.flatMap(({ dir, manifest }) =>
-  entryPoints(manifest).map((entry) => ({ dir, name: manifest.name, entry }))
+  entryPoints(manifest).map((entry) => ({
+    dir,
+    name: manifest.name,
+    version: manifest.version,
+    entry,
+  }))
 );
 
 it('found every publishable package', () => {
@@ -239,26 +245,34 @@ it('advertises a Node floor older than require(esm) everywhere', () => {
 
 const entriesOf = (dir: string) => entryPoints(publishable.find((p) => p.dir === dir)!.manifest);
 
-describe.each(cases)('$name $entry.subpath', ({ dir, entry }) => {
+describe.each(cases)('$name $entry.subpath', ({ dir, version, entry }) => {
   it('emits both an ESM entry and its CommonJS twin', () => {
     requireBuilt(dir, entry.esm, true);
     requireBuilt(dir, entry.cjs, entry.cjsDeclared);
   });
 
   if (entry.isBin) {
-    it.each(['esm', 'cjs'] as const)('runs as a program from the %s build', (format) => {
-      const abs = requireBuilt(dir, entry[format], format === 'esm' || entry.cjsDeclared);
-      // A bin cannot be imported for its exports: this one parses argv at module scope. Running
-      // it is what a consumer does and is the only thing that catches a bundle that cannot start.
-      const out = execFileSync(process.execPath, [abs, '--version'], {
-        cwd: probeDir,
-        encoding: 'utf8',
-        timeout: 60_000,
-      });
-      expect(
-        out.trim().length,
-        `${dir} ${format} bin printed nothing for --version`
-      ).toBeGreaterThan(0);
+    // A bin cannot be imported for its exports: this one parses argv at module scope. Running it
+    // is what a consumer does and is the only thing that catches a bundle that cannot start.
+    //
+    // The assertion is equality with the manifest, not merely that something was printed. For
+    // every one of the 29 published versions of @drzl/cli this printed the literal `0.0.1`,
+    // hardcoded in the `program.version()` call, while the manifest said otherwise; a
+    // non-empty check passed on all of them, so every version report ever filed was `0.0.1`.
+    it.each(['--version', '-V'])('prints the manifest version for %s, from both builds', (flag) => {
+      for (const format of ['esm', 'cjs'] as const) {
+        const abs = requireBuilt(dir, entry[format], format === 'esm' || entry.cjsDeclared);
+        const out = execFileSync(process.execPath, [abs, flag], {
+          cwd: probeDir,
+          encoding: 'utf8',
+          timeout: 60_000,
+        });
+        expect(
+          out.trim(),
+          `${dir} ${format} bin printed the wrong version for ${flag}; packages/${dir}/package.json ` +
+            `says ${version}. A stale dist is one cause, so try 'pnpm build' before reading further.`
+        ).toBe(version);
+      }
     });
     return;
   }
