@@ -87,13 +87,18 @@ describe('SingleStore, against a real singlestoreTable', () => {
     expect(analysis.dialect).toBe('singlestore');
   });
 
-  it('types every column it is given except the enum', async () => {
-    // 28 columns tried, 1 `unknown`. The count is asserted alongside the name so that a
-    // regression shows up even if it widens a column this file does not name individually,
-    // and so that deleting a column from the fixture cannot quietly shrink the coverage.
+  it('types every column it is given', async () => {
+    // 28 columns tried, none `unknown`. The count is asserted alongside the emptiness so that a
+    // regression shows up even if it widens a column this file does not name individually, and so
+    // that deleting a column from the fixture cannot quietly shrink the coverage.
+    //
+    // This asserted `['m']` when it was written, and that measurement is what produced the fix:
+    // the enum was the one column left, and its `unknown` was a wrong description rather than a
+    // hole, because the generators had been reading `enumValues` all along. See the enum test
+    // below.
     const { analysis, unknowns } = await columnsOf('real-singlestore', SINGLESTORE_SOURCE);
     expect(analysis.tables[0].columns).toHaveLength(28);
-    expect(unknowns).toEqual(['m']);
+    expect(unknowns).toEqual([]);
   });
 
   it('describes the scalar families correctly', async () => {
@@ -149,20 +154,37 @@ describe('SingleStore, against a real singlestoreTable', () => {
     expect(byName.get('si')).toMatchObject({ integer: true, min: '-32768', max: '32767' });
   });
 
-  it('keeps the enum members even though the column type is unknown', async () => {
-    // The column itself is `unknown`, but `enumValues` survives, and every generator keys on
-    // `enumValues` before it looks at `tsType`. Measured end to end against zod, valibot,
-    // arktype, typebox and the JSON Schema generator: the emitted select schema accepts 'sad'
-    // and refuses 'definitely-not-a-member', so this one is not a hole in practice.
+  it('describes the enum as the string it is, and keeps its members', async () => {
+    // This asserted `tsType: 'unknown'` when it was written, and said so with a note that the
+    // emitted schema was fine anyway: `enumValues` survives, every generator keys on it before it
+    // looks at `tsType`, and the select schema accepts 'sad' and refuses
+    // 'definitely-not-a-member' in all five generators.
     //
-    // It does mean the DRZL_ANL_UNKNOWN_COLUMN warning raised for `m` is a false positive: it
-    // says the validator "will accept any value" and the validator does no such thing. MySQL's
-    // `mysqlEnum` behaves identically, so this is shared with a covered dialect rather than
-    // specific to SingleStore.
+    // The note went further, and that is what got fixed. It observed that
+    // DRZL_ANL_UNKNOWN_COLUMN was therefore a false positive for `m`: it says the validator "will
+    // accept any value" while the validator accepts exactly three. A warning wrong about the one
+    // column it names teaches the reader to skip the true ones.
+    //
+    // The class-name map now has arms for `MySqlEnumColumn` and `SingleStoreEnumColumn` beside the
+    // `PgEnumColumn` one it already had, so the description matches the schema and the warning is
+    // silent here. `string` rather than a union of the members, because that is what v1 answers for
+    // the same column and the narrowing lives in `enumValues` on both majors.
     const { byName, analysis } = await columnsOf('real-singlestore', SINGLESTORE_SOURCE);
-    expect(byName.get('m')?.tsType).toBe('unknown');
+    expect(byName.get('m')?.tsType).toBe('string');
     expect(byName.get('m')?.enumValues).toEqual(['sad', 'ok', 'happy']);
     expect(analysis.enums.map((e) => e.values)).toContainEqual(['sad', 'ok', 'happy']);
+
+    // Named columns only. A first version of this asserted the whole issue list was empty and
+    // failed, which is the assertion earning its place: `vec` is a `vector(3, F32)` and comes back
+    // `any` with no shape, so it warns and the warning is true there. Postgres `vector` has a
+    // `numberVector` shape; the SingleStore class has no arm at all. That is filed under the
+    // uncovered-dialect work rather than fixed here, and the point of this line is that fixing the
+    // false positive did not silence the true one.
+    const warned = analysis.issues
+      .filter((i) => i.code === 'DRZL_ANL_UNKNOWN_COLUMN')
+      .map((i) => i.message.match(/"(\w+)"/)?.[1]);
+    expect(warned).not.toContain('m');
+    expect(warned).toContain('vec');
   });
 
   it('DEFECT: leaves tinyint and mediumint unbounded, where MySQL bounds them', async () => {

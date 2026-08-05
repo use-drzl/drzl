@@ -6930,9 +6930,8 @@ const DEFECTS: Record<string, Entry> = {
  *   the same object with the key present                                 accepted
  *
  * So it is the nullable form and not the unknown that opens it, and that is why no column of
- * `matrix` is here. Seven of them are unnamed on this major: `c_geometry`, `c_bit`, `c_vector`,
- * `s_blob`, `s_blob_buf`, `s_int_ts_ms` and `m_enum`, the last of which does not emit an unknown at
- * all because every generator recovers its members from `enumValues`. The other six are `notNull`,
+ * `matrix` is here. The ones unnamed on this major are `c_geometry`, `c_bit`, `c_vector`,
+ * `s_blob`, `s_blob_buf` and `s_int_ts_ms`. They are `notNull`,
  * so they emit a bare `Type.Unknown()` and their keys stay required, which this run measures: an
  * entry for any of them would fail as dead. The three Postgres ones are read on update alone,
  * because `PRESENCE_BARREN` below makes select and insert unreadable on that pairing, and update is
@@ -7145,8 +7144,11 @@ const THREW: Record<string, Crash> = {
  * Columns the analyzer cannot name at all on 0.4x, in the two fixtures nothing else checks.
  *
  * The comparison above is differential and can only see DRZL and official disagreeing. This is
- * absolute, and it is what still fires when they agree about something wrong, which is the state
- * `m_enum` is in below. `check-old.ts` in the stage above does the same job for the Postgres and
+ * absolute, and it is what still fires when they agree about something wrong. `m_enum` used to be
+ * the worked example: DRZL called it `unknown` while every generator recovered its members from
+ * `enumValues`, so the emitted schema was right, the description was not, and nothing differential
+ * could see it. It is named now and its entries are gone.
+ * `check-old.ts` in the stage above does the same job for the Postgres and
  * MySQL-text fixtures; it cannot cover these two, because it runs before this stage writes them.
  * One home per fixture, so a fix has exactly one entry to remove.
  *
@@ -7165,11 +7167,9 @@ const UNNAMED: Record<string, string> = {
   // regardless of `tsType`, and the 0.4x zod output for this column is `z.enum(['a','b','c'])`.
   // So the emitted validator is right, the comparison above reports parity, and nothing but this
   // line records that the analyzer still cannot describe the column. Filed as addendum Z.
-  'mysql/matrix.m_enum': 'no MySqlEnumColumn arm; the generators recover the values from enumValues',
   // The nullable table's share of the same two gaps. Both are the same class as their `matrix`
   // twin, so listing them is the check that the gap is about the column class rather than about
   // `notNull`, which is the only thing that differs between the two.
-  'mysql/nullable.m_n_enum': 'as mysql/matrix.m_enum',
   'sqlite/nullable.s_n_blob': 'as sqlite/matrix.s_blob_buf',
   'sqlite/nullable.s_n_ts_ms': 'as sqlite/matrix.s_int_ts_ms',
   // Unnamed on both majors rather than on this one, and correctly so: a customType's JavaScript
