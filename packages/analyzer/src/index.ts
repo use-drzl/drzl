@@ -365,6 +365,28 @@ const TUPLE_CLASS_SHAPES: Record<string, ColumnShape> = {
 };
 
 /**
+ * Column families that arrived with Drizzle v1 and exist on no earlier release, by
+ * `drizzle:entityKind`.
+ *
+ * The third v1 marker, after the `codec` and the semantic half of `dataType`. Both of those are
+ * properties of a column, and mssql and cockroach columns have neither: swept across every column
+ * builder the two cores export, 22 and 27 of them, **not one states a codec**, and thirteen state
+ * a bare `dataType` with no semantic half either (`bit` says `boolean`; `varchar`, `nvarchar`,
+ * `char`, `nchar`, `text`, `ntext`, `string` all say `string`). Those thirteen are exactly the two
+ * dialects' boolean and string families, and they were indistinguishable from a 0.4x column, so
+ * every one of them fell to the class-name path, which has arms for Pg, MySql, SingleStore and Gel
+ * and none for these two, and came back `unknown`.
+ *
+ * The class name is the marker of last resort here rather than the first choice, and it is sound
+ * for exactly these two: `mssql-core` and `cockroach-core` ship only on v1. Checked rather than
+ * assumed, by grepping the whole installed 0.45.2 package: the strings `MsSql` and `Cockroach`
+ * appear in none of its files, so no 0.4x column can reach this.
+ *
+ * `drizzle:entityKind` rather than `constructor.name`, because it survives minification.
+ */
+const V1_ONLY_ENTITY_KINDS = /^(?:MsSql|Cockroach)/;
+
+/**
  * Everything Drizzle v1 states about a column outright, or `null` on an older Drizzle.
  *
  * v1 stamps each column with a `dataType` of the form `"<js type> <semantic>"` (`"number
@@ -393,12 +415,17 @@ export function describeV1Column(column: any): Partial<Column> | null {
     };
   }
 
+  const entityKind = String(column?.constructor?.[Symbol.for('drizzle:entityKind')] ?? '');
   const [js, semantic = ''] = dataType.split(' ');
   // SQLite columns carry a `dataType` but no `codec` at all, so gating on the codec alone left
   // the whole dialect on the class-name path: its json text and blob modes stayed `any`, its
   // buffer mode stayed `unknown`, and its bigint blob mode lost its range. A semantic half is
   // just as good a v1 marker, since 0.4x spells every dataType as a single bare word.
-  if (typeof codec !== 'string' && !semantic) return null;
+  //
+  // mssql and cockroach state neither, on their boolean and string families, so the two markers
+  // above left thirteen columns looking exactly like 0.4x ones. Their class names are the third
+  // marker; see `V1_ONLY_ENTITY_KINDS`.
+  if (typeof codec !== 'string' && !semantic && !V1_ONLY_ENTITY_KINDS.test(entityKind)) return null;
 
   const out: Partial<Column> = {};
 
@@ -449,21 +476,33 @@ export function describeV1Column(column: any): Partial<Column> | null {
       break;
     case 'float':
     case 'double': {
-      // Only the 4 byte width has a magnitude the database will refuse, and the two databases that
-      // have one refuse at different values, so the codec picks which. `float4` is Postgres's
-      // spelling and `float` is MySQL's. Three dialects state `number float` with no codec at all
-      // on 1.0.0-rc.4, measured: SingleStore, Cockroach and MSSQL. All three land on MySQL's bound
-      // by falling through, which is right for SingleStore and matches the answer its class-name
-      // entry gives on 0.4x, and is **wrong for Cockroach**, whose `real` is a Postgres `FLOAT4`
-      // over the Postgres wire. That is filed rather than fixed: Cockroach and MSSQL lose whole
-      // type families to `unknown` today, so a bound is not the defect worth fixing first, and
-      // neither dialect has a fixture in any gate that would prove a fix. The cross-major diff is
-      // what holds SingleStore's two answers together.
+      // Only the 4 byte width has a magnitude the database will refuse, and the databases that
+      // have one do not put the edge in the same place, so the codec picks which. `float4` is
+      // Postgres's spelling and `float` is MySQL's. Three dialects state `number float` with no
+      // codec at all on 1.0.0-rc.4, measured: SingleStore, Cockroach and MSSQL, so each needs
+      // deciding on something else.
+      //
+      // SingleStore and MSSQL take MySQL's, which is where falling through already put them.
+      // SingleStore is MySQL wire-compatible and matches the answer its class-name entry gives on
+      // 0.4x, which the cross-major diff holds together. MSSQL was measured on SQL Server 2022:
+      // a `real` column stores 3.4028234663852886e38, the largest finite float32 and MySQL's exact
+      // edge, and refuses the next candidate up with "Arithmetic overflow error for type real".
+      //
+      // Cockroach takes Postgres's, and falling through was wrong for it. `information_schema`
+      // reports its `real` as crdb_sql_type FLOAT4 and it speaks the Postgres wire protocol, so it
+      // inherits the Postgres defect this file already records at PG_FLOAT4_RANGE: measured on
+      // v24.3, inserting the largest finite float32 makes the column hand back 3.4028235e+38,
+      // which is a *larger* double, so a schema bounded at MySQL's edge refused a row the column
+      // had just returned. It does not refuse a magnitude at all, saturating to infinity instead,
+      // which no finite range can describe either way; the bound is set by what comes back.
       //
       // Both majors take the same answer here on purpose: the bound moved off `drizzle-orm/zod`'s
       // and onto the database's, and moving one major without the other is what that diff catches.
       if (semantic === 'float')
-        [out.min, out.max] = codec === 'float4' ? PG_FLOAT4_RANGE : MYSQL_FLOAT_RANGE;
+        [out.min, out.max] =
+          codec === 'float4' || entityKind.startsWith('Cockroach')
+            ? PG_FLOAT4_RANGE
+            : MYSQL_FLOAT_RANGE;
       out.integer = false;
       out.tsType = 'number';
       out.dbType = semantic === 'float' ? 'REAL' : 'DOUBLE';
