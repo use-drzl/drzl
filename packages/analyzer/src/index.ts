@@ -1277,7 +1277,20 @@ export class SchemaAnalyzer {
       // 0.4x gives an enum its own class, which had no arm here at all, so an enum column came
       // back `unknown` and every generator emitted a schema that accepted anything. The values
       // were on the column the whole time, in `enumValues`, waiting for a type to attach to.
+      //
+      // The MySQL and SingleStore classes were added later than the Postgres one, and their
+      // absence showed up somewhere unexpected: the emitted validator was already right, because
+      // every generator reads `enumValues` before it reads `tsType`, so the only thing wrong was
+      // the description. That description reached the user anyway, through the untyped-column
+      // warning, which said an enum column "will accept any value" while the emitted schema
+      // accepted exactly three. A warning that is wrong about the one thing it names is worse
+      // than no warning, because it teaches the reader to skip the true ones.
+      //
+      // v1 already answered `string` here, so this is also the two majors agreeing again rather
+      // than a new opinion; the cross-major diff carried the disagreement as a filed defect.
       case 'PgEnumColumn':
+      case 'MySqlEnumColumn':
+      case 'SingleStoreEnumColumn':
         return { tsType: 'string', dbType: 'TEXT' };
       case 'PgInteger':
       case 'PgSmallInt':
