@@ -169,9 +169,25 @@ Drizzle knows what a column defaults to, and `drizzle-orm` reproduces none of th
 country: "string = 'GB'",
 ```
 
+A field that already holds a Type takes its default through `.default()` instead, after the
+narrow, because `type("string = 'GB'")` is not something ArkType will build on its own:
+"Defaultable definitions like `'number = 0'` are only valid as properties in an object or tuple".
+The same route carries every value the string DSL has no literal for, which is an object, an
+array, a Date and a bigint:
+
+```ts
+country: type('string')
+  .narrow((v, ctx) => [...v].length <= 2 || ctx.mustBe('at most 2 characters'))
+  .default('GB'),
+payload: type('number | object | string | boolean | null').default(() => ({ a: 1 })),
+created: type('Date | string').default(() => new Date('2020-01-01T00:00:00.000Z')),
+```
+
 Only **literal** defaults. `defaultNow()`, `defaultRandom()` and any `sql` default are evaluated
 by the database, and `$defaultFn` is called by Drizzle at insert time, so those stay optional: a
-schema guessing at them would produce a different value than the one actually stored.
+schema guessing at them would produce a different value than the one actually stored. A literal
+this generator cannot write down exactly is left out for the same reason, and `Infinity` is the
+one that looks like a literal and is not: `JSON.stringify` turns it into `null`.
 
 Insert only, and off by default, because it changes what parsing _returns_ rather than only what
 it accepts.

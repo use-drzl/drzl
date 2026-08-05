@@ -125,31 +125,40 @@ describe('a bound ArkType could only state wrongly', () => {
 
 describe('a bigint column carrying an applied default', () => {
   /**
-   * The bound is dropped on a field that carries an applied default, because a defaultable
-   * definition is only valid as an object property: `type("(bigint | null) = null").narrow(...)`
-   * throws at import. Remove the guard in the generator and this test fails by not loading.
+   * The bound used to be dropped from the insert schema whenever a default was applied, because a
+   * defaultable definition is only valid as an object property: `type("(bigint | null) = null")`
+   * throws at import, so the narrow and the default could not both be written. The whole cost was
+   * paid by insert, which is the schema that runs before a write: the same `2n ** 70n` was
+   * accepted there and refused by select and update.
    *
-   * It is checked by loading rather than by reading the source, because the source cannot show
-   * the part that matters: the module loads, and its insert schema is unbounded while select and
-   * update are bounded. An earlier version of this test asserted on the text and claimed no such
-   * module could load at all, which was wrong and unfalsifiable in that form.
-   *
-   * `null` is the only default value that reaches this state. `.default(7)` on a bigint is
-   * refused by ArkType as "Default for n must be a bigint", and a bigint-valued default crashes
-   * the generator on `JSON.stringify`. Both are applyDefaults defects tracked separately, and
-   * fixing them, or moving the default onto the Type where `.default()` keeps the narrow, should
-   * turn the first expectation below into `false` and this comment into history.
+   * The default now goes on the Type through `.default()`, after the narrow rather than inside
+   * the string, so the two coexist and the three schemas agree again. Checked by loading and
+   * running rather than by reading the source: an expression ArkType cannot parse throws here.
    */
-  it('loads, and is unbounded on insert alone, which is the cost of the guard', async () => {
+  it('keeps its bound in every mode, and still fills the default in', async () => {
     const { load } = await schemasFor(
       [col('n', { nullable: true, hasDefault: true, defaultValue: null as never })],
       { applyDefaults: true }
     );
     const mod = await load();
-    expect(ok(mod.InserttSchema, 2n ** 70n), 'insert: the bound the guard drops').toBe(true);
-    expect(ok(mod.SelecttSchema, 2n ** 70n), 'select: bounded as usual').toBe(false);
-    expect(ok(mod.UpdatetSchema, 2n ** 70n), 'update: bounded as usual').toBe(false);
-    expect(ok(mod.InserttSchema, 1n), 'insert still accepts a valid value').toBe(true);
+    for (const name of ['InserttSchema', 'SelecttSchema', 'UpdatetSchema']) {
+      expect(ok(mod[name], 2n ** 70n), `${name} rejects above the maximum`).toBe(false);
+      expect(ok(mod[name], 1n), `${name} accepts a valid value`).toBe(true);
+    }
+    expect(mod.InserttSchema({}), 'the default is still applied').toEqual({ n: null });
+  });
+
+  it('reproduces a bigint-valued default, which used to end the generate run', async () => {
+    // `JSON.stringify(7n)` throws "Do not know how to serialize a BigInt", and it was called on
+    // the default value before anything was written, so one such column took down every file in
+    // the run. `7` is not usable either: ArkType refuses it as "Default for n must be a bigint".
+    const { load } = await schemasFor(
+      [col('n', { hasDefault: true, defaultValue: 7n as never })],
+      { applyDefaults: true }
+    );
+    const mod = await load();
+    expect(mod.InserttSchema({})).toEqual({ n: 7n });
+    expect(ok(mod.InserttSchema, 2n ** 70n), 'and the bound is still there').toBe(false);
   });
 });
 
