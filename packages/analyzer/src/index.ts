@@ -635,15 +635,61 @@ function declaredLength(column: any): number | undefined {
   return typeof n === 'number' && Number.isFinite(n) && n > 0 ? n : undefined;
 }
 
-/** `getSymbol` as a free function, for the readers that live outside the class. */
-function getSymbolOf(target: any, key: string): unknown {
-  if (!target) return undefined;
+/**
+ * The three lookups a view answers on drizzle-orm 1.0.0 and on no 0.x release, and the field of
+ * `drizzle:ViewBaseConfig` each one comes from.
+ *
+ * On 1.0.0 `View` declares `drizzle:Name`, `drizzle:Schema` and `drizzle:Columns` as prototype
+ * getters over its `drizzle:ViewBaseConfig`, so a view answers all three exactly as a table does.
+ * On 0.x those getters do not exist and the config is the only place a view's columns and name
+ * are recorded, so every one of the three comes back undefined and a view looks like nothing.
+ *
+ * Probed with a fresh install of each: all three undefined on 0.29.5, 0.33.0, 0.36.4, 0.39.3,
+ * 0.44.7, 0.45.0 and 0.45.2, all three answered on 1.0.0-beta.1, beta.24, rc.1 and rc.4. The
+ * config itself is an own symbol on all eleven.
+ */
+const VIEW_CONFIG_FIELDS: Record<string, string> = {
+  'drizzle:Columns': 'selectedFields',
+  'drizzle:Name': 'name',
+  'drizzle:Schema': 'schema',
+};
+
+/** An own symbol by description. Separate from `getSymbolOf` so the view fallback cannot recur. */
+function ownSymbolOf(target: any, key: string): unknown {
   try {
     for (const sym of Object.getOwnPropertySymbols(target)) {
       if ((sym as any).description === key) return (target as any)[sym];
     }
   } catch {}
-  return (target as any)[Symbol.for(key)];
+  return undefined;
+}
+
+/** `getSymbol` as a free function, for the readers that live outside the class. */
+function getSymbolOf(target: any, key: string): unknown {
+  if (!target) return undefined;
+  const own = ownSymbolOf(target, key);
+  if (own !== undefined) return own;
+  const direct = (target as any)[Symbol.for(key)];
+  if (direct !== undefined) return direct;
+  // A 0.x view, whose columns and name are only in its config.
+  const field = VIEW_CONFIG_FIELDS[key];
+  if (!field) return undefined;
+  const cfg = ownSymbolOf(target, 'drizzle:ViewBaseConfig') as any;
+  return cfg ? cfg[field] : undefined;
+}
+
+/**
+ * Whether an export is a Drizzle view, of any dialect and on either major.
+ *
+ * Asked of `drizzle:ViewBaseConfig` rather than of `drizzle:IsDrizzleView`, which reads like the
+ * obvious question and is not there to be asked: the marker was introduced in 0.39.0, and a view
+ * built on 0.29.5, 0.33.0 or 0.36.4 answers undefined to it. The config is an own symbol on all
+ * eleven releases probed and on every view form measured, on both majors: the query-builder and
+ * explicit-column-list forms of pg view, pg materialized view, mysql view and sqlite view,
+ * `.existing()`, and the schema-qualified pg view and materialized view.
+ */
+export function isDrizzleView(val: any): boolean {
+  return !!val && typeof val === 'object' && !!getSymbolOf(val, 'drizzle:ViewBaseConfig');
 }
 
 /**
@@ -728,16 +774,9 @@ export class SchemaAnalyzer {
   constructor(private readonly schemaPath: string) {}
 
   private getSymbol(table: any, key: string) {
-    if (!table) return undefined;
-    try {
-      const syms = Object.getOwnPropertySymbols(table);
-      for (const s of syms) {
-        if ((s as any).description === key) {
-          return (table as any)[s];
-        }
-      }
-    } catch {}
-    return (table as any)[Symbol.for(key)];
+    // One resolver rather than two identical ones, so a fallback added to either is reached by
+    // every caller of both.
+    return getSymbolOf(table, key);
   }
 
   /**
@@ -1666,6 +1705,8 @@ export class SchemaAnalyzer {
     const enums: Enum[] = [];
     // Enums seen on a column, resolved against the exported ones once the loop below ends.
     const columnEnums: Enum[] = [];
+    // Views, held aside for the read-only pass that runs once the dialect is known.
+    const viewTables: Table[] = [];
 
     // Identify table-like exports by presence of Drizzle symbols
     for (const [name, val] of Object.entries(exportsObj)) {
@@ -1674,6 +1715,7 @@ export class SchemaAnalyzer {
         if (cols && typeof cols === 'object') {
           const table = this.analyzeTable(name, val, issues);
           tables.push(table);
+          if (isDrizzleView(val)) viewTables.push(table);
 
           // Enum capture is deliberately outside any relations guard. It used to sit inside
           // `if (opts.includeRelations)`, so a caller that only wanted tables silently lost
@@ -1751,7 +1793,13 @@ export class SchemaAnalyzer {
     let dialect: Dialect = 'unknown';
     const marks = new Set<string>();
     for (const [_, val] of Object.entries(exportsObj)) {
-      const cols = (val as any)?.[Symbol.for('drizzle:Columns')];
+      // Through the resolver, not `val[Symbol.for('drizzle:Columns')]`. This loop read the
+      // symbol itself, so it was the one site a fallback added to the resolver did not reach.
+      // Measured with the resolver fixed and this line left as it was, on a file of nothing but
+      // pg views: both views analysed, `dialect: unknown`, and a DRZL_ANL_DIALECT warning whose
+      // hint does not apply. The columns keep their types either way, since `analyzeTable` reads
+      // each column object and never consults the dialect.
+      const cols = this.getSymbol(val, 'drizzle:Columns');
       if (!cols) continue;
       for (const c of Object.values(cols) as any[]) {
         const kind = c?.constructor?.[Symbol.for('drizzle:entityKind')] as string | undefined;
@@ -1770,6 +1818,23 @@ export class SchemaAnalyzer {
     else if (/MySql|Mysql/i.test(names)) dialect = 'mysql';
     else if (/Pg|Postgres/i.test(names)) dialect = 'postgres';
     else if (/Gel/i.test(names)) dialect = 'gel';
+
+    // SQLite refuses every write to a view, so an insert or update schema for one describes an
+    // operation the database will always refuse. Measured with node:sqlite: insert, update and
+    // delete against a plain `create view` all fail with "cannot modify <name> because it is a
+    // view". That is the same argument `isReadOnlyRelation` already makes for a materialized
+    // view, and it holds for every SQLite view rather than for one construction of one.
+    //
+    // Only SQLite. Postgres and MySQL both accept a write to a simple auto-updatable view, and
+    // whether a given view qualifies depends on its query rather than on anything the schema
+    // file states.
+    //
+    // Decided here rather than in `isReadOnlyRelation` because the dialect is a fact about the
+    // schema and not about the export: a view selecting nothing but `sql` aliases carries no
+    // column that names a dialect, so asking the export alone gets no answer for it.
+    if (dialect === 'sqlite') {
+      for (const view of viewTables) view.readOnly = true;
+    }
 
     // No guessing from column storage classes. That fallback asked "does any column look like a
     // SQLite type", and every unrecognised column returns dbType UNKNOWN while the `/At$/`
