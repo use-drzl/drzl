@@ -14,6 +14,8 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import path from 'node:path';
 import os from 'node:os';
+import { createRequire } from 'node:module';
+import { pathToFileURL } from 'node:url';
 import { formatCode } from '../src';
 
 // Outside the workspace on purpose. `resolveConfig` walks up from this path, so a path inside
@@ -59,21 +61,24 @@ describe('formatCode with prettier resolvable', () => {
     expect(warn.mock.calls).toEqual([]);
   });
 
-  it('warns, once, when the chosen engine is biome and biome cannot be loaded', async () => {
-    // The biome branch is reached through a `Function`-built import precisely so no bundler can
-    // see it. Selecting it with biome unreachable must degrade rather than throw, and must not
-    // fall back to the prettier that is installed right here: the config named an engine.
+  it('warns, once, when the chosen engine is biome and biome is not installed', async () => {
+    // Selecting biome where it is absent must degrade rather than throw, and must not fall back to
+    // the prettier that is installed right here: the config named an engine.
     //
-    // Why the expected reason is taken from a run rather than written down: under vitest that
-    // import fails as ERR_VM_DYNAMIC_IMPORT_CALLBACK_MISSING, and under plain node as
-    // ERR_MODULE_NOT_FOUND. Hardcoding either would assert the harness instead of the message,
-    // and would go stale the moment the harness changed. no-bundled-formatter.spec.ts runs the
-    // node one for real.
+    // The expected reason is taken from a run rather than written down, and what that run does had
+    // to change with the engine. This used to attempt `import('@biomejs/biome')`, because that is
+    // how the engine reached it, and the import failed under every harness: the package publishes
+    // `bin` and no module entry point at all, so the engine had never formatted anything for
+    // anyone. It spawns the published binary now, and finds it by resolving the package's own
+    // manifest, so absence surfaces as a failed resolve rather than a failed import.
     let cause = '';
     try {
-      await Function('s', 'return import(s)')('@biomejs/biome');
+      createRequire(pathToFileURL(path.join(os.tmpdir(), 'noop.js'))).resolve(
+        '@biomejs/biome/package.json',
+        { paths: [os.tmpdir(), process.cwd()] }
+      );
     } catch (e: any) {
-      cause = String(e?.message ?? e);
+      cause = String(e?.message ?? e).split('\n')[0];
     }
     expect(cause, 'biome resolved here, so this test proved nothing').not.toBe('');
 

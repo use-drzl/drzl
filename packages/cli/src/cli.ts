@@ -16,8 +16,32 @@ import {
   loadConfig,
 } from './config.js';
 import { diffSnapshots, restoreSnapshot, snapshotAll } from './drift.js';
+import { GeneratorNotInstalledError, loadGenerator } from './generator-loader.js';
 import { maybeShowSponsorMessage } from './sponsor.js';
 import { CLI_VERSION } from './version.js';
+
+/**
+ * Say what went wrong with a generator, distinguishing the two things that can.
+ *
+ * Every branch below used to print "<name> generator missing. Install with: npm install
+ * @drzl/generator-<name>" for anything at all that threw, with the real reason on a trailing
+ * "Error details" line. A generator that was installed and merely failed therefore sent its user
+ * to reinstall a package they already had, and the sentence that would have told them what
+ * actually happened was the one written as a footnote.
+ *
+ * `loadGenerator` marks the one case that is an install problem, so the package name comes off the
+ * error rather than being repeated here beside the `import()` that already spells it.
+ */
+function reportGeneratorFailure(kind: string, e: unknown): void {
+  if (e instanceof GeneratorNotInstalledError) {
+    console.error(
+      chalk.red(`The ${kind} generator is not installed.`),
+      chalk.yellow(`\nInstall with: npm install ${e.specifier}`)
+    );
+    return;
+  }
+  console.error(chalk.red(`The ${kind} generator failed:`), (e as any)?.message ?? e);
+}
 
 const program = new Command();
 program.name('drzl').description('DRZL - Drizzle Developer Toolkit').version(CLI_VERSION);
@@ -138,7 +162,10 @@ program
           files.forEach((f: string) => console.log('  -', chalk.cyan(f)));
         } else if (g.kind === 'service') {
           try {
-            const { ServiceGenerator } = await import('@drzl/generator-service');
+            const { ServiceGenerator } = await loadGenerator(
+              '@drzl/generator-service',
+              () => import('@drzl/generator-service')
+            );
             const gen = new ServiceGenerator(analysis);
             const target = g.path ?? 'src/services';
             const files = await gen.generate({
@@ -155,16 +182,15 @@ program
             files.forEach((f: string) => console.log('  -', chalk.cyan(f)));
           } catch (e: any) {
             progress.stop();
-            console.error(
-              chalk.red('Service generator missing.'),
-              chalk.yellow('\nInstall with: npm install @drzl/generator-service')
-            );
-            console.error(chalk.gray('Error details:'), e?.message ?? e);
+            reportGeneratorFailure(g.kind, e);
             process.exit(1);
           }
         } else if (g.kind === 'zod') {
           try {
-            const { ZodGenerator } = await import('@drzl/generator-zod');
+            const { ZodGenerator } = await loadGenerator(
+              '@drzl/generator-zod',
+              () => import('@drzl/generator-zod')
+            );
             const gen = new ZodGenerator(analysis);
             const target = g.path ?? 'src/validators/zod';
             const files = await gen.generate(
@@ -175,16 +201,15 @@ program
             files.forEach((f: string) => console.log('  -', chalk.cyan(f)));
           } catch (e: any) {
             progress.stop();
-            console.error(
-              chalk.red('Zod generator missing.'),
-              chalk.yellow('\nInstall with: npm install @drzl/generator-zod')
-            );
-            console.error(chalk.gray('Error details:'), e?.message ?? e);
+            reportGeneratorFailure(g.kind, e);
             process.exit(1);
           }
         } else if (g.kind === 'valibot') {
           try {
-            const { ValibotGenerator } = await import('@drzl/generator-valibot');
+            const { ValibotGenerator } = await loadGenerator(
+              '@drzl/generator-valibot',
+              () => import('@drzl/generator-valibot')
+            );
             const gen = new ValibotGenerator(analysis);
             const target = g.path ?? 'src/validators/valibot';
             const files = await gen.generate(
@@ -195,16 +220,15 @@ program
             files.forEach((f: string) => console.log('  -', chalk.cyan(f)));
           } catch (e: any) {
             progress.stop();
-            console.error(
-              chalk.red('Valibot generator missing.'),
-              chalk.yellow('\nInstall with: npm install @drzl/generator-valibot')
-            );
-            console.error(chalk.gray('Error details:'), e?.message ?? e);
+            reportGeneratorFailure(g.kind, e);
             process.exit(1);
           }
         } else if (g.kind === 'arktype') {
           try {
-            const { ArkTypeGenerator } = await import('@drzl/generator-arktype');
+            const { ArkTypeGenerator } = await loadGenerator(
+              '@drzl/generator-arktype',
+              () => import('@drzl/generator-arktype')
+            );
             const gen = new ArkTypeGenerator(analysis);
             const target = g.path ?? 'src/validators/arktype';
             const files = await gen.generate(
@@ -215,16 +239,19 @@ program
             files.forEach((f: string) => console.log('  -', chalk.cyan(f)));
           } catch (e: any) {
             progress.stop();
-            console.error(
-              chalk.red('ArkType generator missing.'),
-              chalk.yellow('\nInstall with: npm install @drzl/generator-arktype')
-            );
-            console.error(chalk.gray('Error details:'), e?.message ?? e);
+            reportGeneratorFailure(g.kind, e);
             process.exit(1);
           }
         } else if (g.kind === 'json-schema') {
           try {
-            const { JsonSchemaGenerator } = await import('@drzl/generator-json-schema');
+            // An optional dependency, unlike the other generators, until its npm trusted publisher
+            // exists. A missing optional dependency is skipped rather than failing the install,
+            // which is what keeps `npm i @drzl/cli` working meanwhile, and is why this one really
+            // can be absent on a normal install.
+            const { JsonSchemaGenerator } = await loadGenerator(
+              '@drzl/generator-json-schema',
+              () => import('@drzl/generator-json-schema')
+            );
             const gen = new JsonSchemaGenerator(analysis);
             const target = g.path ?? 'src/validators/json-schema';
             const files = await gen.generate({
@@ -238,20 +265,15 @@ program
             files.forEach((f: string) => console.log('  -', chalk.cyan(f)));
           } catch (e: any) {
             progress.stop();
-            console.error(
-              chalk.red('JSON Schema generator missing.'),
-              chalk.yellow('\nInstall with: npm install @drzl/generator-json-schema'),
-              // An optional dependency, unlike the other generators, until its npm trusted
-              // publisher exists. A missing optional dependency is skipped rather than failing
-              // the install, which is what keeps `npm i @drzl/cli` working meanwhile.
-              ''
-            );
-            console.error(chalk.gray('Error details:'), e?.message ?? e);
+            reportGeneratorFailure(g.kind, e);
             process.exit(1);
           }
         } else if (g.kind === 'typebox') {
           try {
-            const { TypeBoxGenerator } = await import('@drzl/generator-typebox');
+            const { TypeBoxGenerator } = await loadGenerator(
+              '@drzl/generator-typebox',
+              () => import('@drzl/generator-typebox')
+            );
             const gen = new TypeBoxGenerator(analysis);
             const target = g.path ?? 'src/validators/typebox';
             const files = await gen.generate(
@@ -262,11 +284,7 @@ program
             files.forEach((f: string) => console.log('  -', chalk.cyan(f)));
           } catch (e: any) {
             progress.stop();
-            console.error(
-              chalk.red('TypeBox generator missing.'),
-              chalk.yellow('\nInstall with: npm install @drzl/generator-typebox')
-            );
-            console.error(chalk.gray('Error details:'), e?.message ?? e);
+            reportGeneratorFailure(g.kind, e);
             process.exit(1);
           }
         }
@@ -501,7 +519,10 @@ program
             newFiles.push(...files);
           } else if (g.kind === 'service') {
             try {
-              const { ServiceGenerator } = await import('@drzl/generator-service');
+              const { ServiceGenerator } = await loadGenerator(
+                '@drzl/generator-service',
+                () => import('@drzl/generator-service')
+              );
               const gen = new ServiceGenerator(analysis);
               const target = g.path ?? 'src/services';
               const files = await gen.generate({
@@ -521,16 +542,15 @@ program
                   );
               newFiles.push(...files);
             } catch (e: any) {
-              console.error(
-                chalk.red('Service generator missing.'),
-                chalk.yellow('\nInstall with: npm install @drzl/generator-service')
-              );
-              console.error(chalk.gray('Error details:'), e?.message ?? e);
+              reportGeneratorFailure(g.kind, e);
               return;
             }
           } else if (g.kind === 'zod') {
             try {
-              const { ZodGenerator } = await import('@drzl/generator-zod');
+              const { ZodGenerator } = await loadGenerator(
+                '@drzl/generator-zod',
+                () => import('@drzl/generator-zod')
+              );
               const gen = new ZodGenerator(analysis);
               const target = g.path ?? 'src/validators/zod';
               const files = await gen.generate({
@@ -550,16 +570,15 @@ program
                   );
               newFiles.push(...files);
             } catch (e: any) {
-              console.error(
-                chalk.red('Zod generator missing.'),
-                chalk.yellow('\nInstall with: npm install @drzl/generator-zod')
-              );
-              console.error(chalk.gray('Error details:'), e?.message ?? e);
+              reportGeneratorFailure(g.kind, e);
               return;
             }
           } else if (g.kind === 'valibot') {
             try {
-              const { ValibotGenerator } = await import('@drzl/generator-valibot');
+              const { ValibotGenerator } = await loadGenerator(
+                '@drzl/generator-valibot',
+                () => import('@drzl/generator-valibot')
+              );
               const gen = new ValibotGenerator(analysis);
               const target = g.path ?? 'src/validators/valibot';
               const files = await gen.generate({
@@ -579,16 +598,15 @@ program
                   );
               newFiles.push(...files);
             } catch (e: any) {
-              console.error(
-                chalk.red('Valibot generator missing.'),
-                chalk.yellow('\nInstall with: npm install @drzl/generator-valibot')
-              );
-              console.error(chalk.gray('Error details:'), e?.message ?? e);
+              reportGeneratorFailure(g.kind, e);
               return;
             }
           } else if (g.kind === 'arktype') {
             try {
-              const { ArkTypeGenerator } = await import('@drzl/generator-arktype');
+              const { ArkTypeGenerator } = await loadGenerator(
+                '@drzl/generator-arktype',
+                () => import('@drzl/generator-arktype')
+              );
               const gen = new ArkTypeGenerator(analysis);
               const target = g.path ?? 'src/validators/arktype';
               const files = await gen.generate({
@@ -608,11 +626,7 @@ program
                   );
               newFiles.push(...files);
             } catch (e: any) {
-              console.error(
-                chalk.red('ArkType generator missing.'),
-                chalk.yellow('\nInstall with: npm install @drzl/generator-arktype')
-              );
-              console.error(chalk.gray('Error details:'), e?.message ?? e);
+              reportGeneratorFailure(g.kind, e);
               return;
             }
           }

@@ -215,8 +215,14 @@ describe('the built validation-core entry', () => {
     // The resolver's own words for a package that is not installed, which is what separates this
     // from a mocked import and from a formatter that loaded and then misbehaved. Asserted for both,
     // since the prose of the message names both packages on its own and would match either way.
+    //
+    // The two engines reach their package differently and their resolvers say different things, so
+    // these are not the same string with a name swapped. Prettier is imported, and an ESM import
+    // that cannot resolve says "Cannot find package". Biome is spawned as the binary it publishes,
+    // which is found by resolving its manifest with `createRequire`, and that says "Cannot find
+    // module" naming the manifest path. Both are quoted from a run rather than composed here.
     expect(run.stderr).toContain("Cannot find package 'prettier'");
-    expect(run.stderr).toContain("Cannot find package '@biomejs/biome'");
+    expect(run.stderr).toContain("Cannot find module '@biomejs/biome/package.json'");
   });
 });
 

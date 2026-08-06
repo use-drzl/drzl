@@ -1,3 +1,8 @@
+import { spawn } from 'node:child_process';
+import { existsSync, readFileSync, statSync } from 'node:fs';
+import { createRequire } from 'node:module';
+import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import type { Analysis, Column } from '@drzl/analyzer';
 import type { ImportExtension } from './files.js';
 import type { AffixOptions } from './naming.js';
@@ -254,12 +259,10 @@ const ENGINE_PACKAGE = { prettier: 'prettier', biome: '@biomejs/biome' } as cons
  * and "installed and then threw" reach this from the same branch and nothing else distinguishes
  * them.
  *
- * The advice differs because the remedy does. Installing prettier fixes the prettier case; it is
- * an optional peer of this package and that is the whole of it. Installing `@biomejs/biome` does
- * not fix the biome case: at 2.5.7 that package declares `bin` and no `main`, `module` or
- * `exports`, so importing it as a module rejects with ERR_MODULE_NOT_FOUND whether or not it is
- * installed. Measured, against a real install of it. So the biome message points at the CLI and at
- * the other engines rather than telling anyone to install something that would not help.
+ * Installing the named package is the remedy in both cases, which was not true of biome until the
+ * engine started running the Biome binary rather than importing the package: `@biomejs/biome`
+ * publishes `bin` and no module entry point, so the old advice had to send people to the CLI by
+ * hand. See `formatBiome` below for what was measured.
  */
 function reportUnusableFormatter(engine: 'prettier' | 'biome', cause: unknown): void {
   if (reportedEngines.has(engine)) return;
@@ -269,13 +272,142 @@ function reportUnusableFormatter(engine: 'prettier' | 'biome', cause: unknown): 
     engine === 'prettier'
       ? 'Install prettier, which is an optional peer of @drzl/validation-core, or set ' +
         'format.engine to "auto" to accept whatever formatter is present.'
-      : 'drzl formats with Biome by importing @biomejs/biome as a module; run the Biome CLI ' +
-        'over the output instead, or set format.engine to "auto" or "prettier".';
+      : 'Install @biomejs/biome in the project being generated into, or set format.engine to ' +
+        '"auto" or "prettier".';
   const reason = cause instanceof Error ? cause.message : String(cause);
   console.warn(
     `[drzl] format.engine is "${engine}" but ${pkg} could not be used, so the generated files ` +
       `were left unformatted. ${remedy} Reason: ${reason}`
   );
+}
+
+/**
+ * The nearest directory at or above `from` that exists.
+ *
+ * A child process cannot be spawned into a directory that is not there: `spawn` fails with ENOENT
+ * before the command runs. Every generator calls `fs.mkdir(out, { recursive: true })` before its
+ * first `formatCode`, so in a real run the output directory exists, but `formatCode` is exported
+ * and its own tests pass paths under a temp directory that was never created. Walking up is what
+ * makes that a formatted file rather than a spawn failure. `path.dirname` is its own fixed point at
+ * the filesystem root, which is what terminates this.
+ */
+function nearestExistingDir(from: string): string {
+  let dir = path.dirname(path.resolve(from));
+  for (;;) {
+    try {
+      if (statSync(dir).isDirectory()) return dir;
+    } catch {
+      // Not there, or not readable. Either way the parent is the next thing to try.
+    }
+    const parent = path.dirname(dir);
+    if (parent === dir) return dir;
+    dir = parent;
+  }
+}
+
+/**
+ * Locate the Biome executable belonging to the project being generated into.
+ *
+ * `@biomejs/biome` cannot be imported. Its manifest declares `bin` and carries no `main`, no
+ * `module`, no `exports` and no `types`, and the tarball has no `index.js` for Node's legacy main
+ * resolution to fall back to, so `import('@biomejs/biome')` rejects with ERR_MODULE_NOT_FOUND on a
+ * complete and correct install. That is not a recent regression: it holds at 1.0.0, 1.5.3, 1.9.4,
+ * 2.0.6, 2.4.16 and 2.5.7, measured by installing each one and importing it, so the engine had
+ * never formatted anything for anybody. `bin` is what the package publishes, so `bin` is what this
+ * uses.
+ *
+ * The manifest is reachable as a subpath *because* there is no `exports` field to gate it, which is
+ * the same fact from the other side: `require.resolve('@biomejs/biome')` throws MODULE_NOT_FOUND
+ * against an install where `require.resolve('@biomejs/biome/package.json')` succeeds.
+ *
+ * Resolution starts from the consumer's project rather than from this package, which is why
+ * `@biomejs/biome` is not declared as a peer here the way prettier is. Prettier is imported, so it
+ * has to resolve from validation-core's own location and pnpm links it there only because the peer
+ * entry exists. Biome is spawned, and the install that matters is the one in the project the files
+ * are being written into.
+ */
+function biomeBinary(startDir: string): string {
+  const require_ = createRequire(pathToFileURL(path.join(startDir, 'noop.js')));
+  // `paths` covers the case where the output directory sits outside the project, as it does for an
+  // absolute `outDir`; the process working directory is then the better anchor.
+  const manifestPath = require_.resolve('@biomejs/biome/package.json', {
+    paths: [startDir, process.cwd()],
+  });
+  const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
+  // A string at 1.5.3 and below, an object from 1.9.4 on. Both shapes are still installable.
+  const relative = typeof manifest.bin === 'string' ? manifest.bin : manifest.bin?.biome;
+  if (typeof relative !== 'string') {
+    throw new Error(`@biomejs/biome at ${manifestPath} declares no biome binary`);
+  }
+  const binary = path.resolve(path.dirname(manifestPath), relative);
+  if (!existsSync(binary)) {
+    throw new Error(`@biomejs/biome declares a binary at ${relative}, and there is nothing there`);
+  }
+  return binary;
+}
+
+/**
+ * Format one file's worth of code by piping it through `biome format --stdin-file-path`.
+ *
+ * Supported as far back as 1.5.3, checked by running it there and at 2.5.7.
+ *
+ * Three things about the child are load-bearing, each measured against the real 2.5.7 binary rather
+ * than assumed:
+ *
+ * 1. Only the exit status may be believed. Biome exits 1 and *echoes the input back on stdout* when
+ *    the formatter is disabled in the consumer's biome.json, and again for a file extension it does
+ *    not format. Code that returned stdout whenever stdout was non-empty would hand back unformatted
+ *    text as though it had been formatted, and nothing downstream inspects whitespace.
+ * 2. stdout is collected by hand rather than through `execFile`, whose default 1 MB `maxBuffer`
+ *    truncated a 2.9 MB result to exactly 1048576 bytes and failed with
+ *    ERR_CHILD_PROCESS_STDIO_MAXBUFFER. Generated barrels reach that size.
+ * 3. The child runs in the directory the file is being written to. Biome finds biome.json by
+ *    walking up from its working directory and not from `--stdin-file-path`, so the working
+ *    directory is the whole of whose configuration applies; running the same command from an
+ *    unrelated directory picked up a different biome.json and exited non-zero. That also makes the
+ *    consumer's config apply without passing `--config-path`, whose argument means a directory at
+ *    1.x and either a directory or a file at 2.x, and so cannot be passed compatibly.
+ *
+ * `process.execPath` rather than the file's shebang: `bin/biome` is a Node launcher at every
+ * published version, and a shebang means nothing on Windows.
+ */
+function formatBiome(code: string, filePath: string, configAnchor: string): Promise<string> {
+  const cwd = nearestExistingDir(configAnchor);
+  const binary = biomeBinary(nearestExistingDir(filePath));
+  return new Promise<string>((resolve, reject) => {
+    const child = spawn(
+      process.execPath,
+      [binary, 'format', `--stdin-file-path=${path.basename(filePath)}`],
+      { cwd, stdio: ['pipe', 'pipe', 'pipe'] }
+    );
+    let out = '';
+    let err = '';
+    child.stdout.setEncoding('utf8');
+    child.stdout.on('data', (chunk: string) => (out += chunk));
+    child.stderr.setEncoding('utf8');
+    child.stderr.on('data', (chunk: string) => (err += chunk));
+    child.on('error', reject);
+    // Biome can exit before reading all of stdin, and an unhandled EPIPE on a child's stdin is an
+    // uncaught exception rather than a rejected promise. The exit status is what decides the
+    // outcome, so the write failing is not separately interesting.
+    child.stdin.on('error', () => {});
+    child.on('close', (status) => {
+      if (status !== 0) {
+        const detail = err.trim().split('\n')[0] || out.trim().split('\n')[0] || 'no output';
+        reject(new Error(`biome format exited with ${status}: ${detail}`));
+        return;
+      }
+      // Empty stdout is the right answer for empty input, measured, and never for anything else.
+      // This return value is written straight to disk, so a formatter that swallowed the file would
+      // truncate it to nothing, which is a worse outcome than any formatting failure.
+      if (out === '' && code !== '') {
+        reject(new Error('biome format exited 0 but returned nothing'));
+        return;
+      }
+      resolve(out);
+    });
+    child.stdin.end(code);
+  });
 }
 
 /**
@@ -297,11 +429,11 @@ function reportUnusableFormatter(engine: 'prettier' | 'biome', cause: unknown): 
  * request, and an unmet request that produces neither formatted output nor a message reads as
  * "this is fine" when it is not: the consumer configured something, it did not happen, and nothing
  * in the run says which. So a named engine that cannot be loaded warns on stderr and still returns
- * the code, rather than throwing. Throwing would lose a whole generation over whitespace, and the
- * consumer would not even be told what for: every generator branch in the CLI except the oRPC one
- * wraps its `generate()` in a catch that prints "<name> generator missing. Install with: npm
- * install @drzl/generator-<name>", so the headline would name a package they already have and the
- * real reason would arrive as a trailing detail line. Measured, with a throw wired in on purpose.
+ * the code, rather than throwing. Throwing would lose a whole generation over whitespace, which is
+ * a bad trade even now that the CLI reports the reason faithfully: it used to answer any throw at
+ * all with "<name> generator missing. Install with: npm install @drzl/generator-<name>", naming a
+ * package the consumer already had, and it now separates an unresolvable package from a generator
+ * that ran and failed.
  */
 export async function formatCode(code: string, filePath: string, fmt?: FormatOptions) {
   if (fmt && fmt.enabled === false) return code;
@@ -322,23 +454,10 @@ export async function formatCode(code: string, filePath: string, fmt?: FormatOpt
   }
   if (engine === 'biome' || engine === 'auto') {
     try {
-      const dynamicImport: any = Function('s', 'return import(s)');
-      const biome: any = await dynamicImport('@biomejs/biome');
-      if (biome?.formatContent) {
-        const res = await biome.formatContent(code, { filePath });
-        const out = res && (res.content || res.formatted);
-        if (typeof out === 'string') return out;
-        throw new Error('@biomejs/biome formatContent returned no formatted content');
-      }
-      // Biome has shipped this entry point under both names. The second was only ever tried by
-      // the oRPC generator's private copy of this function, and is kept here so that folding the
-      // copies together takes nothing away from it.
-      if (biome?.format) {
-        const res = await biome.format(code, { filePath });
-        if (typeof res === 'string') return res;
-        throw new Error('@biomejs/biome format returned no formatted content');
-      }
-      throw new Error('@biomejs/biome exposes neither formatContent nor format');
+      // `filePath` names the file, which is where the extension comes from; the second argument is
+      // only ever used to decide which directory to run Biome in, and so honours `configPath` the
+      // same way the prettier branch above hands it to `resolveConfig`.
+      return await formatBiome(code, filePath, fmt?.configPath ?? filePath);
     } catch (err) {
       if (engine === 'biome') reportUnusableFormatter('biome', err);
     }
