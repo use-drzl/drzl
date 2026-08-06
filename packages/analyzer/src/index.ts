@@ -67,6 +67,35 @@ export interface Column {
   integer?: boolean;
 
   /**
+   * Whether the column stores and returns `NaN`, and whether it does the same for an infinity.
+   *
+   * A range cannot say this. `>=`/`<=` refuses `Infinity` whatever the two numbers are, and `NaN`
+   * compares false against both ends, so a bounded float column described by its range alone
+   * refused three values Postgres stores in it and hands back on SELECT. That is a read-path
+   * defect: every read of such a row fails validation on a column behaving exactly as documented.
+   * The generators render these as a union beside the range rather than as a wider range.
+   *
+   * Measured against PostgreSQL 18.3 through PGlite, on the bound-parameter path a validator
+   * guards. `real` and `double precision` return all three unchanged. An unconstrained `numeric`
+   * does too, but a `numeric(10,2)` refuses either infinity with `22003 numeric field overflow`
+   * while still taking `NaN`, and `integer`/`bigint` refuse all three.
+   *
+   * So `numeric` in `{ mode: 'number' }` states `allowsInfinity: false` deliberately, and it is a
+   * narrowing rather than an oversight: nothing here reads a column's precision or scale, so the
+   * two `numeric` declarations are indistinguishable, and admitting the infinities would make the
+   * schema promise what the server refuses for the commoner of the two.
+   *
+   * Postgres only, today. MySQL refuses all three on a `float`/`double` and silently stores `0.00`
+   * for a `decimal`. SQLite returns both infinities and silently turns `NaN` into NULL, which is
+   * real and is filed on its own: a column needs both halves of that answer or none.
+   *
+   * Absent on every other column, including the string mode of `numeric`, which already carries the
+   * same fact as a pattern; see `COLUMN_FORMATS.numeric` in `@drzl/validation-core`.
+   */
+  allowsNaN?: boolean;
+  allowsInfinity?: boolean;
+
+  /**
    * A string column whose contents have a shape the database enforces.
    *
    * Only formats checked against Postgres itself appear here, and the list is short because most
@@ -363,8 +392,9 @@ const MYSQL_TEXT_CAPS: Record<string, number> = {
  * What no range can express either way is `Infinity` and `NaN`. Postgres stores and returns both
  * in `real` and in `double precision`; a `>=`/`<=` pair refuses them whatever the numbers are, and
  * `z.number()` and `Type.Number()` refuse them with no bound at all. Describing that column
- * honestly needs a union rather than a range, in every generator, which is filed rather than done
- * here.
+ * honestly needs a union rather than a range, in every generator, so the fact is carried beside the
+ * range as `allowsNaN`/`allowsInfinity` and the generators emit that union. The range below is
+ * unchanged by it and still describes the column's finite values.
  */
 /** The largest finite float32, which is exactly where MySQL's `FLOAT` stops. */
 const FLOAT32_MAX = '340282346638528859811704183484516925440';
@@ -606,6 +636,20 @@ export function describeV1Column(column: any): Partial<Column> | null {
       out.integer = false;
       out.tsType = 'number';
       out.dbType = semantic === 'float' ? 'REAL' : 'DOUBLE';
+      // Postgres stores `NaN` and both infinities in either width and returns them on SELECT, so
+      // the range above describes the *finite* values and these say the rest. See `allowsNaN`.
+      //
+      // The codec, for the reason the bound above uses it: `float4` and `float8` are Postgres's
+      // spellings and no other dialect states them. MySQL says `float`, `double` and `real`, and
+      // SQLite, SingleStore, Cockroach and MSSQL state no codec at all on 1.0.0-rc.4, all swept off
+      // real columns. Cockroach is deliberately outside this, unlike the bound: it speaks the
+      // Postgres wire protocol but its float behaviour here was not measured, and Postgres's answer
+      // is not free to assume when the same file already records it saturating magnitudes to
+      // infinity where Postgres refuses them.
+      if (codec === 'float4' || codec === 'float8') {
+        out.allowsNaN = true;
+        out.allowsInfinity = true;
+      }
       break;
     }
     case 'uuid':
@@ -749,6 +793,18 @@ export function describeV1Column(column: any): Partial<Column> | null {
         out.dbType = 'NUMERIC';
         out.integer = false;
         [out.min, out.max] = JS_SAFE_INTEGER_BOUNDS;
+        // Postgres stores `NaN` in a `numeric` of any width and returns it, so the bounds above
+        // describe the finite values and this says the rest. Not the infinities: an unconstrained
+        // `numeric` takes them and a `numeric(10,2)` answers `22003 numeric field overflow`, and
+        // nothing here reads precision or scale, so the two cannot be told apart. Admitting them
+        // would promise what the server refuses for the commoner declaration.
+        //
+        // `numeric:number` is Postgres's codec for the number mode. MySQL and SingleStore say
+        // `decimal:number` and store `0.00` for all three, and SQLite says nothing at all.
+        if (codec === 'numeric:number') {
+          out.allowsNaN = true;
+          out.allowsInfinity = false;
+        }
       } else if (js === 'string') {
         out.tsType = 'string';
         out.dbType = codec === 'varchar' ? 'VARCHAR' : codec === 'char' ? 'CHAR' : 'TEXT';
@@ -1278,6 +1334,29 @@ export class SchemaAnalyzer {
   };
 
   /**
+   * The Postgres number columns that hold a non-finite double, and which of the three each holds.
+   *
+   * The class-name half of what `describeV1Column` reads off the codec, and the two must agree: a
+   * fact stated on one path and not the other is a schema that changes when the user upgrades
+   * drizzle, which the cross-major diff in `verify-packed.sh` fails on. These three class names are
+   * the same on both majors, read off real `pgTable` columns on 0.45.2 and on 1.0.0-rc.4, so this
+   * table also answers for a v1 column and the two answers are identical rather than merely
+   * compatible. non-finite-numbers.spec.ts asserts that agreement through the real analyzer.
+   *
+   * Postgres only. No MySQL, SingleStore or SQLite class belongs here: MySQL refuses all three on a
+   * `float`/`double` and stores `0.00` for a `decimal`, and SQLite returns both infinities while
+   * silently turning `NaN` into NULL, which is a different answer that has to arrive whole.
+   *
+   * `PgNumeric` is absent because its value is a string, and its pattern already accepts `NaN` and
+   * `Infinity`. `PgNumericNumber` states `infinity: false` on purpose; see `Column.allowsNaN`.
+   */
+  private static readonly PG_NON_FINITE: Record<string, { nan: boolean; infinity: boolean }> = {
+    PgReal: { nan: true, infinity: true },
+    PgDoublePrecision: { nan: true, infinity: true },
+    PgNumericNumber: { nan: true, infinity: false },
+  };
+
+  /**
    * Constraints the column definition already carries, which the analysis used to throw away.
    *
    * Everything here is read off Drizzle's own column instance, so it states what the schema
@@ -1285,9 +1364,15 @@ export class SchemaAnalyzer {
    */
   private columnConstraints(
     column: any
-  ): Pick<Column, 'maxLength' | 'min' | 'max' | 'format' | 'integer'> {
+  ): Pick<
+    Column,
+    'maxLength' | 'min' | 'max' | 'format' | 'integer' | 'allowsNaN' | 'allowsInfinity'
+  > {
     const ctor = column?.constructor?.name ?? '';
-    const out: Pick<Column, 'maxLength' | 'min' | 'max' | 'format' | 'integer'> = {};
+    const out: Pick<
+      Column,
+      'maxLength' | 'min' | 'max' | 'format' | 'integer' | 'allowsNaN' | 'allowsInfinity'
+    > = {};
 
     // `length` is set by varchar/char across every dialect, and by SQLite's `text({length})`.
     const length = column?.length ?? column?.config?.length;
@@ -1315,6 +1400,15 @@ export class SchemaAnalyzer {
       const inexact = SchemaAnalyzer.INEXACT_RANGES[ctor];
       if (inexact) [out.min, out.max] = inexact;
       out.integer = false;
+    }
+
+    // Beside the range rather than inside it, because no range can hold either fact: `>=`/`<=`
+    // refuses `Infinity` whatever the bounds are and `NaN` compares false against both ends. The
+    // range describes the finite values of the column and these two describe the rest.
+    const nonFinite = SchemaAnalyzer.PG_NON_FINITE[ctor];
+    if (nonFinite) {
+      out.allowsNaN = nonFinite.nan;
+      out.allowsInfinity = nonFinite.infinity;
     }
 
     if (/^(Pg)?UUID$/i.test(ctor) || /Uuid$/i.test(ctor)) out.format = 'uuid';

@@ -13,6 +13,7 @@ import {
   COLUMN_FORMATS,
   insertColumns,
   isIntegerColumn,
+  nonFiniteAccepted,
   parseCheck,
   renderDuplicateFinder,
   updateColumns,
@@ -90,6 +91,54 @@ function atRange(num: string, lower?: Bound, upper?: Bound): string {
   if (lower && upper) return `${lower.value} ${MIRROR[lower.op]} ${num} ${upper.op} ${upper.value}`;
   const only = lower ?? upper;
   return only ? `${num} ${only.op} ${only.value}` : num;
+}
+
+/**
+ * How a number column that stores a non-finite double is spelled, decided in one place.
+ *
+ * Both the type expression and the narrow ask this, because they are two halves of one answer and
+ * they are exactly the pair this file has already had drift apart: a DSL that dropped its range
+ * while the narrow declined to state one is a column with no bound at all, and nothing would say
+ * so.
+ *
+ * ArkType needs less repairing than zod and TypeBox and it is not none. Measured on the installed
+ * version, and asserted in this package's non-finite spec rather than remembered:
+ *
+ *   `number` alone                    takes both infinities, refuses NaN
+ *   `(range) | number.NaN`            takes NaN                              two branches, correct
+ *   `(range) | number.NaN | ...`      REFUSES NaN                            three or more, broken
+ *   `number | number.NaN | number.Infinity | number.NegativeInfinity`        folds to two, correct
+ *
+ * The third line is an ArkType defect rather than a rule: `.json` on that type still lists the NaN
+ * branch, so the type reports a member it then rejects, and the union's discriminator is what drops
+ * it. Nothing that reads the emitted text or the parsed type can see this, only running it.
+ *
+ * So a bounded column that admits NaN *and* the infinities needs four branches and cannot have
+ * them: it emits `number | number.NaN` and its range moves to a `.narrow`, the same escape hatch
+ * the character caps and the bigint range already use. Everything else stays declarative, including
+ * the unbounded `double precision`, where ArkType folds the two infinity units back into `number`
+ * on its own and the union is two branches again.
+ */
+function atNumberPlan(
+  c: Column,
+  checks: ColumnCheck[]
+): { kind: 'plain' } | { kind: 'union'; branches: string[] } | { kind: 'narrowed' } {
+  const { nan, infinity } = nonFiniteAccepted(c);
+  if (!nan && !infinity) return { kind: 'plain' };
+  const { lower, upper, equals } = atNarrowRange(c, checks);
+  // An equality pins the column to one value and supersedes every other constraint, this included.
+  if (equals !== undefined) return { kind: 'plain' };
+  const bounded = !!(lower || upper);
+  const branches = [
+    ...(nan ? ['number.NaN'] : []),
+    // Only where a bound would otherwise exclude them. Unbounded, `number` already takes both and
+    // naming them changes nothing.
+    ...(infinity && bounded ? ['number.Infinity', 'number.NegativeInfinity'] : []),
+  ];
+  if (!branches.length) return { kind: 'plain' };
+  // Two branches is always safe, and so is any number of them with no NaN among them: the defect
+  // above is the discriminator failing to match `NaN`, which nothing else triggers.
+  return branches.length === 1 || !nan ? { kind: 'union', branches } : { kind: 'narrowed' };
 }
 
 /**
@@ -188,7 +237,13 @@ function atTypeForColumn(
       // ArkType does accept both at once: `-2147483648 <= number.integer <= 2147483647` parses
       // and rejects 1.5. Preferring the bound alone, on the theory that a range implied
       // integrality, meant every `integer()` column accepted a fraction.
-      return atRange(isIntegerColumn(c) ? 'number.integer' : 'number', lower, upper);
+      const base = isIntegerColumn(c) ? 'number.integer' : 'number';
+      const plan = atNumberPlan(c, checks);
+      // The range has gone to a narrow, so the DSL has to admit every number and let the narrow
+      // decide. See `atNumberPlan` for why a four-branch union cannot do this.
+      if (plan.kind === 'narrowed') return `${base} | number.NaN`;
+      const ranged = atRange(base, lower, upper);
+      return plan.kind === 'union' ? `${ranged} | ${plan.branches.join(' | ')}` : ranged;
     }
     case 'bigint':
       // Bare here on purpose. The string DSL cannot carry this bound at all:
@@ -367,6 +422,12 @@ function atDefaultFits(c: Column, v: unknown, dims: number): boolean {
     case 'string':
       return typeof v === 'string';
     case 'number':
+      // Still finite, and deliberately so now that a `real` column's *type* takes `NaN` and both
+      // infinities. This question is not "does the type hold it" but "can this generator write it
+      // down", and it cannot: the literal is emitted through `JSON.stringify`, which renders all
+      // three as `null`, so a `.default(NaN)` would silently become a default of `null` and be
+      // refused at import on a NOT NULL column. Declining leaves the key merely optional, which is
+      // what a default this generator cannot reproduce already gets.
       return typeof v === 'number' && Number.isFinite(v);
     case 'boolean':
       return typeof v === 'boolean';
@@ -480,7 +541,8 @@ function renderObjectShape(
       // select and update were bounded, and said closing it meant moving the default off the DSL
       // and onto the Type. `atDefault` and `onBuilder` below are that move, so the narrow and the
       // default now coexist and the skip is gone.
-      const caps = atCapNarrows(c, mode) + atBigintNarrow(c, checks);
+      const caps =
+        atCapNarrows(c, mode) + atBigintNarrow(c, checks) + atNonFiniteNarrow(c, checks);
       // A defaultable definition is only valid as an object *property*: `type("bigint = 7")`
       // throws "Defaultable definitions like 'number = 0' are only valid as properties in an
       // object or tuple" at import. A field carrying a narrow is exactly that, a `type(...)` call
@@ -641,6 +703,34 @@ function atBigintNarrow(c: Column, checks: ColumnCheck[]): string {
     equals !== undefined
       ? `exactly ${equals}`
       : `between ${lower?.value ?? 'any'} and ${upper?.value ?? 'any'}`
+  );
+}
+
+/**
+ * The range of a float column that also stores `NaN` and the infinities, as a narrow.
+ *
+ * Reached only where `atNumberPlan` says the DSL had to give the range up, which is a bounded
+ * column admitting all three. The type there is `number | number.NaN`, so this is the only thing
+ * left holding the magnitude: without it a `real` would accept 1e300, which Postgres refuses.
+ *
+ * `!Number.isFinite(v)` is the whole of the non-finite half, and it is exact here rather than
+ * approximate: this narrow is only ever built for a column that admits `NaN` and both infinities,
+ * so every value that predicate lets through is one the column stores. A column admitting `NaN`
+ * alone keeps its range in the DSL and never reaches this.
+ */
+function atNonFiniteNarrow(c: Column, checks: ColumnCheck[]): string {
+  if (c.tsType !== 'number' || c.shape) return '';
+  if (atNumberPlan(c, checks).kind !== 'narrowed') return '';
+  const { lower, upper } = atNarrowRange(c, checks);
+  const parts: ((v: string) => string)[] = [];
+  for (const b of [lower, upper]) {
+    if (b) parts.push((v) => `${v} ${b.op} ${b.value}`);
+  }
+  if (!parts.length) return '';
+  return atNarrow(
+    c,
+    (v) => `(!Number.isFinite(${v}) || (${parts.map((p) => p(v)).join(' && ')}))`,
+    `NaN, an infinity, or between ${lower?.value ?? 'any'} and ${upper?.value ?? 'any'}`
   );
 }
 

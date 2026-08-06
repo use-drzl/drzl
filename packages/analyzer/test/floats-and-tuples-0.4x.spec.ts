@@ -404,16 +404,15 @@ describe('an inexact numeric column on 0.4x', () => {
     expect(max, 'and is nowhere near +/-8388607').toBeGreaterThan(1e9);
   });
 
-  it('leaves Infinity and NaN outside every range, which the database does not', async () => {
-    // Filed, not fixed, and pinned here so it is measured rather than remembered. PGlite stores
-    // Infinity and NaN in both `real` and `double precision` and returns them unchanged. A
-    // `>=`/`<=` pair cannot admit either, whatever the numbers are, and `z.number()` and
-    // `Type.Number()` refuse both with no bound at all. Describing those columns honestly needs a
-    // union in every generator rather than a wider range.
+  it('leaves Infinity and NaN outside every range, and states them beside it', async () => {
+    // PGlite stores Infinity and NaN in both `real` and `double precision` and returns them
+    // unchanged. A `>=`/`<=` pair cannot admit either, whatever the numbers are, so the range is
+    // *not* what carries them and this asserts that it still is not: the bound on a `real` stays a
+    // finite number, and the 8 byte column stays unbounded.
     //
-    // This asserts what the analyzer states, which is the input to that: a bounded float column
-    // has a finite range and no way to say "or Infinity", and an unbounded one says nothing about
-    // it either way.
+    // The fact itself is carried beside the range, as `allowsNaN`/`allowsInfinity`, which the
+    // generators render as a union. non-finite-numbers.spec.ts is where that is measured on both
+    // majors; this pins the half that must not have changed.
     const cols = await columnsOf(
       'pg-float-inf-0.4x',
       `
@@ -423,5 +422,7 @@ describe('an inexact numeric column on 0.4x', () => {
     );
     expect(Number.isFinite(Number(cols.r.max))).toBe(true);
     expect(cols.d.max, 'nothing on the 8 byte column to admit or refuse it').toBeUndefined();
+    expect(cols.r).toMatchObject({ allowsNaN: true, allowsInfinity: true });
+    expect(cols.d).toMatchObject({ allowsNaN: true, allowsInfinity: true });
   });
 });

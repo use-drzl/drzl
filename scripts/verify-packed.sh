@@ -1890,6 +1890,19 @@ type Waiver = {
   why: string;
   /** The exact divergence, keyed `<modes>/<libraries>`. */
   divergence: Record<string, string>;
+  /**
+   * Pairings inside `libs` x `modes` that genuinely do not diverge, named one at a time.
+   *
+   * The product is asserted exactly, which is what stops a waiver covering four pairings while
+   * claiming twelve. A real divergence that misses one cell of the product therefore has nowhere
+   * to go, and the alternatives are both worse: widening `libs` or `modes` until the product fits
+   * understates which pairings are waived, and splitting the column across two keys is not
+   * possible since the key is the column.
+   *
+   * Asserted in the fail-closed direction. A pairing named here that *does* diverge fails the run,
+   * so this can only ever shrink what the waiver claims, never quietly absorb a new difference.
+   */
+  except?: string[];
 };
 
 const LIB_NAMES = ['zod', 'valibot', 'arktype', 'typebox'];
@@ -2104,9 +2117,25 @@ const ALLOWED: Record<string, Waiver> = {
   //                      only valibot and arktype do, because `z.number()` and `Type.Number()`
   //                      refuse it with no bound at all. Filed: describing that column honestly
   //                      needs a union in every generator rather than a range.
-  'pg/c_real': { libs: LIB_NAMES, modes: MODE_NAMES, why: 'bounded where Postgres stops accepting rather than at drizzle-zod +/-8388607, which refuses rows the column returns', divergence: { '*/*': `L: 9000000, 2147483648, 9007199254740993, 3.4028235e38 | T: ` } },
+  // The arktype update arm gains `Infinity` alone rather than `NaN, Infinity`. Not a gap in the
+  // fix: official `drizzle-orm/arktype` already accepts NaN in its union-shaped arms, so NaN was
+  // never a divergence there and still is not. Measured directly: `{x:'number'}` rejects NaN,
+  // `{x:'(bound | null)'}` accepts it.
+  'pg/c_real': { libs: LIB_NAMES, modes: MODE_NAMES, why: 'bounded where Postgres stops accepting rather than at drizzle-zod +/-8388607, which refuses rows the column returns. Non-finite values were added on top: Postgres stores NaN and both infinities in a float column and returns them, and a Select schema refusing what the database hands back fails on real rows (AW).', divergence: { 'select,insert/*': `L: 9000000, 2147483648, 9007199254740993, 3.4028235e38, NaN, Infinity | T: `, 'update/zod,valibot,typebox': `L: 9000000, 2147483648, 9007199254740993, 3.4028235e38, NaN, Infinity | T: `, 'update/arktype': `L: 9000000, 2147483648, 9007199254740993, 3.4028235e38, Infinity | T: ` } },
   'mysql/m_float': { libs: LIB_NAMES, modes: MODE_NAMES, why: 'as pg/c_real, but at MySQL edge: a real MySQL 8.4 refuses 3.4028235e38 where Postgres takes it', divergence: { '*/*': `L: 9000000, 2147483648, 9007199254740993 | T: ` } },
-  'pg/c_double': { libs: LIB_NAMES, modes: MODE_NAMES, why: 'no finite bound is true of an 8 byte float, which holds every finite JS number', divergence: { '*/zod,typebox': `L: 9007199254740993, 3.4028235e38 | T: `, '*/valibot,arktype': `L: 9007199254740993, 3.4028235e38, Infinity | T: ` } },
+  // All four libraries now carry the same signature, where zod and typebox used to differ from
+  // valibot and arktype on the infinities. That convergence is the fix: the two that refused a
+  // non-finite number no longer do.
+  // NaN and not the infinities, and the asymmetry is the point. Postgres takes NaN into a numeric
+  // whether or not it carries a precision, and takes an infinity only when it does not: a
+  // `numeric(10,2)` answers `22003 numeric field overflow`. The analyzer does not read precision
+  // or scale at all, so it cannot tell the two declarations apart, and accepting would make the
+  // schema admit what the server refuses for the commoner one. Narrower on purpose (AW).
+  //
+  // arktype on update is excepted because official already accepts NaN there, so there is nothing
+  // to waive. It is the one cell of the twelve that reports parity.
+  'pg/c_numeric_n': { libs: LIB_NAMES, modes: MODE_NAMES, except: ['update/arktype'], why: 'Postgres stores NaN in a numeric column and returns it; official refuses the value the database hands back', divergence: { '*/*': `L: NaN | T: ` } },
+  'pg/c_double': { libs: LIB_NAMES, modes: MODE_NAMES, why: 'no finite bound is true of an 8 byte float, which holds every finite JS number. Non-finite values were added on top: Postgres stores NaN and both infinities in a float column and returns them, and a Select schema refusing what the database hands back fails on real rows (AW).', divergence: { 'select,insert/*': `L: 9007199254740993, 3.4028235e38, NaN, Infinity | T: `, 'update/zod,valibot,typebox': `L: 9007199254740993, 3.4028235e38, NaN, Infinity | T: `, 'update/arktype': `L: 9007199254740993, 3.4028235e38, Infinity | T: ` } },
   'mysql/m_real': { libs: LIB_NAMES, modes: MODE_NAMES, why: 'as pg/c_double; MySQL REAL is a synonym for DOUBLE', divergence: { '*/zod,typebox': `L: 9007199254740993, 3.4028235e38 | T: `, '*/valibot,arktype': `L: 9007199254740993, 3.4028235e38, Infinity | T: ` } },
   'mysql/m_double': { libs: LIB_NAMES, modes: MODE_NAMES, why: 'as pg/c_double', divergence: { '*/zod,typebox': `L: 9007199254740993, 3.4028235e38 | T: `, '*/valibot,arktype': `L: 9007199254740993, 3.4028235e38, Infinity | T: ` } },
   'sqlite/s_real': { libs: LIB_NAMES, modes: MODE_NAMES, why: 'as pg/c_double; SQLite REAL is an 8 byte IEEE float', divergence: { '*/zod,typebox': `L: 9007199254740993, 3.4028235e38 | T: `, '*/valibot,arktype': `L: 9007199254740993, 3.4028235e38, Infinity | T: ` } },
@@ -2162,7 +2191,10 @@ const ALLOWED: Record<string, Waiver> = {
   // wrapping is where a constraint gets lost, and a signature identical to the twin's is the
   // evidence that nothing was lost. Three have no twin and they are the three CHECK columns,
   // because no column of `matrix` carries a CHECK.
-  'pg/n_real': { libs: LIB_NAMES, modes: MODE_NAMES, why: 'as pg/c_real, through the nullable wrapper', divergence: { '*/*': `L: 9000000, 2147483648, 9007199254740993, 3.4028235e38 | T: ` } },
+  // Every arktype arm gains `Infinity` alone here, where `c_real` above diverges only on update:
+  // the nullable wrapper makes all three modes union shaped, and official accepts NaN in all of
+  // them. Same reason, wider reach.
+  'pg/n_real': { libs: LIB_NAMES, modes: MODE_NAMES, why: 'as pg/c_real, through the nullable wrapper', divergence: { '*/zod,valibot,typebox': `L: 9000000, 2147483648, 9007199254740993, 3.4028235e38, NaN, Infinity | T: `, '*/arktype': `L: 9000000, 2147483648, 9007199254740993, 3.4028235e38, Infinity | T: ` } },
   'pg/c_bytea_null': { libs: LIB_NAMES, modes: MODE_NAMES, why: 'as pg/c_bytea, through the nullable wrapper', divergence: { '*/*': `L: Uint8Array | T: ` } },
   'pg/valibot/n_json': { libs: ['valibot'], modes: MODE_NAMES, why: 'as pg/valibot/c_json', divergence: { '*/*': `L:  | T: Infinity, Date, Buffer, Uint8Array` } },
   'pg/valibot/n_point': { libs: ['valibot'], modes: MODE_NAMES, why: 'as pg/valibot/c_point', divergence: { '*/*': `L:  | T: [1,2,3]` } },
@@ -2381,7 +2413,6 @@ const CROSS_ALLOWED: Record<string, { why: string; divergence: string }> = {
   //
   // No `real` entry: the float4 bound refuses Infinity in all four, so they agree there for a
   // reason that has nothing to do with the libraries.
-  'pg/c_double': { why: 'z.number() and Type.Number() refuse a non-finite number with no bound; v.number() and arktype number accept one, as Postgres does', divergence: `Infinity: valibot/arktype accept, zod/typebox reject` },
   'mysql/m_real': { why: 'as pg/c_double', divergence: `Infinity: valibot/arktype accept, zod/typebox reject` },
   'mysql/m_double': { why: 'as pg/c_double', divergence: `Infinity: valibot/arktype accept, zod/typebox reject` },
   'sqlite/s_real': { why: 'as pg/c_double', divergence: `Infinity: valibot/arktype accept, zod/typebox reject` },
@@ -2412,7 +2443,6 @@ const CROSS_ALLOWED: Record<string, { why: string; divergence: string }> = {
    * strict ones, exactly as with `Infinity` on the 8 byte floats above, and the honest description
    * of a Postgres float column still needs a union in every generator rather than a range.
    */
-  'pg/n_real': { why: "arktype's number refuses NaN and its (number | null) accepts one, as Postgres does", divergence: `NaN: arktype accept, zod/valibot/typebox reject` },
   'mysql/m_n_float': { why: 'as pg/n_real', divergence: `NaN: arktype accept, zod/valibot/typebox reject` },
   'sqlite/s_n_real': { why: 'as pg/n_real on NaN, and as pg/c_double on Infinity, which no bound holds back here', divergence: `NaN: arktype accept, zod/valibot/typebox reject; Infinity: valibot/arktype accept, zod/typebox reject` },
   // No bigint entry either, for the reason given in ALLOWED: arktype now bounds a bigint with a
@@ -3153,7 +3183,15 @@ for (const [key, seen] of seenAll) {
   const wantModes = [...entry.modes].sort().join(',');
   if (gotLibs !== wantLibs) waiverProblems.push(`${name}[${key}] declares libs ${wantLibs}, measured ${gotLibs}`);
   if (gotModes !== wantModes) waiverProblems.push(`${name}[${key}] declares modes ${wantModes}, measured ${gotModes}`);
-  const wantPairings = entry.libs.length * entry.modes.length;
+  const excepted = entry.except ?? [];
+  const wrongly = excepted.filter((x) => seen.has(x));
+  if (wrongly.length) {
+    waiverProblems.push(
+      `${name}[${key}] excepts ${wrongly.join(', ')}, which diverged on this run. ` +
+        `Remove the exception or the waiver is understating what it covers.`
+    );
+  }
+  const wantPairings = entry.libs.length * entry.modes.length - excepted.length;
   if (seen.size !== wantPairings) {
     waiverProblems.push(
       `${name}[${key}] declares ${wantPairings} pairings, measured ${seen.size}: ` +
@@ -4734,41 +4772,17 @@ if (crashed.length) {
  * still fails below.
  */
 /**
- * Rejections that are DRZL's own defect, filed and pinned rather than fixed in this change.
+ * Rejections that are DRZL's own defect, filed and pinned rather than fixed.
  *
- * Postgres float and numeric columns store `NaN`, `Infinity` and `-Infinity`, and the driver hands
- * them back as those JavaScript values. The emitted number schema refuses all three, so reading a
- * row that holds one fails validation on a column that is behaving exactly as documented. That is
- * the failure this whole stage exists to detect, and the first thing it detected.
+ * Empty, and that is a result rather than a default. It held five pins when this stage was written:
+ * `c_real` and `c_double` on NaN and on Infinity, and `c_numeric_n` on NaN, all cases where Postgres
+ * stores a value, returns it, and the emitted schema refused it. Fixing that (AW) made every one of
+ * them stop firing, and a pin that stops firing fails the run, which is how the fix reported itself
+ * here rather than needing to be checked for by hand.
  *
- * Not waived, and kept apart from the two ledgers above for that reason: those say the schema is
- * right, this says it is wrong. Fixing it changes emitted output for every float column and moves
- * DRZL away from `drizzle-orm`, which rejects these too, so it goes in its own change with its own
- * cascade through the parity ledgers. Addendum AW.
- *
- * Pinned exactly, in both directions: an unpinned rejection here still fails, and a pin that stops
- * firing fails too, which is what will report the fix when it lands.
+ * Kept rather than deleted so the next one has somewhere to go that is asserted in both directions.
  */
-const DEFECTS: Record<string, { why: string; cases: { label: string; returned: string }[] }> = {
-  c_real: {
-    why: 'real() refuses NaN and Infinity, which Postgres stores and returns',
-    cases: [
-      { label: 'NaN', returned: 'NaN' },
-      { label: 'Infinity', returned: 'Infinity' },
-    ],
-  },
-  c_double: {
-    why: 'doublePrecision() refuses NaN and Infinity, which Postgres stores and returns',
-    cases: [
-      { label: 'NaN', returned: 'NaN' },
-      { label: 'Infinity', returned: 'Infinity' },
-    ],
-  },
-  c_numeric_n: {
-    why: 'numeric({ mode: number }) refuses NaN, which Postgres stores and returns',
-    cases: [{ label: 'NaN', returned: 'NaN' }],
-  },
-};
+const DEFECTS: Record<string, { why: string; cases: { label: string; returned: string }[] }> = {};
 
 const excusedNarrow = new Set<string>();
 const excusedLossy = new Set<string>();
@@ -7144,22 +7158,37 @@ const ALLOWED: Record<string, Entry> = {
   // `pg/c_numeric_n` is deliberately not among them. Its bound is the safe-integer range, which is
   // about what a JS number can carry rather than about the column, official emits the same one,
   // and Postgres is stricter than both: it refuses 2147483648 into a `numeric(10,2)`.
+  // The arktype update arm gains `Infinity` alone. Official arktype already accepts NaN in its
+  // union-shaped arms, so NaN was never a divergence there. Same split as the v1 pass.
   'pg/c_real': {
     libs: LIB_NAMES,
     modes: MODE_NAMES,
-    divergence: { '*/*': `L: 9000000, 2147483648, 9007199254740993, 3.4028235e38 | T: ` },
-    drzl: 'a number within the magnitude Postgres accepts into a real',
+    divergence: {
+      'select,insert/*': `L: 9000000, 2147483648, 9007199254740993, 3.4028235e38, NaN, Infinity | T: `,
+      'update/zod,valibot,typebox': `L: 9000000, 2147483648, 9007199254740993, 3.4028235e38, NaN, Infinity | T: `,
+      'update/arktype': `L: 9000000, 2147483648, 9007199254740993, 3.4028235e38, Infinity | T: `,
+    },
+    drzl: 'a number within the magnitude Postgres accepts into a real, plus the non-finite values it stores',
     official: 'a number within +/-8388607, which refuses rows the column returns',
     filed: 'not a defect: the database is the arbiter, see the same key in the v1 pass',
   },
+  // NaN and not the infinities, because Postgres takes an infinity into a numeric only when the
+  // column carries no precision and the analyzer does not read precision at all. arktype on update
+  // is excepted: official already accepts NaN there, so there is nothing to waive. See the v1 copy
+  // of this entry for the full reasoning.
+  'pg/c_numeric_n': { libs: LIB_NAMES, modes: MODE_NAMES, except: ['update/arktype'], divergence: { '*/*': `L: NaN | T: ` }, drzl: 'a number, plus the NaN Postgres stores in a numeric column', official: 'a number, refusing the NaN the database hands back', filed: 'not a defect: as pg/c_real' },
   // Not `as pg/c_real` in the signature, which it was until MySQL was measured: the two 4 byte
   // floats have different edges, and `3.4028235e38` is the probe that says so.
   'mysql/m_float': { libs: LIB_NAMES, modes: MODE_NAMES, divergence: { '*/*': `L: 9000000, 2147483648, 9007199254740993 | T: ` }, drzl: 'as pg/c_real, at the narrower MySQL edge', official: 'as pg/c_real', filed: 'as pg/c_real' },
   'pg/c_double': {
     libs: LIB_NAMES,
     modes: MODE_NAMES,
-    divergence: { '*/zod,typebox': `L: 9007199254740993, 3.4028235e38 | T: `, '*/valibot,arktype': `L: 9007199254740993, 3.4028235e38, Infinity | T: ` },
-    drzl: 'an unbounded number, because no finite bound is true of an 8 byte float',
+    divergence: {
+      'select,insert/*': `L: 9007199254740993, 3.4028235e38, NaN, Infinity | T: `,
+      'update/zod,valibot,typebox': `L: 9007199254740993, 3.4028235e38, NaN, Infinity | T: `,
+      'update/arktype': `L: 9007199254740993, 3.4028235e38, Infinity | T: `,
+    },
+    drzl: 'an unbounded number, because no finite bound is true of an 8 byte float, plus the non-finite values it stores',
     official: 'a number within +/-140737488355327, which refuses an ordinary microsecond epoch',
     filed: 'not a defect: as pg/c_real',
   },
@@ -7173,7 +7202,7 @@ const ALLOWED: Record<string, Entry> = {
   // twin's is the evidence that the wrapping loses nothing. Three have no twin and they are the
   // three CHECK columns: no column of `matrix` carries a CHECK, and no first-party module reads
   // one at all.
-  'pg/n_real': { libs: LIB_NAMES, modes: MODE_NAMES, divergence: { '*/*': `L: 9000000, 2147483648, 9007199254740993, 3.4028235e38 | T: ` }, drzl: 'as pg/c_real', official: 'as pg/c_real', filed: 'as pg/c_real' },
+  'pg/n_real': { libs: LIB_NAMES, modes: MODE_NAMES, divergence: { '*/zod,valibot,typebox': `L: 9000000, 2147483648, 9007199254740993, 3.4028235e38, NaN, Infinity | T: `, '*/arktype': `L: 9000000, 2147483648, 9007199254740993, 3.4028235e38, Infinity | T: ` }, drzl: 'as pg/c_real', official: 'as pg/c_real', filed: 'as pg/c_real' },
   'pg/n_json': { libs: ['valibot'], modes: MODE_NAMES, divergence: { '*/*': `L:  | T: Infinity, Date, Buffer, Uint8Array` }, drzl: 'as pg/c_json', official: 'as pg/c_json', filed: 'as pg/c_json' },
   'pg/n_point': { libs: ['valibot'], modes: MODE_NAMES, divergence: { '*/*': `L:  | T: [1,2,3]` }, drzl: 'as pg/c_point', official: 'as pg/c_point', filed: 'as pg/c_point' },
   'pg/n_ts': { libs: LIB_NAMES, modes: WRITE, divergence: { '*/zod': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', '12.5', '0101', '010', 17, 18, 50, 100, 101 | T: `, '*/valibot,arktype,typebox': `L: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010' | T: ` }, drzl: 'as pg/c_date_d', official: 'as pg/c_date_d', filed: 'as pg/c_date_d' },
@@ -8159,7 +8188,7 @@ async function main() {
       if (gotModes !== wantModes) {
         ledgerProblems.push(`${name}[${key}] declares modes ${wantModes}, measured ${gotModes}`);
       }
-      const wantPairings = entry.libs.length * entry.modes.length;
+      const wantPairings = entry.libs.length * entry.modes.length - (entry.except?.length ?? 0);
       if (seen.pairings !== wantPairings) {
         ledgerProblems.push(
           `${name}[${key}] declares ${wantPairings} pairings, measured ${seen.pairings}: ` +

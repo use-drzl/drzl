@@ -213,6 +213,31 @@ export function isIntegerColumn(c: Column): boolean {
   return c.dbType === 'INTEGER' || (c.min !== undefined && c.max !== undefined);
 }
 
+/**
+ * The non-finite doubles the emitted schema must admit beside the column's range, as the analyzer
+ * stated them.
+ *
+ * One reading of two flags, shared so that four generators cannot drift on what they mean, and not
+ * a shared *rendering*: the four libraries do not need the same repair. `z.number()` and
+ * `Type.Number()` refuse `NaN` and both infinities outright, `v.number()` and ArkType's `number`
+ * refuse only `NaN`, and any bound at all makes all four refuse the infinities, so what each has to
+ * add depends on the library and on whether the column carries a range.
+ *
+ * Guarded on `tsType` so an enum, a shape or a string can never pick these up from a stale
+ * analysis. `@drzl/generator-json-schema` deliberately does not call this at all: JSON has no `NaN`
+ * and no `Infinity`, so there is nothing for a JSON Schema to admit.
+ *
+ * A numeric CHECK folded into one end of the column's range does not take a branch away, in any of
+ * the four. That is a decision rather than an oversight, and it is deliberately the loose one: what
+ * Postgres does with `CHECK (c >= 0)` and a `NaN` was not measured for this change, and dropping
+ * the branch on a column that carries a CHECK would put back, for that column, exactly the
+ * read-path failure this exists to remove.
+ */
+export function nonFiniteAccepted(c: Column): { nan: boolean; infinity: boolean } {
+  if (c.tsType !== 'number' || c.shape) return { nan: false, infinity: false };
+  return { nan: c.allowsNaN === true, infinity: c.allowsInfinity === true };
+}
+
 export function insertColumns(table: Table): Column[] {
   return table.columns.filter((c) => !isGeneratedColumn(c));
 }
