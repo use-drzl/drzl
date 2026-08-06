@@ -429,11 +429,11 @@ function formatBiome(code: string, filePath: string, configAnchor: string): Prom
  * request, and an unmet request that produces neither formatted output nor a message reads as
  * "this is fine" when it is not: the consumer configured something, it did not happen, and nothing
  * in the run says which. So a named engine that cannot be loaded warns on stderr and still returns
- * the code, rather than throwing. Throwing would lose a whole generation over whitespace, and the
- * consumer would not even be told what for: every generator branch in the CLI except the oRPC one
- * wraps its `generate()` in a catch that prints "<name> generator missing. Install with: npm
- * install @drzl/generator-<name>", so the headline would name a package they already have and the
- * real reason would arrive as a trailing detail line. Measured, with a throw wired in on purpose.
+ * the code, rather than throwing. Throwing would lose a whole generation over whitespace, which is
+ * a bad trade even now that the CLI reports the reason faithfully: it used to answer any throw at
+ * all with "<name> generator missing. Install with: npm install @drzl/generator-<name>", naming a
+ * package the consumer already had, and it now separates an unresolvable package from a generator
+ * that ran and failed.
  */
 export async function formatCode(code: string, filePath: string, fmt?: FormatOptions) {
   if (fmt && fmt.enabled === false) return code;
