@@ -23,8 +23,10 @@ class PgInet {}
 class PgCidr {}
 class PgMacaddr {}
 class PgMacaddr8 {}
-class PgPoint {}
-class PgLine {}
+class PgPointTuple {}
+class PgLineTuple {}
+class PgPointObject {}
+class PgLineABC {}
 class PgJson {}
 class PgJsonb {}
 class PgReal {}
@@ -55,8 +57,10 @@ table[Symbol.for('drizzle:Columns')] = {
   cidr: new PgCidr(),
   mac: new PgMacaddr(),
   mac8: new PgMacaddr8(),
-  p: new PgPoint(),
-  l: new PgLine(),
+  p: new PgPointTuple(),
+  l: new PgLineTuple(),
+  po: new PgPointObject(),
+  lo: new PgLineABC(),
   j: new PgJson(),
   jb: new PgJsonb(),
   r: new PgReal(),
@@ -95,13 +99,15 @@ export { table as pg_table };
     expect(get('cidr')).toBe('string');
     expect(get('mac')).toBe('string');
     expect(get('mac8')).toBe('string');
-    // These two are the coarse `/Point|Line/i` fallback and not what drizzle builds. `point()`
-    // is a `PgPointTuple` and `line()` a `PgLineTuple` on both majors, both of which are tuples
-    // and are asserted against the installed drizzle in floats-and-tuples-0.4x.spec.ts. What is
-    // still reached through this arm is `point({ mode: 'xy' })` and `line({ mode: 'abc' })`,
-    // which hand back an object and are a filed defect on both majors.
-    expect(get('p')).toBe('string');
-    expect(get('l')).toBe('string');
+    // These four used to be two, named `PgPoint` and `PgLine`, which are names drizzle builds on
+    // neither major: they existed only to exercise a coarse `/Point|Line/i` arm that answered
+    // `string` for all four of the classes it really caught. The arm is gone and these are the
+    // names drizzle does build, asserted against the installed drizzle itself in
+    // floats-and-tuples-0.4x.spec.ts.
+    expect(get('p')).toBe('[number, number]');
+    expect(get('l')).toBe('[number, number, number]');
+    expect(get('po')).toBe('{ x: number; y: number }');
+    expect(get('lo')).toBe('{ a: number; b: number; c: number }');
     expect(get('j')).toBe('any');
     expect(get('jb')).toBe('any');
     expect(get('r')).toBe('number');

@@ -102,6 +102,18 @@ function baseSchema(
               minItems: s.length,
               maxItems: s.length,
             };
+      case 'numberObject':
+        // The object modes of the same columns: `point({ mode: 'xy' })` returns `{ x, y }` and
+        // `line({ mode: 'abc' })` returns `{ a, b, c }`. One spelling for every target, since
+        // `type: 'object'`, `properties` and `required` mean the same thing in all three.
+        //
+        // No `additionalProperties: false`. The column ignores an unlisted key: measured on PGlite
+        // through drizzle 0.45.2, `{ x: 1, y: 2, z: 3 }` inserts and the row stores `(1,2)`.
+        return {
+          type: 'object',
+          properties: Object.fromEntries(s.fields.map((f) => [f, { type: 'number' }])),
+          required: [...s.fields],
+        };
       case 'numberVector':
         return {
           type: 'array',

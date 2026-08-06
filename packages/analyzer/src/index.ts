@@ -126,8 +126,27 @@ export type ColumnShape =
   | { kind: 'buffer' }
   /** `json`, `jsonb`: any value that survives a JSON round trip, checked recursively. */
   | { kind: 'json' }
-  /** `point`, `line`, `geometry`: a fixed-length tuple of numbers. */
+  /** `point`, `line`, `geometry` in their tuple modes: a fixed-length tuple of numbers. */
   | { kind: 'tuple'; length: number }
+  /**
+   * The same three columns in their object modes: an object of named number fields.
+   *
+   * `point({ mode: 'xy' })` hands back `{ x, y }`, `line({ mode: 'abc' })` hands back
+   * `{ a, b, c }`, and `geometry({ type: 'point', mode: 'xy' })` hands back `{ x, y }`. The names
+   * are carried rather than derived from a length, because the two arities have different keys and
+   * nothing else on the column states them.
+   *
+   * Not a tuple, on either major, and the difference is a value the database refuses. Asked of
+   * PGlite through drizzle 0.45.2 and again through 1.0.0-rc.4: `mapToDriverValue` reads `.x`/`.y`
+   * off whatever it is handed, so `[1, 2]` and `'1,2'` both become the literal
+   * `(undefined,undefined)` and Postgres answers `invalid input syntax for type point`, while
+   * `{ x: 1.5, y: -2.25 }` is stored as `(1.5,-2.25)` and read back unchanged.
+   *
+   * Every field is required and unlisted keys are ignored, both measured on the same server:
+   * `{ x: 1 }` renders `(1,undefined)` and is refused, and `{ x: 1, y: 2, z: 3 }` is accepted and
+   * stored as `(1,2)`.
+   */
+  | { kind: 'numberObject'; fields: string[] }
   /** `vector`, `halfvec`: a numeric vector, with a fixed length where one is declared. */
   | { kind: 'numberVector'; length?: number }
   /**
@@ -378,15 +397,26 @@ const JS_SAFE_INTEGER_BOUNDS: [string, string] = ['-9007199254740991', '90071992
  * answers `invalid input syntax for type point`. Line behaves the same way, `{1,2,3}` against
  * `{1,,,2}`.
  *
- * Only the tuple modes. `point({ mode: 'xy' })` is a `PgPointObject` and hands back `{ x, y }`,
- * so neither a tuple nor a string describes it, and drizzle v1 calls that one a tuple too. It is
- * left where it is rather than moved to a second wrong answer.
+ * Both modes of both builders, which is what the regex was catching and what it could not tell
+ * apart. `point({ mode: 'xy' })` is a `PgPointObject` and hands back `{ x, y }`, so neither a
+ * tuple nor a string describes it; the same server refuses `[1, 2]` and `'1,2'` for that column,
+ * because `mapToDriverValue` reads `.x`/`.y` off whatever it is given and renders
+ * `(undefined,undefined)`.
+ *
+ * `PgGeometry` and `PgGeometryObject` are deliberately absent. 0.4x names neither, on either mode,
+ * and that gap is filed and waived by name in `scripts/verify-packed.sh`; naming only the object
+ * half here would half-close it and leave the two modes of one builder answered from two different
+ * paths.
  */
-const TUPLE_CLASS_SHAPES: Record<string, ColumnShape> = {
+const GEOMETRIC_CLASS_SHAPES: Record<string, ColumnShape> = {
   // `line()` is the trap here: its `drizzle:entityKind` is `PgLine` while its constructor is
   // `PgLineTuple`, and this path matches on the constructor.
   PgPointTuple: { kind: 'tuple', length: 2 },
   PgLineTuple: { kind: 'tuple', length: 3 },
+  // The object modes. `line({ mode: 'abc' })` is a `PgLineABC` and not a `PgLineObject`, and any
+  // mode but `'tuple'` builds the object class: `point({ mode: 'abc' })` is a `PgPointObject` too.
+  PgPointObject: { kind: 'numberObject', fields: ['x', 'y'] },
+  PgLineABC: { kind: 'numberObject', fields: ['a', 'b', 'c'] },
 };
 
 /**
@@ -635,16 +665,34 @@ export function describeV1Column(column: any): Partial<Column> | null {
           };
       break;
     }
+    // Two modes per builder, and v1 states which in the JS half of the dataType it already
+    // carries: the tuple modes say `array point` / `array line` / `array geometry` and the object
+    // modes say `object point` / `object line` / `object geometry`. Read off real 1.0.0-rc.4
+    // columns rather than assumed. Both used to reach these arms and be called tuples, so a select
+    // schema for `point({ mode: 'xy' })` rejected every row the driver returned, on the major that
+    // describes the column outright.
+    //
+    // `js` rather than the codec, which also distinguishes them here (`point:tuple` against
+    // `point`): three dialects state a semantic with no codec at all on this release, so the codec
+    // is the weaker of the two signals and this file already prefers `js` elsewhere for the same
+    // reason.
     case 'point':
     case 'geometry':
-      out.tsType = '[number, number]';
+      out.tsType = js === 'object' ? '{ x: number; y: number }' : '[number, number]';
       out.dbType = semantic.toUpperCase();
-      out.shape = { kind: 'tuple', length: 2 };
+      out.shape =
+        js === 'object'
+          ? { kind: 'numberObject', fields: ['x', 'y'] }
+          : { kind: 'tuple', length: 2 };
       break;
     case 'line':
-      out.tsType = '[number, number, number]';
+      out.tsType =
+        js === 'object' ? '{ a: number; b: number; c: number }' : '[number, number, number]';
       out.dbType = 'LINE';
-      out.shape = { kind: 'tuple', length: 3 };
+      out.shape =
+        js === 'object'
+          ? { kind: 'numberObject', fields: ['a', 'b', 'c'] }
+          : { kind: 'tuple', length: 3 };
       break;
     case 'vector':
       out.tsType = 'number[]';
@@ -1362,6 +1410,15 @@ export class SchemaAnalyzer {
         return { tsType: '[number, number]', dbType: 'POINT' };
       case 'PgLineTuple':
         return { tsType: '[number, number, number]', dbType: 'LINE' };
+      // The object modes, which the same regex answered `string` for and which are not tuples
+      // either. `point({ mode: 'xy' })` returns `{ x, y }` and `line({ mode: 'abc' })` returns
+      // `{ a, b, c }`, read back from PGlite through drizzle 0.45.2; the same column refuses
+      // `[1, 2]` and `'1,2'`, both of which `mapToDriverValue` renders `(undefined,undefined)`.
+      // v1 says the same thing about the same two columns through `dataType: 'object point'`.
+      case 'PgPointObject':
+        return { tsType: '{ x: number; y: number }', dbType: 'POINT' };
+      case 'PgLineABC':
+        return { tsType: '{ a: number; b: number; c: number }', dbType: 'LINE' };
       case 'PgJson':
       case 'PgJsonb':
         return { tsType: 'any', dbType: ctor === 'PgJsonb' ? 'JSONB' : 'JSON' };
@@ -1385,7 +1442,12 @@ export class SchemaAnalyzer {
           // Textual + identifiers
           if (/Text|Varchar|Char|Uuid/i.test(ctor)) return { tsType: 'string', dbType: 'TEXT' };
           if (/Inet|Cidr|Macaddr8?|Uuid/i.test(ctor)) return { tsType: 'string', dbType: 'TEXT' };
-          if (/Point|Line/i.test(ctor)) return { tsType: 'string', dbType: 'TEXT' };
+          // No `/Point|Line/i` arm. It was written for two classes and caught four, and `string`
+          // is wrong for all four: the two tuple modes and the two object modes are each named
+          // outright above. Swept over every builder `pg-core` exports on 0.45.2, in every mode,
+          // those four are the only class names it matched, so removing it takes nothing else with
+          // it. The sweep is the assertion, in floats-and-tuples-0.4x.spec.ts, rather than this
+          // sentence.
 
           // Temporal
           if (/TimestampString|DateString/i.test(ctor))
@@ -1687,15 +1749,15 @@ export class SchemaAnalyzer {
       const byteCap = sqlType ? MYSQL_TEXT_CAPS[sqlType] : undefined;
 
       // The shape the class-name path can state for itself, which until now was only ever the
-      // json one. A `point` on 0.4x has no codec to read and needs a tuple here or the generators
-      // emit a scalar for a value that is not one.
+      // json one. A `point` on 0.4x has no codec to read and needs its shape here or the
+      // generators emit a scalar for a value that is not one.
       const ctorName = String((col as any)?.constructor?.name ?? '');
       const fallbackShape: ColumnShape | undefined =
         dbType === 'JSON' || dbType === 'JSONB' || (col as any)?.config?.mode === 'json'
           ? { kind: 'json' }
           : BYTE_STRING_CLASSES.has(ctorName)
             ? { kind: 'byteString', length: declaredLength(col) }
-            : TUPLE_CLASS_SHAPES[ctorName];
+            : GEOMETRIC_CLASS_SHAPES[ctorName];
       // The same reason the v1 branch above drops it, reached from the other path: the declared
       // `length` of a binary column is not a character limit, and `maxLength` is applied as one in
       // every mode by every generator. Left in place the column carried the width twice under two
