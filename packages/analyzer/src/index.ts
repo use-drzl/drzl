@@ -452,6 +452,18 @@ const V1_ONLY_ENTITY_KINDS = /^(?:MsSql|Cockroach)/;
  * A shape rather than a `maxLength`, because the declared width is a byte budget on the way in and
  * a code-point ceiling on the way out; see `ColumnShape`.
  */
+/**
+ * 0.4x classes whose value is a dense numeric vector.
+ *
+ * `PgSparseVector` is deliberately absent: its value is the string `{1:1.5,3:2}/3`, so it takes the
+ * string arm above and no shape at all. The two here are `vector` and `halfvec`, which differ in
+ * storage width and in nothing `mapFromDriverValue` shows, both handing back `[1, 2, 3]`.
+ *
+ * A set rather than an entry in `GEOMETRIC_CLASS_SHAPES`, because the shape carries the declared
+ * dimension count and that map holds fixed shapes with no access to the column.
+ */
+const NUMBER_VECTOR_CLASSES = new Set(['PgVector', 'PgHalfVector']);
+
 const BYTE_STRING_CLASSES = new Set([
   'MySqlBinary',
   'MySqlVarBinary',
@@ -694,7 +706,16 @@ export function describeV1Column(column: any): Partial<Column> | null {
           ? { kind: 'numberObject', fields: ['a', 'b', 'c'] }
           : { kind: 'tuple', length: 3 };
       break;
+    // `halfvec` beside `vector`, because they differ in storage width and in nothing a validator
+    // can see: `mapFromDriverValue` on both hands back `[1, 2, 3]`. It had no arm and came back
+    // `unknown` on this path too, which the fuzzer found.
+    //
+    // `sparsevec` is deliberately not here. Its name says vector and its value is the string
+    // `{1:1.5,3:2}/3`, so typing it `number[]` for symmetry would reject every row the database
+    // returns. Its codec already answers `string` on its own, which is the same conclusion reached
+    // without this arm.
     case 'vector':
+    case 'halfvec':
       out.tsType = 'number[]';
       out.dbType = 'VECTOR';
       out.shape = { kind: 'numberVector', length: declaredLength(column) };
@@ -1340,6 +1361,23 @@ export class SchemaAnalyzer {
       case 'MySqlEnumColumn':
       case 'SingleStoreEnumColumn':
         return { tsType: 'string', dbType: 'TEXT' };
+      // The pgvector family, found by the analyzer fuzzer: all three came back `unknown` on this
+      // path, so their validators accepted anything. The answers are drizzle's own mappers rather
+      // than the type names, and the three do not agree with each other:
+      //
+      //   vector(3)     SELECT gives [1,2,3]          INSERT sends "[1,2,3]"
+      //   halfvec(3)    SELECT gives [1,2,3]          INSERT sends "[1,2,3]"
+      //   sparsevec(3)  SELECT gives "{1:1.5,3:2}/3"  INSERT sends "{1:1.5,3:2}/3"
+      //
+      // So the two dense ones are number arrays and the sparse one is a string. Typing `sparsevec`
+      // as a vector for symmetry would reject every row the database returns, which is the defect
+      // this family was filed under to begin with. The `shape` carries the dimension count where
+      // one is declared, as the codec path already did for `vector`.
+      case 'PgVector':
+      case 'PgHalfVector':
+        return { tsType: 'number[]', dbType: 'VECTOR' };
+      case 'PgSparseVector':
+        return { tsType: 'string', dbType: 'TEXT' };
       case 'PgInteger':
       case 'PgSmallInt':
         return { tsType: 'number', dbType: 'INTEGER' };
@@ -1757,7 +1795,9 @@ export class SchemaAnalyzer {
           ? { kind: 'json' }
           : BYTE_STRING_CLASSES.has(ctorName)
             ? { kind: 'byteString', length: declaredLength(col) }
-            : GEOMETRIC_CLASS_SHAPES[ctorName];
+            : NUMBER_VECTOR_CLASSES.has(ctorName)
+              ? { kind: 'numberVector', length: declaredLength(col) }
+              : GEOMETRIC_CLASS_SHAPES[ctorName];
       // The same reason the v1 branch above drops it, reached from the other path: the declared
       // `length` of a binary column is not a character limit, and `maxLength` is applied as one in
       // every mode by every generator. Left in place the column carried the width twice under two

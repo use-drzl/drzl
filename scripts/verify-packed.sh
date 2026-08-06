@@ -899,10 +899,11 @@ export const arrays = pgTable('arrays', {
  * the five are here, which is `json`, `tuple`, `numberVector` and, on v1 alone, `buffer`; the
  * SQLite table carries `buffer` on both majors and carries the fifth, `custom`.
  *
- * `n_geometry`, `n_bit` and `n_vector` are all three of the Postgres classes the 0.4x class-name
- * path cannot name. That is not incidental to the nullable path: an unnamed column emits an
- * unknown, and a *nullable* unknown is the one construction whose key TypeBox lets go missing. The
- * `notNull` twins of all three sit in `matrix` and do not have that property.
+ * `n_geometry` and `n_bit` are the Postgres classes the 0.4x class-name path still cannot name,
+ * and `n_vector` was a third until the pgvector arms landed. That is not incidental to the nullable
+ * path: an unnamed column emits an unknown, and a *nullable* unknown is the one construction whose
+ * key TypeBox lets go missing. The `notNull` twins sit in `matrix` and do not have that property.
+ * `n_vector` stays in the fixture, because a column that is named now is still worth comparing.
  */
 export const nullable = pgTable('nullable', {
   n_text: text(),
@@ -5619,14 +5620,11 @@ const DEFECTS: Record<string, string> = {
   'matrix.c_bit.tsType': 'unnamed on 0.4x: no PgBinaryVector arm, the class a bit column uses',
   'matrix.c_bit.dbType': 'as matrix.c_bit.tsType',
   'matrix.c_bit.shape': 'as matrix.c_bit.tsType',
-  'matrix.c_vector.tsType': 'unnamed on 0.4x: no PgVector arm in the class-name path',
-  'matrix.c_vector.dbType': 'as matrix.c_vector.tsType',
-  'matrix.c_vector.shape': 'as matrix.c_vector.tsType',
-  // The nullable twin of the third, which is what says the gap is about the class rather than
-  // about the `notNull` the two columns differ by.
-  'nullable.n_vector.tsType': 'as matrix.c_vector.tsType',
-  'nullable.n_vector.dbType': 'as matrix.c_vector.dbType',
-  'nullable.n_vector.shape': 'as matrix.c_vector.shape',
+  // `c_vector` and its nullable twin used to sit here, six entries, unnamed on 0.4x for want of a
+  // `PgVector` arm. They are gone because the arm exists: the analyzer fuzzer found the whole
+  // pgvector family unnamed and the fix covers `vector` and `halfvec` as number arrays and
+  // `sparsevec` as the string it really is. The two majors agree about them now, which is what
+  // made these six suppress nothing and fail this stage.
   'nullable.n_geometry.tsType': 'as matrix.c_geometry.tsType',
   'nullable.n_geometry.dbType': 'as matrix.c_geometry.dbType',
   'nullable.n_geometry.shape': 'as matrix.c_geometry.shape',
@@ -5967,13 +5965,14 @@ import { SchemaAnalyzer } from '@drzl/analyzer';
 const KNOWN_UNNAMED: Record<string, string> = {
   'matrix.c_geometry': 'no PgGeometry arm in the class-name path',
   'matrix.c_bit': 'no PgBinaryVector arm, the class a bit column uses',
-  'matrix.c_vector': 'no PgVector arm in the class-name path',
   // The nullable twin of each, in the table the same fixture now carries. Same classes, same
   // missing arms, and listing them is what says the gap is about the class rather than about the
   // `notNull` the two columns differ by.
   'nullable.n_geometry': 'as matrix.c_geometry',
   'nullable.n_bit': 'as matrix.c_bit',
-  'nullable.n_vector': 'as matrix.c_vector',
+  // `c_vector` and `n_vector` were here and are named now: the pgvector family has arms on this
+  // path. Their entries went dead the moment the arms landed, which is this check working rather
+  // than a maintenance chore.
 };
 
 // `npm init -y` leaves the project CommonJS, where tsx refuses a top-level await.
@@ -6692,21 +6691,6 @@ const DEFECTS: Record<string, Entry> = {
     official: 'a string of at most 3 characters matching ^[01]*$',
     filed: 'AC: matrix.c_bit.tsType, .dbType, .shape, and check-old.ts KNOWN_UNNAMED',
   },
-  'pg/c_vector': {
-    libs: LIB_NAMES,
-    modes: MODE_NAMES,
-    divergence: {
-      // Per pairing, because official's own rejections are not the same everywhere and the bare
-      // shorthand hid that. What each split measures is on `allProbes`, where it is measured
-      // rather than argued.
-      'select,insert/*': allProbes(62, ['[1,2,3]']),
-      'update/zod,valibot,arktype': allProbes(61, ['undefined', '[1,2,3]']),
-      'update/typebox': allProbes(62, ['[1,2,3]']),
-    },
-    drzl: 'unknown, which accepts every value in the pool',
-    official: 'an array of exactly 3 numbers',
-    filed: 'AC: matrix.c_vector.tsType, .dbType, .shape, and check-old.ts KNOWN_UNNAMED',
-  },
   'sqlite/s_blob': {
     libs: LIB_NAMES,
     modes: MODE_NAMES,
@@ -6802,18 +6786,6 @@ const DEFECTS: Record<string, Entry> = {
   // ---- the nullable table, where the same 0.4x defects show up again -------------------------
   // Each of these is its `matrix` twin's defect measured through a nullable wrapper, which is what
   // says the defect is in the analysis of the column rather than in one emitted shape.
-  'pg/n_vector': {
-    libs: LIB_NAMES,
-    modes: MODE_NAMES,
-    divergence: {
-      'select/*': allProbes(61, ['null', '[1,2,3]']),
-      'insert,update/zod,valibot,arktype': allProbes(60, ['null', 'undefined', '[1,2,3]']),
-      'insert,update/typebox': allProbes(61, ['null', '[1,2,3]']),
-    },
-    drzl: 'unknown, which accepts every value in the pool',
-    official: 'an array of exactly 3 numbers, or null',
-    filed: 'as pg/c_vector: no PgVector arm in the class-name path',
-  },
   // The other two Postgres classes the class-name path cannot name. All five classes that produce
   // this shape are in the fixture now, three here and two on SQLite below.
   'pg/n_geometry': {
@@ -6985,7 +6957,6 @@ const SELECT_REACH = { schemas: 24, keys: 492 };
 const SELECT_OPTIONAL: Record<string, string> = {
   'pg/typebox/n_geometry': 'no PgGeometry arm, so a nullable unknown, whose TypeBox key may be missing',
   'pg/typebox/n_bit': 'as pg/typebox/n_geometry, and official crashes on the omission so PRESENCE cannot see it',
-  'pg/typebox/n_vector': 'as pg/typebox/n_geometry',
   'sqlite/typebox/s_n_blob': 'as pg/typebox/n_geometry, with no SQLiteBlobBuffer arm',
   'sqlite/typebox/s_n_ts_ms': 'as pg/typebox/n_geometry, with no timestamp_ms arm',
   'sqlite/typebox/s_n_custom': 'a nullable customType is unknown on both majors, and official emits the same union',
@@ -6999,14 +6970,6 @@ const PRESENCE: Record<string, Entry> = {
     drzl: 'Type.Union([Type.Unknown(), Type.Null()]), whose key TypeBox lets go missing',
     official: 'a required key on select; on insert a nullable column is optional on both sides',
     filed: 'as pg/c_geometry: no PgGeometry arm in the class-name path',
-  },
-  'pg/n_vector': {
-    libs: ['typebox'],
-    modes: ['select'],
-    divergence: { '*/*': 'official required, DRZL optional' },
-    drzl: 'Type.Union([Type.Unknown(), Type.Null()]), whose key TypeBox lets go missing',
-    official: 'a required key on select; on insert a nullable column is optional on both sides',
-    filed: 'as pg/c_vector: no PgVector arm in the class-name path',
   },
   'sqlite/s_n_blob': {
     libs: ['typebox'],
