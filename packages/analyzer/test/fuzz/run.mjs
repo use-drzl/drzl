@@ -64,15 +64,21 @@ async function analyseCore(analyzerModule, coreSpec, specs, tableFn) {
   // column is a separate answer from its element and one of this month's defects was exactly that.
   const cols = [];
   const back = [];
-  specs.forEach((s, i) => {
+  // Named by position in `back`, so the column name and the entry that produced it are the same
+  // index and the mapping back is the identity. Naming them by position in `specs` is what the
+  // first version did, and `back` gains two entries wherever an array variant is added, so from the
+  // first such column onward every finding was attributed to the wrong builder. The counts looked
+  // right and the signatures were fiction: `decimal("c")` was reported unnamed on Postgres, and
+  // asking the analyzer about that column directly says `string`.
+  for (const s of specs) {
     const call = `${s.callee}(${s.args.map(literal).join(', ')})`;
-    cols.push(`  c${i}: ${call},`);
+    cols.push(`  c${back.length}: ${call},`);
     back.push(s);
     if (s.canArray && rng() < 0.5) {
-      cols.push(`  c${i}_arr: ${call}.array(),`);
-      back.push({ ...s, signature: `${s.signature}.array()`, isArray: true });
+      cols.push(`  c${back.length}: ${call}.array(),`);
+      back.push({ ...s, signature: `${s.signature}.array()` });
     }
-  });
+  }
 
   const source = [
     `import { ${[...new Set([tableFn, ...names])].join(', ')} } from ${JSON.stringify(coreSpec)};`,
@@ -100,9 +106,9 @@ async function analyseCore(analyzerModule, coreSpec, specs, tableFn) {
   const columns = table?.columns ?? [];
 
   for (const c of columns) {
-    const m = /^c(\d+)(_arr)?$/.exec(c.name);
+    const m = /^c(\d+)$/.exec(c.name);
     if (!m) continue;
-    const spec = back.find((s, idx) => `c${idx}` === c.name || `c${idx}_arr` === c.name) ?? back[Number(m[1])];
+    const spec = back[Number(m[1])];
     if (spec) reached.add(spec.columnKind);
     const wide = (c.tsType === 'unknown' || c.tsType === 'any') && !c.shape;
     if (wide) {
@@ -121,8 +127,8 @@ async function analyseCore(analyzerModule, coreSpec, specs, tableFn) {
   // here would report it: the loop above can only see columns that came back.
   const emitted = new Set(columns.map((c) => c.name));
   for (let i = 0; i < back.length; i++) {
-    const name = back[i].isArray ? `c${i}_arr` : `c${i}`;
-    if (!emitted.has(name) && !emitted.has(`c${i}`)) {
+    const name = `c${i}`;
+    if (!emitted.has(name)) {
       findings.push({
         core: coreSpec,
         column: name,
