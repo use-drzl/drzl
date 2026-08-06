@@ -19,6 +19,7 @@ import {
   moduleSpecifier,
   nonFiniteAccepted,
   parseCheck,
+  parsesToADate,
   renderDuplicateFinder,
   resolveAffix,
   resolveConfiguredImport,
@@ -62,16 +63,61 @@ function tbDateType(
   // TypeBox has no Date primitive that also accepts an ISO string, so a coercing position is
   // stated as the union the value can actually be.
   //
-  // Not a bare `Type.String()`. `new Date` reads a bare number as a year or as month.day, so
-  // `'12.5'`, `'0101'` and `'010'` all passed here and Postgres refuses all three. `pattern` is
-  // how TypeBox states it, the same way a column format is stated; see `COERCIBLE_DATE_STRING`
-  // for what was measured and why.
+  // The string branch carries two constraints, because they are two different questions.
+  //
+  // `pattern` is the gate on the string. `new Date` reads a bare number as a year or as month.day,
+  // so `'12.5'`, `'0101'` and `'010'` all passed here and Postgres refuses all three; see
+  // `COERCIBLE_DATE_STRING` for what was measured and why.
+  //
+  // The intersected kind is the gate on the result, and without it any string the pattern let
+  // through was accepted whatever `new Date` made of it: `'hello'`, `'zzz'` and `'25:99:99'` are
+  // not bare numbers, so they matched the pattern and were taken. TypeBox has no declarative form
+  // for this, exactly as it has none for a character cap, so it goes to the same registered kind
+  // the caps use; see `parsesToADate`.
+  //
+  // The `typeof` guard is there because `new Date` throws a TypeError on a bigint and on a symbol,
+  // and a predicate that throws is neither an accept nor a reject. It is not what stops that
+  // happening today: measured on TypeBox 0.34, an intersection stops at its first failing branch
+  // in both `Value.Check` and `TypeCompiler`, so an unguarded assert beside `Type.String` is never
+  // reached with `1n` or with `null` at all. Evaluation order is not something this generator
+  // should be relying on, and the guard costs one comparison.
+  //
+  // The cost is that the extra branch does not survive serialisation to JSON Schema, where the
+  // `pattern` beside it does. Emitting nothing rather than a check JSON Schema cannot state is not
+  // a better trade: JSON has no notion of a string that parses, and the pattern still serialises.
   if (coerceDates === 'none') return 'Type.Date()';
-  const union =
-    `Type.Union([Type.Date(), Type.String({ pattern: ` +
-    `${JSON.stringify(COERCIBLE_DATE_STRING)} })])`;
+  const coercible =
+    `Type.Intersect([Type.String({ pattern: ${JSON.stringify(COERCIBLE_DATE_STRING)} }), ` +
+    `Type.Unsafe<unknown>({
+    [Kind]: 'DrzlRowCheck',
+    description: 'a date the runtime can parse',
+    assert: (v: any) => typeof v === 'string' && ${parsesToADate('new Date(v)')},
+  })])`;
+  const union = `Type.Union([Type.Date(), ${coercible}])`;
   if (coerceDates === 'all') return union;
   return mode === 'select' ? 'Type.Date()' : union;
+}
+
+/**
+ * Whether this column, in this mode, emits the coerced-string branch that carries the kind.
+ *
+ * Shared with the preamble check, for the reason `tbNeedsCapKind` and `tbNeedsNonFiniteKind`
+ * carry: two copies of one condition drift, and what a drifted copy emits is `[Kind]` into a file
+ * that did not import it, which throws the moment anything loads the module.
+ *
+ * `mode` is a parameter because `coerceDates: 'input'` answers differently for select than for
+ * the write modes, and the preamble has to be right in both directions: too little and the module
+ * throws at import, too much and it carries an import nothing uses.
+ */
+function tbNeedsDateKind(
+  c: Column,
+  mode: Mode,
+  coerceDates: NonNullable<ValidationGenerateOptions['coerceDates']>
+): boolean {
+  if (c.tsType !== 'Date' || c.shape) return false;
+  if (coerceDates === 'none') return false;
+  if (coerceDates === 'all') return true;
+  return mode !== 'select';
 }
 
 /**
@@ -472,8 +518,17 @@ function renderTableSchemas(
   const needsRows =
     rows.some((r) => rowCols.some((s) => s.has(r.left) && s.has(r.right))) ||
     lengths.some((k) => rowCols.some((s) => s.has(k.column))) ||
-    [insertCols, updateCols, selectCols].some((cs) =>
-      cs.some((c) => tbNeedsCapKind(c) || tbNeedsNonFiniteKind(c))
+    (
+      [
+        [insertCols, 'insert'],
+        [updateCols, 'update'],
+        [selectCols, 'select'],
+      ] as Array<[Column[], Mode]>
+    ).some(([cs, m]) =>
+      cs.some(
+        (c) =>
+          tbNeedsCapKind(c) || tbNeedsNonFiniteKind(c) || tbNeedsDateKind(c, m, coerceDates)
+      )
     );
   const rowImport = needsRows ? `, Kind, TypeRegistry` : '';
 
