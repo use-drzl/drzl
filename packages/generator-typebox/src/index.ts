@@ -16,6 +16,7 @@ import {
   isIntegerColumn,
   moduleFileName,
   moduleSpecifier,
+  nonFiniteAccepted,
   parseCheck,
   renderDuplicateFinder,
   resolveAffix,
@@ -262,7 +263,8 @@ function tbExprForColumn(
     }
     case 'number': {
       const o = renderOptions(merged(tbBounds(c)));
-      return isIntegerColumn(c) ? `Type.Integer(${o})` : `Type.Number(${o})`;
+      const base = isIntegerColumn(c) ? `Type.Integer(${o})` : `Type.Number(${o})`;
+      return tbNonFiniteUnion(c, base);
     }
     case 'bigint':
       // `minimum`/`maximum` do take bigint values here, verified by running the emitted schema:
@@ -462,7 +464,9 @@ function renderTableSchemas(
   const needsRows =
     rows.some((r) => rowCols.some((s) => s.has(r.left) && s.has(r.right))) ||
     lengths.some((k) => rowCols.some((s) => s.has(k.column))) ||
-    [insertCols, updateCols, selectCols].some((cs) => cs.some(tbNeedsCapKind));
+    [insertCols, updateCols, selectCols].some((cs) =>
+      cs.some((c) => tbNeedsCapKind(c) || tbNeedsNonFiniteKind(c))
+    );
   const rowImport = needsRows ? `, Kind, TypeRegistry` : '';
 
     // Uniqueness is a fact about the table, so no per-row schema can see it. This checks the
@@ -547,6 +551,56 @@ function tbNeedsCapKind(c: Column): boolean {
   // Not excluded for an array column: the cap describes the *element*, and the array wraps it
   // after, so `varchar(50).array()` caps each entry.
   return c.tsType === 'string' && !c.shape && !!(c.maxLength || c.maxBytes);
+}
+
+/**
+ * Whether this column needs the registered kind for the non-finite doubles it stores.
+ *
+ * Shared with the preamble check for the same reason `tbNeedsCapKind` is: the two used to be two
+ * copies of one condition and drifted, emitting `[Kind]` into a file that did not import it, which
+ * throws the moment anything loads the module.
+ */
+function tbNeedsNonFiniteKind(c: Column): boolean {
+  const { nan, infinity } = nonFiniteAccepted(c);
+  return nan || infinity;
+}
+
+/**
+ * The column widened by the non-finite doubles it really stores, or left exactly as it was.
+ *
+ * A union rather than a wider range, because no range can hold either value: `minimum`/`maximum`
+ * refuse `Infinity` whatever the numbers are, and `NaN` compares false against both ends.
+ *
+ * The added branch is a registered kind rather than a literal, because TypeBox has neither a
+ * `.refine` nor a literal that can hold `NaN`: `Type.Literal(NaN)` is checked with `===` and
+ * `NaN === NaN` is false. This generator already registers `DrzlRowCheck` for the character caps,
+ * whose entry calls the `assert` carried on the schema, so the branch reuses it rather than adding
+ * a second kind that means the same thing.
+ *
+ * `type: 'number'` on the branch is what it costs least to serialise as. A branch carrying no JSON
+ * Schema keywords renders as `{}`, which inside an `anyOf` means "anything" and would turn the
+ * serialised document into one that accepts a string; JSON has no `NaN` and no `Infinity`, so
+ * "a number" is as close as a JSON Schema gets to the truth here. The predicate is what runs, and
+ * the keyword is not consulted: TypeBox dispatches on `[Kind]`.
+ *
+ * Both infinity branches whenever the column admits them, because `Type.Number()` refuses a
+ * non-finite number with no options at all, so there is no unbounded case here where the base
+ * already takes them.
+ */
+function tbNonFiniteUnion(c: Column, base: string): string {
+  const { nan, infinity } = nonFiniteAccepted(c);
+  if (!nan && !infinity) return base;
+  // One branch, not two: a single predicate covers whichever of the three the column admits, and
+  // `NaN` is the only one of them a column can admit alone.
+  const [desc, expr] = infinity
+    ? ['NaN, Infinity or -Infinity, which this column stores', '!Number.isFinite(v)']
+    : ['NaN, which this column stores', 'Number.isNaN(v)'];
+  return `Type.Union([${base}, Type.Unsafe<number>({
+    [Kind]: 'DrzlRowCheck',
+    type: 'number',
+    description: ${JSON.stringify(desc)},
+    assert: (v: any) => typeof v === 'number' && ${expr},
+  })])`;
 }
 
 function tbCapExpr(c: Column, base: string, mode: Mode): string {

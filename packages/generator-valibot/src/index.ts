@@ -10,6 +10,7 @@ import {
   COLUMN_FORMATS,
   insertColumns,
   isIntegerColumn,
+  nonFiniteAccepted,
   parseCheck,
   renderDuplicateFinder,
   resolveConfiguredImport,
@@ -72,6 +73,30 @@ function vBounds(
   }
 
   return [lo, hi].filter(Boolean).map((x) => `v.${x!.action}(${literal(x!.value)})`);
+}
+
+/**
+ * The union branches for the non-finite doubles this column really stores, or none.
+ *
+ * A union rather than a wider range, because no range can hold either value: `v.maxValue(n)`
+ * refuses `Infinity` whatever `n` is, and `NaN` compares false against both ends.
+ *
+ * `bounded` is why this is not the same list zod and TypeBox emit. Measured on the installed
+ * valibot: a bare `v.number()` already accepts `Infinity` and `-Infinity` and refuses only `NaN`,
+ * so an unbounded `double precision` needs one branch where a bounded `real` needs three. Emitting
+ * the redundant pair anyway would put two branches in the generated file that change nothing, and
+ * the measurement is asserted in this package's non-finite spec rather than trusted.
+ *
+ * Both infinity branches together once any bound is present, rather than one per side. For the
+ * three Postgres columns this reaches, the type's own bounds always come as a pair; a lone bound
+ * can only arrive from a CHECK, and the branch that is then redundant admits nothing new.
+ */
+function vNonFiniteBranches(c: Column, bounded: boolean): string[] {
+  const { nan, infinity } = nonFiniteAccepted(c);
+  return [
+    ...(nan ? ['v.nan()'] : []),
+    ...(infinity && bounded ? ['v.literal(Infinity)', 'v.literal(-Infinity)'] : []),
+  ];
 }
 
 /** Which checks `vBounds` has already stated, so they are not also emitted as actions. */
@@ -326,10 +351,14 @@ function vExprForColumn(
           : []
       );
     case 'number': {
-      return piped('v.number()', [
-        ...(isIntegerColumn(c) ? ['v.integer()'] : []),
-        ...vBounds(c, (v) => v, checks),
-      ]);
+      const bounds = vBounds(c, (v) => v, checks);
+      const actions = [...(isIntegerColumn(c) ? ['v.integer()'] : []), ...bounds];
+      const branches = vNonFiniteBranches(c, bounds.length > 0);
+      if (!branches.length) return piped('v.number()', actions);
+      // The bounds stay on the number branch and the union is what `extra` then applies to, so a
+      // CHECK that could not be folded into a bound still sees every value the column admits.
+      const finite = actions.length ? `v.pipe(v.number(), ${actions.join(', ')})` : 'v.number()';
+      return piped(`v.union([${finite}, ${branches.join(', ')}])`, []);
     }
     case 'bigint': {
       // Bounds must be bigint literals: a 64 bit bound written as a number rounds.

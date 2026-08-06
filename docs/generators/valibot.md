@@ -97,6 +97,26 @@ each follows the column. Asked of a real Postgres, drizzle reads `.x` and `.y` o
 given, so `{ x: 1, y: 2, z: 3 }` inserts and stores `(1,2)` while a tuple or a string is rendered
 `(undefined,undefined)` and refused.
 
+### `NaN` and the infinities
+
+Postgres stores `NaN`, `Infinity` and `-Infinity` in a `real` and in a `double precision` and hands
+all three back on SELECT. A bare `v.number()` already takes both infinities and refuses `NaN`, and
+`v.maxValue(n)` refuses an infinity whatever `n` is, so what each column needs depends on whether it
+carries a range:
+
+```ts
+c_real:   v.union([v.pipe(v.number(), v.minValue(-3402...), v.maxValue(3402...)),
+                   v.nan(), v.literal(Infinity), v.literal(-Infinity)]),  // real()
+c_double: v.union([v.number(), v.nan()]),                                 // doublePrecision()
+c_num:    v.union([v.pipe(v.number(), v.minValue(-9007199254740991),
+                          v.maxValue(9007199254740991)), v.nan()]),       // numeric({mode:'number'})
+```
+
+A `numeric` in number mode takes `NaN` and keeps refusing both infinities, because Postgres refuses
+an infinity in any `numeric` carrying a precision and nothing in the analysis reads one. Integer
+columns are unchanged, and so are MySQL and SQLite. See
+[Zod → `NaN` and the infinities](/generators/zod#nan-and-the-infinities-are-values-not-out-of-range-numbers).
+
 Valibot has no `json()` built-in, so a json column emits a recursive declaration at the top of the
 file. It is stricter than the official one in two ways, both of which reject values that cannot
 survive the round trip: `Infinity` is refused rather than written out as `null`, and a class

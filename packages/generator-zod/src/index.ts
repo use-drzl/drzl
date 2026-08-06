@@ -21,6 +21,7 @@ import {
   isIntegerColumn,
   moduleFileName,
   moduleSpecifier,
+  nonFiniteAccepted,
   resolveAffix,
   schemaName,
   selectColumns,
@@ -67,6 +68,27 @@ function numericBounds(
   }
 
   return [lo, hi].filter(Boolean).map((x) => `.${x!.op}(${literal(x!.value)})`).join('');
+}
+
+/**
+ * The column widened by the non-finite doubles it really stores, or left exactly as it was.
+ *
+ * A union rather than a wider range, because no range can hold either value: `.gte()/.lte()`
+ * refuses `Infinity` whatever the numbers are, and `NaN` compares false against both ends. The
+ * range keeps describing the finite values of the column and each branch adds one more.
+ *
+ * Both infinity branches whenever the column admits them, unlike valibot and ArkType, because
+ * zod 4 refuses a non-finite number with no bound at all: `z.number()` is `Number.isFinite`, so
+ * there is no unbounded case here where the base already takes them. Measured on the installed
+ * zod, which answers no to `NaN`, `Infinity` and `-Infinity` alike.
+ */
+function withNonFinite(c: Column, base: string): string {
+  const { nan, infinity } = nonFiniteAccepted(c);
+  const branches = [
+    ...(nan ? ['z.nan()'] : []),
+    ...(infinity ? ['z.literal(Infinity)', 'z.literal(-Infinity)'] : []),
+  ];
+  return branches.length ? `z.union([${base}, ${branches.join(', ')}])` : base;
 }
 
 /** Which checks `numericBounds` has already stated, so they are not also emitted as predicates. */
@@ -304,7 +326,7 @@ function zodExprForColumn(
       return str;
     case 'number': {
       const base = isIntegerColumn(c) ? 'z.number().int()' : 'z.number()';
-      return base + numericBounds(c, (v) => v, checks);
+      return withNonFinite(c, base + numericBounds(c, (v) => v, checks));
     }
     case 'bigint':
       // Bounds have to be bigint literals. A 64 bit bound written as a plain number rounds, so

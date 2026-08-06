@@ -89,6 +89,41 @@ out rather than evaluated against `undefined`.
 Only unambiguous comparisons are translated; see
 [Zod → CHECK constraints](/generators/zod#check-constraints) for what is skipped and why.
 
+## `NaN` and the infinities
+
+Postgres stores `NaN`, `Infinity` and `-Infinity` in a `real` and in a `double precision` and hands
+all three back on SELECT. ArkType's bare `number` already takes both infinities and refuses `NaN`,
+and a range refuses an infinity whatever the numbers are, so those columns state the extra members
+as union branches:
+
+```ts
+c_double: "number | number.NaN",                                  // doublePrecision()
+c_num:    "-9007199254740991 <= number <= 9007199254740991 | number.NaN",  // numeric({mode:'number'})
+```
+
+A bounded column that admits all three cannot be written that way. Measured on ArkType itself,
+`(-5 <= number <= 5) | number.NaN` accepts `NaN` and adding a third branch makes the same type
+reject it, while `.json` still lists the branch: the union's discriminator cannot match `NaN`. So a
+`real`, which would need four branches, moves its range to a narrow instead:
+
+```ts
+c_real: type("number | number.NaN").narrow(
+  (v, ctx) => v == null || !Number.isFinite(v) || (v >= -3402... && v <= 3402...)
+    || ctx.mustBe("NaN, an infinity, or between ...")
+),
+```
+
+The unbounded `double precision` is unaffected by that limit, because ArkType folds a unit branch
+into the domain it already belongs to: `number | number.NaN | number.Infinity` reduces to two
+branches on its own.
+
+A `numeric` in number mode takes `NaN` and keeps refusing both infinities, because Postgres refuses
+an infinity in any `numeric` carrying a precision and nothing in the analysis reads one. Integer
+columns are unchanged, and so are MySQL and SQLite. A declared default is still restricted to a
+finite number: the literal is written through `JSON.stringify`, which renders all three as `null`.
+See
+[Zod → `NaN` and the infinities](/generators/zod#nan-and-the-infinities-are-values-not-out-of-range-numbers).
+
 ## Arrays and structured columns
 
 A column declared with `.array()` becomes an array of the element type. The element is

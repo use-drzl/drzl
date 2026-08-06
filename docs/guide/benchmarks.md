@@ -88,11 +88,11 @@ PGlite, SQLite via `node:sqlite`, and MySQL as a CI service container.
 
 ```
     1440 probes against a real Postgres (40 columns)
-    agree with the database: DRZL 1056, drizzle-orm 1013
-    DRZL closer than drizzle-orm on 49, further on 0
+    agree with the database: DRZL 1061, drizzle-orm 1013
+    DRZL closer than drizzle-orm on 54, further on 0
 
     393 rows read back through the driver (40 columns)
-    rejected by DRZL: 71, of which drizzle-orm also rejects: 71
+    rejected by DRZL: 66, of which drizzle-orm also rejects: 66
 
     53 CHECK probes against a real Postgres (13 constrained columns)
     rows Postgres rejects and the validator accepts: DRZL 0, drizzle-orm 22

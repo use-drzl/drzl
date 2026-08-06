@@ -37,8 +37,8 @@ export type SelectpeopleOutput = Static<typeof SelectpeopleSchema>;
 | `varchar(255)`      | `Type.Intersect([Type.String(), <code-point cap>])`, see below          |
 | `uuid()`            | `Type.String({ pattern: '...' })`                                      |
 | `smallint()`        | `Type.Integer({ minimum: -32768, maximum: 32767 })`                    |
-| `real()`            | `Type.Number({ minimum: -3.4028235677973366e38, maximum: 3.4028235677973366e38 })`, written out in full |
-| `doublePrecision()` | `Type.Number()`, with no magnitude bound                               |
+| `real()`            | `Type.Number({ minimum: -3.4028235677973366e38, maximum: 3.4028235677973366e38 })`, written out in full, inside a union |
+| `doublePrecision()` | `Type.Number()`, with no magnitude bound, inside a union               |
 
 The two float rows are the database's answer rather than `drizzle-orm/typebox`'s. Postgres accepts
 every double up to `3.4028235677973366e38` in a `real` and answers `out of range for type real` to
@@ -46,6 +46,33 @@ the next one, and it stored `Number.MAX_VALUE` in a `double precision` and hande
 On MySQL a `float()` is bounded lower, at `3.4028234663852886e38`, because a real MySQL 8.4 refuses
 the next double after that one. See
 [Zod → What the column declares](/generators/zod#what-the-column-declares-is-what-the-schema-enforces).
+
+### `NaN` and the infinities
+
+Postgres stores `NaN` and both infinities in either float width and returns them on SELECT, and
+`Type.Number()` refuses all three: TypeBox's number check is `Number.isFinite`, and
+`minimum`/`maximum` refuse an infinity whatever the numbers are. Those columns emit a union whose
+second branch is a registered kind, the same `DrzlRowCheck` the character caps use, because TypeBox
+has no `.refine` and `Type.Literal(NaN)` cannot work: it compares with `===` and `NaN === NaN` is
+false.
+
+```ts
+c_real: Type.Union([
+  Type.Number({ minimum: -3.4028235677973366e38, maximum: 3.4028235677973366e38 }),
+  Type.Unsafe<number>({
+    [Kind]: 'DrzlRowCheck',
+    type: 'number',
+    description: 'NaN, Infinity or -Infinity, which this column stores',
+    assert: (v: any) => typeof v === 'number' && !Number.isFinite(v),
+  }),
+]),
+```
+
+Both `Value.Check` and `TypeCompiler` honour the registered kind. The cost is in serialisation: JSON
+Schema has no `NaN` and no `Infinity`, so the branch carries a bare `type: 'number'` and a
+`JSON.stringify` of the schema describes a number that may sit outside the stated range. A
+`numeric({ mode: 'number' })` column emits the same shape with a `Number.isNaN` predicate, since
+Postgres refuses an infinity in any `numeric` carrying a precision.
 
 ### Why uuid is a pattern and not a format
 

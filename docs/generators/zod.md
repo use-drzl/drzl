@@ -58,6 +58,33 @@ Postgres: a real MySQL 8.4 refuses the very next double above the largest float3
 and under the stock `sql_mode` alike. Its `double` and `real` carry no bound, like Postgres's
 `double precision`.
 
+### `NaN` and the infinities are values, not out-of-range numbers
+
+Postgres stores `NaN`, `Infinity` and `-Infinity` in a `real` and in a `double precision`, and hands
+all three back on SELECT. No range can admit them: `.gte()/.lte()` refuses an infinity whatever the
+numbers are, and `NaN` compares false against both ends. `z.number()` refuses all three on its own,
+with no bound at all.
+
+So those columns emit a union, and the range keeps describing the finite values:
+
+```ts
+c_real:   z.union([z.number().gte(-3402...).lte(3402...), z.nan(),
+                   z.literal(Infinity), z.literal(-Infinity)]),   // real()
+c_double: z.union([z.number(), z.nan(),
+                   z.literal(Infinity), z.literal(-Infinity)]),   // doublePrecision()
+c_num:    z.union([z.number().gte(-9007199254740991)
+                            .lte(9007199254740991), z.nan()]),    // numeric({ mode: 'number' })
+```
+
+A `numeric` in number mode takes `NaN` and keeps refusing both infinities. Postgres accepts an
+infinity in an unconstrained `numeric` and answers `22003 numeric field overflow` for a
+`numeric(10,2)`, and nothing in the analysis reads a column's precision or scale, so the two cannot
+be told apart; admitting them would promise what the server refuses for the commoner declaration.
+
+Integer columns are unchanged, because Postgres refuses all three there too, and so are MySQL and
+SQLite. `drizzle-orm/zod` refuses all three on every one of these columns, so this is a deliberate
+divergence with the measurement attached.
+
 Those bounds are the database's rather than `drizzle-orm/zod`'s, which bounds the same two columns
 at `-8388608 .. 8388607` and `-140737488355328 .. 140737488355327`. Both refuse values the column
 hands back, `9000000` in a `real` and `1.75e15` in a `double precision`, so DRZL is deliberately
