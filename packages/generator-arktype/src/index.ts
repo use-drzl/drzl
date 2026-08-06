@@ -301,6 +301,7 @@ function atNumberObjectField(
     else if (mode === 'update' || c.nullable || c.hasDefault) optional = true;
   }
   return `  ${JSON.stringify(optional ? `${c.name}?` : c.name)}: ${expr},`;
+}
 
 /**
  * An applied default, in the two places ArkType can hold one.
