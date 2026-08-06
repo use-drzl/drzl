@@ -88,7 +88,7 @@ PGlite, SQLite via `node:sqlite`, and MySQL as a CI service container.
 
 ```
     1440 probes against a real Postgres (40 columns)
-    agree with the database: DRZL 1061, drizzle-orm 1013
+    agree with the database: DRZL 1067, drizzle-orm 1013
     DRZL closer than drizzle-orm on 54, further on 0
 
     393 rows read back through the driver (40 columns)

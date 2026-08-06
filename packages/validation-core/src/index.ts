@@ -179,6 +179,51 @@ export const COLUMN_FORMATS: Record<string, string> = {
 };
 
 /**
+ * Which strings a `mode: 'date'` column may coerce, for `coerceDates`.
+ *
+ * A string matching this may be handed to `new Date`; one that does not is left alone and fails
+ * the `Date` check that follows it. This narrows coercion, it does not remove it: `coerceDates`
+ * still decides *where* a string is coerced at all.
+ *
+ * Two things are refused, both measured against a real Postgres through PGlite.
+ *
+ * **A string that is only a number.** V8's legacy date parser reads a bare digit run as a year,
+ * or as `month.day`, so `new Date('12.5')`, `new Date('0101')` and `new Date('010')` are all real
+ * dates. Postgres refuses those three, so the insert passed validation and then failed at the
+ * server, which is the outcome an Insert schema exists to prevent.
+ *
+ * The obvious justification for the rule, that Postgres refuses a bare number, is false. Postgres
+ * reads a six or eight digit run as a compact `YYMMDD` / `YYYYMMDD` date and takes it happily. The
+ * real justification is stronger: where both parsers accept such a string they never agree on
+ * which date it is. Measured over every all-digit string in the probe set that both accept, ten of
+ * them, the two answers differed every single time and none of the ten agreed:
+ *
+ *   '250101'    Postgres 2025-01-01    V8 the year 250101
+ *   '241231'    Postgres 2024-12-31    V8 the year 241231
+ *   '121212'    Postgres 2012-12-12    V8 the year 121212
+ *   '000101'    Postgres 2000-01-01    V8 0100-12-31
+ *
+ * So coercing a bare number is not merely permissive. Either the value reaches the server and is
+ * rejected, or it is silently written as a different date than the one the database would have
+ * stored. Refusing to coerce it is the only answer that is never wrong.
+ *
+ * **A string starting with a sign.** `new Date('+2020-01-01')` and `new Date('-2020-01-01')` are
+ * valid dates in V8 and Postgres refuses both. It also costs nothing: the sign-prefixed strings
+ * Postgres does take are `infinity`, `+infinity` and `-infinity`, and no JS `Date` represents
+ * those, so a `mode: 'date'` column could never carry one whatever this pattern said.
+ *
+ * Not to be confused with the rejected `date` entry in `COLUMN_FORMATS` above. That would have
+ * constrained a string-typed date column, whose value goes to the server verbatim, so refusing
+ * `20200101` or `infinity` there would turn away a working insert. Here the string is on its way
+ * into a JS `Date`, and neither of those survives the trip.
+ *
+ * Verified still coercing, both parsers agreeing on the date: `2020-01-01`,
+ * `2020-01-01T00:00:00Z`, `1999-01-08 04:05:06`, `01/02/2020`, `January 8, 1999`, `2020-1-5` and
+ * `  2020-01-01  `.
+ */
+export const COERCIBLE_DATE_STRING = '^(?!\\s*[+-])(?!\\s*\\d*\\.?\\d*(?:[eE][+-]?\\d+)?\\s*$)';
+
+/**
  * Why a character limit is not `.max(n)`.
  *
  * Postgres and MySQL count `varchar(n)` in **characters**; every JavaScript validator counts

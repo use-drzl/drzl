@@ -1,0 +1,118 @@
+/**
+ * What a `mode: 'date'` column accepts on write, in TypeBox output.
+ *
+ * `coerceDates` defaults to accepting a string beside the `Date` on insert and update, which is
+ * what lets a client send an ISO string. That branch used to be a bare `Type.String()`, so
+ * `'12.5'`, `'0101'` and `'010'` all passed and Postgres refuses all three: the schema passed and
+ * the INSERT then failed at the server, which is the one outcome an Insert schema exists to
+ * prevent.
+ *
+ * Both `Value.Check` and `TypeCompiler` are exercised, because a `pattern` the compiler builds
+ * differently from the interpreter is a schema that validates one way read and another way run.
+ */
+import { describe, it, expect } from 'vitest';
+import { TypeBoxGenerator } from '../src/index';
+import type { Analysis, Column } from '@drzl/analyzer';
+import { Value } from '@sinclair/typebox/value';
+import { TypeCompiler } from '@sinclair/typebox/compiler';
+import { promises as fs } from 'node:fs';
+import path from 'node:path';
+
+const col = (name: string, over: Partial<Column> = {}): Column =>
+  ({
+    name,
+    tsType: 'Date',
+    dbType: 'TIMESTAMP',
+    nullable: false,
+    hasDefault: false,
+    isGenerated: false,
+    ...over,
+  }) as Column;
+
+async function schemasFor(
+  coerceDates: 'input' | 'all' | 'none',
+  label: string
+): Promise<Record<string, never>> {
+  const analysis: Analysis = {
+    dialect: 'postgres',
+    tables: [
+      { name: 't', tsName: 't', columns: [col('at')], unique: [], indexes: [], checks: [] },
+    ] as never,
+    enums: [],
+    relations: [],
+    issues: [],
+  };
+  const dir = path.join(__dirname, '.tmp-dates');
+  await fs.mkdir(dir, { recursive: true });
+  await new TypeBoxGenerator(analysis).generate({ outDir: dir, coerceDates } as never);
+  const file = path.join(dir, `t-${process.pid}-${label}.ts`);
+  await fs.rename(path.join(dir, 't.typebox.ts'), file);
+  return await import(file);
+}
+
+const accepts = (schema: any, x: unknown) => Value.Check(schema.properties.at, x);
+/** The same question through the compiler, which is a separate implementation of the same check. */
+const compiled = (schema: any, x: unknown) => TypeCompiler.Compile(schema.properties.at).Check(x);
+
+describe('the default, which accepts a string on write only', () => {
+  it('takes a Date and every notation Postgres and V8 read as the same date', async () => {
+    const m = await schemasFor('input', 'input');
+    for (const check of [accepts, compiled]) {
+      expect(check(m.InserttSchema, new Date()), 'a Date').toBe(true);
+      for (const s of [
+        '2020-01-01',
+        '2020-01-01T00:00:00Z',
+        '1999-01-08 04:05:06',
+        '01/02/2020',
+        'January 8, 1999',
+        '2020-1-5',
+        '  2020-01-01  ',
+      ]) {
+        expect(check(m.InserttSchema, s), s).toBe(true);
+      }
+    }
+  });
+
+  it('refuses a string that is only a number, which Postgres does not read as a date', async () => {
+    const m = await schemasFor('input', 'input');
+    for (const check of [accepts, compiled]) {
+      for (const s of ['12.5', '0101', '010']) {
+        expect(check(m.InserttSchema, s), s).toBe(false);
+        expect(Number.isNaN(new Date(s).getTime()), `${s} is a valid Date in V8`).toBe(false);
+      }
+      for (const s of ['2020', '99', '1', '0', '.5', '+2020-01-01', '-2020-01-01', ' 2020 ', '']) {
+        expect(check(m.InserttSchema, s), s).toBe(false);
+      }
+    }
+  });
+
+  it('still refuses the values a bare coercion would have taken', async () => {
+    const m = await schemasFor('input', 'input');
+    for (const check of [accepts, compiled]) {
+      expect(check(m.InserttSchema, null), 'null on a NOT NULL column').toBe(false);
+      expect(check(m.InserttSchema, true), 'a boolean').toBe(false);
+      expect(check(m.InserttSchema, [1, 2]), 'an array').toBe(false);
+    }
+  });
+
+  it('leaves select strict, since a row out of the database is already a Date', async () => {
+    const m = await schemasFor('input', 'input');
+    expect(accepts(m.SelecttSchema, new Date())).toBe(true);
+    expect(accepts(m.SelecttSchema, '2020-01-01'), 'a string on select').toBe(false);
+  });
+});
+
+describe('the explicit settings', () => {
+  it("accepts a string on select too under 'all', and narrows there as well", async () => {
+    const m = await schemasFor('all', 'all');
+    expect(accepts(m.SelecttSchema, '2020-01-01')).toBe(true);
+    expect(accepts(m.SelecttSchema, '12.5'), 'still not a bare number').toBe(false);
+    expect(accepts(m.SelecttSchema, null), 'still not null').toBe(false);
+  });
+
+  it("takes a Date only under 'none', which is what matches the official module", async () => {
+    const m = await schemasFor('none', 'none');
+    expect(accepts(m.InserttSchema, new Date())).toBe(true);
+    expect(accepts(m.InserttSchema, '2020-01-01')).toBe(false);
+  });
+});

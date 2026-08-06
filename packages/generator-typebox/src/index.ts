@@ -11,6 +11,7 @@ import type {
 } from '@drzl/validation-core';
 import {
   formatCode,
+  COERCIBLE_DATE_STRING,
   COLUMN_FORMATS,
   insertColumns,
   isIntegerColumn,
@@ -60,8 +61,15 @@ function tbDateType(
 ): string {
   // TypeBox has no Date primitive that also accepts an ISO string, so a coercing position is
   // stated as the union the value can actually be.
+  //
+  // Not a bare `Type.String()`. `new Date` reads a bare number as a year or as month.day, so
+  // `'12.5'`, `'0101'` and `'010'` all passed here and Postgres refuses all three. `pattern` is
+  // how TypeBox states it, the same way a column format is stated; see `COERCIBLE_DATE_STRING`
+  // for what was measured and why.
   if (coerceDates === 'none') return 'Type.Date()';
-  const union = 'Type.Union([Type.Date(), Type.String()])';
+  const union =
+    `Type.Union([Type.Date(), Type.String({ pattern: ` +
+    `${JSON.stringify(COERCIBLE_DATE_STRING)} })])`;
   if (coerceDates === 'all') return union;
   return mode === 'select' ? 'Type.Date()' : union;
 }

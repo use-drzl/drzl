@@ -7,6 +7,7 @@ import type {
 } from '@drzl/validation-core';
 import type { CardinalityCheck, ColumnCheck, ColumnSet, LengthCheck } from '@drzl/validation-core';
 import {
+  COERCIBLE_DATE_STRING,
   COLUMN_FORMATS,
   insertColumns,
   isIntegerColumn,
@@ -38,7 +39,13 @@ function vDateExpr(
   coerceDates: NonNullable<ValidationGenerateOptions['coerceDates']>
 ): string {
   if (coerceDates === 'none') return 'v.date()';
-  const coercer = `v.pipe(v.string(), v.transform((s) => new Date(s)))`;
+  // Not every string. `new Date` reads a bare number as a year or as month.day, so `'12.5'`,
+  // `'0101'` and `'010'` all became real dates here and Postgres refuses all three. The regex
+  // runs before the transform, so a string that is not a date notation never reaches `new Date`;
+  // see `COERCIBLE_DATE_STRING` for what was measured and why.
+  const coercer =
+    `v.pipe(v.string(), v.regex(new RegExp(${JSON.stringify(COERCIBLE_DATE_STRING)})), ` +
+    `v.transform((s) => new Date(s)))`;
   if (coerceDates === 'all') return `v.union([v.date(), ${coercer}])`;
   // 'input'
   return mode === 'select' ? 'v.date()' : `v.union([v.date(), ${coercer}])`;
