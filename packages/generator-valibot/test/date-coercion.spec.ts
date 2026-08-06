@@ -51,6 +51,36 @@ async function schemasFor(
 
 const accepts = (schema: any, x: unknown) => v.safeParse(schema.entries.at, x).success;
 
+/**
+ * Strings that are not a bare number, so `COERCIBLE_DATE_STRING` lets them through, and that
+ * `new Date` then turns into an Invalid Date.
+ *
+ * Every one of them is a member of the packed gate's probe pool, and the waiver for the date
+ * columns recorded all of them as accepted here while zod refused them: the pattern gates the
+ * *shape* of the string and nothing looked at what came out of the coercion. An Invalid Date is
+ * still a `Date` instance, so `instanceof` cannot see it and `getTime()` is what has to be asked.
+ */
+const NOT_DATES = [
+  'hello',
+  'zzz',
+  'not-a-uuid',
+  '3f2504e0-4f89-11d3-9a0c-0305e82c3301',
+  'a',
+  'happy',
+  'x',
+  'xxxxx',
+  '12:00:00',
+  '25:99:99',
+  '999.999.999.999',
+  '10.0.0.1',
+  'x'.repeat(300),
+  '\u{1F44D}\u{1F44D}\u{1F44D}',
+  '一'.repeat(300),
+];
+
+/** A probe short enough to name in an assertion message. */
+const label = (s: string) => (s.length > 20 ? `${s.slice(0, 20)}... (${s.length})` : s);
+
 describe('the default, which coerces on write only', () => {
   it('takes a Date and every notation Postgres and V8 read as the same date', async () => {
     const m = await schemasFor('input', 'input');
@@ -86,6 +116,15 @@ describe('the default, which coerces on write only', () => {
     expect(accepts(m.InserttSchema, [1, 2]), 'an array').toBe(false);
   });
 
+  it('refuses a string that reaches `new Date` and comes back Invalid', async () => {
+    const m = await schemasFor('input', 'input');
+    for (const s of NOT_DATES) {
+      expect(Number.isNaN(new Date(s).getTime()), `${label(s)} is a real date`).toBe(true);
+      expect(accepts(m.InserttSchema, s), label(s)).toBe(false);
+      expect(accepts(m.UpdatetSchema, s), `${label(s)} on update`).toBe(false);
+    }
+  });
+
   it('leaves select strict, since a row out of the database is already a Date', async () => {
     const m = await schemasFor('input', 'input');
     expect(accepts(m.SelecttSchema, new Date())).toBe(true);
@@ -99,6 +138,9 @@ describe('the explicit settings', () => {
     expect(accepts(m.SelecttSchema, '2020-01-01')).toBe(true);
     expect(accepts(m.SelecttSchema, '12.5'), 'still not a bare number').toBe(false);
     expect(accepts(m.SelecttSchema, null), 'still not null').toBe(false);
+    for (const s of NOT_DATES) {
+      expect(accepts(m.SelecttSchema, s), `${label(s)} on select`).toBe(false);
+    }
   });
 
   it("coerces nowhere under 'none', which is what matches the official module", async () => {

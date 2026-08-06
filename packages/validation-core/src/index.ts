@@ -224,6 +224,40 @@ export const COLUMN_FORMATS: Record<string, string> = {
 export const COERCIBLE_DATE_STRING = '^(?!\\s*[+-])(?!\\s*\\d*\\.?\\d*(?:[eE][+-]?\\d+)?\\s*$)';
 
 /**
+ * Whether a coercion really produced a date, as an expression over an emitted `Date`.
+ *
+ * `COERCIBLE_DATE_STRING` above is a gate on the *shape* of the input string and this is a gate on
+ * the *result*. They are two different questions and the second one was not being asked at all:
+ * `'hello'`, `'zzz'`, `'25:99:99'`, `'not-a-uuid'`, `'10.0.0.1'`, a 300-character run of `x` and a
+ * string of emoji are none of them bare numbers, so the pattern passed every one of them through,
+ * `new Date` returned an Invalid Date for every one of them, and nothing looked. Postgres refuses
+ * all of them, so validation passed and the INSERT then failed at the server.
+ *
+ * **An Invalid Date is still a `Date`.** `new Date('hello') instanceof Date` is true and
+ * `typeof` says `object`, so no instance check and no type guard can tell the two apart. The
+ * timestamp is the only thing that differs, and it is `NaN`, which is also why the test cannot be
+ * `d.getTime() !== NaN`: nothing is equal to `NaN`, including itself.
+ *
+ * The zod generator has always asked this without needing to say so, because
+ * `z.preprocess(coerce, z.date())` validates what came *out* of the coercion and `z.date()` fails
+ * an Invalid Date. The other three either accept the string or transform it and then stop looking,
+ * so each states this in whatever form its library has: valibot as a `v.check` after the
+ * transform, ArkType as a `.narrow`, TypeBox as the `assert` of a registered kind. One expression,
+ * shared, so the four cannot drift on what "is a date" means.
+ *
+ * `'12:00:00'` is the one probe worth naming, because V8 and Postgres could have disagreed about
+ * it and do not. `new Date('12:00:00')` is an Invalid Date, and measured against Postgres through
+ * PGlite, `'12:00:00'` is refused by `date`, `timestamp` and `timestamptz` alike with
+ * `invalid input syntax`. The three Postgres types that do take it are `time`, `timetz` and
+ * `interval`, and none of those is ever a `mode: 'date'` column. So refusing it is right on both
+ * counts. `'25:99:99'` is refused by both as well, Postgres with `date/time field value out of
+ * range`.
+ */
+export function parsesToADate(expr: string): string {
+  return `!Number.isNaN(${expr}.getTime())`;
+}
+
+/**
  * Why a character limit is not `.max(n)`.
  *
  * Postgres and MySQL count `varchar(n)` in **characters**; every JavaScript validator counts

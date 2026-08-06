@@ -13,6 +13,7 @@ import {
   isIntegerColumn,
   nonFiniteAccepted,
   parseCheck,
+  parsesToADate,
   renderDuplicateFinder,
   resolveConfiguredImport,
   updateColumns,
@@ -39,13 +40,22 @@ function vDateExpr(
   coerceDates: NonNullable<ValidationGenerateOptions['coerceDates']>
 ): string {
   if (coerceDates === 'none') return 'v.date()';
-  // Not every string. `new Date` reads a bare number as a year or as month.day, so `'12.5'`,
-  // `'0101'` and `'010'` all became real dates here and Postgres refuses all three. The regex
-  // runs before the transform, so a string that is not a date notation never reaches `new Date`;
-  // see `COERCIBLE_DATE_STRING` for what was measured and why.
+  // Not every string, and the pipe says so twice, because those are two different questions.
+  //
+  // The regex is the gate on the string. `new Date` reads a bare number as a year or as month.day,
+  // so `'12.5'`, `'0101'` and `'010'` all became real dates here and Postgres refuses all three;
+  // see `COERCIBLE_DATE_STRING` for what was measured and why. It runs before the transform, so
+  // such a string never reaches `new Date` at all.
+  //
+  // The check is the gate on the result, and without it any string the regex let through was
+  // accepted whatever came out: `'hello'`, `'zzz'` and `'25:99:99'` are not bare numbers, so they
+  // passed the pattern, became an Invalid Date and were taken. A valibot action sees the previous
+  // step's *output*, so this one is handed the `Date` rather than the string, and an Invalid Date
+  // is a real `Date` instance whose only tell is `getTime()`; see `parsesToADate`.
   const coercer =
     `v.pipe(v.string(), v.regex(new RegExp(${JSON.stringify(COERCIBLE_DATE_STRING)})), ` +
-    `v.transform((s) => new Date(s)))`;
+    `v.transform((s) => new Date(s)), ` +
+    `v.check((d) => ${parsesToADate('d')}, 'a date the runtime can parse'))`;
   if (coerceDates === 'all') return `v.union([v.date(), ${coercer}])`;
   // 'input'
   return mode === 'select' ? 'v.date()' : `v.union([v.date(), ${coercer}])`;

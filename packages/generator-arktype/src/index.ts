@@ -16,6 +16,7 @@ import {
   isIntegerColumn,
   nonFiniteAccepted,
   parseCheck,
+  parsesToADate,
   renderDuplicateFinder,
   updateColumns,
   selectColumns,
@@ -45,6 +46,10 @@ function atDateType(
   // `'0101'` and `'010'` all passed here and Postgres refuses all three. ArkType states the
   // narrowing as a regex literal in its DSL, the same way a column format is stated; see
   // `COERCIBLE_DATE_STRING` for what was measured and why.
+  //
+  // The regex is only half of it, and the other half cannot be written here: this is the gate on
+  // the *shape* of the string, and what the string turns into is a question about the result of
+  // `new Date`, which no DSL string can ask. That half is `atDateNarrow`.
   const coercible = `Date | /${COERCIBLE_DATE_STRING}/`;
   if (coerceDates === 'all') return coercible;
   // 'input'
@@ -548,7 +553,10 @@ function renderObjectShape(
       // and onto the Type. `atDefault` and `onBuilder` below are that move, so the narrow and the
       // default now coexist and the skip is gone.
       const caps =
-        atCapNarrows(c, mode) + atBigintNarrow(c, checks) + atNonFiniteNarrow(c, checks);
+        atCapNarrows(c, mode) +
+        atBigintNarrow(c, checks) +
+        atNonFiniteNarrow(c, checks) +
+        atDateNarrow(c, mode, coerceDates);
       // A defaultable definition is only valid as an object *property*: `type("bigint = 7")`
       // throws "Defaultable definitions like 'number = 0' are only valid as properties in an
       // object or tuple" at import. A field carrying a narrow is exactly that, a `type(...)` call
@@ -737,6 +745,54 @@ function atNonFiniteNarrow(c: Column, checks: ColumnCheck[]): string {
     c,
     (v) => `(!Number.isFinite(${v}) || (${parts.map((p) => p(v)).join(' && ')}))`,
     `NaN, an infinity, or between ${lower?.value ?? 'any'} and ${upper?.value ?? 'any'}`
+  );
+}
+
+/**
+ * The other half of a coerced date: that the string really is one.
+ *
+ * `atDateType` above puts `COERCIBLE_DATE_STRING` in the DSL, which gates the *shape* of the
+ * string. Nothing gated the result, and the two are not the same question: `'hello'`, `'zzz'`,
+ * `'25:99:99'`, `'not-a-uuid'`, `'10.0.0.1'` and a 300-character run of `x` are none of them bare
+ * numbers, so every one of them matched the pattern and this generator accepted it while Postgres
+ * refuses all of them. See `parsesToADate`.
+ *
+ * A narrow rather than a union branch, because a branch is the wrong direction: a union admits
+ * more and this has to admit less. The constraint is a predicate over the result of a call, which
+ * the string DSL cannot state at all, so it lands where the character caps, the bigint range and
+ * the non-finite range already are.
+ *
+ * The union defect recorded on `atNumberPlan` is *not* the reason, and it does not apply. That one
+ * is the discriminator failing to match `NaN` specifically, which is why the rule there is that
+ * two branches are always safe and so is any number of them with no `NaN` among them. A nullable
+ * date column emits three here, `(Date | /.../ | null)`, and it was run rather than assumed: null,
+ * a `Date` and `'2020-01-01'` are all accepted and `'hello'` is not.
+ *
+ * The narrow sits on the whole value, as every other narrow in this file does, so it has to let a
+ * `Date` through: the union's other branch is a real `Date` and this must not turn it away. That
+ * is what the `typeof` guard is for, and it is why the predicate is a disjunction where the
+ * TypeBox branch carries a conjunction, since there the same check sits on the string alone.
+ *
+ * The guard changes no verdict, and that was measured rather than assumed: an Invalid `Date`
+ * instance is refused by ArkType's own `Date` keyword before a narrow is consulted, on all three
+ * `coerceDates` settings and in all four generators. What reaches this predicate is therefore a
+ * valid `Date` or a string, and `new Date(aValidDate)` has the same timestamp. So the guard buys
+ * clarity and one skipped allocation rather than a different answer.
+ */
+function atDateNarrow(
+  c: Column,
+  mode: Mode,
+  coerceDates: NonNullable<ValidationGenerateOptions['coerceDates']>
+): string {
+  if (c.tsType !== 'Date' || c.shape) return '';
+  // The same three-way answer `atDateType` gives, so the narrow is present exactly where the
+  // string branch it narrows is.
+  if (coerceDates === 'none') return '';
+  if (coerceDates === 'input' && mode === 'select') return '';
+  return atNarrow(
+    c,
+    (v) => `(typeof ${v} !== 'string' || ${parsesToADate(`new Date(${v})`)})`,
+    'a date the runtime can parse'
   );
 }
 

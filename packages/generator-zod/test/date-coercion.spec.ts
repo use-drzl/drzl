@@ -53,6 +53,36 @@ async function schemasFor(
 
 const accepts = (schema: any, x: unknown) => schema.shape.at.safeParse(x).success;
 
+/**
+ * Strings that are not a bare number, so `COERCIBLE_DATE_STRING` lets them through, and that
+ * `new Date` then turns into an Invalid Date.
+ *
+ * This generator already refused every one of them and the other three did not, which is what made
+ * it the reference for the fix: `z.preprocess(coerce, z.date())` validates the *result* of the
+ * coercion, and an Invalid Date is a `Date` instance that `z.date()` still turns away. The list is
+ * the packed gate's probe pool, and the same list is asserted in the other three packages.
+ */
+const NOT_DATES = [
+  'hello',
+  'zzz',
+  'not-a-uuid',
+  '3f2504e0-4f89-11d3-9a0c-0305e82c3301',
+  'a',
+  'happy',
+  'x',
+  'xxxxx',
+  '12:00:00',
+  '25:99:99',
+  '999.999.999.999',
+  '10.0.0.1',
+  'x'.repeat(300),
+  '\u{1F44D}\u{1F44D}\u{1F44D}',
+  '一'.repeat(300),
+];
+
+/** A probe short enough to name in an assertion message. */
+const label = (s: string) => (s.length > 20 ? `${s.slice(0, 20)}... (${s.length})` : s);
+
 describe('the default, which coerces on write only', () => {
   it('takes a Date, an ISO string and an epoch number', async () => {
     const m = await schemasFor('input', 'input');
@@ -67,6 +97,15 @@ describe('the default, which coerces on write only', () => {
     expect(accepts(m.InserttSchema, true), 'a boolean').toBe(false);
     expect(accepts(m.InserttSchema, [1, 2]), 'an array').toBe(false);
     expect(accepts(m.InserttSchema, 'nonsense'), 'an unparseable string').toBe(false);
+  });
+
+  it('refuses a string that reaches `new Date` and comes back Invalid', async () => {
+    const m = await schemasFor('input', 'input');
+    for (const s of NOT_DATES) {
+      expect(Number.isNaN(new Date(s).getTime()), `${label(s)} is a real date`).toBe(true);
+      expect(accepts(m.InserttSchema, s), label(s)).toBe(false);
+      expect(accepts(m.UpdatetSchema, s), `${label(s)} on update`).toBe(false);
+    }
   });
 
   it('refuses a string that is only a number, which Postgres does not read as a date', async () => {
