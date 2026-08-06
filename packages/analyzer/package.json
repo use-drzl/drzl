@@ -1,6 +1,6 @@
 {
   "name": "@drzl/analyzer",
-  "version": "1.18.0",
+  "version": "1.17.1",
   "private": false,
   "license": "Apache-2.0",
   "type": "module",
@@ -26,13 +26,16 @@
   "scripts": {
     "build": "tsup src/index.ts --dts --format esm,cjs --clean",
     "lint": "eslint . --ext .ts",
-    "test": "vitest run --testTimeout=20000"
+    "test": "vitest run --testTimeout=20000",
+    "fuzz": "node test/fuzz/run.mjs",
+    "fuzz:gate": "node test/fuzz/run.mjs --gate"
   },
   "dependencies": {
     "jiti": "^2.7.0"
   },
   "devDependencies": {
     "drizzle-orm": "^0.45.2",
+    "drizzle-orm-v1": "npm:drizzle-orm@1.0.0-rc.4",
     "tsup": "^8.5.1",
     "typescript": "^5.9.3"
   },
