@@ -1,5 +1,146 @@
 # @drzl/generator-service
 
+## 2.4.0
+
+### Minor Changes
+
+- 8cc4de8: `point({ mode: 'xy' })` and `line({ mode: 'abc' })` are described as the objects they are, on both
+  drizzle-orm majors.
+
+  **`minor`, not `patch`.** The emitted TypeScript type of an object-mode `point` changes from
+  `string` (0.4x) or `[number, number]` (v1) to `{ x: number; y: number }`, and of an object-mode
+  `line` to `{ a: number; b: number; c: number }`. Code written against the old output does not
+  compile against the new. `CONTRIBUTING.md` asks for a bump above patch to be called out, and this is
+  the call-out.
+
+  **What changes for a user, in one sentence.** If you have a `point({ mode: 'xy' })`,
+  `line({ mode: 'abc' })` or `geometry({ mode: 'xy' })` column, your select schema stops rejecting
+  every row the driver returns, and your insert schema stops accepting a value the database refuses.
+  Nothing else moves: the tuple modes of the same three builders are untouched, and no other column
+  type reaches the code that changed.
+
+  ### It was wrong on both majors, in two different ways
+
+  The two modes of these builders return different JavaScript values, and neither major's description
+  separated them.
+
+  On 0.4x there is no `codec` to read, so the column reaches the analyzer by class name, and a coarse
+  `/Point|Line/i` answered `string`. That regex was written for the two tuple classes and was catching
+  four: swept over every builder `pg-core` exports on 0.45.2, in every mode, it matches
+  `PgPointTuple`, `PgLineTuple`, `PgPointObject` and `PgLineABC`, and `string` is wrong for all four.
+  The tuple pair was fixed in `@drzl/analyzer@1.15.0`; this is the other half, and the regex is now
+  gone rather than narrowed.
+
+  On v1 the column states `dataType: 'object point'` while the tuple mode beside it states
+  `'array point'`, and the analyzer read only the second word. Both modes reached one arm and came
+  back as tuples, so a v1 select schema for an object-mode column rejected every row.
+
+  ### The database settles it, not the first-party module
+
+  Asked of a real Postgres through PGlite, on drizzle 0.45.2 and again on 1.0.0-rc.4, on a `point`
+  and a `line` column:
+
+  | value passed to insert | rendered by drizzle     | server                                 |
+  | ---------------------- | ----------------------- | -------------------------------------- |
+  | `{ x: 1.5, y: -2.25 }` | `(1.5,-2.25)`           | stored, and read back as `{ x, y }`    |
+  | `{ a: 1, b: 2, c: 3 }` | `{1,2,3}`               | stored, and read back as `{ a, b, c }` |
+  | `[1, 2]`               | `(undefined,undefined)` | `invalid input syntax for type point`  |
+  | `'1,2'`                | `(undefined,undefined)` | `invalid input syntax for type point`  |
+  | `{ x: 1 }`             | `(1,undefined)`         | `invalid input syntax for type point`  |
+  | `{ x: 1, y: 2, z: 3 }` | `(1,2)`                 | stored: the unlisted key is ignored    |
+
+  `mapToDriverValue` reads `.x`/`.y` off whatever it is handed, which is why a tuple and a string are
+  not rejected in JavaScript but produce a literal the server refuses.
+
+  So every named field is required and unlisted keys are not refused: the emitted object is
+  `z.object`/`v.object`/`Type.Object` rather than the strict form, which would turn away a write the
+  column accepts.
+
+  ### What each generator emits
+
+  | generator     | emitted for `point({ mode: 'xy' })`                   |
+  | ------------- | ----------------------------------------------------- |
+  | zod           | `z.object({ x: z.number(), y: z.number() })`          |
+  | valibot       | `v.object({ x: v.number(), y: v.number() })`          |
+  | typebox       | `Type.Object({ x: Type.Number(), y: Type.Number() })` |
+  | arktype       | `type({ "x": "number", "y": "number" })`              |
+  | JSON Schema   | `type: 'object'` with both fields `required`          |
+  | service types | `{ x: number; y: number }`                            |
+  | oRPC          | the zod or valibot form above; `unknown` for arktype  |
+
+  ArkType is the one that is not a string. Its definition DSL cannot state an object at all,
+  `type({ p: '{ x: number, y: number }' })` throws `'{' is unresolvable`, and it throws at import, so
+  the field is emitted as a `type(...)` instance with `.array()`, `.or("null")` and an optional key
+  around it. In the oRPC generator, where every field value is a quoted DSL fragment that has to
+  compose with the nullable and optional wrappers, ArkType keeps `unknown` for the same measured
+  reason it already keeps it for a tuple.
+
+  ### Still not stated
+
+  Postgres refuses a line whose A and B are both zero, `invalid line specification`, and accepts
+  `{ a: 0, b: 1, c: 0 }` beside it. No column shape carries a cross-field rule, so the insert schema
+  still promises that one write. It is pinned as a measured gap in
+  `packages/cli/test/point-object-mode.e2e.spec.ts` rather than left as a remark.
+
+- f019b03: `require('@drzl/…')` now reaches the CommonJS build, which is what these packages have been
+  shipping and could not deliver.
+
+  Every one of these packages built a `dist/index.cjs` and then published a manifest that could not
+  name it. Ten had no `exports` map at all, so `require('@drzl/generator-zod')` fell through to
+  `main`, which pointed at `dist/index.js` beside `"type": "module"`: an ES module. On Node 20.19 and
+  Node 22.12 and later, `require()` loads one anyway, so it worked and the `.cjs` sat unused. Below
+  those two versions it threw, against an `engines.node` of `>=18.17.0`:
+
+  ```
+  ERR_REQUIRE_ESM: require() of ES Module
+    /app/node_modules/@drzl/generator-zod/dist/index.js from /app/probe.cjs not supported.
+  ```
+
+  Measured on a real install of the packed tarballs: broken on node 18.20.8, 20.18.3 and 22.11.0,
+  working on 20.19.6, 22.22.0 and 24.19.0. The ESM half was never affected, and a Node 18 consumer who
+  used `import` got correct output from all seven generators, which is why the floor stays at
+  `>=18.17.0` rather than being raised: the packages really do run there, and the manifest was what
+  was wrong.
+
+  Each package now declares both entries:
+
+  ```json
+  "exports": {
+    ".": {
+      "import": { "types": "./dist/index.d.ts", "default": "./dist/index.js" },
+      "require": { "types": "./dist/index.d.cts", "default": "./dist/index.cjs" }
+    }
+  }
+  ```
+
+  `@drzl/analyzer` was the one package whose `require` condition already named its `.cjs`, so it
+  loaded. Its single shared `types` still handed a CommonJS consumer the ESM declarations, and
+  `tsc --moduleResolution node16` rejected that with TS1479. It gets the same nested shape.
+
+  **What can break.** These are minors rather than patches for two reasons, both about consumers
+  doing something no DRZL documentation shows.
+
+  An `exports` map is a gate: `@drzl/validation-core/dist/index.js` and any other path inside the
+  package used to be importable and no longer is. Only the package root is a supported entry, and now
+  that is enforced rather than merely intended.
+
+  `main` moves from `dist/index.js` to `dist/index.cjs`, so a bundler old enough to ignore `exports`
+  now picks up the CommonJS build. A `module` field pointing at `dist/index.js` is published beside
+  it, which is what every bundler that predates `exports` reads first, so this only changes what the
+  few that read neither would resolve.
+
+  A consumer on Node 20.19 or newer who already used `require` gets the CommonJS bundle where they
+  previously got the ES module through Node's interop. The named exports and `default` are the same
+  either way, and `__esModule` is still true.
+
+### Patch Changes
+
+- Updated dependencies [b14cbed]
+- Updated dependencies [8cc4de8]
+- Updated dependencies [f019b03]
+  - @drzl/validation-core@3.16.0
+  - @drzl/analyzer@1.18.0
+
 ## 2.3.1
 
 ### Patch Changes
