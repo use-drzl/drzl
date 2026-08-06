@@ -39,3 +39,8 @@ packages/*/test/.tmp-*
 scripts/*-rr[0-9]*.sh
 scripts/*.tmp.sh
 scripts/vp-*.sh
+packages/*/test/fuzz/.tmp-run-*
+
+# The fuzzer writes its generated schema beside itself, because a bare `drizzle-orm/pg-core` only
+# resolves against the importing file's location and a system temp directory resolves nothing.
+packages/*/test/fuzz/.tmp-*
