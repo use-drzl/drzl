@@ -235,6 +235,16 @@ interface LibDialect {
    * text around their argument. ArkType therefore keeps `unknown` for these columns.
    */
   tuple?: (length: number) => string;
+  /**
+   * An object of named number fields: `point({ mode: 'xy' })`, `line({ mode: 'abc' })`.
+   *
+   * Absent for ArkType for the same measured reason as `tuple`, and it is the same measurement
+   * rerun rather than the same sentence: `type({ p: '{ x: number, y: number }' })` throws
+   * `'{' is unresolvable`. The nested-definition form `type({ p: { x: 'number', y: 'number' } })`
+   * does work and does reject `[1, 2]`, but it is not a string, so it composes with neither
+   * `nullable` nor `optional` here.
+   */
+  numberObject?: (fields: string[]) => string;
   /** ArkType types are strings, so the field value is JSON-encoded rather than emitted bare. */
   fieldIsString?: boolean;
   /** Applied to the whole update schema, where the library has a shorthand for it. */
@@ -258,6 +268,7 @@ const LIBS: Record<Lib, LibDialect> = {
     date: 'z.date()',
     unknown: 'z.unknown()',
     tuple: (n) => `z.tuple([${Array.from({ length: n }, () => 'z.number()').join(', ')}])`,
+    numberObject: (fields) => `z.object({ ${fields.map((f) => `${f}: z.number()`).join(', ')} })`,
     enum: (vals) => `z.enum([${vals.map(q).join(', ')}] as const)`,
     array: (e) => `z.array(${e})`,
     nullable: (b) => `${b}.nullable()`,
@@ -273,6 +284,7 @@ const LIBS: Record<Lib, LibDialect> = {
     date: 'v.date()',
     unknown: 'v.unknown()',
     tuple: (n) => `v.tuple([${Array.from({ length: n }, () => 'v.number()').join(', ')}])`,
+    numberObject: (fields) => `v.object({ ${fields.map((f) => `${f}: v.number()`).join(', ')} })`,
     enum: (vals) => `v.picklist([${vals.map(q).join(', ')}] as const)`,
     array: (e) => `v.array(${e})`,
     nullable: (b) => `v.nullable(${b})`,
@@ -306,6 +318,12 @@ function mapExpr(column: Column, lib: Lib, mode: 'insert' | 'update' | 'select')
     // 0.4x, which refuses the value the driver returns, and then on `unknown`, which accepts
     // anything at all including a null payload the insert will not survive. Neither is the column.
     if (column.shape?.kind === 'tuple' && d.tuple) return d.tuple(column.shape.length);
+    // The object modes of the same builders, which return `{ x, y }` and `{ a, b, c }`. Landing on
+    // `unknown` here means the router accepts a null payload the insert will not survive, which is
+    // the same loosening the tuple line above exists to prevent.
+    if (column.shape?.kind === 'numberObject' && d.numberObject) {
+      return d.numberObject(column.shape.fields);
+    }
     switch (column.tsType) {
       case 'number':
         return d.number;

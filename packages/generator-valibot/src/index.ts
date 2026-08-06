@@ -182,6 +182,16 @@ function vShapeExpr(c: Column, mode: Mode): string | undefined {
       // `strictTuple`, not `tuple`: valibot's plain `tuple` ignores extra items, so a `point`
       // schema built from it accepted `[1, 2, 3]`.
       return `v.strictTuple([${Array.from({ length: s.length }, () => 'v.number()').join(', ')}])`;
+    case 'numberObject':
+      // The object modes of the same columns: `point({ mode: 'xy' })` returns `{ x, y }` and
+      // `line({ mode: 'abc' })` returns `{ a, b, c }`.
+      //
+      // `v.object` and not `v.strictObject`, which is the opposite choice from the tuple above and
+      // for the same reason: it follows the column. Measured on PGlite through drizzle 0.45.2,
+      // `mapToDriverValue` reads the named fields and ignores the rest, so `{ x: 1, y: 2, z: 3 }`
+      // inserts and stores `(1,2)` while `[1, 2, 3]` in a strict tuple's place is a value the
+      // tuple column never produces.
+      return `v.object({ ${s.fields.map((f) => `${f}: v.number()`).join(', ')} })`;
     case 'numberVector':
       return s.length
         ? `v.pipe(v.array(v.number()), v.length(${s.length}))`

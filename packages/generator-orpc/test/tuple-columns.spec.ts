@@ -62,6 +62,25 @@ const analysis: Analysis = {
           isGenerated: false,
           shape: { kind: 'tuple', length: 3 },
         },
+        // The object modes of the same two builders, which hand back `{ x, y }` and `{ a, b, c }`.
+        {
+          name: 'corner',
+          tsType: '{ x: number; y: number }',
+          dbType: 'POINT',
+          nullable: false,
+          hasDefault: false,
+          isGenerated: false,
+          shape: { kind: 'numberObject', fields: ['x', 'y'] },
+        },
+        {
+          name: 'axis',
+          tsType: '{ a: number; b: number; c: number }',
+          dbType: 'LINE',
+          nullable: true,
+          hasDefault: false,
+          isGenerated: false,
+          shape: { kind: 'numberObject', fields: ['a', 'b', 'c'] },
+        },
       ],
       unique: [],
       indexes: [],
@@ -109,5 +128,32 @@ describe('@drzl/generator-orpc tuple columns', () => {
     const content = await generate('arktype');
     expect(content).toContain('unknown');
     expect(content).not.toContain('[number, number]');
+  });
+
+  it('emits an object of named numbers for the object modes, in zod and valibot', async () => {
+    // `point({ mode: 'xy' })` and `line({ mode: 'abc' })` return `{ x, y }` and `{ a, b, c }`, so
+    // the router's input schema has to take those and not the tuple beside them. Measured on
+    // PGlite through drizzle 0.45.2 and again through 1.0.0-rc.4.
+    // The emitted keys are unquoted here: prettier drops the quotes from a bare identifier, so an
+    // assertion written as `"corner": ...` matches nothing and passes whatever the generator did.
+    const zod = await generate('zod');
+    expect(zod).toContain('corner: z.object({ x: z.number(), y: z.number() })');
+    expect(zod).toContain('axis: z.object({ a: z.number(), b: z.number(), c: z.number() })');
+    expect(zod).not.toContain('corner: z.unknown()');
+    const valibot = await generate('valibot');
+    expect(valibot).toContain('corner: v.object({ x: v.number(), y: v.number() })');
+    // The nullable wrapper still goes round it, which is what a shared builder has to keep.
+    expect(valibot).toContain(
+      'axis: v.nullable(v.object({ a: v.number(), b: v.number(), c: v.number() }))'
+    );
+  });
+
+  it('leaves arktype on unknown for the object modes too, for the same reason', async () => {
+    // Measured, not assumed: `type({ p: '{ x: number, y: number }' })` throws
+    // `'{' is unresolvable`, so ArkType's string DSL cannot state this shape either, and every
+    // field value here is emitted as a quoted DSL fragment.
+    const content = await generate('arktype');
+    expect(content).toContain('corner: "unknown"');
+    expect(content).toContain('axis: "(unknown | null)"');
   });
 });

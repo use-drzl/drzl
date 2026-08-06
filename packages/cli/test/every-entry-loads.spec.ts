@@ -15,7 +15,14 @@
  * format that loads and exports a different shape is the same defect one step later.
  *
  * The CommonJS twin is checked even where no `exports` map names it, because tsup emits it under
- * `--format esm,cjs` and `files: ["dist"]` publishes it.
+ * `--format esm,cjs` and `files: ["dist"]` publishes it. `@drzl/cli` is the only package left in
+ * that position, for `./config`.
+ *
+ * Everything here loads a file by absolute path, which is deliberate and is also this file's
+ * blind spot: it says nothing about whether `require('@drzl/generator-zod')` reaches that file.
+ * For ten packages it did not, for their whole published life. That half is in
+ * `packages/validation-core/test/require-entry.spec.ts`, which resolves by package name through a
+ * real node_modules tree.
  *
  * The CLI's own entry is a bin: it calls `program.parseAsync(process.argv)` at module scope, so
  * importing it runs the program. It is exercised the way a consumer reaches it instead, by being
@@ -23,14 +30,14 @@
  *
  * **What this does and does not prove.** The child inherits the Node running the tests, which in
  * this repo is 22.13 or newer, because pnpm 11 declares that floor and the workspace cannot be
- * installed below it. From Node 22.12 onwards `require()` of an ES module is allowed, and that is
- * what carries ten of these thirteen entries. It is not what the packages advertise: eleven
- * manifests say `engines.node: ">=18.17.0"` and `@drzl/cli` says `">=22"`, and every one of those
- * floors predates 22.12. That last sentence is checked rather than trusted, by the first test
- * below, because the previous version of this paragraph asserted a number that was wrong for one
- * of the twelve. So a green run here means the bundles load on the Node this repo develops on,
- * and says nothing about the floor the packages claim. The gap is measured rather than left to a
- * comment, at the bottom of this file.
+ * installed below it. From Node 22.12 onwards `require()` of an ES module is allowed, so a green
+ * run in this block can be carried by a feature the packages do not advertise: eleven manifests
+ * say `engines.node: ">=18.17.0"` and `@drzl/cli` says `">=22"`, and every one of those floors
+ * predates 22.12. That last sentence is checked rather than trusted, by the first test below,
+ * because the previous version of this paragraph asserted a number that was wrong for one of the
+ * twelve. So a green run here means the bundles load on the Node this repo develops on, and says
+ * nothing about the floor the packages claim. The gap is measured rather than left to a comment,
+ * at the bottom of this file.
  *
  * This asserts on the build, so the build has to have happened. `pnpm build` first.
  */
@@ -43,17 +50,41 @@ import path from 'node:path';
 const repoRoot = path.resolve(import.meta.dirname, '../../..');
 const packagesDir = path.join(repoRoot, 'packages');
 
+/** A node in an `exports` map: a path, or further conditions nested to any depth. */
+type Conditions = string | { [condition: string]: Conditions };
+
 interface Manifest {
   name: string;
   version: string;
   private?: boolean;
   main?: string;
   bin?: Record<string, string>;
-  exports?: Record<string, string | Record<string, string>>;
+  exports?: Record<string, Conditions>;
   engines?: { node?: string };
 }
 
 const rel = (p: string) => p.replace(/^\.\//, '');
+
+/**
+ * The file a condition leads to, following `exports` down as far as it nests.
+ *
+ * Reading `conditions.import` as a path was enough while every map here was one level deep. It
+ * stopped being enough when the manifests grew a `types` inside each condition, which is what
+ * `moduleResolution: node16` needs in order to hand a CommonJS consumer a `.d.cts`, and the
+ * one-level read then found an object where it expected a string.
+ *
+ * `types` is never followed: it names a declaration file, and the point of this file is loading
+ * something in a child process.
+ */
+function pick(node: Conditions | undefined, want: 'import' | 'require'): string | undefined {
+  if (node === undefined) return undefined;
+  if (typeof node === 'string') return node;
+  for (const key of [want, 'default']) {
+    const found = pick(node[key], want);
+    if (found) return found;
+  }
+  return undefined;
+}
 
 /** Read from disk rather than listed, so a package added later is covered without editing this. */
 const publishable = fs
@@ -101,8 +132,7 @@ function entryPoints(m: Manifest): Entry[] {
   };
   if (m.exports) {
     for (const [subpath, conditions] of Object.entries(m.exports)) {
-      if (typeof conditions === 'string') add(subpath, conditions, undefined);
-      else add(subpath, conditions.import ?? conditions.default, conditions.require);
+      add(subpath, pick(conditions, 'import'), pick(conditions, 'require'));
     }
   } else {
     add('.', m.main, undefined);
@@ -307,37 +337,44 @@ describe.each(cases)('$name $entry.subpath', ({ dir, version, entry }) => {
  *
  * `engines.node` names a floor below 22.12 in all twelve manifests: eleven say `">=18.17.0"` and
  * `@drzl/cli` says `">=22"`, which still predates it. That is asserted further up rather than
- * left as a sentence here. `require()` of an ES module did not exist before 22.12, and ten of
- * these thirteen entries need it, so on the advertised floor they throw `ERR_REQUIRE_ESM`. The
- * block above cannot see that, because the Node running the tests is 22.13 or newer: pnpm 11
- * declares that floor and the workspace cannot be installed below it.
+ * left as a sentence here. `require()` of an ES module did not exist before 22.12, so a bundle
+ * that needs it throws `ERR_REQUIRE_ESM` on the advertised floor. The block above cannot see that,
+ * because the Node running the tests is 22.13 or newer: pnpm 11 declares that floor and the
+ * workspace cannot be installed below it.
  *
  * `--no-experimental-require-module` turns the newer behaviour off, which is the closest a modern
  * Node gets to the old one for this question.
  *
- * The cause is one line repeated: every failing bundle does `require("@drzl/<sibling>")`, and
- * every DRZL package is `"type": "module"` with an ESM `main`, so the CommonJS build of one
- * package can only reach another through an ESM file. The three that survive are exactly the
- * three whose CommonJS bundle requires no `@drzl` sibling at all.
+ * Ten of these entries used to fail here, all for one reason: each CommonJS bundle did
+ * `require("@drzl/<sibling>")` and every DRZL package was `"type": "module"` with an ESM `main`
+ * and no `exports` map, so the only file a sibling `require` could reach was an ES module. The
+ * eleven library manifests now carry an `exports` map whose `require` condition names the `.cjs`
+ * beside the `.js`, and the chain resolves to CommonJS the whole way down.
  *
- * This pins the measurement rather than endorsing it. It fails if the set grows, which is a new
- * package inheriting the defect, and it fails if the set shrinks, which is the defect being fixed
- * and this table needing to say so. It is not a passing grade for the CommonJS builds.
+ * One entry still fails, and not for a reason DRZL owns: `@drzl/cli`'s own bundle requires
+ * `chalk@6`, which is ESM only (`"type": "module"`, one unconditional `exports` target, and its
+ * own `engines.node` of `">=22"`). No manifest change here can make that requireable. It is also
+ * the one entry no consumer reaches by `require`: it is the bin, run as a program.
  *
- * Measured 2026-08-03 on Node 22.22.0.
+ * A `+` row is a package that has newly inherited the defect. A `-` row is one that no longer has
+ * it, which means this table has to say what fixed it.
+ *
+ * Measured 2026-08-05 on Node 22.22.0, and confirmed against node:18.20.8, node:20.18, node:20.19
+ * and node:22.11 in docker with the packed tarballs installed by npm.
  */
 const ON_THE_ADVERTISED_ENGINE_FLOOR: Record<string, 'loads' | 'ERR_REQUIRE_ESM'> = {
   'analyzer .': 'loads',
+  // chalk@6 is ESM only. Every other entry here is CommonJS all the way down.
   'cli .': 'ERR_REQUIRE_ESM',
-  'cli ./config': 'ERR_REQUIRE_ESM',
-  'generator-arktype .': 'ERR_REQUIRE_ESM',
-  'generator-json-schema .': 'ERR_REQUIRE_ESM',
-  'generator-orpc .': 'ERR_REQUIRE_ESM',
-  'generator-service .': 'ERR_REQUIRE_ESM',
-  'generator-typebox .': 'ERR_REQUIRE_ESM',
-  'generator-valibot .': 'ERR_REQUIRE_ESM',
-  'generator-zod .': 'ERR_REQUIRE_ESM',
-  'template-orpc-service .': 'ERR_REQUIRE_ESM',
+  'cli ./config': 'loads',
+  'generator-arktype .': 'loads',
+  'generator-json-schema .': 'loads',
+  'generator-orpc .': 'loads',
+  'generator-service .': 'loads',
+  'generator-typebox .': 'loads',
+  'generator-valibot .': 'loads',
+  'generator-zod .': 'loads',
+  'template-orpc-service .': 'loads',
   'template-standard .': 'loads',
   'validation-core .': 'loads',
 };

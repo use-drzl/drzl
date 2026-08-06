@@ -81,7 +81,9 @@ The structured Postgres columns each get the shape their runtime value actually 
 | Column                      | Emitted                                               |
 | --------------------------- | ----------------------------------------------------- |
 | `point()`, `geometry()`     | `v.strictTuple([v.number(), v.number()])`             |
+| `point({ mode: 'xy' })`     | `v.object({ x: v.number(), y: v.number() })`          |
 | `line()`                    | `v.strictTuple([...three...])`                        |
+| `line({ mode: 'abc' })`     | `v.object({ a, b, c })`                               |
 | `vector({ dimensions: 3 })` | `v.pipe(v.array(v.number()), v.length(3))`            |
 | `bit({ dimensions: 3 })`    | `v.pipe(v.string(), v.regex(/^[01]*$/), v.length(3))` |
 | `bytea()`                   | `v.instance(Uint8Array)`                              |
@@ -89,6 +91,11 @@ The structured Postgres columns each get the shape their runtime value actually 
 
 `strictTuple` rather than `tuple` is deliberate: valibot's plain `tuple` ignores extra items, so a
 schema built from it accepts `[1, 2, 3]` for a point. `drizzle-orm/valibot` uses the plain form.
+
+The object modes go the other way, `object` rather than `strictObject`, and for the same reason:
+each follows the column. Asked of a real Postgres, drizzle reads `.x` and `.y` off whatever it is
+given, so `{ x: 1, y: 2, z: 3 }` inserts and stores `(1,2)` while a tuple or a string is rendered
+`(undefined,undefined)` and refused.
 
 Valibot has no `json()` built-in, so a json column emits a recursive declaration at the top of the
 file. It is stricter than the official one in two ways, both of which reject values that cannot

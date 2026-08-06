@@ -154,6 +154,12 @@ function tbShapeExpr(c: Column, mode: Mode, typedJsonRef?: string): string | und
       return 'Type.Uint8Array()';
     case 'tuple':
       return `Type.Tuple([${Array.from({ length: s.length }, () => 'Type.Number()').join(', ')}])`;
+    case 'numberObject':
+      // The object modes of the same columns: `point({ mode: 'xy' })` returns `{ x, y }` and
+      // `line({ mode: 'abc' })` returns `{ a, b, c }`. No `additionalProperties: false`, because
+      // the column ignores an unlisted key: measured on PGlite through drizzle 0.45.2,
+      // `{ x: 1, y: 2, z: 3 }` inserts and the row stores `(1,2)`.
+      return `Type.Object({ ${s.fields.map((f) => `${f}: Type.Number()`).join(', ')} })`;
     case 'numberVector':
       return `Type.Array(Type.Number()${s.length ? `, { minItems: ${s.length}, maxItems: ${s.length} }` : ''})`;
     case 'bitstring':

@@ -102,6 +102,45 @@ describe('structured columns', () => {
     expect(accepts(f, '(1,2)'), 'the string form it used to be mapped to').toBe(false);
   });
 
+  it('holds an object-mode point and line to their named number fields', async () => {
+    // The other mode of the same two builders, and not a tuple. Every value below was measured on
+    // PGlite through drizzle 0.45.2 and again through 1.0.0-rc.4, on a `point({ mode: 'xy' })` and
+    // a `line({ mode: 'abc' })` column.
+    const m = await schemasFor([
+      col('p', {
+        tsType: '{ x: number; y: number }',
+        dbType: 'POINT',
+        shape: { kind: 'numberObject', fields: ['x', 'y'] },
+      }),
+      col('l', {
+        tsType: '{ a: number; b: number; c: number }',
+        dbType: 'LINE',
+        shape: { kind: 'numberObject', fields: ['a', 'b', 'c'] },
+      }),
+    ]);
+    const p = m.SelecttSchema.shape.p;
+    const l = m.SelecttSchema.shape.l;
+    expect(accepts(p, { x: 1.5, y: -2.25 }), 'the row the column handed back').toBe(true);
+    expect(accepts(l, { a: 1, b: 2, c: 3 }), 'the row the line column handed back').toBe(true);
+    // The two answers this column has had, neither of which the server accepts: both `[1, 2]` and
+    // `'1,2'` are rendered `(undefined,undefined)` by `mapToDriverValue` and refused with
+    // `invalid input syntax for type point`.
+    expect(accepts(p, [1, 2]), 'the tuple the other mode returns').toBe(false);
+    expect(accepts(p, '(1,2)'), 'the string form it used to be typed as').toBe(false);
+    expect(accepts(p, { x: 1 }), 'a missing field, which renders (1,undefined)').toBe(false);
+    expect(accepts(p, { x: '1', y: '2' }), 'strings in the fields').toBe(false);
+    expect(accepts(p, null), 'null on a NOT NULL column').toBe(false);
+    // The server takes this one: `mapToDriverValue` reads `.x` and `.y` and ignores the rest, so
+    // `{ x: 1, y: 2, z: 3 }` inserts and stores `(1,2)`. Refusing it here would be stricter than
+    // the column.
+    expect(accepts(p, { x: 1, y: 2, z: 3 }), 'an unlisted key, which the column ignores').toBe(
+      true
+    );
+    // The arity is the field list, so a point schema must not take a line and back.
+    expect(accepts(p, { a: 1, b: 2, c: 3 })).toBe(false);
+    expect(accepts(l, { x: 1, y: 2 })).toBe(false);
+  });
+
   it('holds a vector to its declared width', async () => {
     const m = await schemasFor([
       col('v', {

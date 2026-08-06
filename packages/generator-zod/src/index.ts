@@ -220,6 +220,16 @@ function shapeExpr(c: Column, mode: Mode, typedJsonRef?: string): string | undef
       return 'z.instanceof(Uint8Array)';
     case 'tuple':
       return `z.tuple([${Array.from({ length: s.length }, () => 'z.number()').join(', ')}])`;
+    case 'numberObject':
+      // The object modes of the same columns: `point({ mode: 'xy' })` hands back `{ x, y }` and
+      // `line({ mode: 'abc' })` hands back `{ a, b, c }`.
+      //
+      // Not `.strictObject`. Measured on PGlite through drizzle 0.45.2: `mapToDriverValue` reads
+      // the named fields off whatever it is handed and ignores the rest, so `{ x: 1, y: 2, z: 3 }`
+      // inserts and the column stores `(1,2)`. A strict object would refuse a write the server
+      // takes. Every named field is required, on the same measurement: `{ x: 1 }` renders
+      // `(1,undefined)` and Postgres answers `invalid input syntax for type point`.
+      return `z.object({ ${s.fields.map((f) => `${f}: z.number()`).join(', ')} })`;
     case 'numberVector':
       return `z.array(z.number())${s.length ? `.length(${s.length})` : ''}`;
     case 'bitstring':

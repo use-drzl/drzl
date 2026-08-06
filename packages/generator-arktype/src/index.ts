@@ -129,6 +129,13 @@ function atShapeType(c: Column): string | undefined {
       // ceiling out and a byte budget in, and `string <= n` is a third measurement that agrees
       // with neither, so the cap goes to `atCapNarrows` where an exact count can be written.
       return 'string';
+    case 'numberObject':
+      // The one shape with no string form at all: `type({ p: '{ x: number, y: number }' })` throws
+      // `'{' is unresolvable`, measured. It is emitted as a Type instance instead, by
+      // `atNumberObjectField`, which is why this returns nothing rather than an approximation.
+      // Answering `unknown` here would be the same loosening this generator already refuses for a
+      // tuple: it accepts a string, an array and null on a NOT NULL column.
+      return undefined;
   }
 }
 
@@ -225,14 +232,206 @@ function atCardinality(c: Column, cardinalities: CardinalityCheck[]): { lower?: 
   return { lower, upper, equals };
 }
 
+/**
+ * The whole field line for an object-mode `point` or `line`, as a Type instance.
+ *
+ * The one column this generator cannot describe in the string DSL: ArkType parses `{` in a
+ * definition string as an alias and throws `'{' is unresolvable`, measured, and it throws at
+ * import, so an approximation here is a module nothing can load. `type({ x: 'number', y: 'number' })`
+ * as the field value does work, and every wrapper the DSL path applies has an instance form that
+ * was run rather than assumed:
+ *
+ *   `.array()` per dimension, `.or("null")` for a nullable column, `?` on the key for an optional
+ *   one, `.atLeastLength`/`.moreThanLength`/`.atMostLength`/`.lessThanLength`/`.exactlyLength` for
+ *   a cardinality CHECK, and `.default(() => (...))` for an applied default.
+ *
+ * The default is the one place this is deliberately narrower than the DSL path. ArkType validates
+ * a default against the type at build time and throws when it does not fit, so a default that is
+ * not an object of the declared number fields would make the emitted module unloadable. Those fall
+ * back to an optional key, which is what the column without `applyDefaults` already emits. Not a
+ * hole this shape introduced: the DSL path throws outright today for a tuple column carrying an
+ * array default, `Expected an expression before '[0,0]'`, which is the same defect one step worse
+ * and is reported separately.
+ */
+function atNumberObjectField(
+  c: Column,
+  mode: Mode,
+  applyDefaults: boolean,
+  cardinalities: CardinalityCheck[]
+): string | undefined {
+  const s = c.shape;
+  if (s?.kind !== 'numberObject') return undefined;
+  let expr = `type({ ${s.fields.map((f) => `${JSON.stringify(f)}: "number"`).join(', ')} })`;
+  for (let i = 0; i < (c.arrayDimensions ?? 0); i++) expr += '.array()';
+  const card = atCardinality(c, cardinalities);
+  // A whole number or nothing: these methods take a length, and a spliced non-numeric literal
+  // would be a syntax error in the emitted module rather than a missing constraint.
+  const len = (v: string) => (/^\d+$/.test(v) ? v : undefined);
+  const LOWER = { '>=': 'atLeastLength', '>': 'moreThanLength' } as const;
+  const UPPER = { '<=': 'atMostLength', '<': 'lessThanLength' } as const;
+  if (card.equals !== undefined) {
+    const n = len(card.equals);
+    if (n) expr += `.exactlyLength(${n})`;
+  } else {
+    for (const [b, table] of [
+      [card.lower, LOWER],
+      [card.upper, UPPER],
+    ] as const) {
+      if (!b) continue;
+      const n = len(b.value);
+      const method = (table as Record<string, string>)[b.op];
+      if (n && method) expr += `.${method}(${n})`;
+    }
+  }
+  if (c.nullable) expr += '.or("null")';
+  let optional = false;
+  if (mode !== 'select') {
+    const d = c.defaultValue;
+    const fits =
+      mode === 'insert' &&
+      applyDefaults &&
+      d !== undefined &&
+      (c.arrayDimensions
+        ? false
+        : d === null
+          ? c.nullable
+          : typeof d === 'object' &&
+            s.fields.every((f) => typeof (d as Record<string, unknown>)[f] === 'number'));
+    if (fits) expr += d === null ? '.default(null)' : `.default(() => (${JSON.stringify(d)}))`;
+    else if (mode === 'update' || c.nullable || c.hasDefault) optional = true;
+  }
+  return `  ${JSON.stringify(optional ? `${c.name}?` : c.name)}: ${expr},`;
+}
+
+/**
+ * An applied default, in the two places ArkType can hold one.
+ *
+ * `dsl` is the literal as the string DSL spells it, and only some values have one: `=` there is
+ * followed by a literal, so an object, an array, a Date or a bigint has nothing to write. `expr`
+ * is the JavaScript that `.default()` takes on the Type itself, which is where a field rendered
+ * as a Type instance has to put its default whatever the value, since `type("string = 'GB'")`
+ * throws "Defaultable definitions like 'number = 0' are only valid as properties in an object or
+ * tuple" and takes the whole module with it.
+ */
+type AppliedDefault = { dsl?: string; expr: string };
+
+/**
+ * Whether a value survives `JSON.stringify` as itself.
+ *
+ * Not a formality. `JSON.stringify(Infinity)` is the string `null`, so
+ * `doublePrecision().default(Infinity)` emitted `number = null`: ArkType refuses that at import,
+ * and had it loaded, the schema would have filled in a different value than the database writes.
+ * A Date, a Buffer, a bigint and any class instance are excluded here for the same reason, and
+ * get their own arm below or no default at all.
+ */
+function atJsonValue(v: unknown): boolean {
+  if (v === null || typeof v === 'string' || typeof v === 'boolean') return true;
+  if (typeof v === 'number') return Number.isFinite(v);
+  if (Array.isArray(v)) return v.every(atJsonValue);
+  if (typeof v === 'object') {
+    const proto = Object.getPrototypeOf(v);
+    if (proto !== Object.prototype && proto !== null) return false;
+    return Object.values(v as Record<string, unknown>).every(atJsonValue);
+  }
+  return false;
+}
+
+/**
+ * Whether a value can inhabit the type this file emits for the column, judged on kind alone.
+ *
+ * ArkType checks a default against its type when the module is built rather than when a row
+ * arrives, so a mismatch is a `ParseError` at import: no verdict on any row at all. Kind is what
+ * a generator can settle for itself. Whether the value also satisfies the column's *constraints*
+ * (an enum's members, a uuid's shape, a range, a character cap) is a question about the schema,
+ * and a default the column itself refuses is one the database refuses too.
+ */
+function atDefaultFits(c: Column, v: unknown, dims: number): boolean {
+  // The dimensions belong to the list and everything below them describes an element. A null
+  // element does not fit: `c.nullable` wraps the whole array, never its members.
+  if (dims > 0) return Array.isArray(v) && v.every((e) => atDefaultFits(c, e, dims - 1));
+  switch (c.shape?.kind) {
+    case 'json':
+    case 'custom':
+      return atJsonValue(v);
+    case 'buffer':
+      // `TypedArray.Uint8`, which nothing reconstructible from JSON satisfies.
+      return false;
+    case 'tuple':
+    case 'numberVector':
+      return Array.isArray(v) && v.every((e) => typeof e === 'number' && Number.isFinite(e));
+    case 'bitstring':
+    case 'byteString':
+      return typeof v === 'string';
+  }
+  switch (c.tsType) {
+    case 'string':
+      return typeof v === 'string';
+    case 'number':
+      return typeof v === 'number' && Number.isFinite(v);
+    case 'boolean':
+      return typeof v === 'boolean';
+    case 'bigint':
+      return typeof v === 'bigint' || (typeof v === 'number' && Number.isInteger(v));
+    case 'Date':
+      return v instanceof Date || typeof v === 'string' || typeof v === 'number';
+    default:
+      // Every remaining `tsType` renders as `unknown`, which holds anything reproducible.
+      return atJsonValue(v);
+  }
+}
+
+/**
+ * The default to apply to a column, or nothing when none can be reproduced faithfully.
+ *
+ * Nothing is the honest answer more often than it looks. The analyzer already drops an SQL
+ * default and a `$defaultFn`, since the database evaluates the one and Drizzle calls the other,
+ * and the key is left merely optional. A literal this generator cannot write down exactly gets
+ * the same treatment rather than a value that differs from what the database would have stored.
+ */
+function atDefault(c: Column, mode: Mode, applyDefaults: boolean): AppliedDefault | undefined {
+  if (mode !== 'insert' || !applyDefaults) return undefined;
+  const v = c.defaultValue;
+  if (v === undefined) return undefined;
+  const dims = c.arrayDimensions ?? 0;
+  // A null default belongs to the column's nullability rather than to its element type. On a
+  // non-nullable column ArkType refuses it at import: "Default must be a string (was null)".
+  if (v === null) return c.nullable ? { dsl: 'null', expr: 'null' } : undefined;
+  if (!atDefaultFits(c, v, dims)) return undefined;
+  // A Date column is rebuilt as a Date whatever Drizzle stored. Its select schema types the
+  // column as a Date, and under `coerceDates: 'none'` so does its insert schema, which refuses
+  // the ISO string this used to emit: "Default for x must be a Date (was string)".
+  if (c.tsType === 'Date' && dims === 0 && !c.shape) {
+    const d = v instanceof Date ? v : new Date(v as string | number);
+    if (Number.isNaN(d.getTime())) return undefined;
+    // A non-primitive default has to arrive as a function: ArkType refuses a value outright,
+    // "Non-primitive default must be specified as a function like () => ({my: 'object'})", which
+    // is also what keeps one instance from being shared between parses.
+    return { expr: `() => new Date(${JSON.stringify(d.toISOString())})` };
+  }
+  if (typeof v === 'bigint' || (c.tsType === 'bigint' && typeof v === 'number')) {
+    // Both forms demand a bigint literal here, and `JSON.stringify` throws on a bigint rather
+    // than rendering one, which used to end the whole generate run before a file was written.
+    const literal = `${BigInt(v as bigint | number)}n`;
+    return { dsl: literal, expr: literal };
+  }
+  if (typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') {
+    const literal = JSON.stringify(v);
+    return { dsl: literal, expr: literal };
+  }
+  // An object or an array. No DSL literal exists for either, and the value has to arrive through
+  // a function, so both go on the builder.
+  return atJsonValue(v) ? { expr: `() => (${JSON.stringify(v)})` } : undefined;
+}
+
 function atField(
   c: Column,
   mode: Mode,
   coerceDates: NonNullable<ValidationGenerateOptions['coerceDates']>,
   checks: ColumnCheck[] = [],
   sets: ColumnSet[] = [],
-  applyDefault = false,
-  cardinalities: CardinalityCheck[] = []
+  inlineDefault?: AppliedDefault,
+  cardinalities: CardinalityCheck[] = [],
+  defaulted = false
 ): string {
   let t = atTypeForColumn(c, mode, coerceDates, checks, sets);
   // The element is parenthesised whenever it is anything but a bare keyword, because `[]` binds
@@ -249,12 +448,12 @@ function atField(
   if (c.nullable) t = `(${t} | null)`;
   if (mode !== 'select') {
     // ArkType states a default in the DSL itself: `"string = 'GB'"`. That already makes the key
-    // optional, so it replaces the `?` suffix rather than combining with it.
-    if (mode === 'insert' && applyDefault && c.defaultValue !== undefined) {
-      t = `${t} = ${JSON.stringify(c.defaultValue)}`;
-    } else if (mode === 'update' || c.nullable || c.hasDefault) {
-      t = `${t}?`;
-    }
+    // optional, and the two may not be combined: `{ "x?": "string = 'GB'" }` is refused with
+    // "Only required keys may specify default values". So an applied default replaces the `?`
+    // rather than joining it, wherever the default is finally written. `defaulted` is true even
+    // when the value goes on the builder instead, because the key has to stay required either way.
+    if (inlineDefault?.dsl !== undefined) t = `${t} = ${inlineDefault.dsl}`;
+    else if (!defaulted && (mode === 'update' || c.nullable || c.hasDefault)) t = `${t}?`;
   }
   return t;
 }
@@ -270,23 +469,37 @@ function renderObjectShape(
 ) {
   return cols
     .map((c) => {
-      const dsl = atField(c, mode, coerceDates, checks, sets, applyDefaults, cardinalities);
-      // A defaultable definition is only valid as an object property: `type("bigint = 7")` throws
-      // "Defaultable definitions like 'number = 0' are only valid as properties in an object or
-      // tuple" at import. So a bound is not moved onto a field carrying an applied default, where
-      // it would trade a missing constraint for a module nothing can load.
-      //
-      // That leaves a hole rather than closing one, and it is observable. `.default(null)` on a
-      // nullable bigint emits `"(bigint | null) = null"`, which loads, so its *insert* schema is
-      // unbounded while select and update are bounded. It is the only value for which the hole
-      // shows: `.default(7)` on a bigint is refused as "Default for n must be a bigint", and a
-      // bigint-valued default crashes this generator on `JSON.stringify` before reaching here.
-      // Closing it means moving the default off the DSL and onto the Type, where
-      // `.default(null)` does work and does keep the narrow. That is a change to the whole
-      // applyDefaults path, which has two further defects of its own, and is tracked separately.
-      const defaulted = mode === 'insert' && applyDefaults && c.defaultValue !== undefined;
-      const caps = atCapNarrows(c, mode) + (defaulted ? '' : atBigintNarrow(c, checks));
-      if (!caps) return `  ${JSON.stringify(c.name)}: ${JSON.stringify(dsl)},`;
+      // The one shape with no DSL form at all, emitted as a Type instance instead. It builds the
+      // whole line, key included, because ArkType marks optionality on the key when the value is a
+      // Type rather than with a `?` inside the definition.
+      const asType = atNumberObjectField(c, mode, applyDefaults, cardinalities);
+      if (asType) return asType;
+      const dflt = atDefault(c, mode, applyDefaults);
+      // Unconditional, where this used to skip the bigint narrow whenever a default was applied.
+      // That skip was documented here as a hole it left open, an insert schema unbounded while
+      // select and update were bounded, and said closing it meant moving the default off the DSL
+      // and onto the Type. `atDefault` and `onBuilder` below are that move, so the narrow and the
+      // default now coexist and the skip is gone.
+      const caps = atCapNarrows(c, mode) + atBigintNarrow(c, checks);
+      // A defaultable definition is only valid as an object *property*: `type("bigint = 7")`
+      // throws "Defaultable definitions like 'number = 0' are only valid as properties in an
+      // object or tuple" at import. A field carrying a narrow is exactly that, a `type(...)` call
+      // of its own, so its default cannot live in the string and goes to `.default()` on the Type
+      // instead, where the narrow survives beside it. A value the DSL has no literal for takes the
+      // same route whether or not the field is narrowed.
+      const onBuilder = !!dflt && (caps !== '' || dflt.dsl === undefined);
+      const dsl = atField(
+        c,
+        mode,
+        coerceDates,
+        checks,
+        sets,
+        onBuilder ? undefined : dflt,
+        cardinalities,
+        !!dflt
+      );
+      if (!caps && !onBuilder) return `  ${JSON.stringify(c.name)}: ${JSON.stringify(dsl)},`;
+
       // A Type instance rather than a DSL string, because neither cap is expressible in the DSL:
       // `string <= n` counts UTF-16 code units, which agrees with neither database. ArkType marks
       // optionality on the key when the value is a Type, so the `?` moves there.
@@ -298,7 +511,11 @@ function renderObjectShape(
       // for a bare `T[]`: a nullable array renders `(T[] | null)` and the union became the
       // element, and a two-dimensional array came out three deep. The dimensions belong to the
       // DSL, which already gets them right, and `atNarrow` walks into them instead.
-      return `  ${key}: type(${JSON.stringify(inner)})${caps},`;
+      //
+      // The default goes last, after the narrows, so ArkType checks it against the constraint it
+      // is defaulting into: a value the column itself refuses is refused here too.
+      const applied = onBuilder ? `.default(${dflt!.expr})` : '';
+      return `  ${key}: type(${JSON.stringify(inner)})${caps}${applied},`;
     })
     .join('\n');
 }

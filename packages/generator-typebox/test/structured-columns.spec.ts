@@ -87,6 +87,37 @@ describe('structured columns', () => {
     expect(accepts(m.SelecttSchema, 'p', '(1,2)')).toBe(false);
   });
 
+  it('holds an object-mode point and line to their named number fields', async () => {
+    // The other mode of the same two builders. Measured on PGlite through drizzle 0.45.2 and
+    // again through 1.0.0-rc.4: the column returns `{ x, y }` and `{ a, b, c }` and refuses both
+    // the tuple and the string forms.
+    const m = await schemasFor(
+      [
+        col('p', {
+          tsType: '{ x: number; y: number }',
+          dbType: 'POINT',
+          shape: { kind: 'numberObject', fields: ['x', 'y'] },
+        }),
+        col('l', {
+          tsType: '{ a: number; b: number; c: number }',
+          dbType: 'LINE',
+          shape: { kind: 'numberObject', fields: ['a', 'b', 'c'] },
+        }),
+      ],
+      'point-object'
+    );
+    const s = m.SelecttSchema;
+    expect(accepts(s, 'p', { x: 1.5, y: -2.25 }), 'the row the column handed back').toBe(true);
+    expect(accepts(s, 'l', { a: 1, b: 2, c: 3 })).toBe(true);
+    expect(accepts(s, 'p', [1, 2]), 'the tuple the other mode returns').toBe(false);
+    expect(accepts(s, 'p', '(1,2)')).toBe(false);
+    expect(accepts(s, 'p', { x: 1 }), 'a missing field').toBe(false);
+    expect(accepts(s, 'p', null)).toBe(false);
+    // An unlisted key is what the column itself ignores, so no `additionalProperties: false`.
+    expect(accepts(s, 'p', { x: 1, y: 2, z: 3 })).toBe(true);
+    expect(accepts(s, 'p', { a: 1, b: 2, c: 3 })).toBe(false);
+  });
+
   it('holds a vector to its declared width', async () => {
     const m = await schemasFor(
       [
