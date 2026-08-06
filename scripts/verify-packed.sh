@@ -1961,8 +1961,8 @@ const ALLOWED: Record<string, Waiver> = {
     modes: WRITE,
     why: 'coerceDates accepts a date string or epoch number on write',
     divergence: {
-      '*/zod': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', '12.5', '0101', '010', 17, 18, 50, 100, 101 | T: `,
-      '*/valibot,arktype,typebox': `L: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010' | T: `,
+      '*/zod': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', 17, 18, 50, 100, 101 | T: `,
+      '*/valibot,arktype,typebox': `L: 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1' | T: `,
     },
   },
   'pg/c_ts_d': {
@@ -1970,8 +1970,8 @@ const ALLOWED: Record<string, Waiver> = {
     modes: WRITE,
     why: 'as pg/c_date_d',
     divergence: {
-      '*/zod': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', '12.5', '0101', '010', 17, 18, 50, 100, 101 | T: `,
-      '*/valibot,arktype,typebox': `L: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010' | T: `,
+      '*/zod': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', 17, 18, 50, 100, 101 | T: `,
+      '*/valibot,arktype,typebox': `L: 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1' | T: `,
     },
   },
   'mysql/m_date': {
@@ -1979,8 +1979,8 @@ const ALLOWED: Record<string, Waiver> = {
     modes: WRITE,
     why: 'as pg/c_date_d',
     divergence: {
-      '*/zod': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', '12.5', '0101', '010', 17, 18, 50, 100, 101 | T: `,
-      '*/valibot,arktype,typebox': `L: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010' | T: `,
+      '*/zod': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', 17, 18, 50, 100, 101 | T: `,
+      '*/valibot,arktype,typebox': `L: 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1' | T: `,
     },
   },
   'mysql/m_datetime': {
@@ -1988,8 +1988,8 @@ const ALLOWED: Record<string, Waiver> = {
     modes: WRITE,
     why: 'as pg/c_date_d',
     divergence: {
-      '*/zod': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', '12.5', '0101', '010', 17, 18, 50, 100, 101 | T: `,
-      '*/valibot,arktype,typebox': `L: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010' | T: `,
+      '*/zod': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', 17, 18, 50, 100, 101 | T: `,
+      '*/valibot,arktype,typebox': `L: 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1' | T: `,
     },
   },
   'mysql/m_ts': {
@@ -1997,8 +1997,8 @@ const ALLOWED: Record<string, Waiver> = {
     modes: WRITE,
     why: 'as pg/c_date_d',
     divergence: {
-      '*/zod': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', '12.5', '0101', '010', 17, 18, 50, 100, 101 | T: `,
-      '*/valibot,arktype,typebox': `L: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010' | T: `,
+      '*/zod': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', 17, 18, 50, 100, 101 | T: `,
+      '*/valibot,arktype,typebox': `L: 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1' | T: `,
     },
   },
   'sqlite/s_int_ts': {
@@ -2006,8 +2006,8 @@ const ALLOWED: Record<string, Waiver> = {
     modes: WRITE,
     why: 'as pg/c_date_d',
     divergence: {
-      '*/zod': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', '12.5', '0101', '010', 17, 18, 50, 100, 101 | T: `,
-      '*/valibot,arktype,typebox': `L: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010' | T: `,
+      '*/zod': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', 17, 18, 50, 100, 101 | T: `,
+      '*/valibot,arktype,typebox': `L: 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1' | T: `,
     },
   },
   'sqlite/s_int_ts_ms': {
@@ -2015,8 +2015,8 @@ const ALLOWED: Record<string, Waiver> = {
     modes: WRITE,
     why: 'as pg/c_date_d',
     divergence: {
-      '*/zod': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', '12.5', '0101', '010', 17, 18, 50, 100, 101 | T: `,
-      '*/valibot,arktype,typebox': `L: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010' | T: `,
+      '*/zod': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', 17, 18, 50, 100, 101 | T: `,
+      '*/valibot,arktype,typebox': `L: 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1' | T: `,
     },
   },
   // Official emits `Type.String({ format: 'uuid' })`, and TypeBox fails a format it has no entry
@@ -2204,8 +2204,8 @@ const ALLOWED: Record<string, Waiver> = {
     modes: WRITE,
     why: 'as pg/c_ts_d',
     divergence: {
-      '*/zod': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', '12.5', '0101', '010', 17, 18, 50, 100, 101 | T: `,
-      '*/valibot,arktype,typebox': `L: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010' | T: `,
+      '*/zod': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', 17, 18, 50, 100, 101 | T: `,
+      '*/valibot,arktype,typebox': `L: 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1' | T: `,
     },
   },
   // The first divergence in either pass that comes from a CHECK, because `matrix` carries none and
@@ -2231,8 +2231,8 @@ const ALLOWED: Record<string, Waiver> = {
     modes: WRITE,
     why: 'as pg/c_date_d',
     divergence: {
-      '*/zod': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', '12.5', '0101', '010', 17, 18, 50, 100, 101 | T: `,
-      '*/valibot,arktype,typebox': `L: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010' | T: `,
+      '*/zod': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', 17, 18, 50, 100, 101 | T: `,
+      '*/valibot,arktype,typebox': `L: 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1' | T: `,
     },
   },
   'mysql/m_n_check': { libs: LIB_NAMES, modes: MODE_NAMES, why: 'as pg/n_check, in MySQL spelling', divergence: { '*/*': `L:  | T: 0, 1, -1, 200, 40000, 9000000, 1900, 2000, 2500, 17, 101` } },
@@ -2244,8 +2244,8 @@ const ALLOWED: Record<string, Waiver> = {
     modes: WRITE,
     why: 'as sqlite/s_int_ts',
     divergence: {
-      '*/zod': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', '12.5', '0101', '010', 17, 18, 50, 100, 101 | T: `,
-      '*/valibot,arktype,typebox': `L: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010' | T: `,
+      '*/zod': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', 17, 18, 50, 100, 101 | T: `,
+      '*/valibot,arktype,typebox': `L: 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1' | T: `,
     },
   },
   'sqlite/s_n_ts_ms': {
@@ -2253,8 +2253,8 @@ const ALLOWED: Record<string, Waiver> = {
     modes: WRITE,
     why: 'as sqlite/s_int_ts_ms',
     divergence: {
-      '*/zod': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', '12.5', '0101', '010', 17, 18, 50, 100, 101 | T: `,
-      '*/valibot,arktype,typebox': `L: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010' | T: `,
+      '*/zod': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', 17, 18, 50, 100, 101 | T: `,
+      '*/valibot,arktype,typebox': `L: 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1' | T: `,
     },
   },
   'sqlite/s_n_check': { libs: LIB_NAMES, modes: MODE_NAMES, why: "as pg/n_check; the extra label is official's SQLite integer bound being the safe-integer range where its Postgres one is int32", divergence: { '*/*': `L:  | T: 0, 1, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, 17, 101` } },
@@ -4269,30 +4269,25 @@ for (const col of cols) {
 }
 
 /**
- * Insert-side over-permissiveness, filed and pinned rather than fixed here.
+ * Insert-side over-permissiveness, filed and pinned rather than fixed.
  *
- * `date({ mode: 'date' })` and `timestamp({ mode: 'date' })` emit a coercing schema, and coercion
- * to a `Date` is far looser than Postgres's date parser: `new Date('12.5')` is a real date in V8,
- * and `'0101'` and `'010'` are dates too. Postgres refuses all three, so validation passes and the
- * INSERT then fails at the server, which is the one outcome an Insert schema exists to prevent.
+ * Empty, and that is a result. It held six pins: `c_date_d` and `c_ts_d` on `'0101'`, `'010'` and
+ * `'12.5'`, all strings `new Date()` turns into a real date and Postgres refuses, so validation
+ * passed and the INSERT then failed at the server. They appeared the moment this stage began
+ * grading the Insert schema rather than the Select one; they had always been there with nothing
+ * asking the question. Narrowing what a coerced string may be (AX) made all six stop firing, and a
+ * pin that stops firing fails the run, which is how the fix reported itself here.
  *
- * These surfaced the moment this stage began grading the Insert schema instead of the Select one.
- * They were always here; nothing was asking the question. Fixing the coercion changes emitted
- * output for every date and timestamp column, so it goes in its own change. Addendum AX.
+ * The rule that replaced them is worth keeping in view, because the obvious one is wrong. Postgres
+ * reads a 6 or 8 digit run as a compact date, so "the server refuses bare numbers" is false: ten
+ * such strings are accepted by both parsers. In every one of those ten the two disagree about
+ * which date it is, `'200101'` being 2020-01-01 to Postgres and the year 200101 to V8. So the test
+ * is not that the server refuses the string, it is that coercing it either fails at the server or
+ * silently writes a different date than the database would have stored.
  *
- * Pinned by column and probe label, asserted in both directions: an unpinned disagreement fails,
- * and a pin that stops firing fails too, which is how the fix will announce itself.
+ * Kept rather than deleted so the next one has somewhere to go that is asserted in both directions.
  */
-const DEFECTS: Record<string, { why: string; labels: string[] }> = {
-  c_date_d: {
-    why: 'mode date coerces; new Date() parses strings Postgres will not',
-    labels: ["'0101'", "'010'", "'12.5'"],
-  },
-  c_ts_d: {
-    why: 'as c_date_d',
-    labels: ["'0101'", "'010'", "'12.5'"],
-  },
-};
+const DEFECTS: Record<string, { why: string; labels: string[] }> = {};
 
 const firedDefects = new Set<string>();
 const pinned = (r: Row): boolean => {
@@ -7082,18 +7077,18 @@ const ALLOWED: Record<string, Entry> = {
     libs: LIB_NAMES,
     modes: WRITE,
     divergence: {
-      '*/zod': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', '12.5', '0101', '010', 17, 18, 50, 100, 101 | T: `,
-      '*/valibot,arktype,typebox': `L: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010' | T: `,
+      '*/zod': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', 17, 18, 50, 100, 101 | T: `,
+      '*/valibot,arktype,typebox': `L: 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1' | T: `,
     },
     drzl: 'a Date, or a string or number coerced to one',
     official: 'a Date only',
     filed: 'not a defect: coerceDates',
   },
-  'pg/c_ts_d': { libs: LIB_NAMES, modes: WRITE, divergence: { '*/zod': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', '12.5', '0101', '010', 17, 18, 50, 100, 101 | T: `, '*/valibot,arktype,typebox': `L: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010' | T: `,     }, drzl: 'as pg/c_date_d', official: 'as pg/c_date_d', filed: 'as pg/c_date_d' },
-  'mysql/m_date': { libs: LIB_NAMES, modes: WRITE, divergence: { '*/zod': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', '12.5', '0101', '010', 17, 18, 50, 100, 101 | T: `, '*/valibot,arktype,typebox': `L: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010' | T: `,     }, drzl: 'as pg/c_date_d', official: 'as pg/c_date_d', filed: 'as pg/c_date_d' },
-  'mysql/m_datetime': { libs: LIB_NAMES, modes: WRITE, divergence: { '*/zod': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', '12.5', '0101', '010', 17, 18, 50, 100, 101 | T: `, '*/valibot,arktype,typebox': `L: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010' | T: `,     }, drzl: 'as pg/c_date_d', official: 'as pg/c_date_d', filed: 'as pg/c_date_d' },
-  'mysql/m_ts': { libs: LIB_NAMES, modes: WRITE, divergence: { '*/zod': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', '12.5', '0101', '010', 17, 18, 50, 100, 101 | T: `, '*/valibot,arktype,typebox': `L: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010' | T: `,     }, drzl: 'as pg/c_date_d', official: 'as pg/c_date_d', filed: 'as pg/c_date_d' },
-  'sqlite/s_int_ts': { libs: LIB_NAMES, modes: WRITE, divergence: { '*/zod': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', '12.5', '0101', '010', 17, 18, 50, 100, 101 | T: `, '*/valibot,arktype,typebox': `L: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010' | T: `,     }, drzl: 'as pg/c_date_d', official: 'as pg/c_date_d', filed: 'as pg/c_date_d' },
+  'pg/c_ts_d': { libs: LIB_NAMES, modes: WRITE, divergence: { '*/zod': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', 17, 18, 50, 100, 101 | T: `, '*/valibot,arktype,typebox': `L: 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1' | T: `,     }, drzl: 'as pg/c_date_d', official: 'as pg/c_date_d', filed: 'as pg/c_date_d' },
+  'mysql/m_date': { libs: LIB_NAMES, modes: WRITE, divergence: { '*/zod': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', 17, 18, 50, 100, 101 | T: `, '*/valibot,arktype,typebox': `L: 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1' | T: `,     }, drzl: 'as pg/c_date_d', official: 'as pg/c_date_d', filed: 'as pg/c_date_d' },
+  'mysql/m_datetime': { libs: LIB_NAMES, modes: WRITE, divergence: { '*/zod': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', 17, 18, 50, 100, 101 | T: `, '*/valibot,arktype,typebox': `L: 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1' | T: `,     }, drzl: 'as pg/c_date_d', official: 'as pg/c_date_d', filed: 'as pg/c_date_d' },
+  'mysql/m_ts': { libs: LIB_NAMES, modes: WRITE, divergence: { '*/zod': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', 17, 18, 50, 100, 101 | T: `, '*/valibot,arktype,typebox': `L: 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1' | T: `,     }, drzl: 'as pg/c_date_d', official: 'as pg/c_date_d', filed: 'as pg/c_date_d' },
+  'sqlite/s_int_ts': { libs: LIB_NAMES, modes: WRITE, divergence: { '*/zod': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', 17, 18, 50, 100, 101 | T: `, '*/valibot,arktype,typebox': `L: 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1' | T: `,     }, drzl: 'as pg/c_date_d', official: 'as pg/c_date_d', filed: 'as pg/c_date_d' },
   // TypeBox fails a format it has no entry for rather than ignoring it, so official's schema
   // rejects every valid uuid in any project that has not populated `FormatRegistry` first.
   'pg/c_uuid': {
@@ -7205,7 +7200,7 @@ const ALLOWED: Record<string, Entry> = {
   'pg/n_real': { libs: LIB_NAMES, modes: MODE_NAMES, divergence: { '*/zod,valibot,typebox': `L: 9000000, 2147483648, 9007199254740993, 3.4028235e38, NaN, Infinity | T: `, '*/arktype': `L: 9000000, 2147483648, 9007199254740993, 3.4028235e38, Infinity | T: ` }, drzl: 'as pg/c_real', official: 'as pg/c_real', filed: 'as pg/c_real' },
   'pg/n_json': { libs: ['valibot'], modes: MODE_NAMES, divergence: { '*/*': `L:  | T: Infinity, Date, Buffer, Uint8Array` }, drzl: 'as pg/c_json', official: 'as pg/c_json', filed: 'as pg/c_json' },
   'pg/n_point': { libs: ['valibot'], modes: MODE_NAMES, divergence: { '*/*': `L:  | T: [1,2,3]` }, drzl: 'as pg/c_point', official: 'as pg/c_point', filed: 'as pg/c_point' },
-  'pg/n_ts': { libs: LIB_NAMES, modes: WRITE, divergence: { '*/zod': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', '12.5', '0101', '010', 17, 18, 50, 100, 101 | T: `, '*/valibot,arktype,typebox': `L: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010' | T: ` }, drzl: 'as pg/c_date_d', official: 'as pg/c_date_d', filed: 'as pg/c_date_d' },
+  'pg/n_ts': { libs: LIB_NAMES, modes: WRITE, divergence: { '*/zod': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', 17, 18, 50, 100, 101 | T: `, '*/valibot,arktype,typebox': `L: 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1' | T: ` }, drzl: 'as pg/c_date_d', official: 'as pg/c_date_d', filed: 'as pg/c_date_d' },
   // The database has already answered this one in this same script: the CHECK ground-truth stage
   // runs 53 probes over the `checked` table against a real Postgres and reports rows Postgres
   // rejects and the validator accepts as DRZL 0, drizzle-orm 22, and `k_between BETWEEN 5 AND 15`
@@ -7216,11 +7211,11 @@ const ALLOWED: Record<string, Entry> = {
   'mysql/m_n_tinytext': { libs: LIB_NAMES, modes: MODE_NAMES, divergence: { '*/*': `L:  | T: 100 emoji` }, drzl: 'as mysql/m_tinytext', official: 'as mysql/m_tinytext', filed: 'as mysql/m_tinytext' },
   'mysql/m_n_float': { libs: LIB_NAMES, modes: MODE_NAMES, divergence: { '*/*': `L: 9000000, 2147483648, 9007199254740993 | T: ` }, drzl: 'as mysql/m_float', official: 'as mysql/m_float', filed: 'as pg/c_real' },
   'mysql/m_n_json': { libs: ['valibot'], modes: MODE_NAMES, divergence: { '*/*': `L:  | T: Infinity, Date, Buffer, Uint8Array` }, drzl: 'as pg/c_json', official: 'as pg/c_json', filed: 'as pg/c_json' },
-  'mysql/m_n_datetime': { libs: LIB_NAMES, modes: WRITE, divergence: { '*/zod': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', '12.5', '0101', '010', 17, 18, 50, 100, 101 | T: `, '*/valibot,arktype,typebox': `L: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010' | T: ` }, drzl: 'as pg/c_date_d', official: 'as pg/c_date_d', filed: 'as pg/c_date_d' },
+  'mysql/m_n_datetime': { libs: LIB_NAMES, modes: WRITE, divergence: { '*/zod': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', 17, 18, 50, 100, 101 | T: `, '*/valibot,arktype,typebox': `L: 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1' | T: ` }, drzl: 'as pg/c_date_d', official: 'as pg/c_date_d', filed: 'as pg/c_date_d' },
   'mysql/m_n_check': { libs: LIB_NAMES, modes: MODE_NAMES, divergence: { '*/*': `L:  | T: 0, 1, -1, 200, 40000, 9000000, 1900, 2000, 2500, 17, 101` }, drzl: 'as pg/n_check', official: 'as pg/n_check', filed: 'as pg/n_check' },
   'sqlite/s_n_real': { libs: LIB_NAMES, modes: MODE_NAMES, divergence: { '*/zod,typebox': `L: 9007199254740993, 3.4028235e38 | T: `, '*/valibot,arktype': `L: 9007199254740993, 3.4028235e38, Infinity | T: ` }, drzl: 'as pg/c_double', official: 'as pg/c_double', filed: 'as pg/c_real' },
   'sqlite/s_n_json': { libs: ['valibot'], modes: MODE_NAMES, divergence: { '*/*': `L:  | T: Infinity, Date, Buffer, Uint8Array` }, drzl: 'as pg/c_json', official: 'as pg/c_json', filed: 'as pg/c_json' },
-  'sqlite/s_n_ts': { libs: LIB_NAMES, modes: WRITE, divergence: { '*/zod': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', '12.5', '0101', '010', 17, 18, 50, 100, 101 | T: `, '*/valibot,arktype,typebox': `L: "", 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1', '12.5', '0101', '010' | T: ` }, drzl: 'as pg/c_date_d', official: 'as pg/c_date_d', filed: 'as pg/c_date_d' },
+  'sqlite/s_n_ts': { libs: LIB_NAMES, modes: WRITE, divergence: { '*/zod': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', 17, 18, 50, 100, 101 | T: `, '*/valibot,arktype,typebox': `L: 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'zzz', 'a', 'happy', 'x', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1' | T: ` }, drzl: 'as pg/c_date_d', official: 'as pg/c_date_d', filed: 'as pg/c_date_d' },
   'sqlite/s_n_check': { libs: LIB_NAMES, modes: MODE_NAMES, divergence: { '*/*': `L:  | T: 0, 1, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, 17, 101` }, drzl: 'as pg/n_check', official: 'as pg/n_check', filed: 'as pg/n_check' },
   // ---- binary and varbinary, where only DRZL enforces the declared width ----------------------
   // These two were DEFECTS here until the analyzer stopped calling a byte string a Uint8Array. They

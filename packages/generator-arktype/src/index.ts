@@ -10,6 +10,7 @@ import type {
   ValidationGenerateOptions,
 } from '@drzl/validation-core';
 import {
+  COERCIBLE_DATE_STRING,
   COLUMN_FORMATS,
   insertColumns,
   isIntegerColumn,
@@ -40,9 +41,14 @@ function atDateType(
   coerceDates: NonNullable<ValidationGenerateOptions['coerceDates']>
 ): string {
   if (coerceDates === 'none') return 'Date';
-  if (coerceDates === 'all') return 'Date | string';
+  // Not a bare `string`. `new Date` reads a bare number as a year or as month.day, so `'12.5'`,
+  // `'0101'` and `'010'` all passed here and Postgres refuses all three. ArkType states the
+  // narrowing as a regex literal in its DSL, the same way a column format is stated; see
+  // `COERCIBLE_DATE_STRING` for what was measured and why.
+  const coercible = `Date | /${COERCIBLE_DATE_STRING}/`;
+  if (coerceDates === 'all') return coercible;
   // 'input'
-  return mode === 'select' ? 'Date' : 'Date | string';
+  return mode === 'select' ? 'Date' : coercible;
 }
 
 /**

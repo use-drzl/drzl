@@ -16,6 +16,7 @@ import {
   parseCheck,
   renderDuplicateFinder,
   resolveConfiguredImport,
+  COERCIBLE_DATE_STRING,
   COLUMN_FORMATS,
   insertColumns,
   isIntegerColumn,
@@ -340,8 +341,14 @@ function zodExprForColumn(
       // a string, so a NOT NULL timestamp column accepted `null`, `true` and an array on insert.
       // Coercing only from the two types that carry a date, and validating the result, keeps the
       // intent while rejecting all three.
+      //
+      // Not every string either. `new Date` reads a bare number as a year or as month.day, so
+      // `'12.5'`, `'0101'` and `'010'` were all real dates here and Postgres refuses all three.
+      // A string that does not match `COERCIBLE_DATE_STRING` is passed through untouched and the
+      // `z.date()` behind it turns it away; see that constant for what was measured and why.
       const coerced =
-        "z.preprocess((v) => (typeof v === 'string' || typeof v === 'number' ? new Date(v) : v), z.date())";
+        `z.preprocess((v) => (typeof v === 'number' || (typeof v === 'string' && ` +
+        `new RegExp(${JSON.stringify(COERCIBLE_DATE_STRING)}).test(v)) ? new Date(v) : v), z.date())`;
       if (coerceDates === 'all') return coerced;
       if (coerceDates === 'none') return 'z.date()';
       // 'input'

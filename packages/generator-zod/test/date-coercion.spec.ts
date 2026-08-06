@@ -6,6 +6,12 @@
  * anything: `new Date(null)` is the epoch, `new Date(true)` is one millisecond past it, and
  * `new Date([1, 2])` parses the array as a string. So a NOT NULL timestamp column accepted
  * `null`, `true` and an array, and every one of them silently became a real date.
+ *
+ * Narrowing to strings and numbers was not enough. `new Date` reads a bare number as a year or as
+ * `month.day`, so `'12.5'`, `'0101'` and `'010'` were real dates too, and Postgres refuses all
+ * three: the schema passed and the INSERT then failed at the server. A string now has to look like
+ * a date notation before it is coerced at all; `COERCIBLE_DATE_STRING` in validation-core carries
+ * the measurement.
  */
 import { describe, it, expect } from 'vitest';
 import { ZodGenerator } from '../src/index';
@@ -63,6 +69,43 @@ describe('the default, which coerces on write only', () => {
     expect(accepts(m.InserttSchema, 'nonsense'), 'an unparseable string').toBe(false);
   });
 
+  it('refuses a string that is only a number, which Postgres does not read as a date', async () => {
+    // The three the ground-truth gate caught. `new Date('12.5')` is a real date in V8, and so are
+    // `'0101'` and `'010'`, so the insert passed validation and then failed at the server.
+    const m = await schemasFor('input', 'input');
+    for (const s of ['12.5', '0101', '010']) {
+      expect(accepts(m.InserttSchema, s), s).toBe(false);
+      expect(Number.isNaN(new Date(s).getTime()), `${s} is a valid Date in V8`).toBe(false);
+    }
+    for (const s of ['2020', '99', '1', '0', '.5', '+2020-01-01', '-2020-01-01', ' 2020 ']) {
+      expect(accepts(m.InserttSchema, s), s).toBe(false);
+    }
+  });
+
+  it('still takes every notation Postgres and V8 read as the same date', async () => {
+    const m = await schemasFor('input', 'input');
+    for (const s of [
+      '2020-01-01',
+      '2020-01-01T00:00:00Z',
+      '1999-01-08 04:05:06',
+      '01/02/2020',
+      'January 8, 1999',
+      '2020-1-5',
+      '  2020-01-01  ',
+    ]) {
+      expect(accepts(m.InserttSchema, s), s).toBe(true);
+    }
+  });
+
+  it('leaves the number path alone, so an epoch millisecond still coerces', async () => {
+    // The narrowing is about strings. A number carries no notation to be wrong about, and
+    // `1700000000000` as a string is refused while the same value as a number is taken.
+    const m = await schemasFor('input', 'input');
+    expect(accepts(m.InserttSchema, 1700000000000), 'a number').toBe(true);
+    expect(accepts(m.InserttSchema, 0), 'the epoch').toBe(true);
+    expect(accepts(m.InserttSchema, '1700000000000'), 'the same value as a string').toBe(false);
+  });
+
   it('leaves select strict, since a row out of the database is already a Date', async () => {
     const m = await schemasFor('input', 'input');
     expect(accepts(m.SelecttSchema, new Date())).toBe(true);
@@ -75,6 +118,7 @@ describe('the explicit settings', () => {
     const m = await schemasFor('all', 'all');
     expect(accepts(m.SelecttSchema, '2020-01-01')).toBe(true);
     expect(accepts(m.SelecttSchema, null), 'still not null').toBe(false);
+    expect(accepts(m.SelecttSchema, '12.5'), 'and still not a bare number').toBe(false);
   });
 
   it("coerces nowhere under 'none', which is what matches the official module", async () => {
