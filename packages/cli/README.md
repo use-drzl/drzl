@@ -56,3 +56,7 @@ Notes
   DRZL uses whichever it finds in your project, with your config. With neither installed the
   generated files are written exactly as rendered, which is the same valid TypeScript with worse
   whitespace. Add `prettier` as a dev dependency if you want it formatted.
+- Naming an engine instead, `format.engine: 'prettier'` or `'biome'`, is a request rather than a
+  preference, so an engine that cannot be loaded is reported on stderr with the reason. The files
+  are still written, unformatted; nothing fails. `'auto'` stays silent, because it asked for
+  whatever happened to be installed and no formatter is a legitimate answer to that.

@@ -27,7 +27,7 @@
  * are covered here because they are the ones that used to carry a private copy of it.
  */
 import { describe, it, expect } from 'vitest';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -74,6 +74,31 @@ function build(pkg: string): Promise<string> {
   return run;
 }
 
+/**
+ * The built validation-core, copied somewhere Node's resolver cannot reach this repo's
+ * node_modules, so an optional peer is genuinely missing rather than mocked away.
+ */
+const sandboxed = new Map<string, Promise<string>>();
+function sandbox(): Promise<string> {
+  const existing = sandboxed.get('validation-core');
+  if (existing) return existing;
+  const run = (async () => {
+    const dir = await build('validation-core');
+    const to = await fs.mkdtemp(path.join(os.tmpdir(), 'drzl-no-peer-'));
+    for (const name of await fs.readdir(dir)) {
+      await fs.copyFile(path.join(dir, name), path.join(to, name));
+    }
+    // Without this, `.js` in a directory with no manifest is read as CommonJS.
+    await fs.writeFile(path.join(to, 'package.json'), '{"type":"module"}');
+    return to;
+  })();
+  sandboxed.set('validation-core', run);
+  return run;
+}
+
+/** Both published entry points, since a consumer reaches one or the other and not both. */
+const ENTRIES = ['./index.js', './index.cjs'];
+
 async function outputFiles(dir: string) {
   const names = (await fs.readdir(dir)).filter((f) => /\.(js|cjs|mjs)$/.test(f));
   return Promise.all(
@@ -115,24 +140,16 @@ describe('the built validation-core entry', () => {
   });
 
   it('returns the code unchanged when prettier is genuinely not installed', async () => {
-    const dir = await build('validation-core');
-    // A copy outside the workspace, so Node's resolver cannot walk up into this repo's
-    // node_modules and find prettier there.
-    const sandbox = await fs.mkdtemp(path.join(os.tmpdir(), 'drzl-no-peer-'));
-    for (const name of await fs.readdir(dir)) {
-      await fs.copyFile(path.join(dir, name), path.join(sandbox, name));
-    }
-    // Without this, `.js` in a directory with no manifest is read as CommonJS.
-    await fs.writeFile(path.join(sandbox, 'package.json'), '{"type":"module"}');
+    const dir = await sandbox();
     await fs.writeFile(
-      path.join(sandbox, 'probe.mjs'),
+      path.join(dir, 'probe.mjs'),
       [
         'const input = "export  const  a={x:1,y:\'two\'}\\n";',
         "const at = new URL('./generated.ts', import.meta.url).pathname;",
         'let resolved = true;',
         "try { await import('prettier'); } catch { resolved = false; }",
         'const out = {};',
-        "for (const entry of ['./index.js', './index.cjs']) {",
+        `for (const entry of ${JSON.stringify(ENTRIES)}) {`,
         '  const mod = await import(entry);',
         '  const fn = mod.formatCode ?? mod.default?.formatCode;',
         '  out[entry] = (await fn(input, at)) === input;',
@@ -142,10 +159,64 @@ describe('the built validation-core entry', () => {
     );
     // A child process, because vitest resolves bare specifiers through vite against this
     // workspace: an in-process import would have found the repo's prettier and proved nothing.
-    const raw = execFileSync(process.execPath, ['probe.mjs'], { cwd: sandbox, encoding: 'utf8' });
+    const raw = execFileSync(process.execPath, ['probe.mjs'], { cwd: dir, encoding: 'utf8' });
     const result = JSON.parse(raw);
     expect(result.resolved, 'prettier resolved in the sandbox, so this proved nothing').toBe(false);
-    expect(result.out).toEqual({ './index.js': true, './index.cjs': true });
+    expect(result.out).toEqual(Object.fromEntries(ENTRIES.map((e) => [e, true])));
+  });
+
+  /**
+   * The same real absence, for a consumer who named the engine.
+   *
+   * `engine: 'auto'` above asked for whatever was present and got an answer. Naming an engine is a
+   * request, and the request went unmet: the files come back exactly as rendered. Returning them
+   * with nothing on stderr is the whole defect, and it is asserted here rather than only against a
+   * mocked import because a stub proves the branch runs, not that a real resolution failure lands
+   * in it. Neither formatter is installed in this sandbox, so both specifiers fail the way they
+   * fail for a consumer who has not installed them.
+   */
+  it('says so on stderr when the named engine is genuinely not installed', async () => {
+    const dir = await sandbox();
+    const engines = ['prettier', 'biome'];
+    await fs.writeFile(
+      path.join(dir, 'probe-named.mjs'),
+      [
+        'const input = "export  const  a={x:1,y:\'two\'}\\n";',
+        "const at = new URL('./generated.ts', import.meta.url).pathname;",
+        'const out = {};',
+        `for (const entry of ${JSON.stringify(ENTRIES)}) {`,
+        '  const mod = await import(entry);',
+        '  const fn = mod.formatCode ?? mod.default?.formatCode;',
+        `  for (const engine of ${JSON.stringify(engines)}) {`,
+        // Twice, so a warning repeated per emitted file would show up in the count below.
+        '    await fn(input, at, { engine });',
+        '    out[entry + " " + engine] = (await fn(input, at, { engine })) === input;',
+        '  }',
+        '}',
+        'process.stdout.write(JSON.stringify(out));',
+      ].join('\n')
+    );
+    // spawnSync rather than execFileSync, because the message under test is the stderr.
+    const run = spawnSync(process.execPath, ['probe-named.mjs'], { cwd: dir, encoding: 'utf8' });
+    expect(run.status, run.stderr).toBe(0);
+    const wanted = ENTRIES.flatMap((e) => engines.map((g) => [`${e} ${g}`, true]));
+    expect(JSON.parse(run.stdout)).toEqual(Object.fromEntries(wanted));
+
+    const lines = run.stderr.split('\n').filter((l) => l.includes('[drzl] format.engine'));
+    // One per engine per module instance, and no more: each entry is a separate copy of the
+    // module with its own record of what it has already reported.
+    expect(lines).toHaveLength(wanted.length);
+    for (const engine of engines) {
+      // `is "<engine>"` rather than the bare name, because the biome message mentions prettier
+      // too, as one of the things to switch to.
+      const line = lines.find((l) => l.includes(`is "${engine}"`));
+      expect(line, `nothing on stderr named the ${engine} engine`).toBeTruthy();
+    }
+    // The resolver's own words for a package that is not installed, which is what separates this
+    // from a mocked import and from a formatter that loaded and then misbehaved. Asserted for both,
+    // since the prose of the message names both packages on its own and would match either way.
+    expect(run.stderr).toContain("Cannot find package 'prettier'");
+    expect(run.stderr).toContain("Cannot find package '@biomejs/biome'");
   });
 });
 

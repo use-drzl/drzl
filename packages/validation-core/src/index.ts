@@ -235,6 +235,50 @@ export function selectColumns(table: Table): Column[] {
 }
 
 /**
+ * Engines already reported as unusable in this process.
+ *
+ * Whether a formatter can be loaded is a fact about the environment, not about the file being
+ * written, so it is reported once however many files a run emits. `drzl generate` reaches
+ * `formatCode` once per table per generator, and a message repeated that many times is one nobody
+ * reads.
+ */
+const reportedEngines = new Set<string>();
+
+/** Which package each engine is loaded from, since the config names one and the error the other. */
+const ENGINE_PACKAGE = { prettier: 'prettier', biome: '@biomejs/biome' } as const;
+
+/**
+ * Say that a formatter the config asked for by name could not be used, and why.
+ *
+ * The reason is the caught error's own words rather than a paraphrase, because "never installed"
+ * and "installed and then threw" reach this from the same branch and nothing else distinguishes
+ * them.
+ *
+ * The advice differs because the remedy does. Installing prettier fixes the prettier case; it is
+ * an optional peer of this package and that is the whole of it. Installing `@biomejs/biome` does
+ * not fix the biome case: at 2.5.7 that package declares `bin` and no `main`, `module` or
+ * `exports`, so importing it as a module rejects with ERR_MODULE_NOT_FOUND whether or not it is
+ * installed. Measured, against a real install of it. So the biome message points at the CLI and at
+ * the other engines rather than telling anyone to install something that would not help.
+ */
+function reportUnusableFormatter(engine: 'prettier' | 'biome', cause: unknown): void {
+  if (reportedEngines.has(engine)) return;
+  reportedEngines.add(engine);
+  const pkg = ENGINE_PACKAGE[engine];
+  const remedy =
+    engine === 'prettier'
+      ? 'Install prettier, which is an optional peer of @drzl/validation-core, or set ' +
+        'format.engine to "auto" to accept whatever formatter is present.'
+      : 'drzl formats with Biome by importing @biomejs/biome as a module; run the Biome CLI ' +
+        'over the output instead, or set format.engine to "auto" or "prettier".';
+  const reason = cause instanceof Error ? cause.message : String(cause);
+  console.warn(
+    `[drzl] format.engine is "${engine}" but ${pkg} could not be used, so the generated files ` +
+      `were left unformatted. ${remedy} Reason: ${reason}`
+  );
+}
+
+/**
  * Pretty-print emitted code with whatever formatter the consumer already has.
  *
  * Both formatters are optional peers, reached at call time and never bundled. Prettier used to be
@@ -243,38 +287,62 @@ export function selectColumns(table: Table): Column[] {
  * anyone installing @drzl/cli. It is `--external` in every build script that can reach it, and
  * no-bundled-formatter.spec.ts builds those scripts and checks.
  *
- * Neither absence is an error. A consumer with no formatter gets the code as rendered, which is
- * valid TypeScript that merely looks worse, and losing generated files at the last step would be
- * a far worse trade than losing their whitespace.
+ * An absent formatter is never fatal. A consumer with no formatter gets the code as rendered,
+ * which is valid TypeScript that merely looks worse, and losing generated files at the last step
+ * would be a far worse trade than losing their whitespace.
+ *
+ * Whether it is worth saying so depends on what was asked for, which is the difference between the
+ * two branches below. `engine: 'auto'` asked for whatever happens to be installed, so finding
+ * nothing is an outcome and the code comes back unchanged in silence. Naming an engine is a
+ * request, and an unmet request that produces neither formatted output nor a message reads as
+ * "this is fine" when it is not: the consumer configured something, it did not happen, and nothing
+ * in the run says which. So a named engine that cannot be loaded warns on stderr and still returns
+ * the code, rather than throwing. Throwing would lose a whole generation over whitespace, and the
+ * consumer would not even be told what for: every generator branch in the CLI except the oRPC one
+ * wraps its `generate()` in a catch that prints "<name> generator missing. Install with: npm
+ * install @drzl/generator-<name>", so the headline would name a package they already have and the
+ * real reason would arrive as a trailing detail line. Measured, with a throw wired in on purpose.
  */
 export async function formatCode(code: string, filePath: string, fmt?: FormatOptions) {
   if (fmt && fmt.enabled === false) return code;
   const engine = fmt?.engine ?? 'auto';
-  try {
-    if (engine === 'prettier' || engine === 'auto') {
+  if (engine === 'prettier' || engine === 'auto') {
+    try {
       const prettier: any = await import('prettier');
       const cfgRef = fmt?.configPath ?? filePath;
       const cfg = await prettier.resolveConfig(cfgRef).catch(() => null);
+      // Returned without `await`, which is what it has always been and is load-bearing: an async
+      // function adopts a returned promise outside its own try, so a prettier that loads and then
+      // rejects on this code still propagates to the caller. That is an error rather than an
+      // absence, and it is not this function's to swallow.
       return prettier.format(code, { ...(cfg ?? {}), parser: 'typescript', filepath: filePath });
+    } catch (err) {
+      if (engine === 'prettier') reportUnusableFormatter('prettier', err);
     }
-  } catch {}
-  try {
-    if (engine === 'biome' || engine === 'auto') {
+  }
+  if (engine === 'biome' || engine === 'auto') {
+    try {
       const dynamicImport: any = Function('s', 'return import(s)');
-      const biome: any = await dynamicImport('@biomejs/biome').catch(() => null);
+      const biome: any = await dynamicImport('@biomejs/biome');
       if (biome?.formatContent) {
         const res = await biome.formatContent(code, { filePath });
-        return (res && (res.content || res.formatted)) ?? code;
+        const out = res && (res.content || res.formatted);
+        if (typeof out === 'string') return out;
+        throw new Error('@biomejs/biome formatContent returned no formatted content');
       }
       // Biome has shipped this entry point under both names. The second was only ever tried by
       // the oRPC generator's private copy of this function, and is kept here so that folding the
       // copies together takes nothing away from it.
       if (biome?.format) {
         const res = await biome.format(code, { filePath });
-        return res ?? code;
+        if (typeof res === 'string') return res;
+        throw new Error('@biomejs/biome format returned no formatted content');
       }
+      throw new Error('@biomejs/biome exposes neither formatContent nor format');
+    } catch (err) {
+      if (engine === 'biome') reportUnusableFormatter('biome', err);
     }
-  } catch {}
+  }
   return code;
 }
 
