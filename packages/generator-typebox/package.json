@@ -1,6 +1,6 @@
 {
   "name": "@drzl/generator-typebox",
-  "version": "0.10.1",
+  "version": "0.10.2",
   "private": false,
   "license": "Apache-2.0",
   "type": "module",
