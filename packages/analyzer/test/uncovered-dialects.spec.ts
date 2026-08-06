@@ -174,17 +174,17 @@ describe('SingleStore, against a real singlestoreTable', () => {
     expect(byName.get('m')?.enumValues).toEqual(['sad', 'ok', 'happy']);
     expect(analysis.enums.map((e) => e.values)).toContainEqual(['sad', 'ok', 'happy']);
 
-    // Named columns only. A first version of this asserted the whole issue list was empty and
-    // failed, which is the assertion earning its place: `vec` is a `vector(3, F32)` and comes back
-    // `any` with no shape, so it warns and the warning is true there. Postgres `vector` has a
-    // `numberVector` shape; the SingleStore class has no arm at all. That is filed under the
-    // uncovered-dialect work rather than fixed here, and the point of this line is that fixing the
-    // false positive did not silence the true one.
+    // Named columns only. A first version asserted the whole issue list was empty, failed on `vec`,
+    // and was narrowed to name both sides: `m` must not warn and `vec` must, because `vec` really
+    // was unnameable and a fix for the false positive must not silence a true one.
+    //
+    // `vec` is named now, so this fixture no longer has a true warning to hold the line with. The
+    // assertion that matters is the one this test is about, and it is kept as an emptiness check
+    // rather than dropped: a warning appearing here again means something regressed.
     const warned = analysis.issues
       .filter((i) => i.code === 'DRZL_ANL_UNKNOWN_COLUMN')
       .map((i) => i.message.match(/"(\w+)"/)?.[1]);
-    expect(warned).not.toContain('m');
-    expect(warned).toContain('vec');
+    expect(warned).toEqual([]);
   });
 
   it('DEFECT: leaves tinyint and mediumint unbounded, where MySQL bounds them', async () => {
@@ -217,20 +217,20 @@ describe('SingleStore, against a real singlestoreTable', () => {
     }
   });
 
-  it('DEFECT: types a vector column as any, so its validator refuses nothing', async () => {
-    // `SingleStoreVector` is matched by the `/Vector/i` arm, which returns `tsType: 'any'` with
-    // the comment "model as any to avoid unknown in generators". `any` does avoid the word
-    // unknown and it avoids the validation too: measured through the emitted schema for all
-    // four validator libraries, this column accepts 'not a vector', 5 and { a: 1 }.
+  it('types a vector column as the number array the driver returns', async () => {
+    // This was a DEFECT, asserting `any` with the note that `/Vector/i` returned it "to avoid
+    // unknown in generators". `any` avoided the word and avoided the validation too: the emitted
+    // schema accepted 'not a vector', 5 and { a: 1 } in all four libraries.
     //
-    // Drizzle states the truth on the column: `dataType` is 'array' and the SQL type is
-    // 'vector(3, F32)'. The same column on drizzle v1 comes back 'number[]' with
-    // `shape: { kind: 'numberVector', length: 3 }` and does reject all three.
+    // Drizzle stated the truth on the column the whole time, `dataType: 'array'` and the SQL type
+    // `vector(3, F32)`, and `mapFromDriverValue` hands back `[1, 2, 3]`. v1 already answered
+    // `number[]` with a `numberVector` shape, so naming it here is the two majors agreeing rather
+    // than a new opinion. Found by the analyzer fuzzer, alongside the pgvector family.
     const { byName, analysis } = await columnsOf('real-singlestore', SINGLESTORE_SOURCE);
-    expect(byName.get('vec')?.tsType).toBe('any');
-    expect(byName.get('vec')?.shape).toBeUndefined();
-    // The analyzer does at least say so, which is the one thing standing between this and silence.
-    expect(analysis.issues.some((i) => i.code === 'DRZL_ANL_UNKNOWN_COLUMN' && /"vec"/.test(i.message))).toBe(true);
+    expect(byName.get('vec')?.tsType).toBe('number[]');
+    expect(byName.get('vec')?.shape).toEqual({ kind: 'numberVector', length: 3 });
+    // And the warning it used to raise is gone, because there is nothing left to warn about.
+    expect(analysis.issues.some((i) => i.code === 'DRZL_ANL_UNKNOWN_COLUMN' && /"vec"/.test(i.message))).toBe(false);
   });
 
   it('types the default decimal mode as the string the driver returns', async () => {
