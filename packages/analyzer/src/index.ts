@@ -417,6 +417,11 @@ const GEOMETRIC_CLASS_SHAPES: Record<string, ColumnShape> = {
   // mode but `'tuple'` builds the object class: `point({ mode: 'abc' })` is a `PgPointObject` too.
   PgPointObject: { kind: 'numberObject', fields: ['x', 'y'] },
   PgLineABC: { kind: 'numberObject', fields: ['a', 'b', 'c'] },
+  // `geometry()` and `geometry({ mode: 'xy' })` are two classes, not one class with a flag, and
+  // the fuzzer found both unnamed on this path. Their driver mappers disagree the same way the
+  // point ones do: the default hands back `[1, 2]` and the xy mode hands back `{ x: 1, y: 2 }`.
+  PgGeometry: { kind: 'tuple', length: 2 },
+  PgGeometryObject: { kind: 'numberObject', fields: ['x', 'y'] },
 };
 
 /**
@@ -462,7 +467,17 @@ const V1_ONLY_ENTITY_KINDS = /^(?:MsSql|Cockroach)/;
  * A set rather than an entry in `GEOMETRIC_CLASS_SHAPES`, because the shape carries the declared
  * dimension count and that map holds fixed shapes with no access to the column.
  */
-const NUMBER_VECTOR_CLASSES = new Set(['PgVector', 'PgHalfVector']);
+const NUMBER_VECTOR_CLASSES = new Set(['PgVector', 'PgHalfVector', 'SingleStoreVector']);
+
+/**
+ * 0.4x classes whose value is a string of bit digits with a declared, exact width.
+ *
+ * `bit(3)` on Postgres holds exactly three digits and `mapFromDriverValue` hands back `"101"`, a
+ * string rather than a number or a byte array. `exact` is what separates it from a MySQL
+ * `binary(4)`, which holds at most four and takes a short value; both are byte-ish strings with a
+ * declared width and only one of them is a minimum as well as a maximum.
+ */
+const BIT_STRING_CLASSES = new Set(['PgBinaryVector']);
 
 const BYTE_STRING_CLASSES = new Set([
   'MySqlBinary',
@@ -1375,7 +1390,18 @@ export class SchemaAnalyzer {
       // one is declared, as the codec path already did for `vector`.
       case 'PgVector':
       case 'PgHalfVector':
+      case 'SingleStoreVector':
         return { tsType: 'number[]', dbType: 'VECTOR' };
+      // `BIT` rather than `TEXT`, which a first version of this arm returned. v1's codec says `BIT`
+      // for the same column, and the cross-major diff said so: naming the class made ten of its
+      // twelve entries go stale and left `c_bit.dbType` and its nullable twin standing, which is
+      // that check distinguishing a fix from a half fix.
+      case 'PgBinaryVector':
+        return { tsType: 'string', dbType: 'BIT' };
+      case 'PgGeometry':
+        return { tsType: '[number, number]', dbType: 'GEOMETRY' };
+      case 'PgGeometryObject':
+        return { tsType: '{ x: number; y: number }', dbType: 'GEOMETRY' };
       case 'PgSparseVector':
         return { tsType: 'string', dbType: 'TEXT' };
       case 'PgInteger':
@@ -1797,7 +1823,9 @@ export class SchemaAnalyzer {
             ? { kind: 'byteString', length: declaredLength(col) }
             : NUMBER_VECTOR_CLASSES.has(ctorName)
               ? { kind: 'numberVector', length: declaredLength(col) }
-              : GEOMETRIC_CLASS_SHAPES[ctorName];
+              : BIT_STRING_CLASSES.has(ctorName)
+                ? { kind: 'bitstring', length: declaredLength(col), exact: true }
+                : GEOMETRIC_CLASS_SHAPES[ctorName];
       // The same reason the v1 branch above drops it, reached from the other path: the declared
       // `length` of a binary column is not a character limit, and `maxLength` is applied as one in
       // every mode by every generator. Left in place the column carried the width twice under two

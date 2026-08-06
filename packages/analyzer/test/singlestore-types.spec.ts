@@ -105,7 +105,9 @@ export { table as things };
     // enumerated from the module's own exports. It stays on the coarse `/Blob/` arm, which nothing
     // real reaches.
     expect(get('blob')).toBe('Uint8Array');
-    expect(get('vec')).toBe('any');
+    // Was 'any', which accepted anything. `mapFromDriverValue` on a SingleStore vector hands back
+    // `[1, 2, 3]`, and v1 has said `number[]` all along.
+    expect(get('vec')).toBe('number[]');
   });
 });
 

@@ -5608,29 +5608,15 @@ const DEFECTS: Record<string, string> = {
   'matrix.c_decimal.format': 'as rows.amount.format',
 
   // ---- geometry, bit and vector are unnamed on 0.4x ------------------------------------------
-  // No arm for `PgGeometry`, `PgBinaryVector` or `PgVector` in the class-name path, so all three
-  // come back `unknown` and every generator emits a validator that accepts anything. Official
-  // drizzle-zod 0.8.3 types all three on 0.45.2: it takes [1, 2] and refuses '1,2' for geometry,
-  // takes '101' and refuses 'xyz' for bit, and takes [1, 2, 3] and refuses 'abc' for vector.
-  // check-old.ts below names the same three columns, as an absolute check rather than a relative
-  // one, so a fix has to remove both entries.
-  'matrix.c_geometry.tsType': 'unnamed on 0.4x: no PgGeometry arm in the class-name path',
-  'matrix.c_geometry.dbType': 'as matrix.c_geometry.tsType',
-  'matrix.c_geometry.shape': 'as matrix.c_geometry.tsType',
-  'matrix.c_bit.tsType': 'unnamed on 0.4x: no PgBinaryVector arm, the class a bit column uses',
-  'matrix.c_bit.dbType': 'as matrix.c_bit.tsType',
-  'matrix.c_bit.shape': 'as matrix.c_bit.tsType',
-  // `c_vector` and its nullable twin used to sit here, six entries, unnamed on 0.4x for want of a
-  // `PgVector` arm. They are gone because the arm exists: the analyzer fuzzer found the whole
-  // pgvector family unnamed and the fix covers `vector` and `halfvec` as number arrays and
-  // `sparsevec` as the string it really is. The two majors agree about them now, which is what
-  // made these six suppress nothing and fail this stage.
-  'nullable.n_geometry.tsType': 'as matrix.c_geometry.tsType',
-  'nullable.n_geometry.dbType': 'as matrix.c_geometry.dbType',
-  'nullable.n_geometry.shape': 'as matrix.c_geometry.shape',
-  'nullable.n_bit.tsType': 'as matrix.c_bit.tsType',
-  'nullable.n_bit.dbType': 'as matrix.c_bit.dbType',
-  'nullable.n_bit.shape': 'as matrix.c_bit.shape',
+  // `c_geometry`, `c_bit`, `c_vector` and their nullable twins used to sit here, eighteen entries,
+  // all of them the class-name path having no arm for the column. Every one is named now, the two
+  // majors agree, and this stage retired them by name three columns at a time as the arms landed.
+  //
+  // The bit half is worth remembering rather than only recording: the first version of that arm
+  // returned `dbType: 'TEXT'` where v1's codec says `BIT`, and this check left exactly
+  // `c_bit.dbType` and `nullable.n_bit.dbType` standing while the other ten went stale. A ledger
+  // asserted in both directions tells a fix from a half fix without anybody looking for the
+  // difference.
 
   // ---- MySQL's text family carries no character cap on 0.4x ----------------------------------
   // v1's `MySqlText` states `length` equal to the type's cap, 255 for `tinytext` and 65535 for
@@ -5963,16 +5949,13 @@ import { SchemaAnalyzer } from '@drzl/analyzer';
  * DEFECTS map above, which is the relative half of the same finding.
  */
 const KNOWN_UNNAMED: Record<string, string> = {
-  'matrix.c_geometry': 'no PgGeometry arm in the class-name path',
-  'matrix.c_bit': 'no PgBinaryVector arm, the class a bit column uses',
-  // The nullable twin of each, in the table the same fixture now carries. Same classes, same
-  // missing arms, and listing them is what says the gap is about the class rather than about the
-  // `notNull` the two columns differ by.
-  'nullable.n_geometry': 'as matrix.c_geometry',
-  'nullable.n_bit': 'as matrix.c_bit',
-  // `c_vector` and `n_vector` were here and are named now: the pgvector family has arms on this
-  // path. Their entries went dead the moment the arms landed, which is this check working rather
-  // than a maintenance chore.
+  // Empty, and that is a result rather than a reason to delete this check. Every Postgres class the
+  // 0.4x path could not name has an arm now: `c_vector` and `n_vector` went first, then
+  // `c_geometry`, `c_bit` and their nullable twins. Each entry died the moment its arm landed and
+  // this stage named it.
+  //
+  // It still fails on the first column that comes back unnamed, which is the direction that matters
+  // from here, and an empty map is the strongest form of that claim rather than the weakest.
 };
 
 // `npm init -y` leaves the project CommonJS, where tsx refuses a top-level await.
@@ -6589,6 +6572,14 @@ const ALLOWED: Record<string, Entry> = {
   // server that had room for it.
   'mysql/m_binary': { libs: LIB_NAMES, modes: MODE_NAMES, divergence: { 'select/*': `L:  | T: 'hello', 300-char, 70k-char, 5-char, 5 emoji, 'not-a-uuid', uuid, 'happy', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1'`, 'insert,update/*': `L:  | T: 'hello', 300-char, 70k-char, 5-char, 3 emoji, 5 emoji, 'not-a-uuid', uuid, 'happy', '2020-01-01', '2020-01-01T00:00:00Z', '12:00:00', '25:99:99', 100 emoji, 22000 cjk, '999.999.999.999', '10.0.0.1'` }, drzl: 'a string capped at the declared byte width', official: 'an uncapped string', filed: 'not a defect: DRZL is stricter here and the server agrees' },
   'mysql/m_varbinary': { libs: LIB_NAMES, modes: MODE_NAMES, divergence: { 'select/*': `L:  | T: 300-char, 70k-char, uuid, '2020-01-01T00:00:00Z', 100 emoji, 22000 cjk`, 'insert,update/*': `L:  | T: 300-char, 70k-char, 5 emoji, uuid, '2020-01-01T00:00:00Z', 100 emoji, 22000 cjk` }, drzl: 'as mysql/m_binary', official: 'as mysql/m_binary', filed: 'as mysql/m_binary' },
+  // ---- geometry, where DRZL counts the coordinates and official does not ----------------------
+  // These were DEFECTS across all four libraries while the class-name path could not name a
+  // `geometry` column at all. It is named now and what survives is one library and one direction:
+  // valibot's `v.tuple` ignores a third element, so official takes `[1,2,3]` into a two-coordinate
+  // point and DRZL's tuple shape refuses it. ALLOWED[pg/n_point] already records the same valibot
+  // capability difference from the other side.
+  'pg/c_geometry': { libs: ['valibot'], modes: MODE_NAMES, divergence: { '*/valibot': `L:  | T: [1,2,3]` }, drzl: 'a two-number tuple', official: 'an array of any length', filed: 'not a defect: DRZL counts the coordinates and the server agrees' },
+  'pg/n_geometry': { libs: ['valibot'], modes: MODE_NAMES, divergence: { '*/valibot': `L:  | T: [1,2,3]` }, drzl: 'as pg/c_geometry', official: 'as pg/c_geometry', filed: 'as pg/c_geometry' },
 };
 
 /**
@@ -6663,34 +6654,10 @@ const DEFECTS: Record<string, Entry> = {
   // A bare `blob()` is not the same column on the two majors, measured on the column object:
   // 0.45.2 builds a `SQLiteBlobBuffer` and 1.0.0-rc.4 builds a `SQLiteBlobJson`. So `s_blob` and
   // `s_blob_buf` are both buffer columns here, which is why official demands a Buffer for both.
-  'pg/c_geometry': {
-    libs: LIB_NAMES,
-    modes: MODE_NAMES,
-    divergence: {
-      'select,insert/zod,arktype,typebox': allProbes(62, ['[1,2]']),
-      'select,insert/valibot': allProbes(61, ['[1,2]', '[1,2,3]']),
-      'update/zod,arktype': allProbes(61, ['undefined', '[1,2]']),
-      'update/valibot': allProbes(60, ['undefined', '[1,2]', '[1,2,3]']),
-      'update/typebox': allProbes(62, ['[1,2]']),
-    },
-    drzl: 'unknown, which accepts every value in the pool',
-    official: 'a tuple [number, number]',
-    filed: 'AC: matrix.c_geometry.tsType, .dbType, .shape, and check-old.ts KNOWN_UNNAMED',
-  },
-  'pg/c_bit': {
-    libs: LIB_NAMES,
-    modes: MODE_NAMES,
-    divergence: {
-      'select,insert/zod,valibot,arktype': allProbes(62, ["'010'"]),
-      'update/zod,valibot,arktype': allProbes(61, ['undefined', "'010'"]),
-      // Not "typebox refuses fewer": official's TypeBox schema throws on `null` and `undefined`
-      // here, so those two probes are not compared in any mode and the THREW ledger holds them.
-      '*/typebox': allProbes(60, ["'010'"]),
-    },
-    drzl: 'unknown, which accepts every value in the pool',
-    official: 'a string of at most 3 characters matching ^[01]*$',
-    filed: 'AC: matrix.c_bit.tsType, .dbType, .shape, and check-old.ts KNOWN_UNNAMED',
-  },
+  // `pg/c_bit` and `pg/n_bit` stood here and are gone: the column is named, so nothing about it
+  // diverges from official any more. `pg/c_geometry` and `pg/n_geometry` moved to `ALLOWED` above,
+  // narrowed from all four libraries and twelve pairings to valibot and three, in the one direction
+  // where DRZL is the stricter and correct side.
   'sqlite/s_blob': {
     libs: LIB_NAMES,
     modes: MODE_NAMES,
@@ -6788,49 +6755,9 @@ const DEFECTS: Record<string, Entry> = {
   // says the defect is in the analysis of the column rather than in one emitted shape.
   // The other two Postgres classes the class-name path cannot name. All five classes that produce
   // this shape are in the fixture now, three here and two on SQLite below.
-  'pg/n_geometry': {
-    libs: LIB_NAMES,
-    modes: MODE_NAMES,
-    divergence: {
-      'select/zod,arktype,typebox': allProbes(61, ['null', '[1,2]']),
-      // valibot's `v.tuple` ignores a third element, so official takes [1,2,3] as well. The same
-      // capability difference ALLOWED[pg/n_point] records from the other side.
-      'select/valibot': allProbes(60, ['null', '[1,2]', '[1,2,3]']),
-      'insert,update/zod,arktype': allProbes(60, ['null', 'undefined', '[1,2]']),
-      'insert,update/valibot': allProbes(59, ['null', 'undefined', '[1,2]', '[1,2,3]']),
-      'insert,update/typebox': allProbes(61, ['null', '[1,2]']),
-    },
-    drzl: 'unknown, which accepts every value in the pool',
-    official: 'a tuple [number, number], or null',
-    filed: 'as pg/c_geometry: no PgGeometry arm in the class-name path',
-  },
-  'pg/n_bit': {
-    libs: LIB_NAMES,
-    modes: MODE_NAMES,
-    divergence: {
-      'select/zod,valibot,arktype': allProbes(61, ['null', "'010'"]),
-      'insert,update/zod,valibot,arktype': allProbes(60, ['null', 'undefined', "'010'"]),
-      // Not "typebox refuses more": official's TypeBox schema throws on `null` and `undefined`
-      // here, so neither probe is compared in any mode and the THREW ledger holds both. How far
-      // that moves the count is not stated here, because the declarations on these three lines are
-      // the count and a sentence beside them is one more thing that can go stale.
-      //
-      // Earlier attempts at that sentence already have, and no two of them said the same thing.
-      // At `5184b52` there were two, and neither lived on `pg/c_bit`: the `Entry.divergence`
-      // docstring said "two fewer probes than the other three on `c_bit`", and an inline comment
-      // repeated word for word on `pg/c_vector`, `sqlite/s_blob`, `sqlite/s_blob_buf` and
-      // `sqlite/s_int_ts_ms` said "TypeBox refuses two fewer probes than the rest on `c_bit`".
-      // Both read as a rejection TypeBox never made, and both were already wrong about update at
-      // that revision, where `pg/c_bit` declared one fewer for typebox rather than two. The last
-      // was written here at `fdcc627`, said `pg/c_bit` was "two lower in every mode", and was
-      // wrong about update again. A note that misplaces which entry carried a mistake is worth
-      // less than no note, so the sites are named. No number is repeated now, on any of them.
-      '*/typebox': allProbes(60, ["'010'"]),
-    },
-    drzl: 'unknown, which accepts every value in the pool',
-    official: 'a string of at most 3 characters matching ^[01]*$, or null',
-    filed: 'as pg/c_bit: no PgBinaryVector arm in the class-name path',
-  },
+  // `pg/n_geometry` and `pg/n_bit` were here, the nullable twins of the two above, and went
+  // the same way for the same reason: the classes are named, so a nullable one is no longer an
+  // unknown wrapped in a union.
   'sqlite/s_n_blob': {
     libs: LIB_NAMES,
     modes: MODE_NAMES,
@@ -6955,22 +6882,17 @@ const PRESENCE_BARREN: Record<string, string> = {
 const SELECT_REACH = { schemas: 24, keys: 492 };
 
 const SELECT_OPTIONAL: Record<string, string> = {
-  'pg/typebox/n_geometry': 'no PgGeometry arm, so a nullable unknown, whose TypeBox key may be missing',
-  'pg/typebox/n_bit': 'as pg/typebox/n_geometry, and official crashes on the omission so PRESENCE cannot see it',
-  'sqlite/typebox/s_n_blob': 'as pg/typebox/n_geometry, with no SQLiteBlobBuffer arm',
-  'sqlite/typebox/s_n_ts_ms': 'as pg/typebox/n_geometry, with no timestamp_ms arm',
+  // The three Postgres entries that stood here are gone, and nobody edited them out: naming
+  // `vector`, `geometry` and `bit` means those columns no longer emit an unknown, so their nullable
+  // form is no longer the union whose TypeBox key may go missing, and this check retired each one
+  // by name as its arm landed. Only SQLite is left, where two classes are still unnamed.
+  'sqlite/typebox/s_n_blob': 'no SQLiteBlobBuffer arm, so a nullable unknown whose TypeBox key may be missing',
+  'sqlite/typebox/s_n_ts_ms': 'as sqlite/typebox/s_n_blob, with no timestamp_ms arm',
   'sqlite/typebox/s_n_custom': 'a nullable customType is unknown on both majors, and official emits the same union',
 };
 
 const PRESENCE: Record<string, Entry> = {
-  'pg/n_geometry': {
-    libs: ['typebox'],
-    modes: ['select'],
-    divergence: { '*/*': 'official required, DRZL optional' },
-    drzl: 'Type.Union([Type.Unknown(), Type.Null()]), whose key TypeBox lets go missing',
-    official: 'a required key on select; on insert a nullable column is optional on both sides',
-    filed: 'as pg/c_geometry: no PgGeometry arm in the class-name path',
-  },
+  // `pg/n_geometry` sat here for the same reason and left with the rest of them.
   'sqlite/s_n_blob': {
     libs: ['typebox'],
     modes: ['select'],
@@ -7067,7 +6989,7 @@ const THREW: Record<string, Crash> = {
     // Every probe, because the analyzer names no type for this column on 0.4x. The other three
     // libraries report the same thing through the ALL_PROBES signature in DEFECTS[pg/c_bit]; this
     // is the fourth, which the comparison cannot reach.
-    drzl: { '*/null': 'accept', '*/undefined': 'accept' },
+    drzl: { '*/null': 'reject', '*/undefined': 'reject' },
     arbiter: {
       // A real Postgres, built from this column's own `getSQLType()`, refuses a NULL into
       // `bit(3) not null` with a not-null violation, and its nullable twin takes one.
@@ -7094,7 +7016,7 @@ const THREW: Record<string, Crash> = {
     modes: ['select', 'insert', 'update'],
     values: ['null', 'undefined'],
     why: 'as pg/typebox/c_bit',
-    drzl: { '*/null': 'accept', '*/undefined': 'accept' },
+    drzl: { '*/null': 'accept', '*/undefined': 'reject' },
     arbiter: {
       null: 'postgres accepts it',
       undefined: 'postgres accepts the column omitted from the insert',
