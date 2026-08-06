@@ -88,8 +88,11 @@ PGlite, SQLite via `node:sqlite`, and MySQL as a CI service container.
 
 ```
     1440 probes against a real Postgres (40 columns)
-    agree with the database: DRZL 1048, drizzle-orm 1013
-    DRZL closer than drizzle-orm on 35, further on 0
+    agree with the database: DRZL 1056, drizzle-orm 1013
+    DRZL closer than drizzle-orm on 49, further on 0
+
+    393 rows read back through the driver (40 columns)
+    rejected by DRZL: 71, of which drizzle-orm also rejects: 71
 
     53 CHECK probes against a real Postgres (13 constrained columns)
     rows Postgres rejects and the validator accepts: DRZL 0, drizzle-orm 22
@@ -98,3 +101,16 @@ PGlite, SQLite via `node:sqlite`, and MySQL as a CI service container.
     32 CHECK probes against a real SQLite (10 constrained columns)
     37 probes against a real MySQL
 ```
+
+Both directions are asked, because a column's write type and its read type are not the same type.
+The first block sends each probe through an `INSERT` and grades the Insert schema on the answer.
+The second writes a row, reads it back through the driver, and grades the Select schema on the
+value a caller actually receives. `geometry` is written as `point(1 2)` and read back as `[1, 2]`;
+`char(4)` takes `'ab'` and returns `'ab  '`; `boolean` takes the string `'yes'` and returns `true`.
+Grading one schema on the other's question is right only where the two coincide.
+
+The read direction is gated absolutely rather than against `drizzle-orm`. Elsewhere a validator is
+allowed to be stricter than a coercing driver, since that is what a validator is for, but that
+reasoning is about untrusted input: a row read back came out of the database through the very
+driver the schema describes, so a schema refusing it fails on real rows and no amount of agreement
+makes it correct.
