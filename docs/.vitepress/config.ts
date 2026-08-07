@@ -68,6 +68,7 @@ export default {
           { text: 'JSON Schema', link: '/generators/json-schema' },
           { text: 'OpenAPI Document', link: '/generators/openapi' },
           { text: 'Nested Relations', link: '/generators/nested-relations' },
+          { text: 'Branded Keys', link: '/generators/branded-keys' },
           { text: 'Adapters (Overview)', link: '/adapters/overview' },
           { text: 'Router Adapters', link: '/adapters/router' },
         ],

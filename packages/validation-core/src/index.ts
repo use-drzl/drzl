@@ -4,9 +4,11 @@ import { createRequire } from 'node:module';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import type { Analysis, Column } from '@drzl/analyzer';
+import type { BrandingOption } from './branding.js';
 import type { ImportExtension } from './files.js';
 import type { AffixOptions } from './naming.js';
 
+export * from './branding.js';
 export * from './checks.js';
 export * from './files.js';
 export * from './meta.js';
@@ -133,6 +135,25 @@ export interface ValidationGenerateOptions {
    * what terminates a cycle, since `users -> posts -> users` simply stops here.
    */
   nestedDepth?: number;
+  /**
+   * Give every primary key, and every foreign key pointing at one, a nominal type, so a
+   * `users.id` cannot be passed where a `posts.id` is wanted.
+   *
+   * Type level only. The brand is a marker in the inferred type and nothing at all at runtime:
+   * measured on zod 4.4.3, `.brand()` returns the same schema object it was called on, and the
+   * parsed value of `1` is `1`, so two branded ids holding `1` are still `===`. Nothing about
+   * what a schema accepts or rejects changes here, and nothing is added to the bundle.
+   *
+   * Off by default, because it changes the inferred type of every consumer of the select
+   * schemas. Turning it on will produce errors in code that was passing the wrong id around,
+   * which is the point, but it is a change to existing call sites rather than an addition.
+   *
+   * `{ foreignKeys: false }` brands only the keys themselves. See `BrandingOptions`.
+   *
+   * TypeBox has no brand helper, so the marker there is an intersection carried by
+   * `Type.Unsafe<T>`, which leaves the runtime schema byte-identical. See the docs page.
+   */
+  branded?: BrandingOption;
   emit?: {
     select?: boolean;
     insert?: boolean;

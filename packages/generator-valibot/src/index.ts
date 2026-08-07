@@ -7,7 +7,9 @@ import type {
 } from '@drzl/validation-core';
 import type { CardinalityCheck, ColumnCheck, ColumnSet, LengthCheck } from '@drzl/validation-core';
 import type { NestedMode, NestedNode } from '@drzl/validation-core';
+import type { BrandPlan } from '@drzl/validation-core';
 import {
+  buildBrandPlan,
   buildNestedPlan,
   COERCIBLE_DATE_STRING,
   COLUMN_FORMATS,
@@ -431,7 +433,9 @@ function vField(
   applyDefault = false,
   lengths: LengthCheck[] = [],
   cardinalities: CardinalityCheck[] = [],
-  narrowRef?: string
+  narrowRef?: string,
+  /** The nominal brand this column carries, or nothing. See `@drzl/validation-core`'s branding. */
+  brand?: string
 ): string {
   let expr = vExprForColumn(c, mode, coerceDates, checks, sets, lengths);
   // Drizzle keeps an array on the element's own column class, so everything above describes the
@@ -440,6 +444,21 @@ function vField(
   // After the wrapping, because this constrains the array rather than an element.
   const card = vCardinalityChecks(c, cardinalities);
   if (card.length) expr = `v.pipe(${expr}, ${card.join(', ')})`;
+  // Inside `v.nullable`, and that placement is the whole of the decision. A brand is an
+  // intersection and `null & { ... }` is `never`, so `v.pipe(v.nullable(x), v.brand('users.id'))`
+  // infers `number & Brand<'users.id'>` with the null arm gone, measured on valibot 1.4.2, while
+  // the schema still parses null. This order infers `(number & Brand<'users.id'>) | null`.
+  //
+  // Folded into the pipe the column already has rather than nesting a second one inside it.
+  // `v.pipe(v.pipe(a, b), v.brand(x))` behaves identically, measured on 1.4.2, and reads like a
+  // generator that lost track of what it had already emitted. The expression is one balanced
+  // term, so when it opens with `v.pipe(` its last character is that call's own bracket.
+  if (brand) {
+    const action = `v.brand(${JSON.stringify(brand)})`;
+    expr = expr.startsWith('v.pipe(')
+      ? `${expr.slice(0, -1)}, ${action})`
+      : `v.pipe(${expr}, ${action})`;
+  }
   if (c.nullable) expr = `v.nullable(${expr})`;
   if (mode !== 'select') {
     // A literal default is reproduced as valibot's second argument to `optional`, which is where
@@ -452,7 +471,9 @@ function vField(
       expr = `v.optional(${expr})`;
     }
   }
-  return vNarrow(expr, narrowRef);
+  // Not on a branded column. Both narrow the same column's static type and whichever runs last
+  // wins, so they cannot both apply; see the zod generator for the full reasoning.
+  return vNarrow(expr, brand ? undefined : narrowRef);
 }
 
 function renderObjectShape(
@@ -464,7 +485,8 @@ function renderObjectShape(
   applyDefaults = false,
   lengths: LengthCheck[] = [],
   cardinalities: CardinalityCheck[] = [],
-  typedColumns?: { table: string; mode: 'insert' | 'select' }
+  typedColumns?: { table: string; mode: 'insert' | 'select' },
+  brands?: { plan: BrandPlan; tsName: string }
 ) {
   return cols
     .map(
@@ -480,7 +502,8 @@ function renderObjectShape(
           cardinalities,
           typedColumns
             ? `(typeof ${typedColumns.table}.$infer${typedColumns.mode === 'insert' ? 'Insert' : 'Select'})[${JSON.stringify(c.name)}]`
-            : undefined
+            : undefined,
+          brands?.plan.brandOf(brands.tsName, c.name)
         )},`
     )
     .join('\n');
@@ -559,7 +582,8 @@ function renderNestedObject(
   mode: NestedMode,
   coerceDates: NonNullable<ValidationGenerateOptions['coerceDates']>,
   applyDefaults: boolean,
-  typedColumns: boolean
+  typedColumns: boolean,
+  brands?: BrandPlan
 ): string {
   const all = mode === 'insert' ? insertColumns(node.table) : selectColumns(node.table);
   const cols = nestedNodeColumns(all, node);
@@ -574,14 +598,22 @@ function renderNestedObject(
     applyDefaults,
     lengths,
     cardinalities,
-    tc
+    tc,
+    brands ? { plan: brands, tsName: node.table.tsName } : undefined
   );
 
   const arms = node.arms.map((arm) => {
     const notes = nestedArmNotes(arm)
       .map((n) => `  // ${n}\n`)
       .join('');
-    const child = renderNestedObject(arm.child, mode, coerceDates, applyDefaults, typedColumns);
+    const child = renderNestedObject(
+      arm.child,
+      mode,
+      coerceDates,
+      applyDefaults,
+      typedColumns,
+      brands
+    );
     // A to-one may come back null: a relational query returns null where there is no matching
     // row, and accepting it never turns away something the query produced. Optional throughout,
     // because which relations a payload carries is the caller's choice on a write and the `with`
@@ -603,7 +635,8 @@ function renderNestedSchemas(
   coerceDates: NonNullable<ValidationGenerateOptions['coerceDates']>,
   applyDefaults: boolean,
   typedColumns: boolean,
-  plans: Partial<Record<NestedMode, NestedNode>>
+  plans: Partial<Record<NestedMode, NestedNode>>,
+  brands?: BrandPlan
 ): string {
   const out: string[] = [];
   for (const mode of ['insert', 'select'] as const) {
@@ -611,7 +644,7 @@ function renderNestedSchemas(
     if (!plan) continue;
     const name = nestedSchemaName(mode, table.tsName, affix);
     const tname = nestedTypeName(mode, table.tsName, affix);
-    const expr = renderNestedObject(plan, mode, coerceDates, applyDefaults, typedColumns);
+    const expr = renderNestedObject(plan, mode, coerceDates, applyDefaults, typedColumns, brands);
     const infer = mode === 'insert' ? 'InferInput' : 'InferOutput';
     out.push(`export const ${name} = ${expr};\n\nexport type ${tname} = ${infer}<typeof ${name}>;`);
   }
@@ -661,7 +694,8 @@ function renderTableSchemas(
   applyDefaults = false,
   typedColumns?: { schemaSpecifier: string },
   wantsDuplicateFinder = false,
-  nested: Partial<Record<NestedMode, NestedNode>> = {}
+  nested: Partial<Record<NestedMode, NestedNode>> = {},
+  brands?: BrandPlan
 ) {
   const T = table.tsName;
   const insertSchema = schemaName('insert', T, affix);
@@ -697,6 +731,7 @@ function renderTableSchemas(
     ? `import type { ${[...referenced].join(', ')} } from '${typedColumns.schemaSpecifier}';\n`
     : '';
 
+  const forBrands = brands ? { plan: brands, tsName: T } : undefined;
   const bodyInsert = renderObjectShape(
     insertCols,
     'insert',
@@ -706,7 +741,8 @@ function renderTableSchemas(
     applyDefaults,
     lengths,
     cardinalities,
-    tjInsert
+    tjInsert,
+    forBrands
   );
   const bodyUpdate = renderObjectShape(
     updateCols,
@@ -717,7 +753,8 @@ function renderTableSchemas(
     applyDefaults,
     lengths,
     cardinalities,
-    tjInsert
+    tjInsert,
+    forBrands
   );
   const bodySelect = renderObjectShape(
     selectCols,
@@ -728,7 +765,8 @@ function renderTableSchemas(
     applyDefaults,
     lengths,
     cardinalities,
-    tj
+    tj,
+    forBrands
   );
   // Emitted only where a json column exists, so a file without one gains nothing unused. The
   // nested shapes carry other tables' columns, so a json column reachable only through a relation
@@ -751,8 +789,19 @@ function renderTableSchemas(
     coerceDates,
     applyDefaults,
     !!typedColumns,
-    nested
+    nested,
+    brands
   );
+
+  // The brand read back off the schema that carries it, rather than written out a second time.
+  const brandAliases = (brands?.aliasesFor(T) ?? [])
+    .map(
+      (a) =>
+        `/** The nominal type of ${T}.${a.column}. */\n` +
+        `export type ${a.alias} = InferOutput<typeof ${selectSchema}>[${JSON.stringify(a.column)}];`
+    )
+    .join('\n\n');
+  const brandCode = brandAliases ? `\n${brandAliases}\n` : '';
 
   return `import * as v from 'valibot';
 import type { InferInput, InferOutput } from 'valibot';
@@ -766,7 +815,7 @@ export const ${selectSchema} = ${wrapRows(`v.object({\n${bodySelect}\n})`, rows,
 export type ${insertType} = InferInput<typeof ${insertSchema}>;
 export type ${updateType} = InferInput<typeof ${updateSchema}>;
 export type ${selectType} = InferOutput<typeof ${selectSchema}>;
-${nestedCode}${duplicates}`;
+${brandCode}${nestedCode}${duplicates}`;
 }
 
 export interface ValibotGenerateOptions extends ValidationGenerateOptions {
@@ -817,6 +866,10 @@ export class ValibotGenerator implements ValidationRenderer<ValibotGenerateOptio
     const nestedDepth = opts.nestedSchemas
       ? resolveNestedDepth(opts.nestedDepth, (m) => console.warn(m))
       : 0;
+    // Built once for the whole analysis, because a foreign key is branded after the table it
+    // points at and no single table knows that.
+    const brands = buildBrandPlan(this.analysis.tables, opts.branded);
+    for (const note of brands?.notes ?? []) console.warn(`[drzl] ${note}`);
     // File names deliberately stay on the raw Drizzle export name: affixes and tableCase
     // rename identifiers, never modules, so the barrel and importPath keep resolving.
     for (const table of this.analysis.tables) {
@@ -828,7 +881,8 @@ export class ValibotGenerator implements ValidationRenderer<ValibotGenerateOptio
         !!opts.applyDefaults,
         typedColumns,
         !!opts?.duplicateFinder,
-        opts.nestedSchemas ? nestedPlansFor(table, this.analysis, nestedDepth) : {}
+        opts.nestedSchemas ? nestedPlansFor(table, this.analysis, nestedDepth) : {},
+        brands
       );
       const formatted = await formatCode(
         buildHeader(opts.outputHeader) + code,
@@ -857,7 +911,9 @@ export class ValibotGenerator implements ValidationRenderer<ValibotGenerateOptio
       opts?.coerceDates ?? 'input',
       !!opts?.applyDefaults,
       undefined,
-      !!opts?.duplicateFinder
+      !!opts?.duplicateFinder,
+      {},
+      buildBrandPlan(this.analysis.tables, opts?.branded)
     );
   }
 

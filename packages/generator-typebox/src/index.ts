@@ -10,7 +10,9 @@ import type {
   ValidationGenerateOptions,
 } from '@drzl/validation-core';
 import type { NestedMode, NestedNode } from '@drzl/validation-core';
+import type { BrandPlan } from '@drzl/validation-core';
 import {
+  buildBrandPlan,
   buildNestedPlan,
   formatCode,
   importSpecifier,
@@ -595,7 +597,9 @@ function tbField(
   sets: ColumnSet[] = [],
   applyDefault = false,
   narrowRef?: string,
-  cardinalities: CardinalityCheck[] = []
+  cardinalities: CardinalityCheck[] = [],
+  /** The nominal brand this column carries, or nothing. See `@drzl/validation-core`'s branding. */
+  brand?: string
 ): string {
   let expr = tbExprForColumn(c, mode, coerceDates, checks, typedJsonRef, sets);
   // Drizzle keeps an array on the element's own column class, so everything above describes the
@@ -625,6 +629,14 @@ function tbField(
   //
   // This says nothing about whether the key is optional in a write schema. That is decided below,
   // by `Type.Optional`, and `Type.Optional(Type.Unknown())` lets the key go missing as it should.
+  // Inside the null union, and that placement is the whole of the decision. A brand is an
+  // intersection and `null & { ... }` is `never`, so branding a schema that already admits null
+  // deletes the null arm from the static type while `Value.Check` keeps accepting it.
+  //
+  // TypeBox has no brand of its own. `drzlBrand` below is `TUnsafe<Static<T> & marker>`, which is
+  // TypeBox's own primitive for "this schema, that static type": it hands the schema back
+  // untouched, so `Value.Check` and `TypeCompiler` see exactly what they saw before.
+  if (brand) expr = `${BRAND_FN}(${expr}, ${JSON.stringify(brand)})`;
   if (c.nullable && !isUnknownExpr(expr)) expr = `Type.Union([${expr}, Type.Null()])`;
   // The default goes on the schema itself, before anything wraps it. Applied after the
   // `Type.Unsafe` wrapper instead, it landed on the wrapper, where `withDefault` declines to
@@ -639,7 +651,9 @@ function tbField(
   // `typedColumns` narrows the static type without touching the runtime schema. `Type.Unsafe<T>`
   // is TypeBox's own primitive for exactly that: it wraps an existing schema, so every check it
   // carries still runs, and only the inferred type is replaced.
-  if (narrowRef) expr = `Type.Unsafe<${narrowRef}>(${expr})`;
+  // Not on a branded column. Both narrow the same column's static type and whichever wraps last
+  // wins, so they cannot both apply; see the zod generator for the full reasoning.
+  if (narrowRef && !brand) expr = `Type.Unsafe<${narrowRef}>(${expr})`;
 
   if (mode !== 'select') {
     if (wantsDefault || mode === 'update' || c.nullable || c.hasDefault) {
@@ -657,7 +671,8 @@ function renderObjectShape(
   typedJson?: { table: string; mode: 'insert' | 'select'; allColumns?: boolean },
   sets: ColumnSet[] = [],
   applyDefaults = false,
-  cardinalities: CardinalityCheck[] = []
+  cardinalities: CardinalityCheck[] = [],
+  brands?: { plan: BrandPlan; tsName: string }
 ) {
   return cols
     .map((c) => {
@@ -669,7 +684,8 @@ function renderObjectShape(
         typedJson && (c.tsType === 'any' || c.shape?.kind === 'custom')
           ? `(typeof ${typedJson.table}.$infer${typedJson.mode === 'insert' ? 'Insert' : 'Select'})[${JSON.stringify(c.name)}]`
           : undefined;
-      return `  ${JSON.stringify(c.name)}: ${tbField(c, mode, coerceDates, checks, ref, sets, applyDefaults, narrow, cardinalities)},`;
+      const brand = brands?.plan.brandOf(brands.tsName, c.name);
+      return `  ${JSON.stringify(c.name)}: ${tbField(c, mode, coerceDates, checks, ref, sets, applyDefaults, narrow, cardinalities, brand)},`;
     })
     .join('\n');
 }
@@ -685,6 +701,30 @@ function parsedChecksFor(table: Table) {
     cardinalities: parsed.flatMap((p) => (p.ok ? (p.cardinalities ?? []) : [])),
   };
 }
+
+/** The helper a branded file declares, named so nothing a schema module exports can collide. */
+const BRAND_FN = 'drzlBrand';
+
+/**
+ * The nominal marker a branded file declares, emitted once and only where it is used.
+ *
+ * TypeBox 0.34.52 has no brand: no `Type.Brand`, and nothing brand-shaped on `Type` at all,
+ * measured by enumerating its keys. What it does have is `TUnsafe<T>`, its own primitive for
+ * "this schema, that static type", which the generator already uses for `typedColumns`. So the
+ * marker is an intersection carried by a `TUnsafe`, and the value handed back is the schema
+ * itself: `Value.Check` and `TypeCompiler` see the same object with the same `[Kind]` they saw
+ * before, so nothing about validation changes.
+ *
+ * The marker is a plain string-keyed property rather than a `unique symbol`, and that is not a
+ * detail. A `unique symbol` is unique *per declaration*, so two generated files declaring one
+ * would produce two brands that TypeScript considers unrelated, and a foreign key branded in
+ * `posts` would not be assignable to the key it points at in `users`. A structural marker is the
+ * same type in every file that writes it, which is exactly what makes the brands line up across
+ * modules with no import between them.
+ */
+const BRAND_PREAMBLE = `const ${BRAND_FN} = <T extends TSchema, B extends string>(schema: T, _brand: B) =>
+  schema as unknown as TUnsafe<Static<T> & { readonly __drzlBrand: B }>;
+`;
 
 /** Push a rendered block one level deeper, so the nested object reads as one. */
 function indentBlock(code: string, by = '  '): string {
@@ -721,7 +761,8 @@ function renderNestedObject(
   mode: NestedMode,
   coerceDates: NonNullable<ValidationGenerateOptions['coerceDates']>,
   typedJson: { allColumns?: boolean } | undefined,
-  applyDefaults: boolean
+  applyDefaults: boolean,
+  brands?: BrandPlan
 ): string {
   const cols = nestedNodeCols(node, mode);
   const { checks, sets, rows, lengths, cardinalities } = parsedChecksFor(node.table);
@@ -736,14 +777,22 @@ function renderNestedObject(
     tj,
     sets,
     applyDefaults,
-    cardinalities
+    cardinalities,
+    brands ? { plan: brands, tsName: node.table.tsName } : undefined
   );
 
   const arms = node.arms.map((arm) => {
     const notes = nestedArmNotes(arm)
       .map((n) => `  // ${n}\n`)
       .join('');
-    const child = renderNestedObject(arm.child, mode, coerceDates, typedJson, applyDefaults);
+    const child = renderNestedObject(
+      arm.child,
+      mode,
+      coerceDates,
+      typedJson,
+      applyDefaults,
+      brands
+    );
     // A to-one may come back null: a relational query returns null where there is no matching
     // row, and accepting it never turns away something the query produced. Optional throughout,
     // because which relations a payload carries is the caller's choice on a write and the `with`
@@ -766,7 +815,8 @@ function renderNestedSchemas(
   typedJson: { allColumns?: boolean } | undefined,
   applyDefaults: boolean,
   plans: Partial<Record<NestedMode, NestedNode>>,
-  standardSchema = false
+  standardSchema = false,
+  brands?: BrandPlan
 ): string {
   const out: string[] = [];
   for (const mode of ['insert', 'select'] as const) {
@@ -774,7 +824,7 @@ function renderNestedSchemas(
     if (!plan) continue;
     const name = nestedSchemaName(mode, table.tsName, affix);
     const tname = nestedTypeName(mode, table.tsName, affix);
-    const expr = renderNestedObject(plan, mode, coerceDates, typedJson, applyDefaults);
+    const expr = renderNestedObject(plan, mode, coerceDates, typedJson, applyDefaults, brands);
     out.push(
       `export const ${name} = ${wrapStandard(expr, standardSchema)};\n\nexport type ${tname} = Static<typeof ${name}>;`
     );
@@ -830,7 +880,8 @@ function renderTableSchemas(
   applyDefaults = false,
   wantsDuplicateFinder = false,
   nested: Partial<Record<NestedMode, NestedNode>> = {},
-  standard?: { specifier: string }
+  standard?: { specifier: string },
+  brands?: BrandPlan
 ) {
   const T = table.tsName;
   const insertSchema = schemaName('insert', T, affix);
@@ -858,6 +909,7 @@ function renderTableSchemas(
   const tjInsert = typedJson
     ? { table: T, mode: 'insert' as const, allColumns: typedJson.allColumns }
     : undefined;
+  const forBrands = brands ? { plan: brands, tsName: T } : undefined;
   const bodyInsert = renderObjectShape(
     insertCols,
     'insert',
@@ -866,7 +918,8 @@ function renderTableSchemas(
     tjInsert,
     sets,
     applyDefaults,
-    cardinalities
+    cardinalities,
+    forBrands
   );
   const bodyUpdate = renderObjectShape(
     updateCols,
@@ -876,7 +929,8 @@ function renderTableSchemas(
     tjInsert,
     sets,
     applyDefaults,
-    cardinalities
+    cardinalities,
+    forBrands
   );
   const bodySelect = renderObjectShape(
     selectCols,
@@ -886,7 +940,8 @@ function renderTableSchemas(
     tj,
     sets,
     applyDefaults,
-    cardinalities
+    cardinalities,
+    forBrands
   );
 
   // A nested shape references the columns of *other* tables, so those tables have to be named here
@@ -961,7 +1016,25 @@ function renderTableSchemas(
     typedJson,
     applyDefaults,
     nested,
-    !!standard
+    !!standard,
+    brands
+  );
+
+  // The brand read back off the schema that carries it, rather than written out a second time.
+  const brandAliases = (brands?.aliasesFor(T) ?? [])
+    .map(
+      (a) =>
+        `/** The nominal type of ${T}.${a.column}. */\n` +
+        `export type ${a.alias} = Static<typeof ${selectSchema}>[${JSON.stringify(a.column)}];`
+    )
+    .join('\n\n');
+  const brandCode = brandAliases ? `\n${brandAliases}\n` : '';
+
+  // The preamble goes in only where a field really uses it. An unused declaration fails
+  // `noUnusedLocals` in the consumer's build, which is how the other conditional preambles here
+  // came to be conditional.
+  const needsBrand = [bodyInsert, bodyUpdate, bodySelect, nestedCode].some((b) =>
+    b.includes(`${BRAND_FN}(`)
   );
 
   const standardImport = standard
@@ -970,8 +1043,8 @@ function renderTableSchemas(
   const wrap = (expr: string) => wrapStandard(expr, !!standard);
 
   return `import { Type${rowImport} } from '@sinclair/typebox';
-import type { Static } from '@sinclair/typebox';
-${standardImport}${schemaImport}${needsJson ? `\n${JSON_PREAMBLE}` : ''}${needsRows ? `\n${ROW_PREAMBLE}` : ''}
+import type { Static${needsBrand ? ', TSchema, TUnsafe' : ''} } from '@sinclair/typebox';
+${standardImport}${schemaImport}${needsJson ? `\n${JSON_PREAMBLE}` : ''}${needsRows ? `\n${ROW_PREAMBLE}` : ''}${needsBrand ? `\n${BRAND_PREAMBLE}` : ''}
 export const ${insertSchema} = ${wrap(tbWrapRows(`Type.Object({\n${bodyInsert}\n})`, rows, insertCols, lengths))};
 
 export const ${updateSchema} = ${wrap(tbWrapRows(`Type.Object({\n${bodyUpdate}\n})`, rows, updateCols, lengths))};
@@ -981,7 +1054,7 @@ export const ${selectSchema} = ${wrap(tbWrapRows(`Type.Object({\n${bodySelect}\n
 export type ${insertType} = Static<typeof ${insertSchema}>;
 export type ${updateType} = Static<typeof ${updateSchema}>;
 export type ${selectType} = Static<typeof ${selectSchema}>;
-${nestedCode}${duplicates}`;
+${brandCode}${nestedCode}${duplicates}`;
 }
 
 /**
@@ -1290,6 +1363,11 @@ export class TypeBoxGenerator implements ValidationRenderer<TypeBoxGenerateOptio
       files.push(helperPath);
     }
 
+    // Built once for the whole analysis, because a foreign key is branded after the table it
+    // points at and no single table knows that.
+    const brands = buildBrandPlan(this.analysis.tables, opts.branded);
+    for (const note of brands?.notes ?? []) console.warn(`[drzl] ${note}`);
+
     for (const table of this.analysis.tables) {
       const filePath = path.join(out, moduleFileName(table.tsName, fileSuffix));
       const code = renderTableSchemas(
@@ -1300,7 +1378,8 @@ export class TypeBoxGenerator implements ValidationRenderer<TypeBoxGenerateOptio
         !!opts.applyDefaults,
         !!opts?.duplicateFinder,
         opts.nestedSchemas ? nestedPlansFor(table, this.analysis, nestedDepth) : {},
-        standard
+        standard,
+        brands
       );
       const formatted = await formatCode(
         buildHeader(opts.outputHeader) + code,
@@ -1333,7 +1412,8 @@ export class TypeBoxGenerator implements ValidationRenderer<TypeBoxGenerateOptio
       {},
       opts?.standardSchema
         ? { specifier: importSpecifier(`./${STANDARD_FILE}`, opts.importExtension) }
-        : undefined
+        : undefined,
+      buildBrandPlan(this.analysis.tables, opts?.branded)
     );
   }
 

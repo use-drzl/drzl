@@ -10,7 +10,9 @@ import type {
   ValidationGenerateOptions,
 } from '@drzl/validation-core';
 import type { NestedMode, NestedNode } from '@drzl/validation-core';
+import type { BrandPlan } from '@drzl/validation-core';
 import {
+  buildBrandPlan,
   buildNestedPlan,
   nestedArmNotes,
   nestedNodeColumns,
@@ -525,7 +527,9 @@ function atField(
   sets: ColumnSet[] = [],
   inlineDefault?: AppliedDefault,
   cardinalities: CardinalityCheck[] = [],
-  defaulted = false
+  defaulted = false,
+  /** The nominal brand this column carries, or nothing. See `@drzl/validation-core`'s branding. */
+  brand?: string
 ): string {
   let t = atTypeForColumn(c, mode, coerceDates, checks, sets);
   // The element is parenthesised whenever it is anything but a bare keyword, because `[]` binds
@@ -539,6 +543,15 @@ function atField(
   const card = atCardinality(c, cardinalities);
   if (card.equals !== undefined) t = `${t} == ${card.equals}`;
   else if (card.lower || card.upper) t = atRange(t, card.lower, card.upper);
+  // ArkType writes a brand in the DSL itself, with `#`. Applied here, before the null union and
+  // before the `?`, for the same reason as everywhere else: a brand is an intersection, and
+  // branding a type that already admits null would delete the null arm from the inferred type
+  // while the parser kept accepting it. `(number#users.id | null)` is the shape that says both.
+  //
+  // Every combination this reaches was parsed against arktype 2.2.3 rather than reasoned about:
+  // a bare keyword, a bounded range, a `string.uuid`, a null union, an optional key and an
+  // inline default all accept the `#` and all keep enforcing what they enforced.
+  if (brand) t = `${t}#${brand}`;
   if (c.nullable) t = `(${t} | null)`;
   if (mode !== 'select') {
     // ArkType states a default in the DSL itself: `"string = 'GB'"`. That already makes the key
@@ -559,7 +572,8 @@ function renderObjectShape(
   checks: ColumnCheck[] = [],
   sets: ColumnSet[] = [],
   applyDefaults = false,
-  cardinalities: CardinalityCheck[] = []
+  cardinalities: CardinalityCheck[] = [],
+  brands?: { plan: BrandPlan; tsName: string }
 ) {
   return cols
     .map((c) => {
@@ -597,7 +611,8 @@ function renderObjectShape(
         sets,
         onBuilder ? undefined : dflt,
         cardinalities,
-        !!dflt
+        !!dflt,
+        brands?.plan.brandOf(brands.tsName, c.name)
       );
       if (!caps && !onBuilder) return `  ${JSON.stringify(c.name)}: ${JSON.stringify(dsl)},`;
 
@@ -1000,7 +1015,8 @@ function renderNestedObject(
   node: NestedNode,
   mode: NestedMode,
   coerceDates: NonNullable<ValidationGenerateOptions['coerceDates']>,
-  applyDefaults: boolean
+  applyDefaults: boolean,
+  brands?: BrandPlan
 ): string {
   const all = mode === 'insert' ? insertColumns(node.table) : selectColumns(node.table);
   const cols = nestedNodeColumns(all, node);
@@ -1012,14 +1028,15 @@ function renderNestedObject(
     checks,
     sets,
     applyDefaults,
-    cardinalities
+    cardinalities,
+    brands ? { plan: brands, tsName: node.table.tsName } : undefined
   );
 
   const arms = node.arms.map((arm) => {
     const notes = nestedArmNotes(arm)
       .map((n) => `  // ${n}\n`)
       .join('');
-    const child = renderNestedObject(arm.child, mode, coerceDates, applyDefaults);
+    const child = renderNestedObject(arm.child, mode, coerceDates, applyDefaults, brands);
     // A to-one may come back null: a relational query returns null where there is no matching
     // row, and accepting it never turns away something the query produced. The `?` on the key is
     // ArkType's optional, because which relations a payload carries is the caller's choice on a
@@ -1040,7 +1057,8 @@ function renderNestedSchemas(
   affix: ResolvedAffix,
   coerceDates: NonNullable<ValidationGenerateOptions['coerceDates']>,
   applyDefaults: boolean,
-  plans: Partial<Record<NestedMode, NestedNode>>
+  plans: Partial<Record<NestedMode, NestedNode>>,
+  brands?: BrandPlan
 ): string {
   const out: string[] = [];
   for (const mode of ['insert', 'select'] as const) {
@@ -1048,7 +1066,7 @@ function renderNestedSchemas(
     if (!plan) continue;
     const name = nestedSchemaName(mode, table.tsName, affix);
     const tname = nestedTypeName(mode, table.tsName, affix);
-    const expr = renderNestedObject(plan, mode, coerceDates, applyDefaults);
+    const expr = renderNestedObject(plan, mode, coerceDates, applyDefaults, brands);
     out.push(`export const ${name} = ${expr};\n\nexport type ${tname} = typeof ${name}["infer"];`);
   }
   return out.length ? `\n${out.join('\n\n')}\n` : '';
@@ -1082,7 +1100,8 @@ function renderTableSchemas(
   coerceDates: NonNullable<ValidationGenerateOptions['coerceDates']>,
   applyDefaults = false,
   wantsDuplicateFinder = false,
-  nested: Partial<Record<NestedMode, NestedNode>> = {}
+  nested: Partial<Record<NestedMode, NestedNode>> = {},
+  brands?: BrandPlan
 ) {
   const T = table.tsName;
   const insertSchema = schemaName('insert', T, affix);
@@ -1100,6 +1119,7 @@ function renderTableSchemas(
   const rows = parsedChecks.flatMap((p) => (p.ok ? (p.rows ?? []) : []));
   const cardinalities = parsedChecks.flatMap((p) => (p.ok ? (p.cardinalities ?? []) : []));
   const lengths = parsedChecks.flatMap((p) => (p.ok ? (p.lengths ?? []) : []));
+  const forBrands = brands ? { plan: brands, tsName: T } : undefined;
   const bodyInsert = renderObjectShape(
     insertCols,
     'insert',
@@ -1107,7 +1127,8 @@ function renderTableSchemas(
     checks,
     sets,
     applyDefaults,
-    cardinalities
+    cardinalities,
+    forBrands
   );
   const bodyUpdate = renderObjectShape(
     updateCols,
@@ -1116,7 +1137,8 @@ function renderTableSchemas(
     checks,
     sets,
     applyDefaults,
-    cardinalities
+    cardinalities,
+    forBrands
   );
   const bodySelect = renderObjectShape(
     selectCols,
@@ -1125,7 +1147,8 @@ function renderTableSchemas(
     checks,
     sets,
     applyDefaults,
-    cardinalities
+    cardinalities,
+    forBrands
   );
   // Uniqueness is a fact about the table, so no per-row schema can see it. This checks the
   // half that needs no database: whether a batch collides with itself.
@@ -1134,7 +1157,17 @@ function renderTableSchemas(
     : undefined;
   const duplicates = finder ? `\n${finder}\n` : '';
 
-  const nestedCode = renderNestedSchemas(table, affix, coerceDates, applyDefaults, nested);
+  const nestedCode = renderNestedSchemas(table, affix, coerceDates, applyDefaults, nested, brands);
+
+  // The brand read back off the schema that carries it, rather than written out a second time.
+  const brandAliases = (brands?.aliasesFor(T) ?? [])
+    .map(
+      (a) =>
+        `/** The nominal type of ${T}.${a.column}. */\n` +
+        `export type ${a.alias} = (typeof ${selectSchema})["infer"][${JSON.stringify(a.column)}];`
+    )
+    .join('\n\n');
+  const brandCode = brandAliases ? `\n${brandAliases}\n` : '';
 
   return `import { type } from 'arktype';
 
@@ -1153,7 +1186,7 @@ ${bodySelect}
 export type ${insertType} = typeof ${insertSchema}["infer"];
 export type ${updateType} = typeof ${updateSchema}["infer"];
 export type ${selectType} = typeof ${selectSchema}["infer"];
-${nestedCode}${duplicates}`;
+${brandCode}${nestedCode}${duplicates}`;
 }
 
 export interface ArkTypeGenerateOptions extends ValidationGenerateOptions {
@@ -1187,6 +1220,10 @@ export class ArkTypeGenerator implements ValidationRenderer<ArkTypeGenerateOptio
     const nestedDepth = opts.nestedSchemas
       ? resolveNestedDepth(opts.nestedDepth, (m) => console.warn(m))
       : 0;
+    // Built once for the whole analysis, because a foreign key is branded after the table it
+    // points at and no single table knows that.
+    const brands = buildBrandPlan(this.analysis.tables, opts.branded);
+    for (const note of brands?.notes ?? []) console.warn(`[drzl] ${note}`);
     for (const table of this.analysis.tables) {
       const filePath = path.join(out, moduleFileName(table.tsName, fileSuffix));
       const code = renderTableSchemas(
@@ -1195,7 +1232,8 @@ export class ArkTypeGenerator implements ValidationRenderer<ArkTypeGenerateOptio
         coerceDates,
         !!opts.applyDefaults,
         !!opts?.duplicateFinder,
-        opts.nestedSchemas ? nestedPlansFor(table, this.analysis, nestedDepth) : {}
+        opts.nestedSchemas ? nestedPlansFor(table, this.analysis, nestedDepth) : {},
+        brands
       );
       const formatted = await formatCode(
         buildHeader(opts.outputHeader) + code,
@@ -1223,7 +1261,9 @@ export class ArkTypeGenerator implements ValidationRenderer<ArkTypeGenerateOptio
       resolveAffix(opts),
       opts?.coerceDates ?? 'input',
       !!opts?.applyDefaults,
-      !!opts?.duplicateFinder
+      !!opts?.duplicateFinder,
+      {},
+      buildBrandPlan(this.analysis.tables, opts?.branded)
     );
   }
 

@@ -32,6 +32,7 @@ export type ValidationGeneratorConfig = {
   duplicateFinder?: unknown;
   nestedSchemas?: unknown;
   nestedDepth?: unknown;
+  branded?: unknown;
   standardSchema?: unknown;
   meta?: unknown;
 };
@@ -85,6 +86,11 @@ export function validationOptions(
     duplicateFinder: g.duplicateFinder,
     nestedSchemas: g.nestedSchemas,
     nestedDepth: g.nestedDepth,
+    // Every validation generator can express a brand, including TypeBox, which has no brand
+    // helper and gets one from `TUnsafe` instead. So this needs no capability flag: an option
+    // that reached only four of the five would be the class of defect this file exists to
+    // remove.
+    branded: g.branded,
     // Only where the generator can act on them, so an unsupported option is absent rather than
     // present and ignored.
     ...(caps.schemaTypes

@@ -10,7 +10,9 @@ import type {
   ValidationGenerateOptions,
 } from '@drzl/validation-core';
 import type { NestedMode, NestedNode } from '@drzl/validation-core';
+import type { BrandPlan } from '@drzl/validation-core';
 import {
+  buildBrandPlan,
   buildNestedPlan,
   formatCode,
   nestedArmNotes,
@@ -579,7 +581,9 @@ function renderField(
   lengths: LengthCheck[],
   cardinalities: CardinalityCheck[],
   applyDefault: boolean,
-  narrowRef?: string
+  narrowRef?: string,
+  /** The nominal brand this column carries, or nothing. See `@drzl/validation-core`'s branding. */
+  brand?: string
 ): string {
   // A reference over a column with no runtime type replaces the schema; over any other column it
   // narrows one that keeps running.
@@ -609,9 +613,17 @@ function renderField(
   // and where a cast has narrowed the static type that type comes from Drizzle's own inference,
   // which spells a nullable column `T | null` on its own. The test is on the expression rather
   // than on the column, because an array of unknowns is not one and still needs the null arm.
+  // Inside `NullOr`, and that placement is the whole of the decision. A brand is an intersection
+  // and `null & { ... }` is `never`, so branding a schema that already admits null deletes the
+  // null arm from the inferred type while decoding keeps accepting it. This order infers
+  // `(number & Brand<'users.id'>) | null`, which is what the column is.
+  if (brand) expr = piped(expr, [`${NS}.brand(${JSON.stringify(brand)})`]);
+
   if (c.nullable && !isUnknownExpr(expr)) expr = `${NS}.NullOr(${expr})`;
 
-  if (narrowRef) expr = withNarrowedType(expr, narrowRef);
+  // Not on a branded column. Both narrow the same column's static type and whichever runs last
+  // wins, so they cannot both apply; see the zod generator for the full reasoning.
+  if (narrowRef && !brand) expr = withNarrowedType(expr, narrowRef);
 
   if (mode === 'select') return expr;
 
@@ -651,7 +663,8 @@ function renderObjectShape(
   lengths: LengthCheck[],
   cardinalities: CardinalityCheck[],
   typedJson: { table: string; mode: 'insert' | 'select'; allColumns?: boolean } | undefined,
-  applyDefaults: boolean
+  applyDefaults: boolean,
+  brands?: { plan: BrandPlan; tsName: string }
 ): string {
   return cols
     .map((c) => {
@@ -668,7 +681,8 @@ function renderObjectShape(
         lengths,
         cardinalities,
         applyDefaults,
-        ref
+        ref,
+        brands?.plan.brandOf(brands.tsName, c.name)
       );
       return `  ${JSON.stringify(c.name)}: ${field},`;
     })
@@ -739,7 +753,8 @@ function renderNestedObject(
   mode: NestedMode,
   coerceDates: NonNullable<ValidationGenerateOptions['coerceDates']>,
   typedJson: { allColumns?: boolean } | undefined,
-  applyDefaults: boolean
+  applyDefaults: boolean,
+  brands?: BrandPlan
 ): string {
   const cols = nestedNodeCols(node, mode);
   const { checks, sets, rows, lengths, cardinalities } = parsedChecksFor(node.table);
@@ -755,14 +770,22 @@ function renderNestedObject(
     lengths,
     cardinalities,
     tj,
-    applyDefaults
+    applyDefaults,
+    brands ? { plan: brands, tsName: node.table.tsName } : undefined
   );
 
   const arms = node.arms.map((arm) => {
     const notes = nestedArmNotes(arm)
       .map((n) => `  // ${n}\n`)
       .join('');
-    const child = renderNestedObject(arm.child, mode, coerceDates, typedJson, applyDefaults);
+    const child = renderNestedObject(
+      arm.child,
+      mode,
+      coerceDates,
+      typedJson,
+      applyDefaults,
+      brands
+    );
     // A to-one may come back null: a relational query returns null where there is no matching row,
     // and accepting it never turns away something the query produced. Optional throughout, because
     // which relations a payload carries is the caller's choice on a write and the `with` clause's
@@ -784,7 +807,8 @@ function renderNestedSchemas(
   coerceDates: NonNullable<ValidationGenerateOptions['coerceDates']>,
   typedJson: { allColumns?: boolean } | undefined,
   applyDefaults: boolean,
-  plans: Partial<Record<NestedMode, NestedNode>>
+  plans: Partial<Record<NestedMode, NestedNode>>,
+  brands?: BrandPlan
 ): string {
   const out: string[] = [];
   for (const mode of ['insert', 'select'] as const) {
@@ -792,7 +816,7 @@ function renderNestedSchemas(
     if (!plan) continue;
     const name = nestedSchemaName(mode, table.tsName, affix);
     const tname = nestedTypeName(mode, table.tsName, affix);
-    const expr = renderNestedObject(plan, mode, coerceDates, typedJson, applyDefaults);
+    const expr = renderNestedObject(plan, mode, coerceDates, typedJson, applyDefaults, brands);
     out.push(
       `export const ${name} = ${expr};\n\n` +
         `export type ${tname} = ${NS}.Schema.Type<typeof ${name}>;\n\n` +
@@ -831,7 +855,8 @@ function renderTableSchemas(
   typedJson?: { schemaSpecifier: string; allColumns?: boolean },
   applyDefaults = false,
   wantsDuplicateFinder = false,
-  nested: Partial<Record<NestedMode, NestedNode>> = {}
+  nested: Partial<Record<NestedMode, NestedNode>> = {},
+  brands?: BrandPlan
 ) {
   const T = table.tsName;
   const insertCols = insertColumns(table);
@@ -861,7 +886,8 @@ function renderTableSchemas(
       // The update schema references the insert-side inferred types: both describe a value going
       // in, and `$inferSelect` would name the post-default type for a column a write may omit.
       tj ? { ...tj, mode: mode === 'select' ? 'select' : 'insert' } : undefined,
-      applyDefaults
+      applyDefaults,
+      brands ? { plan: brands, tsName: T } : undefined
     );
     const expr = piped(`${NS}.Struct({\n${body}\n})`, rowSteps(rows, cols));
     return (
@@ -926,13 +952,25 @@ function renderTableSchemas(
     coerceDates,
     typedJson,
     applyDefaults,
-    nested
+    nested,
+    brands
   );
+
+  // The brand read back off the schema that carries it, rather than written out a second time.
+  const selectName = schemaName('select', T, affix);
+  const brandAliases = (brands?.aliasesFor(T) ?? [])
+    .map(
+      (a) =>
+        `/** The nominal type of ${T}.${a.column}. */\n` +
+        `export type ${a.alias} = ${NS}.Schema.Type<typeof ${selectName}>[${JSON.stringify(a.column)}];`
+    )
+    .join('\n\n');
+  const brandCode = brandAliases ? `\n${brandAliases}\n` : '';
 
   return `import * as ${NS} from 'effect/Schema';
 ${schemaImport}${needsJson ? `\n${JSON_PREAMBLE}` : ''}
 ${blocks.join('\n\n')}
-${nestedCode}${duplicates}`;
+${brandCode}${nestedCode}${duplicates}`;
 }
 
 export interface EffectGenerateOptions extends ValidationGenerateOptions {
@@ -986,6 +1024,10 @@ export class EffectGenerator implements ValidationRenderer<EffectGenerateOptions
     const nestedDepth = opts.nestedSchemas
       ? resolveNestedDepth(opts.nestedDepth, (m) => console.warn(m))
       : 0;
+    // Built once for the whole analysis, because a foreign key is branded after the table it
+    // points at and no single table knows that.
+    const brands = buildBrandPlan(this.analysis.tables, opts.branded);
+    for (const note of brands?.notes ?? []) console.warn(`[drzl] ${note}`);
     for (const table of this.analysis.tables) {
       const filePath = path.join(out, moduleFileName(table.tsName, fileSuffix));
       const code = renderTableSchemas(
@@ -995,7 +1037,8 @@ export class EffectGenerator implements ValidationRenderer<EffectGenerateOptions
         typedJson,
         !!opts.applyDefaults,
         !!opts?.duplicateFinder,
-        opts.nestedSchemas ? nestedPlansFor(table, this.analysis, nestedDepth) : {}
+        opts.nestedSchemas ? nestedPlansFor(table, this.analysis, nestedDepth) : {},
+        brands
       );
       const formatted = await formatCode(
         buildHeader(opts.outputHeader) + code,
@@ -1024,7 +1067,9 @@ export class EffectGenerator implements ValidationRenderer<EffectGenerateOptions
       opts?.coerceDates ?? 'input',
       undefined,
       !!opts?.applyDefaults,
-      !!opts?.duplicateFinder
+      !!opts?.duplicateFinder,
+      {},
+      buildBrandPlan(this.analysis.tables, opts?.branded)
     );
   }
 

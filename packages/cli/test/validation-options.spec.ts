@@ -28,6 +28,7 @@ const generator = {
   duplicateFinder: true,
   nestedSchemas: true,
   nestedDepth: 2,
+  branded: { foreignKeys: false },
   meta: { description: true },
 };
 const config = { schema: 'src/db/schema.ts' };
@@ -53,7 +54,19 @@ describe('the shared options', () => {
       duplicateFinder: true,
       nestedSchemas: true,
       nestedDepth: 2,
+      branded: { foreignKeys: false },
     });
+  });
+
+  it('carries branding to every generator, with no capability gate', () => {
+    // Unlike `meta` and `standardSchema`, this one has no generator that cannot act on it.
+    // TypeBox has no brand helper and still expresses the marker, through `TUnsafe`, so a
+    // capability flag here would be a promise that one of the five does nothing.
+    for (const caps of [{ schemaTypes: true }, { schemaTypes: false }, {}]) {
+      expect(validationOptions(generator, config, 'out', caps).branded).toEqual({
+        foreignKeys: false,
+      });
+    }
   });
 
   it('withholds metadata from the four generators that have no measured place to put it', () => {

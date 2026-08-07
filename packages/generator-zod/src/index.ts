@@ -12,7 +12,9 @@ import type {
   RowCheck,
 } from '@drzl/validation-core';
 import type { NestedNode, NestedMode } from '@drzl/validation-core';
+import type { BrandPlan } from '@drzl/validation-core';
 import {
+  buildBrandPlan,
   columnMetaFacts,
   formatCode,
   parseCheck,
@@ -430,7 +432,9 @@ function zodField(
    */
   narrowRef?: string,
   /** The column's metadata, already rendered. Appended last; see the call below for why. */
-  metaSuffix = ''
+  metaSuffix = '',
+  /** The nominal brand this column carries, or nothing. See `@drzl/validation-core`'s branding. */
+  brand?: string
 ): string {
   let expr = zodExprForColumn(c, mode, coerceDates, typedJsonRef, sets, checks);
   // `.array()` does not give the column its own class in Drizzle, so everything above describes
@@ -444,6 +448,19 @@ function zodField(
   expr += lengthRefinements(c, lengths);
   // After the array wrapping above, because this constrains the array rather than an element.
   expr += cardinalityRefinements(c, cardinalities);
+  // Before nullability, and that placement is the whole of the decision.
+  //
+  // A brand is an intersection, and `null & { ... }` is `never`, so branding a schema that
+  // already admits null deletes the null arm from the inferred type while the runtime keeps
+  // accepting it. Measured on zod 4.4.3: `z.number().nullable().brand<'users.id'>()` infers
+  // `number & $brand<"users.id">`, with no `| null` anywhere, and `.parse(null)` still returns
+  // null. That is a schema whose type lies about it. The other order infers
+  // `(number & $brand<"users.id">) | null`, which is what the column is.
+  //
+  // Position is otherwise free here, unlike `.meta()` below: `.brand()` returns the *same object*
+  // it was called on, measured by identity, so it is not a clone or a wrap and nothing downstream
+  // of it can lose anything.
+  if (brand) expr = `${expr}.brand<${JSON.stringify(brand)}>()`;
   // For selects, nullable columns should allow null values
   if (c.nullable) {
     expr = `${expr}.nullable()`;
@@ -466,7 +483,15 @@ function zodField(
   // Last, and after the optional wrapper on purpose. `.pipe()` keeps a key optional in both the
   // parsed result and the inferred type, checked against zod rather than assumed, so the runtime
   // schema is untouched and only the static type narrows.
-  if (narrowRef) expr = `${expr}.pipe(z.custom<${narrowRef}>())`;
+  //
+  // Not on a branded column, and the two cannot be reconciled by reordering. `typedColumns` and
+  // `branded` narrow the same column's static type, and whichever runs second wins: the pipe put
+  // first erases the brand, and the brand put first is erased by the pipe. Applying the brand to
+  // the reference instead has the null problem above, since a nullable column's inferred type is
+  // `T | null` and intersecting that with a marker deletes the null. So the brand wins outright.
+  // Nothing is lost for an ordinary key, whose branded type *is* Drizzle's inferred type plus a
+  // marker; a key declared with `.$type<T>()` keeps `T` only if you leave it unbranded.
+  if (narrowRef && !brand) expr = `${expr}.pipe(z.custom<${narrowRef}>())`;
   // After everything, including the pipe. `.meta()` returns a clone carrying the entry, so a
   // *clone* operation keeps it and a *wrapping* one does not: measured on zod 4.4.3, `.refine()`,
   // `.min()` and `.describe()` all preserve it, while `.nullable()`, `.optional()`, `.default()`,
@@ -487,7 +512,8 @@ function renderObjectShape(
   applyDefaults = false,
   lengths: LengthCheck[] = [],
   cardinalities: CardinalityCheck[] = [],
-  meta?: { plan: MetaPlan; table: Table }
+  meta?: { plan: MetaPlan; table: Table },
+  brands?: { plan: BrandPlan; tsName: string }
 ) {
   return cols
     .map((c) => {
@@ -502,7 +528,8 @@ function renderObjectShape(
       const metaSuffix = meta
         ? metaCall(columnMetaFacts(c, meta.table, { description: meta.plan.description }))
         : '';
-      return `  ${JSON.stringify(c.name)}: ${zodField(c, mode, coerceDates, checks, ref, sets, applyDefaults, lengths, cardinalities, narrow, metaSuffix)},`;
+      const brand = brands?.plan.brandOf(brands.tsName, c.name);
+      return `  ${JSON.stringify(c.name)}: ${zodField(c, mode, coerceDates, checks, ref, sets, applyDefaults, lengths, cardinalities, narrow, metaSuffix, brand)},`;
     })
     .join('\n');
 }
@@ -584,7 +611,8 @@ function renderNestedObject(
   coerceDates: NonNullable<ValidationGenerateOptions['coerceDates']>,
   typedJson: { allColumns?: boolean } | undefined,
   applyDefaults: boolean,
-  meta?: MetaPlan
+  meta?: MetaPlan,
+  brands?: BrandPlan
 ): string {
   const all = mode === 'insert' ? insertColumns(node.table) : selectColumns(node.table);
   const cols = nestedNodeColumns(all, node);
@@ -602,14 +630,23 @@ function renderNestedObject(
     applyDefaults,
     lengths,
     cardinalities,
-    meta ? { plan: meta, table: node.table } : undefined
+    meta ? { plan: meta, table: node.table } : undefined,
+    brands ? { plan: brands, tsName: node.table.tsName } : undefined
   );
 
   const arms = node.arms.map((arm) => {
     const notes = nestedArmNotes(arm)
       .map((n) => `  // ${n}\n`)
       .join('');
-    const child = renderNestedObject(arm.child, mode, coerceDates, typedJson, applyDefaults, meta);
+    const child = renderNestedObject(
+      arm.child,
+      mode,
+      coerceDates,
+      typedJson,
+      applyDefaults,
+      meta,
+      brands
+    );
     // A to-one may come back null: a relational query returns null where there is no matching
     // row, and accepting it never turns away something the query produced. Optional throughout,
     // because which relations a payload carries is the caller's choice on a write and the `with`
@@ -644,7 +681,8 @@ function renderNestedSchemas(
   typedJson: { allColumns?: boolean } | undefined,
   applyDefaults: boolean,
   plans: Partial<Record<NestedMode, NestedNode>>,
-  meta?: MetaPlan
+  meta?: MetaPlan,
+  brands?: BrandPlan
 ): string {
   const out: string[] = [];
   for (const mode of ['insert', 'select'] as const) {
@@ -652,7 +690,15 @@ function renderNestedSchemas(
     if (!plan) continue;
     const name = nestedSchemaName(mode, table.tsName, affix);
     const tname = nestedTypeName(mode, table.tsName, affix);
-    const expr = renderNestedObject(plan, mode, coerceDates, typedJson, applyDefaults, meta);
+    const expr = renderNestedObject(
+      plan,
+      mode,
+      coerceDates,
+      typedJson,
+      applyDefaults,
+      meta,
+      brands
+    );
     const infer = mode === 'insert' ? 'input' : 'output';
     out.push(
       `export const ${name} = ${expr};\n\nexport type ${tname} = z.${infer}<typeof ${name}>;`
@@ -676,7 +722,8 @@ function renderTableSchemas(
   applyDefaults = false,
   wantsDuplicateFinder = false,
   nested: Partial<Record<NestedMode, NestedNode>> = {},
-  meta?: MetaPlan
+  meta?: MetaPlan,
+  brands?: BrandPlan
 ) {
   const T = table.tsName;
   const insertSchema = schemaName('insert', T, affix);
@@ -705,6 +752,7 @@ function renderTableSchemas(
     ? { table: table.tsName, mode: 'insert' as const, allColumns: typedJson.allColumns }
     : undefined;
   const forMeta = meta ? { plan: meta, table } : undefined;
+  const forBrands = brands ? { plan: brands, tsName: T } : undefined;
   const bodyInsert = renderObjectShape(
     insertCols,
     'insert',
@@ -715,7 +763,8 @@ function renderTableSchemas(
     applyDefaults,
     lengths,
     cardinalities,
-    forMeta
+    forMeta,
+    forBrands
   );
   const bodyUpdate = renderObjectShape(
     updateCols,
@@ -727,7 +776,8 @@ function renderTableSchemas(
     applyDefaults,
     lengths,
     cardinalities,
-    forMeta
+    forMeta,
+    forBrands
   );
   const bodySelect = renderObjectShape(
     selectCols,
@@ -739,7 +789,8 @@ function renderTableSchemas(
     applyDefaults,
     lengths,
     cardinalities,
-    forMeta
+    forMeta,
+    forBrands
   );
   // One per mode, because the mode is the only thing that differs and it is one of the facts.
   const tableMetaFor = (mode: Mode) =>
@@ -794,8 +845,21 @@ export type ${updateType} = z.input<typeof ${updateSchema}>;
     typedJson,
     applyDefaults,
     nested,
-    meta
+    meta,
+    brands
   );
+
+  // The brand read back off the schema that carries it, rather than written out a second time.
+  // Spelling it as `number & z.core.$brand<'users.id'>` would be a second statement of the
+  // column's base type, and the two would drift the first time a column's expression changed.
+  const brandAliases = (brands?.aliasesFor(T) ?? [])
+    .map(
+      (a) =>
+        `/** The nominal type of ${T}.${a.column}. */\n` +
+        `export type ${a.alias} = z.output<typeof ${selectSchema}>[${JSON.stringify(a.column)}];`
+    )
+    .join('\n\n');
+  const brandCode = brandAliases ? `\n${brandAliases}\n` : '';
 
   return `import { z } from 'zod';
 ${schemaImport}
@@ -804,7 +868,7 @@ ${bodySelect}
 })${rowRefinements(rows, selectCols)}${tableMetaFor('select')};
 
 ${writeTypes}export type ${selectType} = z.output<typeof ${selectSchema}>;
-${nestedCode}${duplicates}`;
+${brandCode}${nestedCode}${duplicates}`;
 }
 
 export interface ZodGenerateOptions extends ValidationGenerateOptions {
@@ -905,6 +969,10 @@ export class ZodGenerator implements ValidationRenderer<ZodGenerateOptions> {
     // The dialect is a fact about the analysis rather than about any one table, and the same
     // declaration means different things across dialects, so it travels with the plan.
     const metaPlan = resolveMeta(opts.meta, this.analysis.dialect);
+    // Built once for the whole analysis, because a foreign key is branded after the table it
+    // points at and no single table knows that.
+    const brands = buildBrandPlan(this.analysis.tables, opts.branded);
+    for (const note of brands?.notes ?? []) console.warn(`[drzl] ${note}`);
     // File names deliberately stay on the raw Drizzle export name: affixes and tableCase
     // rename identifiers, never modules, so the barrel and importPath keep resolving.
     for (const table of this.analysis.tables) {
@@ -917,7 +985,8 @@ export class ZodGenerator implements ValidationRenderer<ZodGenerateOptions> {
         !!opts.applyDefaults,
         !!opts?.duplicateFinder,
         opts.nestedSchemas ? nestedPlansFor(table, this.analysis, nestedDepth) : {},
-        metaPlan
+        metaPlan,
+        brands
       );
       const formatted = await formatCode(
         buildHeader(opts.outputHeader) + code,
@@ -950,7 +1019,8 @@ export class ZodGenerator implements ValidationRenderer<ZodGenerateOptions> {
       !!opts?.applyDefaults,
       !!opts?.duplicateFinder,
       {},
-      resolveMeta(opts?.meta, this.analysis.dialect)
+      resolveMeta(opts?.meta, this.analysis.dialect),
+      buildBrandPlan(this.analysis.tables, opts?.branded)
     );
   }
 
