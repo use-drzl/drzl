@@ -1,18 +1,23 @@
 /**
  * SingleStore and Gel against real drizzle-orm, rather than against hand-written classes.
  *
- * `singlestore-types.spec.ts` and `gel-types.spec.ts` already claim to cover these two, but both
- * build a fake table out of `class SingleStoreVarchar {}` and a bare `Symbol.for('drizzle:Columns')`
- * object. Nothing in either file ever calls `singlestoreTable` or `gelTable`, so what they test is
- * that the analyzer's own regex table agrees with a class list someone typed out by hand. Every
- * type drizzle really ships that nobody thought to type out is invisible to them, and that is not
- * hypothetical: `GelBoolean` is missing from `gel-types.spec.ts`, and a real `boolean()` column
- * comes back `unknown`, which is measured below.
+ * `singlestore-types.spec.ts` and `gel-types.spec.ts` already claimed to cover these two, and both
+ * built a fake table out of `class SingleStoreVarchar {}` and a bare `Symbol.for('drizzle:Columns')`
+ * object. Neither ever called `singlestoreTable` or `gelTable`, so what they tested is that the
+ * analyzer's own regex table agrees with a class list someone typed out by hand. Every type
+ * drizzle really ships that nobody thought to type out is invisible to that, and it was not
+ * hypothetical: `GelBoolean` was missing from `gel-types.spec.ts`, and a real `boolean()` column
+ * came back `unknown` while it passed. `gel-types.spec.ts` builds its table with `gelTable` now
+ * and holds itself to `gel-core`'s own export list; `singlestore-types.spec.ts` still does not,
+ * which is what the SingleStore half of this file is for.
  *
- * `mssql` and `cockroach` are the other two dialects in the public `Dialect` union with no
- * coverage. They exist only in drizzle v1, which is not in this workspace, so they cannot be
- * reached from here at all; they are measured and reported in
- * `.superpowers/sdd/2026-08-03-top-100/task-5-report.md` instead.
+ * `mssql` and `cockroach` are the other two dialects in the public `Dialect` union. This header
+ * used to say they "cannot be reached from here at all", because they exist only in drizzle v1
+ * and the workspace resolves `drizzle-orm` to 0.45.2. That stopped being true when
+ * `drizzle-orm-v1`, an alias of 1.0.0-rc.4, became a devDependency of this package: both cores
+ * import, and `mssql-cockroach-columns.spec.ts` builds a real `mssqlTable` and `cockroachTable`
+ * beside this file. The original measurement is in
+ * `.superpowers/sdd/2026-08-03-top-100/task-5-report.md`.
  *
  * Everything here runs the real `SchemaAnalyzer` over a real drizzle schema module. Where an
  * assertion pins output that is wrong, the comment says so and says what the right answer is.
@@ -230,7 +235,9 @@ describe('SingleStore, against a real singlestoreTable', () => {
     expect(byName.get('vec')?.tsType).toBe('number[]');
     expect(byName.get('vec')?.shape).toEqual({ kind: 'numberVector', length: 3 });
     // And the warning it used to raise is gone, because there is nothing left to warn about.
-    expect(analysis.issues.some((i) => i.code === 'DRZL_ANL_UNKNOWN_COLUMN' && /"vec"/.test(i.message))).toBe(false);
+    expect(
+      analysis.issues.some((i) => i.code === 'DRZL_ANL_UNKNOWN_COLUMN' && /"vec"/.test(i.message))
+    ).toBe(false);
   });
 
   it('types the default decimal mode as the string the driver returns', async () => {
