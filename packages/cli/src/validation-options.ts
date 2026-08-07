@@ -32,6 +32,7 @@ export type ValidationGeneratorConfig = {
   duplicateFinder?: unknown;
   nestedSchemas?: unknown;
   nestedDepth?: unknown;
+  standardSchema?: unknown;
 };
 
 export interface GeneratorCapabilities {
@@ -44,6 +45,14 @@ export interface GeneratorCapabilities {
    * reference has nowhere to live inside a string DSL.
    */
   schemaTypes?: boolean;
+  /**
+   * Whether the generator has a `~standard` key to add.
+   *
+   * TypeBox is the only one that has: zod, valibot and arktype put one on every schema they build,
+   * measured on 4.4.3, 1.4.2 and 2.2.3, so there is nothing for the option to do there and setting
+   * it would read as a promise that something changed.
+   */
+  standardSchema?: boolean;
 }
 
 export function validationOptions(
@@ -75,5 +84,6 @@ export function validationOptions(
           typedColumns: g.typedColumns,
         }
       : {}),
+    ...(caps.standardSchema ? { standardSchema: g.standardSchema } : {}),
   };
 }

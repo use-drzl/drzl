@@ -41,6 +41,21 @@ generators: [{ kind: 'typebox', path: 'src/validators/typebox' }];
 - Optional `index` barrel
 - Shared vs inlined schemas supported
 
+## Backing a tRPC or oRPC route
+
+```ts
+generators: [{ kind: 'typebox', path: 'src/validators/typebox', standardSchema: true }];
+```
+
+`@sinclair/typebox` puts no `~standard` on what `Type.Object()` returns, which is what tRPC and
+oRPC look for. This option attaches one, non-enumerably, to the schema itself: `Value.Check`,
+`TypeCompiler`, `Static<typeof X>` and the JSON Schema `JSON.stringify` produces are all
+unchanged, and `t.procedure.input(InsertusersSchema)` now typechecks and infers the real shape
+rather than `unknown`.
+
+Off by default. See [the docs](https://use-drzl.github.io/drzl/generators/typebox.html#standardschema)
+for the emitted shape and the errors it reports.
+
 ## Custom names
 
 `affix` renames the exported schemas and type aliases, and `tableCase: 'pascal'` upper-camels

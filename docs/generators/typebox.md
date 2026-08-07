@@ -32,13 +32,13 @@ export type SelectpeopleOutput = Static<typeof SelectpeopleSchema>;
 
 ## Column constraints
 
-| Column              | Emitted                                                                |
-| ------------------- | ---------------------------------------------------------------------- |
-| `varchar(255)`      | `Type.Intersect([Type.String(), <code-point cap>])`, see below          |
-| `uuid()`            | `Type.String({ pattern: '...' })`                                      |
-| `smallint()`        | `Type.Integer({ minimum: -32768, maximum: 32767 })`                    |
+| Column              | Emitted                                                                                                                 |
+| ------------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| `varchar(255)`      | `Type.Intersect([Type.String(), <code-point cap>])`, see below                                                          |
+| `uuid()`            | `Type.String({ pattern: '...' })`                                                                                       |
+| `smallint()`        | `Type.Integer({ minimum: -32768, maximum: 32767 })`                                                                     |
 | `real()`            | `Type.Number({ minimum: -3.4028235677973366e38, maximum: 3.4028235677973366e38 })`, written out in full, inside a union |
-| `doublePrecision()` | `Type.Number()`, with no magnitude bound, inside a union               |
+| `doublePrecision()` | `Type.Number()`, with no magnitude bound, inside a union                                                                |
 
 The two float rows are the database's answer rather than `drizzle-orm/typebox`'s. Postgres accepts
 every double up to `3.4028235677973366e38` in a `real` and answers `out of range for type real` to
@@ -85,14 +85,14 @@ valid uuid. A pattern needs no setup and behaves the same everywhere, so that is
 **No official Drizzle validator module enforces these**, in any library. TypeBox states them
 declaratively:
 
-| Constraint                          | Emitted                    |
-| ----------------------------------- | -------------------------- |
-| `CHECK (age >= 18)`                 | `minimum: 18`              |
-| `CHECK (n > 0)`                     | `exclusiveMinimum: 0`      |
-| `CHECK (score BETWEEN 0 AND 100)`   | `minimum: 0, maximum: 100` |
-| `CHECK (tier = 'gold')`             | `Type.Literal("gold")`     |
-| `CHECK (cardinality(tags) >= 2)`    | `minItems: 2`              |
-| `CHECK (status IN ('a', 'b'))`      | `Type.Union([...literals])` |
+| Constraint                        | Emitted                     |
+| --------------------------------- | --------------------------- |
+| `CHECK (age >= 18)`               | `minimum: 18`               |
+| `CHECK (n > 0)`                   | `exclusiveMinimum: 0`       |
+| `CHECK (score BETWEEN 0 AND 100)` | `minimum: 0, maximum: 100`  |
+| `CHECK (tier = 'gold')`           | `Type.Literal("gold")`      |
+| `CHECK (cardinality(tags) >= 2)`  | `minItems: 2`               |
+| `CHECK (status IN ('a', 'b'))`    | `Type.Union([...literals])` |
 
 A bound **replaces** the end of the declared range it narrows rather than sitting beside it: a
 CHECK can only narrow, never widen, since the range is the column's type.
@@ -176,20 +176,123 @@ prefs: Type.Unsafe<(typeof settings.$inferSelect)["prefs"]>(Type.Unknown()),
 See [Zod → typedJson](/generators/zod#typedjson) for why referencing Drizzle's inference works
 where rebuilding the type does not.
 
-## Why it cannot back an oRPC router
+## `standardSchema`
 
-`validation.library` on an `orpc` generator takes `zod`, `valibot` or `arktype`, and not `typebox`.
-oRPC types `.input()` and `.output()` as a [Standard Schema](https://standardschema.dev), and
-neither `@sinclair/typebox` nor the newer `typebox` package implements that spec, while the other
-three all do. A router handed a TypeBox schema would compile and then fail at runtime, so the
-config rejects it rather than emitting one.
+```ts
+{ kind: 'typebox', path: 'src/validators/typebox', standardSchema: true }
+```
 
-This is a limit of TypeBox, not of `drizzle-orm`: its own `drizzle-orm/typebox-legacy` module
-works fine with `@sinclair/typebox`, and DRZL's output is measured against it on every CI run.
+Gives every emitted schema a `~standard` key, so it can be handed straight to a tRPC or oRPC
+route. Off by default: generated code ships in your bundle, and a project that never builds a
+router should not carry a validator nothing calls.
 
-The generator itself is unaffected: TypeBox schemas are the right choice wherever you consume them
-yourself, or hand them to something that speaks JSON Schema. Pair it with a `zod` generator if you
-also want oRPC routers in the same project.
+tRPC and oRPC both recognise an input parser by way of
+[Standard Schema](https://standardschema.dev). zod, valibot, arktype and Effect all put a
+`~standard` on what they build; `@sinclair/typebox` does not, and exports nothing that would add
+one. That is the whole of the gap, and this option closes it.
+
+### What it emits
+
+One extra module, `standard-schema.ts`, is written beside your schemas and exported from the
+barrel. Each table module imports one function from it and calls it around each schema:
+
+```ts
+import { toStandardSchema } from './standard-schema.js';
+
+export const InsertusersSchema = toStandardSchema(
+  Type.Object({
+    id: Type.Integer({ minimum: -2147483648, maximum: 2147483647 }),
+    email: Type.Intersect([
+      Type.String(),
+      Type.Unsafe<unknown>({
+        [Kind]: 'DrzlRowCheck',
+        description: 'at most 254 characters',
+        assert: (v: any) => typeof v !== 'string' || [...v].length <= 254,
+      }),
+    ]),
+  })
+);
+```
+
+The key is defined **non-enumerably on the schema itself**, so nothing you already do with these
+schemas changes. `Value.Check`, `TypeCompiler`, `Static<typeof X>` and `Object.keys` all see
+exactly what they saw before, and `JSON.stringify` still produces the same JSON Schema document
+byte for byte. There is no second export to import and no name to learn.
+
+The `vendor` is `drzl/typebox`, not `typebox`. DRZL implements this, not TypeBox, and a tool that
+special-cases a vendor should not mistake one for the other.
+
+### Backing a tRPC router
+
+```ts
+import { initTRPC } from '@trpc/server';
+import { InsertusersSchema, SelectusersSchema } from './validators/typebox/index.js';
+
+const t = initTRPC.create();
+
+export const appRouter = t.router({
+  createUser: t.procedure
+    .input(InsertusersSchema)
+    .output(SelectusersSchema)
+    .mutation(({ input }) => createUser(input)),
+});
+
+export type AppRouter = typeof appRouter;
+```
+
+`inferRouterInputs<AppRouter>['createUser']` comes back as the real shape, not `unknown`:
+
+```ts
+{
+  id: number;
+  email: string;
+  displayName?: string | null | undefined;
+  active?: boolean | undefined;
+  bio?: string | null | undefined;
+}
+```
+
+That matters more than the runtime half. A wrapper with a working `validate` and no `types` gives
+a router that validates correctly and infers `unknown` on the client, which is worse than useless
+in tRPC, where the whole client API is inferred from the router type.
+
+oRPC is the same call: `os.input(InsertusersSchema).output(SelectusersSchema).handler(...)`, and
+`RouterClient<typeof router>` infers the same shape.
+
+### The errors you get
+
+A rejected value becomes `issues`, each with a message and a path array. Constraints TypeBox can
+only express as a registered kind, which is how DRZL states a character cap or a row-level CHECK,
+report what the constraint says rather than `Expected kind 'DrzlRowCheck'`:
+
+| input                                 | first issue                                                      |
+| ------------------------------------- | ---------------------------------------------------------------- |
+| `{ id: 7, email: 123 }`               | `Expected string` at `["email"]`                                 |
+| `{ id: 7, email: 'x'.repeat(255) }`   | `at most 254 characters` at `["email"]`                          |
+| `{ id: 1.5, email: 'a@b.co' }`        | `Expected integer` at `["id"]`                                   |
+| `{ id: 3000000000, email: 'a@b.co' }` | `Expected integer to be less or equal to 2147483647` at `["id"]` |
+
+Array indices are reported as numbers, matching zod, valibot and arktype, so code that switches on
+`typeof segment` behaves the same whichever generator produced the schema.
+
+### Using it with an `orpc` or `trpc` generator
+
+`validation.library` on an `orpc` or `trpc` generator still takes `zod`, `valibot` or `arktype`.
+Those generators write the router **for** you and have no TypeBox dialect: they need to emit
+`z.object({ id: z.number() })` for a lookup argument, and there is no TypeBox spelling of that in
+their tables. `standardSchema` closes the Standard Schema gap, which was the stated reason TypeBox
+was excluded, but wiring it into the router generators is separate work.
+
+Until then, a TypeBox router is one you write yourself, as above, against schemas DRZL generated.
+
+### The runnable config
+
+```ts
+export default {
+  schema: 'src/db/schema.ts',
+  generators: [{ kind: 'typebox', path: 'src/validators/typebox', standardSchema: true }],
+};
+```
 
 ## Character limits count characters
 

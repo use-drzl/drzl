@@ -85,11 +85,14 @@ Neither substitutes for the other, so both are emitted rather than one being cho
 an option. The wrapper costs one call per schema, measured at 24 microseconds per thousand, and
 255 bytes across the three schemas of a table.
 
-This is the difference from TypeBox, which is
-[excluded from the router generators](/generators/typebox#why-it-cannot-back-an-orpc-router)
-because nothing in `@sinclair/typebox` implements the spec at all. Effect has a route. Wiring
-`validation.library: 'effect'` into the tRPC and oRPC generators is a separate change and is not
-available yet.
+TypeBox reaches the same place by a different road. Nothing in `@sinclair/typebox` implements the
+spec, so DRZL implements it: [`standardSchema`](/generators/typebox#standardschema) attaches a
+`~standard` to the schema in place rather than exporting a second form, which it can do because a
+TypeBox schema is a plain object and nothing is lost by adding a key to it. Effect cannot, since
+`Schema.standardSchemaV1` returns an object that has dropped `.fields`.
+
+Neither library is wired into `validation.library` on the tRPC and oRPC generators yet. That is a
+separate change: those generators write the router for you and have no dialect for either.
 
 ## Column constraints
 
