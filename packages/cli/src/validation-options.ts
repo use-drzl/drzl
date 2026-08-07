@@ -33,6 +33,7 @@ export type ValidationGeneratorConfig = {
   nestedSchemas?: unknown;
   nestedDepth?: unknown;
   standardSchema?: unknown;
+  meta?: unknown;
 };
 
 export interface GeneratorCapabilities {
@@ -53,6 +54,16 @@ export interface GeneratorCapabilities {
    * it would read as a promise that something changed.
    */
   standardSchema?: boolean;
+  /**
+   * Whether the generator can attach metadata to what it emits.
+   *
+   * zod is the only one so far, and deliberately: it is the one validator here whose metadata has
+   * a destination outside itself, since `z.toJSONSchema` copies arbitrary keys through into the
+   * document an OpenAPI consumer reads. The other four each have a facility of their own and each
+   * needs its own measurement of where the metadata has to attach, which is the whole difficulty;
+   * building four on the strength of one measurement is how three of them come to be subtly wrong.
+   */
+  meta?: boolean;
 }
 
 export function validationOptions(
@@ -85,5 +96,6 @@ export function validationOptions(
         }
       : {}),
     ...(caps.standardSchema ? { standardSchema: g.standardSchema } : {}),
+    ...(caps.meta ? { meta: g.meta } : {}),
   };
 }

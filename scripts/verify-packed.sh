@@ -6565,6 +6565,12 @@ const ALLOWED: Record<string, string> = {
   // this exact column: drizzle-zod 0.8.3 on 0.45.2 accepts [['a']] and rejects ['a'], and
   // drizzle-orm/zod on 1.0.0-rc.4 does the opposite. v1 also infers `string[]`, not `string[][]`.
   'rows.grid.arrayDimensions': "v1 spells 2D `.array('[][]')`; chaining `.array()` stays at 1",
+  // `sqlType` follows `arrayDimensions` for the same reason and on the same column: 0.4x's PgArray
+  // answers `text[][]` for a chained `.array().array()`, while v1 stays one dimension deep and
+  // answers the bare `text`, which the analyzer suffixes to `text[]`. Each is the type of the
+  // schema that major actually produces, so this is the divergence already recorded above showing
+  // up in a second field rather than a new one.
+  'rows.grid.sqlType': "v1 spells 2D `.array('[][]')`; chaining `.array()` stays at 1",
 };
 
 /**

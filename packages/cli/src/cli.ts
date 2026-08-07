@@ -291,8 +291,10 @@ program
             );
             const gen = new ZodGenerator(analysis);
             const target = g.path ?? 'src/validators/zod';
+            // `meta` is zod-only; see `GeneratorCapabilities.meta` for why it is not passed to the
+            // other four rather than being passed and ignored.
             const files = await gen.generate(
-              validationOptions(g, cfg, target, { schemaTypes: true }) as never
+              validationOptions(g, cfg, target, { schemaTypes: true, meta: true }) as never
             );
             progress.stop();
             ora().succeed(chalk.green(`Generated (zod): ${files.length} files`));
@@ -736,13 +738,15 @@ program
               );
               const gen = new ZodGenerator(analysis);
               const target = g.path ?? 'src/validators/zod';
+              // `meta` is zod-only; see `GeneratorCapabilities.meta` for why it is not passed to
+              // the other four rather than being passed and ignored.
               // The same builder `generate` uses. Assembled by hand here until now, and every
               // option added since the builder existed was therefore absent from a watch rebuild:
               // `coerceDates`, `applyDefaults`, `typedJson`, `typedColumns` and `duplicateFinder`
               // were all dropped, so the first save after starting `drzl watch` silently replaced
               // correct output with output generated from defaults.
               const files = await gen.generate(
-                validationOptions(g, cfg, target, { schemaTypes: true }) as never
+                validationOptions(g, cfg, target, { schemaTypes: true, meta: true }) as never
               );
               opts.json
                 ? console.log(JSON.stringify({ event: 'generate_complete', kind: g.kind, files }))
