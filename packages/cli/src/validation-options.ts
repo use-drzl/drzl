@@ -11,8 +11,14 @@
  * named as one.
  */
 
-/** A generator entry from the config, loosely typed because the config schema owns its shape. */
-type GeneratorConfig = {
+/**
+ * A generator entry from the config, loosely typed because the config schema owns its shape.
+ *
+ * Exported so a builder that wraps this one names the same keys rather than restating them: every
+ * key listed in two places is a key the two can drift on, which is the failure this file exists to
+ * remove.
+ */
+export type ValidationGeneratorConfig = {
   outputHeader?: unknown;
   format?: unknown;
   schemaSuffix?: unknown;
@@ -41,7 +47,7 @@ export interface GeneratorCapabilities {
 }
 
 export function validationOptions(
-  g: GeneratorConfig,
+  g: ValidationGeneratorConfig,
   cfg: { schema?: unknown },
   outDir: string,
   caps: GeneratorCapabilities = {}

@@ -3655,7 +3655,8 @@ PARITY_HARNESS
 # ground-truth stage in this same tree used to install it on its own line and now inherits it.
 npm install --no-audit --no-fund --loglevel=error \
   "$TARS"/*.tgz drizzle-orm@1.0.0-rc.4 zod valibot arktype @sinclair/typebox tsx typescript \
-  ajv@^8.17.1 ajv-formats@^3.0.1 @electric-sql/pglite >/dev/null
+  ajv@^8.17.1 ajv-formats@^3.0.1 @seriousme/openapi-schema-validator@^2.9.1 \
+  @electric-sql/pglite >/dev/null
 
 for dialect in pg mysql sqlite; do
   case "$dialect" in
@@ -3683,7 +3684,7 @@ for dialect in pg mysql sqlite; do
   # `components: true` because the OpenAPI document is a second emission with its own rules, and
   # nothing outside the generator's own unit tests had ever produced one.
   if [ "$dialect" = pg ]; then
-    gens="$gens    { kind: 'json-schema', path: 'src/gen/$dialect/json-schema', components: true },"$'\n'
+    gens="$gens    { kind: 'json-schema', path: 'src/gen/$dialect/json-schema', components: true, document: { format: 'both' } },"$'\n'
   fi
   cat > "drzl.$dialect.config.ts" <<CONFIG
 import { defineConfig } from '@drzl/cli/config';
@@ -3720,7 +3721,10 @@ CONFIG
   # `components.ts` are not the `<table>.<lib>.ts` shape the loop above assumes, and a kind that
   # emitted nothing at all would otherwise be found only by an import failing much further down.
   if [ "$dialect" = pg ]; then
-    for f in matrix.schema.ts nullable.schema.ts checked.schema.ts defaulted.schema.ts components.ts index.ts; do
+    # `openapi.ts` and `openapi.json` are named here for the same reason as `components.ts`: a
+    # document that is simply not emitted has no shape for the loop above to miss, and the stage
+    # below that validates it would then validate nothing and say so only by counting zero.
+    for f in matrix.schema.ts nullable.schema.ts checked.schema.ts defaulted.schema.ts components.ts index.ts openapi.ts openapi.json; do
       if [ ! -e "src/gen/pg/json-schema/$f" ]; then
         echo "FAIL: the json-schema generator produced no src/gen/pg/json-schema/$f." >&2
         exit 1
@@ -4081,6 +4085,79 @@ JSON_SCHEMA_VALID
 echo "==> the emitted JSON Schema compiles as a schema"
 if ! npx tsx src/json-schema-valid.ts; then
   echo "FAIL: the emitted JSON Schema output is not something a validator can read." >&2
+  exit 1
+fi
+
+
+cat > src/openapi-valid.ts <<'OPENAPI_VALID'
+/**
+ * The emitted OpenAPI document, against the OpenAPI specification itself.
+ *
+ * The stage above asks whether the component schemas are readable as JSON Schema. That is a
+ * different and much weaker question than whether the document around them is a valid OpenAPI
+ * document, and the difference is not academic: OpenAPI 3.0's Schema Object is a **closed** object,
+ * `additionalProperties: false` plus `^x-`, so a keyword plain JSON Schema would ignore makes the
+ * whole document invalid. Two such keywords were being emitted into 3.0 output, `const` and
+ * `contentEncoding`, and ajv over the schemas alone accepted both.
+ *
+ * `@seriousme/openapi-schema-validator` because it carries a genuine 3.1 schema. The obvious
+ * alternative validates 3.1 against the 3.0 schema, which would pass a document this stage exists
+ * to reject.
+ *
+ * Both targets, because they are different specifications and the generator branches on them. And
+ * the references are walked separately: a document can satisfy the specification while pointing at
+ * a component that was never emitted, since `$ref` is just a string to the schema that validates it.
+ */
+import { readFile } from 'node:fs/promises';
+import { Validator } from '@seriousme/openapi-schema-validator';
+
+type Doc = { openapi?: string; paths?: Record<string, unknown>; components?: { schemas?: Record<string, unknown> } };
+
+const raw = await readFile('src/gen/pg/json-schema/openapi.json', 'utf8');
+const doc = JSON.parse(raw) as Doc;
+
+// Measured rather than assumed: a document with no paths validates perfectly well and describes
+// nothing, which is the same shape of green-because-empty this file has been bitten by elsewhere.
+const paths = Object.keys(doc.paths ?? {});
+if (paths.length === 0) {
+  console.error('    FAIL: the emitted document declares no paths, so validating it proves nothing.');
+  process.exit(1);
+}
+
+const result = await new Validator().validate(doc as never);
+if (!result.valid) {
+  console.error(`    FAIL: the emitted OpenAPI ${doc.openapi ?? 'document'} does not validate:`);
+  console.error(JSON.stringify(result.errors, null, 2).split('\n').slice(0, 30).join('\n'));
+  process.exit(1);
+}
+
+// Every `$ref` has to land on something the same run emitted. The specification does not require
+// this and a validator will not check it, so a component renamed on one side and not the other
+// produces a document that is valid and unusable.
+const declared = new Set(Object.keys(doc.components?.schemas ?? {}));
+const referenced = new Set<string>();
+for (const m of raw.matchAll(/"\$ref"\s*:\s*"#\/components\/schemas\/([^"]+)"/g)) {
+  referenced.add(m[1]);
+}
+const dangling = [...referenced].filter((r) => !declared.has(r));
+if (dangling.length) {
+  console.error(`    FAIL: the document references components nothing emitted: ${dangling.join(', ')}`);
+  process.exit(1);
+}
+if (referenced.size === 0) {
+  console.error('    FAIL: the document references no component schema at all, so the check above is vacuous.');
+  process.exit(1);
+}
+
+console.log(
+  `    OpenAPI ${doc.openapi} valid: ${paths.length} path(s), ` +
+    `${referenced.size} of ${declared.size} component schema(s) referenced`
+);
+OPENAPI_VALID
+
+echo "==> the emitted OpenAPI document against the specification"
+if ! npx tsx src/openapi-valid.ts; then
+  echo "FAIL: the emitted OpenAPI document is not a valid OpenAPI document." >&2
   exit 1
 fi
 

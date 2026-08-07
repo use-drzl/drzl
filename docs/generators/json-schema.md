@@ -93,6 +93,12 @@ Two details this handles that are easy to get quietly wrong:
 
 Off by default, so nobody gets a file they did not ask for.
 
+::: tip The whole document
+`components: true` gives you the schemas. `document: true` gives you the document around them:
+paths, verbs, request and response bodies per table, and the status codes. See
+[the OpenAPI document page](/generators/openapi).
+:::
+
 ## What it cannot say
 
 JSON Schema cannot compare one property against another. `if`/`then` and `dependentSchemas` can
