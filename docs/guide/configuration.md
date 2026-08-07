@@ -108,6 +108,119 @@ model names are all overridable through `options.user.modelName`, so a built-in 
 renamed tables, and worse, would silently skip an ordinary table called `user`, which in most
 applications is the primary entity you *do* want generated.
 
+## Choosing which columns to generate for
+
+`include` and `exclude` are all or nothing per table, and the column you do not want in a generated
+schema is usually sitting in a table you *do* want: a `passwordHash` on `users`, an internal note
+beside the public fields, a `tenantId` your server sets from the session. `columns` narrows a table
+without dropping it:
+
+```ts
+columns: {
+  users: { omit: ['passwordHash'] },
+  // Table keys are patterns too, so one entry reaches every table that has the column.
+  'app_*': { omit: ['deleted_at'] },
+  // Or say what to keep instead.
+  audit_log: { pick: ['id', 'action', 'created_at'] },
+},
+```
+
+The key is a **table** pattern in the same language `include`/`exclude` uses: the database table
+name, anchored, with `*` as the only metacharacter. Column patterns are that language again, so
+`omit: ['*At']` drops `createdAt` and `updatedAt` and `omit: ['bio']` does not also drop `bios`.
+
+Every matching entry applies, in the order it is written. Within one entry `pick` runs first and
+`omit` then removes, so `omit` wins where both name the same column. That is the same precedence
+`exclude` already has over `include` one level up, for the same reason: the direction that takes
+something away is the safe one for the thing this option exists to remove.
+
+### A name that matches nothing is an error
+
+```
+drzl config: the "columns" option cannot be honoured.
+  - columns["users"].omit names "passwrodHash", which matches no column of users.
+    Available: id, email, passwordHash, bio.
+```
+
+`omit: ['passwrodHash']` treated as a no-op would leave the column exactly where it was while
+reading like a fix, and nothing downstream could tell that apart from a column that was never there.
+So a table pattern matching no table and a column pattern matching no column both stop the run,
+before anything is written, with every such problem in one message. A column pattern has to match in
+at least one of the tables its entry matched, not in all of them, which is what makes a wildcard
+table key usable.
+
+### It applies to every mode and every generator
+
+`columns` narrows the analysis once, before any generator runs, so the insert, update and select
+schemas, the OpenAPI document, the emitted metadata and the service layer all describe the same
+columns. There is deliberately no per-mode form: a column cannot be kept in `select` and dropped
+from `insert`. Half the output could not honour it if there were. The service generator's
+`Update<Table>` is `Partial<Omit<typeof users.$inferInsert, 'id'>>`, taken from Drizzle's own types
+rather than from the analysis, so a per-mode narrowing would be invisible there, and an option whose
+effect disappears in half the generated tree is worse than one that is not offered.
+
+### What it does not do
+
+The schema stops *describing* the column. Whether a value carrying it survives a `parse` is then the
+validator's own policy about undeclared keys, and they do not agree. Measured:
+
+| Generator | A row carrying the omitted column |
+| --- | --- |
+| zod 4.4.3 | key stripped from the parsed result |
+| valibot 1.4.2 | key stripped |
+| TypeBox 0.34.52 | `Value.Parse` and `Value.Clean` strip it; `Value.Check` alone returns `true` |
+| Effect 3.22.1 | key stripped by `decodeUnknownSync` |
+| arktype 2.2.3 | key left in place |
+| json-schema | `additionalProperties: false`, so a validator rejects the payload |
+
+If you are relying on a parse to strip a secret rather than on never selecting it, check which of
+those you are using.
+
+### Two cases DRZL will not simply do
+
+**Omitting a primary key column is refused.** The generated `getById`, `update` and `delete` address
+rows by that key, and every generator reads it differently: the tRPC generator resolves it against
+the columns and silently drops those three procedures, the oRPC generator keeps emitting them typed
+`{ id: number }`, the service generator falls back to a column literally named `id`, and the OpenAPI
+document drops its `/{id}` paths. One config, four outcomes, none of them announced. Use `exclude`
+on the whole table instead.
+
+**Omitting a NOT NULL column with no default is a warning**, and generation continues:
+
+```
+drzl config: the "columns" option drops "tenantId" from table "users", and the database
+requires it: NOT NULL with no default. The emitted insert schema therefore describes a
+payload that is not a complete row, so whatever calls db.insert has to supply "tenantId"
+itself.
+```
+
+That is a real hazard and also the normal multi-tenant shape: an insert schema describes a *request
+body*, not a row, and the server fills in the rest. Refusing it would remove one of the two things
+this option is for. A CHECK constraint naming a column you omitted also warns, because nothing DRZL
+emits can enforce it any more, though your database still does.
+
+### A complete config
+
+Against a schema declaring `users(id, email, nickname)` and `posts(id, slug, authorId)`:
+
+```ts
+import { defineConfig } from '@drzl/cli/config';
+
+export default defineConfig({
+  schema: 'src/db/schema.ts',
+  columns: {
+    users: { omit: ['nickname'] },
+    posts: { pick: ['id', 'slug'] },
+  },
+  generators: [{ kind: 'zod', path: 'src/validators/zod' }],
+});
+```
+
+`InsertusersSchema`, `UpdateusersSchema` and `SelectusersSchema` are emitted without `nickname`;
+`posts` keeps its key and its `slug` and loses `authorId`, along with the foreign key over it, so
+the relation lookup procedures the router generators would have derived from it are not emitted
+either.
+
 ## Naming generated identifiers
 
 By default the validation generators name their exports `Insert<Table>Schema`,
