@@ -118,6 +118,19 @@ export const GeneratorSchema = z.object({
    */
   duplicateFinder: z.boolean().optional(),
   /**
+   * TypeBox only. Give every emitted schema a `~standard` key, so it can be handed to a tRPC or
+   * oRPC route.
+   *
+   * TypeBox is the one validator DRZL emits that carries none of its own: measured on 0.34.52, a
+   * bare `Type.Object()` has no `~standard` and the package exports nothing matching
+   * `/standard/i`. zod, valibot and arktype all put one on every schema they build, so the option
+   * does nothing for them and is not passed through.
+   *
+   * The property is non-enumerable, so the schema stays a TypeBox schema in every respect that was
+   * already observable, including the JSON Schema `JSON.stringify` produces.
+   */
+  standardSchema: z.boolean().optional(),
+  /**
    * Emit `NestedInsert<Table>` and `NestedSelect<Table>` beside the flat schemas: the table plus
    * one key per relation, so `{ ...user, posts: [...] }` can be validated whole.
    *

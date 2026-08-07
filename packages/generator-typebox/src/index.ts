@@ -13,6 +13,7 @@ import type { NestedMode, NestedNode } from '@drzl/validation-core';
 import {
   buildNestedPlan,
   formatCode,
+  importSpecifier,
   nestedArmNotes,
   nestedNodeColumns,
   nestedSchemaName,
@@ -56,6 +57,172 @@ const DEFAULT_FILE_SUFFIX = '.typebox.ts';
  */
 const UUID_PATTERN =
   '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$';
+
+/**
+ * File the Standard Schema helper is written to, and the function the table modules call.
+ *
+ * One module per output directory rather than one block per table. Per table the option costs an
+ * import line and one call per schema; the implementation itself is the fixed part, and a
+ * directory with twenty tables would otherwise carry twenty copies of it in a tree that ships in
+ * the consumer's bundle. Both figures are printed by the size measurement in
+ * `scripts/verify-packed.sh` rather than restated here, and the run is the live one.
+ *
+ * The stem cannot collide with a table module. Those are named `<tsName><fileSuffix>` and `tsName`
+ * is a TypeScript identifier, which cannot contain a hyphen.
+ */
+const STANDARD_FILE = 'standard-schema.ts';
+const STANDARD_FN = 'toStandardSchema';
+
+/**
+ * What `~standard.vendor` says, and why it does not say `typebox`.
+ *
+ * The spec describes `vendor` as "the vendor name of the schema library", and tooling uses it to
+ * recognise an implementation. `@sinclair/typebox` 0.34.52 implements no part of Standard Schema:
+ * measured, a bare `Type.Object()` has no `~standard` key and the package exports nothing matching
+ * `/standard/i`. So this is DRZL's implementation over a TypeBox schema, and claiming TypeBox's
+ * name for it would mislead anything that special-cases a vendor, and would collide with a
+ * first-party TypeBox implementation whose issues would not be shaped like these.
+ *
+ * The `/typebox` half keeps the producing library visible, since DRZL emits several and a consumer
+ * holding a mixed set should not have to introspect to tell them apart.
+ */
+const STANDARD_VENDOR = 'drzl/typebox';
+
+/**
+ * The Standard Schema wrapper, written once per output directory.
+ *
+ * Implemented against `@standard-schema/spec` v1 as published in 1.1.0, whose `StandardSchemaV1`
+ * requires exactly three properties under `~standard`: `version` fixed at the literal `1`, a
+ * `vendor` string, and `validate`, plus an optional `types` carrying the input and output types.
+ *
+ * Four decisions in here are worth stating, because each has a wrong version that still passes a
+ * shallow test.
+ *
+ * **The interface is restated rather than imported.** tRPC and oRPC each vendor their own copy of
+ * these declarations and match structurally, so a locally declared interface is the same type to
+ * them as `@standard-schema/spec`'s. Importing the real one would put a package in the consumer's
+ * dependencies for types that vanish at build, and a generated tree that cannot resolve an import
+ * is the failure mode `scripts/verify-packed.sh` exists to catch.
+ *
+ * **`validate` is synchronous.** The spec permits `Result | Promise<Result>` and tRPC awaits
+ * whatever it gets, so returning a promise would work and would make every input check a
+ * microtask. `Value.Check` is synchronous, so this is too, and the narrower return type is still
+ * assignable to the spec's wider one.
+ *
+ * **`~standard` is attached to the schema rather than exported beside it.** A TypeBox schema is a
+ * plain extensible object, so the wrapper is the same object; nothing is copied and nothing is
+ * lost. Defined non-enumerably, so `JSON.stringify` still renders the JSON Schema document
+ * unchanged and `Object.keys` still lists only JSON Schema keywords. `'~standard' in schema`,
+ * which is how tRPC detects a Standard Schema, sees a non-enumerable property. The alternative,
+ * a second `Standard<Name>` export, is what the Effect generator does, and it has to: Effect's
+ * `Schema.standardSchemaV1` returns a different object that has dropped `.fields`, so neither form
+ * substitutes for the other. TypeBox has no such split.
+ *
+ * **A failure always carries at least one issue.** An empty `issues` array is a truthy failure
+ * with nothing to say, which is worse for a caller than a wrong message.
+ */
+function renderStandardSchemaModule(): string {
+  return `import { Value } from '@sinclair/typebox/value';
+import { ValueErrorType } from '@sinclair/typebox/errors';
+import type { ValueError } from '@sinclair/typebox/errors';
+import type { Static, TSchema } from '@sinclair/typebox';
+
+/**
+ * The Standard Schema v1 interface, restated here so this directory needs no extra dependency.
+ * Structurally identical to \`@standard-schema/spec\`, which is what tRPC, oRPC and the rest match
+ * against.
+ */
+export interface StandardSchemaV1<Input = unknown, Output = Input> {
+  readonly '~standard': {
+    readonly version: 1;
+    readonly vendor: string;
+    readonly validate: (value: unknown) => StandardSchemaResult<Output>;
+    readonly types?: { readonly input: Input; readonly output: Output } | undefined;
+  };
+}
+
+export type StandardSchemaResult<Output> =
+  | { readonly value: Output; readonly issues?: undefined }
+  | { readonly issues: ReadonlyArray<StandardSchemaIssue> };
+
+export interface StandardSchemaIssue {
+  readonly message: string;
+  readonly path: ReadonlyArray<PropertyKey>;
+}
+
+/**
+ * TypeBox reports an RFC 6901 pointer; the spec asks for a path array.
+ *
+ * The value is walked beside the pointer because \`/tags/1\` is both an array index and an object
+ * key named "1". zod, valibot and arktype all report an index as a number, so this does too.
+ */
+function pointerToPath(pointer: string, root: unknown): PropertyKey[] {
+  if (!pointer) return [];
+  const path: PropertyKey[] = [];
+  let at: unknown = root;
+  for (const raw of pointer.split('/').slice(1)) {
+    // \`~1\` before \`~0\`, per RFC 6901: the other order turns \`~01\` into \`~1\` and then into \`/\`.
+    const key = raw.replace(/~1/g, '/').replace(/~0/g, '~');
+    const segment: PropertyKey = Array.isArray(at) ? Number(key) : key;
+    path.push(segment);
+    at = at === null || at === undefined ? undefined : (at as Record<PropertyKey, unknown>)[segment];
+  }
+  return path;
+}
+
+/**
+ * Give a TypeBox schema a \`~standard\` key, so it can back a tRPC or oRPC route.
+ *
+ * The same object comes back, with the key defined non-enumerably: the JSON Schema document
+ * \`JSON.stringify\` produces is unchanged, and \`Value.Check\`, \`TypeCompiler\` and \`Static\` all still
+ * see what they saw before.
+ */
+export function ${STANDARD_FN}<T extends TSchema>(
+  schema: T
+): T & StandardSchemaV1<Static<T>, Static<T>> {
+  const validate = (value: unknown): StandardSchemaResult<Static<T>> => {
+    if (Value.Check(schema, value)) return { value: value as Static<T> };
+    const issues: StandardSchemaIssue[] = [];
+    const collect = (errors: Iterable<ValueError>) => {
+      for (const error of errors) {
+        // A union reports one summary, \`Expected union value\`, and hangs the branch failures off
+        // it. tRPC renders only the first issue, so the summary is replaced by what it contains.
+        // An intersection carries no sub-errors, measured, so nothing is reported twice.
+        const nested = error.errors ?? [];
+        if (nested.length > 0) {
+          for (const sub of nested) collect(sub);
+          continue;
+        }
+        // A constraint TypeBox can only state as a registered kind reports \`Expected kind '...'\`.
+        // The rule itself is on the node's \`description\`, which is why every such node has one.
+        const described =
+          error.type === ValueErrorType.Kind && typeof error.schema.description === 'string'
+            ? error.schema.description
+            : error.message;
+        issues.push({ message: described, path: pointerToPath(error.path, value) });
+      }
+    };
+    try {
+      collect(Value.Errors(schema, value));
+    } catch {
+      // \`Value.Errors\` does not stop an intersection at its first failing branch the way
+      // \`Value.Check\` does, so a predicate assuming its sibling passed can be reached with a
+      // value it cannot handle. What was collected before the throw is kept; only the walk stops.
+    }
+    // \`Value.Check\` said no, so there is something to say. An empty array is a failure with no
+    // reason, which a caller can neither render nor act on.
+    if (issues.length === 0) issues.push({ message: 'Expected a valid value', path: [] });
+    return { issues };
+  };
+  Object.defineProperty(schema, '~standard', {
+    value: { version: 1, vendor: '${STANDARD_VENDOR}', validate },
+    enumerable: false,
+    configurable: true,
+  });
+  return schema as T & StandardSchemaV1<Static<T>, Static<T>>;
+}
+`;
+}
 
 /** Render a TypeBox options object, or nothing when there is nothing to pass. */
 function renderOptions(entries: Array<[string, string]>): string {
@@ -598,7 +765,8 @@ function renderNestedSchemas(
   coerceDates: NonNullable<ValidationGenerateOptions['coerceDates']>,
   typedJson: { allColumns?: boolean } | undefined,
   applyDefaults: boolean,
-  plans: Partial<Record<NestedMode, NestedNode>>
+  plans: Partial<Record<NestedMode, NestedNode>>,
+  standardSchema = false
 ): string {
   const out: string[] = [];
   for (const mode of ['insert', 'select'] as const) {
@@ -607,9 +775,22 @@ function renderNestedSchemas(
     const name = nestedSchemaName(mode, table.tsName, affix);
     const tname = nestedTypeName(mode, table.tsName, affix);
     const expr = renderNestedObject(plan, mode, coerceDates, typedJson, applyDefaults);
-    out.push(`export const ${name} = ${expr};\n\nexport type ${tname} = Static<typeof ${name}>;`);
+    out.push(
+      `export const ${name} = ${wrapStandard(expr, standardSchema)};\n\nexport type ${tname} = Static<typeof ${name}>;`
+    );
   }
   return out.length ? `\n${out.join('\n\n')}\n` : '';
+}
+
+/**
+ * A schema expression, wrapped where the option asks for it.
+ *
+ * One place, so the plain and the nested schemas cannot end up wrapped differently: a payload
+ * validated through `NestedSelectusers` and one validated through `Selectusers` should reach a
+ * router the same way.
+ */
+function wrapStandard(expr: string, on: boolean): string {
+  return on ? `${STANDARD_FN}(${expr})` : expr;
 }
 
 /** Every table a plan reaches, so a type-only import can name all of them. */
@@ -648,7 +829,8 @@ function renderTableSchemas(
   typedJson?: { schemaSpecifier: string; allColumns?: boolean },
   applyDefaults = false,
   wantsDuplicateFinder = false,
-  nested: Partial<Record<NestedMode, NestedNode>> = {}
+  nested: Partial<Record<NestedMode, NestedNode>> = {},
+  standard?: { specifier: string }
 ) {
   const T = table.tsName;
   const insertSchema = schemaName('insert', T, affix);
@@ -778,17 +960,23 @@ function renderTableSchemas(
     coerceDates,
     typedJson,
     applyDefaults,
-    nested
+    nested,
+    !!standard
   );
+
+  const standardImport = standard
+    ? `import { ${STANDARD_FN} } from '${standard.specifier}';\n`
+    : '';
+  const wrap = (expr: string) => wrapStandard(expr, !!standard);
 
   return `import { Type${rowImport} } from '@sinclair/typebox';
 import type { Static } from '@sinclair/typebox';
-${schemaImport}${needsJson ? `\n${JSON_PREAMBLE}` : ''}${needsRows ? `\n${ROW_PREAMBLE}` : ''}
-export const ${insertSchema} = ${tbWrapRows(`Type.Object({\n${bodyInsert}\n})`, rows, insertCols, lengths)};
+${standardImport}${schemaImport}${needsJson ? `\n${JSON_PREAMBLE}` : ''}${needsRows ? `\n${ROW_PREAMBLE}` : ''}
+export const ${insertSchema} = ${wrap(tbWrapRows(`Type.Object({\n${bodyInsert}\n})`, rows, insertCols, lengths))};
 
-export const ${updateSchema} = ${tbWrapRows(`Type.Object({\n${bodyUpdate}\n})`, rows, updateCols, lengths)};
+export const ${updateSchema} = ${wrap(tbWrapRows(`Type.Object({\n${bodyUpdate}\n})`, rows, updateCols, lengths))};
 
-export const ${selectSchema} = ${tbWrapRows(`Type.Object({\n${bodySelect}\n})`, rows, selectCols, lengths)};
+export const ${selectSchema} = ${wrap(tbWrapRows(`Type.Object({\n${bodySelect}\n})`, rows, selectCols, lengths))};
 
 export type ${insertType} = Static<typeof ${insertSchema}>;
 export type ${updateType} = Static<typeof ${updateSchema}>;
@@ -910,10 +1098,23 @@ function tbNonFiniteUnion(c: Column, base: string): string {
 
 function tbCapExpr(c: Column, base: string, mode: Mode): string {
   if (!tbNeedsCapKind(c)) return base;
+  // `typeof v !== 'string'`, not `v == null`, and the difference is not a tidy-up.
+  //
+  // Every branch here sits beside a string base inside an intersection, so under `Value.Check` it
+  // only ever ran on a string: an intersection stops at its first failing branch, measured on
+  // TypeBox 0.34. `Value.Errors` does not stop. It enumerates every branch, so on
+  // `{ email: 123 }` the predicate was reached with a number and `[...123]` threw, and a
+  // predicate that throws is neither an accept nor a reject. That went unseen while nothing
+  // walked the error path; `standardSchema` walks it to build `issues`, and a real tRPC route
+  // answered `v is not iterable` with a 400 instead of naming the constraint.
+  //
+  // The three other predicates this generator emits already guard on `typeof`, for exactly this
+  // reason, written down beside the date branch. This one guarded only null, so it was the one
+  // left. Null and undefined still pass, as before, since neither is a string.
   const branch = (desc: string, expr: string) => `Type.Unsafe<unknown>({
     [Kind]: 'DrzlRowCheck',
     description: ${JSON.stringify(desc)},
-    assert: (v: any) => v == null || ${expr},
+    assert: (v: any) => typeof v !== 'string' || ${expr},
   })`;
   const out: string[] = [];
   if (c.shape?.kind === 'byteString') {
@@ -1012,6 +1213,23 @@ export interface TypeBoxGenerateOptions extends ValidationGenerateOptions {
    * generated code ships in the consumer's bundle.
    */
   duplicateFinder?: boolean;
+  /**
+   * Give every emitted schema a `~standard` key, so it can be handed to a tRPC or oRPC route.
+   *
+   * TypeBox is the one validator DRZL emits that carries none of its own: measured on 0.34.52, a
+   * bare `Type.Object()` has no `~standard` and the package exports nothing matching
+   * `/standard/i`, which is exactly why both router generators exclude it. zod, valibot and
+   * arktype all carry one already, so this option exists on this generator alone.
+   *
+   * The property is defined non-enumerably on the schema itself, so the schema stays a TypeBox
+   * schema in every respect that was already observable: `Value.Check`, `TypeCompiler`,
+   * `Static<typeof X>`, `Object.keys` and the JSON Schema that `JSON.stringify` produces are all
+   * unchanged. What is added is one shared module in the output directory and one call per schema.
+   *
+   * Off by default, because generated code ships in the consumer's bundle and a project that never
+   * builds a router should not carry a validator nothing calls.
+   */
+  standardSchema?: boolean;
 }
 
 export class TypeBoxGenerator implements ValidationRenderer<TypeBoxGenerateOptions> {
@@ -1052,6 +1270,26 @@ export class TypeBoxGenerator implements ValidationRenderer<TypeBoxGenerateOptio
     const nestedDepth = opts.nestedSchemas
       ? resolveNestedDepth(opts.nestedDepth, (m) => console.warn(m))
       : 0;
+    // Written before the table modules, so the specifier they import always names a file that is
+    // already on disk. The helper takes no options and is identical for every directory, so it is
+    // rendered once rather than per table.
+    const standard = opts.standardSchema
+      ? { specifier: importSpecifier(`./${STANDARD_FILE}`, opts.importExtension) }
+      : undefined;
+    if (standard) {
+      const helperPath = path.join(out, STANDARD_FILE);
+      await fs.writeFile(
+        helperPath,
+        await formatCode(
+          buildHeader(opts.outputHeader) + renderStandardSchemaModule(),
+          helperPath,
+          opts.format
+        ),
+        'utf8'
+      );
+      files.push(helperPath);
+    }
+
     for (const table of this.analysis.tables) {
       const filePath = path.join(out, moduleFileName(table.tsName, fileSuffix));
       const code = renderTableSchemas(
@@ -1061,7 +1299,8 @@ export class TypeBoxGenerator implements ValidationRenderer<TypeBoxGenerateOptio
         typedJson,
         !!opts.applyDefaults,
         !!opts?.duplicateFinder,
-        opts.nestedSchemas ? nestedPlansFor(table, this.analysis, nestedDepth) : {}
+        opts.nestedSchemas ? nestedPlansFor(table, this.analysis, nestedDepth) : {},
+        standard
       );
       const formatted = await formatCode(
         buildHeader(opts.outputHeader) + code,
@@ -1090,19 +1329,25 @@ export class TypeBoxGenerator implements ValidationRenderer<TypeBoxGenerateOptio
       opts?.coerceDates ?? 'input',
       undefined,
       !!opts?.applyDefaults,
-      !!opts?.duplicateFinder
+      !!opts?.duplicateFinder,
+      {},
+      opts?.standardSchema
+        ? { specifier: importSpecifier(`./${STANDARD_FILE}`, opts.importExtension) }
+        : undefined
     );
   }
 
   private defaultIndex(analysis: Analysis, opts: TypeBoxGenerateOptions) {
     const fileSuffix = opts.fileSuffix ?? DEFAULT_FILE_SUFFIX;
-    return (
-      analysis.tables
-        .map(
-          (t) => `export * from '${moduleSpecifier(t.tsName, fileSuffix, opts.importExtension)}';`
-        )
-        .join('\n') + '\n'
-    );
+    // The helper first, so `StandardSchemaV1` and `toStandardSchema` are reachable from the barrel
+    // a consumer already imports rather than from a second path they have to learn.
+    const lines = opts.standardSchema
+      ? [`export * from '${importSpecifier(`./${STANDARD_FILE}`, opts.importExtension)}';`]
+      : [];
+    for (const t of analysis.tables) {
+      lines.push(`export * from '${moduleSpecifier(t.tsName, fileSuffix, opts.importExtension)}';`);
+    }
+    return lines.join('\n') + '\n';
   }
 }
 
