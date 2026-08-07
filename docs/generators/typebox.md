@@ -314,3 +314,10 @@ A batch that passes can still collide with rows already stored. This checks the 
 round trip.
 
 Off by default: generated code ships in your bundle.
+
+## Nested relation schemas
+
+`nestedSchemas: true` also emits `NestedInsert<Table>` and `NestedSelect<Table>`, the table plus one
+key per relation, so `{ ...user, posts: [...] }` can be validated whole. Nothing in the Drizzle
+ecosystem describes that payload, and `db.insert` drops the relation key silently rather than
+refusing it. See [Nested Relation Schemas](/generators/nested-relations).

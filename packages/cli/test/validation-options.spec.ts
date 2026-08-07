@@ -25,6 +25,9 @@ const generator = {
   applyDefaults: true,
   typedJson: true,
   typedColumns: true,
+  duplicateFinder: true,
+  nestedSchemas: true,
+  nestedDepth: 2,
 };
 const config = { schema: 'src/db/schema.ts' };
 
@@ -46,6 +49,9 @@ describe('the shared options', () => {
       schemaPath: 'src/db/schema.ts',
       typedJson: true,
       typedColumns: true,
+      duplicateFinder: true,
+      nestedSchemas: true,
+      nestedDepth: 2,
     });
   });
 
@@ -57,7 +63,15 @@ describe('the shared options', () => {
     expect(o).not.toHaveProperty('typedJson');
     expect(o).not.toHaveProperty('typedColumns');
     // Everything else still arrives.
-    expect(o).toMatchObject({ coerceDates: 'none', applyDefaults: true, affix: generator.affix });
+    expect(o).toMatchObject({
+      coerceDates: 'none',
+      applyDefaults: true,
+      affix: generator.affix,
+      // Nesting is emitted from the analysis rather than from a type reference, so ArkType takes
+      // it like the other three.
+      nestedSchemas: true,
+      nestedDepth: 2,
+    });
   });
 
   it('defaults the output directory when the generator names none', () => {

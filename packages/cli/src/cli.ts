@@ -415,10 +415,7 @@ program
         // cannot become the branch that forgets it.
         servicesDir: opts.servicesDir,
       });
-      console.log(
-        chalk.green(`Generated:`),
-        files.map((f: string) => chalk.cyan(f)).join(', ')
-      );
+      console.log(chalk.green(`Generated:`), files.map((f: string) => chalk.cyan(f)).join(', '));
       maybeShowSponsorMessage({ reason: 'generate:trpc' });
     } catch (e: any) {
       reportGeneratorFailure('trpc', e);
@@ -658,15 +655,14 @@ program
               );
               const gen = new ZodGenerator(analysis);
               const target = g.path ?? 'src/validators/zod';
-              const files = await gen.generate({
-                outDir: target,
-                outputHeader: g.outputHeader,
-                format: g.format,
-                schemaSuffix: g.schemaSuffix,
-                fileSuffix: g.fileSuffix,
-                importExtension: g.importExtension,
-                affix: g.affix,
-              });
+              // The same builder `generate` uses. Assembled by hand here until now, and every
+              // option added since the builder existed was therefore absent from a watch rebuild:
+              // `coerceDates`, `applyDefaults`, `typedJson`, `typedColumns` and `duplicateFinder`
+              // were all dropped, so the first save after starting `drzl watch` silently replaced
+              // correct output with output generated from defaults.
+              const files = await gen.generate(
+                validationOptions(g, cfg, target, { schemaTypes: true }) as never
+              );
               opts.json
                 ? console.log(JSON.stringify({ event: 'generate_complete', kind: g.kind, files }))
                 : console.log(
@@ -686,15 +682,14 @@ program
               );
               const gen = new ValibotGenerator(analysis);
               const target = g.path ?? 'src/validators/valibot';
-              const files = await gen.generate({
-                outDir: target,
-                outputHeader: g.outputHeader,
-                format: g.format,
-                schemaSuffix: g.schemaSuffix,
-                fileSuffix: g.fileSuffix,
-                importExtension: g.importExtension,
-                affix: g.affix,
-              });
+              // The same builder `generate` uses. Assembled by hand here until now, and every
+              // option added since the builder existed was therefore absent from a watch rebuild:
+              // `coerceDates`, `applyDefaults`, `typedJson`, `typedColumns` and `duplicateFinder`
+              // were all dropped, so the first save after starting `drzl watch` silently replaced
+              // correct output with output generated from defaults.
+              const files = await gen.generate(
+                validationOptions(g, cfg, target, { schemaTypes: true }) as never
+              );
               opts.json
                 ? console.log(JSON.stringify({ event: 'generate_complete', kind: g.kind, files }))
                 : console.log(
@@ -714,19 +709,70 @@ program
               );
               const gen = new ArkTypeGenerator(analysis);
               const target = g.path ?? 'src/validators/arktype';
-              const files = await gen.generate({
-                outDir: target,
-                outputHeader: g.outputHeader,
-                format: g.format,
-                schemaSuffix: g.schemaSuffix,
-                fileSuffix: g.fileSuffix,
-                importExtension: g.importExtension,
-                affix: g.affix,
-              });
+              // The same builder `generate` uses. Assembled by hand here until now, and every
+              // option added since the builder existed was therefore absent from a watch rebuild:
+              // `coerceDates`, `applyDefaults`, `typedJson`, `typedColumns` and `duplicateFinder`
+              // were all dropped, so the first save after starting `drzl watch` silently replaced
+              // correct output with output generated from defaults.
+              const files = await gen.generate(
+                validationOptions(g, cfg, target, { schemaTypes: false }) as never
+              );
               opts.json
                 ? console.log(JSON.stringify({ event: 'generate_complete', kind: g.kind, files }))
                 : console.log(
                     chalk.green(`Generated (arktype): ${files.length} files`),
+                    files.map((f: string) => chalk.cyan(f)).join(', ')
+                  );
+              newFiles.push(...files);
+            } catch (e: any) {
+              reportGeneratorFailure(g.kind, e);
+              return;
+            }
+          } else if (g.kind === 'typebox') {
+            try {
+              const { TypeBoxGenerator } = await loadGenerator(
+                '@drzl/generator-typebox',
+                () => import('@drzl/generator-typebox')
+              );
+              const gen = new TypeBoxGenerator(analysis);
+              const target = g.path ?? 'src/validators/typebox';
+              // The same builder `generate` uses. Assembled by hand here until now, and every
+              // option added since the builder existed was therefore absent from a watch rebuild:
+              // `coerceDates`, `applyDefaults`, `typedJson`, `typedColumns` and `duplicateFinder`
+              // were all dropped, so the first save after starting `drzl watch` silently replaced
+              // correct output with output generated from defaults.
+              const files = await gen.generate(
+                validationOptions(g, cfg, target, { schemaTypes: true }) as never
+              );
+              opts.json
+                ? console.log(JSON.stringify({ event: 'generate_complete', kind: g.kind, files }))
+                : console.log(
+                    chalk.green(`Generated (typebox): ${files.length} files`),
+                    files.map((f: string) => chalk.cyan(f)).join(', ')
+                  );
+              newFiles.push(...files);
+            } catch (e: any) {
+              reportGeneratorFailure(g.kind, e);
+              return;
+            }
+          } else if (g.kind === 'json-schema') {
+            try {
+              const { JsonSchemaGenerator } = await loadGenerator(
+                '@drzl/generator-json-schema',
+                () => import('@drzl/generator-json-schema')
+              );
+              const gen = new JsonSchemaGenerator(analysis);
+              const target = g.path ?? 'src/validators/json-schema';
+              const files = await gen.generate({
+                // JSON Schema is data, so nothing here references a type from the schema module.
+                ...(validationOptions(g, cfg, target, { schemaTypes: false }) as object),
+                target: g.target,
+                components: g.components,
+              } as never);
+              opts.json
+                ? console.log(JSON.stringify({ event: 'generate_complete', kind: g.kind, files }))
+                : console.log(
+                    chalk.green(`Generated (json-schema): ${files.length} files`),
                     files.map((f: string) => chalk.cyan(f)).join(', ')
                   );
               newFiles.push(...files);

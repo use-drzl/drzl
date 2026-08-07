@@ -9,7 +9,14 @@ import type {
   ValidationRenderer,
   ValidationGenerateOptions,
 } from '@drzl/validation-core';
+import type { NestedMode, NestedNode } from '@drzl/validation-core';
 import {
+  buildNestedPlan,
+  nestedArmNotes,
+  nestedNodeColumns,
+  nestedSchemaName,
+  nestedTypeName,
+  resolveNestedDepth,
   COERCIBLE_DATE_STRING,
   COLUMN_FORMATS,
   insertColumns,
@@ -297,7 +304,10 @@ function atTypeForColumn(
  * one statement about the type rather than an opaque predicate beside it. `<>` has no such form
  * and is left unstated rather than approximated.
  */
-function atCardinality(c: Column, cardinalities: CardinalityCheck[]): { lower?: Bound; upper?: Bound; equals?: string } {
+function atCardinality(
+  c: Column,
+  cardinalities: CardinalityCheck[]
+): { lower?: Bound; upper?: Bound; equals?: string } {
   let lower: Bound | undefined;
   let upper: Bound | undefined;
   let equals: string | undefined;
@@ -632,16 +642,20 @@ function atRowNarrows(rows: RowCheck[], cols: Column[]): string {
     '=': '===',
     '<>': '!==',
   };
-  return rows
-    // A check naming a column this mode does not carry cannot be evaluated.
-    .filter((r) => present.has(r.left) && present.has(r.right))
-    .map((r) => {
-      const l = `o[${JSON.stringify(r.left)}]`;
-      const rt = `o[${JSON.stringify(r.right)}]`;
-      const msg = JSON.stringify(`${r.name ? `${r.name}: ` : ''}${r.left} ${r.operator} ${r.right}`);
-      return `.narrow((o, ctx) => ${l} == null || ${rt} == null || ${l} ${OPS[r.operator]} ${rt} || ctx.mustBe(${msg}))`;
-    })
-    .join('');
+  return (
+    rows
+      // A check naming a column this mode does not carry cannot be evaluated.
+      .filter((r) => present.has(r.left) && present.has(r.right))
+      .map((r) => {
+        const l = `o[${JSON.stringify(r.left)}]`;
+        const rt = `o[${JSON.stringify(r.right)}]`;
+        const msg = JSON.stringify(
+          `${r.name ? `${r.name}: ` : ''}${r.left} ${r.operator} ${r.right}`
+        );
+        return `.narrow((o, ctx) => ${l} == null || ${rt} == null || ${l} ${OPS[r.operator]} ${rt} || ctx.mustBe(${msg}))`;
+      })
+      .join('')
+  );
 }
 
 /**
@@ -914,7 +928,9 @@ function atCapNarrows(c: Column, mode: Mode): string {
   if (c.tsType !== 'string' || c.shape) return '';
   const out: string[] = [];
   if (c.maxLength) {
-    out.push(atNarrow(c, (v) => `[...${v}].length <= ${c.maxLength}`, `at most ${c.maxLength} characters`));
+    out.push(
+      atNarrow(c, (v) => `[...${v}].length <= ${c.maxLength}`, `at most ${c.maxLength} characters`)
+    );
   }
   if (c.maxBytes) {
     out.push(
@@ -950,12 +966,123 @@ function atLengthNarrows(lengths: LengthCheck[], cols: Column[]): string {
     .join('');
 }
 
+/** Every CHECK on a table that the shared parser understands, split by what it constrains. */
+function parsedChecksFor(table: Table) {
+  const parsed = (table.checks ?? []).map((k) => parseCheck(k.expression, k.name));
+  return {
+    checks: parsed.flatMap((p) => (p.ok ? p.checks : [])),
+    sets: parsed.flatMap((p) => (p.ok ? (p.sets ?? []) : [])),
+    rows: parsed.flatMap((p) => (p.ok ? (p.rows ?? []) : [])),
+    lengths: parsed.flatMap((p) => (p.ok ? (p.lengths ?? []) : [])),
+    cardinalities: parsed.flatMap((p) => (p.ok ? (p.cardinalities ?? []) : [])),
+  };
+}
+
+/** Push a rendered block one level deeper, so the nested object reads as one. */
+function indentBlock(code: string, by = '  '): string {
+  return code
+    .split('\n')
+    .map((line) => (line ? by + line : line))
+    .join('\n');
+}
+
+/**
+ * One object of a nested payload, with its relations expanded inline.
+ *
+ * A Type instance as a property value, rather than a string reference into a `scope`. ArkType is
+ * the one library here that *cannot* express a forward reference outside a scope at all: a plain
+ * `type({ posts: () => Post.array() })` throws `Cannot access 'Post' before initialization` at
+ * module load, which is a generated file that cannot be imported. Expanding inline sidesteps the
+ * question entirely, and every form used here was run: a nested Type, `.array()` over one,
+ * `.or("null")` over one, and `.array()` over a Type that already carries a `.narrow`.
+ */
+function renderNestedObject(
+  node: NestedNode,
+  mode: NestedMode,
+  coerceDates: NonNullable<ValidationGenerateOptions['coerceDates']>,
+  applyDefaults: boolean
+): string {
+  const all = mode === 'insert' ? insertColumns(node.table) : selectColumns(node.table);
+  const cols = nestedNodeColumns(all, node);
+  const { checks, sets, rows, lengths, cardinalities } = parsedChecksFor(node.table);
+  const fields = renderObjectShape(
+    cols,
+    mode,
+    coerceDates,
+    checks,
+    sets,
+    applyDefaults,
+    cardinalities
+  );
+
+  const arms = node.arms.map((arm) => {
+    const notes = nestedArmNotes(arm)
+      .map((n) => `  // ${n}\n`)
+      .join('');
+    const child = renderNestedObject(arm.child, mode, coerceDates, applyDefaults);
+    // A to-one may come back null: a relational query returns null where there is no matching
+    // row, and accepting it never turns away something the query produced. The `?` on the key is
+    // ArkType's optional, because which relations a payload carries is the caller's choice on a
+    // write and the `with` clause's on a read.
+    const value = arm.single
+      ? `${indentBlock(child).trimStart()}.or("null")`
+      : `${indentBlock(child).trimStart()}.array()`;
+    return `${notes}  ${JSON.stringify(`${arm.key}?`)}: ${value},`;
+  });
+
+  const body = [fields, ...arms].filter(Boolean).join('\n');
+  return `type({\n${body}\n})${atRowNarrows(rows, cols)}${atLengthNarrows(lengths, cols)}`;
+}
+
+/** The nested exports for one table, or nothing when it has no relations to describe. */
+function renderNestedSchemas(
+  table: Table,
+  affix: ResolvedAffix,
+  coerceDates: NonNullable<ValidationGenerateOptions['coerceDates']>,
+  applyDefaults: boolean,
+  plans: Partial<Record<NestedMode, NestedNode>>
+): string {
+  const out: string[] = [];
+  for (const mode of ['insert', 'select'] as const) {
+    const plan = plans[mode];
+    if (!plan) continue;
+    const name = nestedSchemaName(mode, table.tsName, affix);
+    const tname = nestedTypeName(mode, table.tsName, affix);
+    const expr = renderNestedObject(plan, mode, coerceDates, applyDefaults);
+    out.push(`export const ${name} = ${expr};\n\nexport type ${tname} = typeof ${name}["infer"];`);
+  }
+  return out.length ? `\n${out.join('\n\n')}\n` : '';
+}
+
+/**
+ * The nested plans for one table, built once per mode.
+ *
+ * Returned as a partial map because the two modes disagree per table: a table that is only ever a
+ * child has a nested select and no nested insert, and emitting an insert one anyway would put a
+ * byte-for-byte copy of the plain insert schema in the file under a second name.
+ */
+function nestedPlansFor(
+  table: Table,
+  analysis: Analysis,
+  depth: number
+): Partial<Record<NestedMode, NestedNode>> {
+  const out: Partial<Record<NestedMode, NestedNode>> = {};
+  for (const mode of ['insert', 'select'] as const) {
+    // A read-only relation refuses every write, so it has no insert schema to nest into.
+    if (mode === 'insert' && table.readOnly) continue;
+    const plan = buildNestedPlan(table, analysis.tables, analysis.relations ?? [], mode, depth);
+    if (plan) out[mode] = plan;
+  }
+  return out;
+}
+
 function renderTableSchemas(
   table: Table,
   affix: ResolvedAffix,
   coerceDates: NonNullable<ValidationGenerateOptions['coerceDates']>,
   applyDefaults = false,
-  wantsDuplicateFinder = false
+  wantsDuplicateFinder = false,
+  nested: Partial<Record<NestedMode, NestedNode>> = {}
 ) {
   const T = table.tsName;
   const insertSchema = schemaName('insert', T, affix);
@@ -1000,14 +1127,16 @@ function renderTableSchemas(
     applyDefaults,
     cardinalities
   );
-    // Uniqueness is a fact about the table, so no per-row schema can see it. This checks the
+  // Uniqueness is a fact about the table, so no per-row schema can see it. This checks the
   // half that needs no database: whether a batch collides with itself.
   const finder = wantsDuplicateFinder
     ? renderDuplicateFinder(table, `findDuplicate${T}`, insertType)
     : undefined;
   const duplicates = finder ? `\n${finder}\n` : '';
 
-return `import { type } from 'arktype';
+  const nestedCode = renderNestedSchemas(table, affix, coerceDates, applyDefaults, nested);
+
+  return `import { type } from 'arktype';
 
 export const ${insertSchema} = type({
 ${bodyInsert}
@@ -1024,7 +1153,7 @@ ${bodySelect}
 export type ${insertType} = typeof ${insertSchema}["infer"];
 export type ${updateType} = typeof ${updateSchema}["infer"];
 export type ${selectType} = typeof ${selectSchema}["infer"];
-${duplicates}`;
+${nestedCode}${duplicates}`;
 }
 
 export interface ArkTypeGenerateOptions extends ValidationGenerateOptions {
@@ -1055,10 +1184,19 @@ export class ArkTypeGenerator implements ValidationRenderer<ArkTypeGenerateOptio
     const fileSuffix = opts.fileSuffix ?? DEFAULT_FILE_SUFFIX;
     // File names deliberately stay on the raw Drizzle export name: affixes and tableCase
     // rename identifiers, never modules, so the barrel and importPath keep resolving.
+    const nestedDepth = opts.nestedSchemas
+      ? resolveNestedDepth(opts.nestedDepth, (m) => console.warn(m))
+      : 0;
     for (const table of this.analysis.tables) {
       const filePath = path.join(out, moduleFileName(table.tsName, fileSuffix));
-      const code = renderTableSchemas(table, affix, coerceDates, !!opts.applyDefaults,
-      !!opts?.duplicateFinder);
+      const code = renderTableSchemas(
+        table,
+        affix,
+        coerceDates,
+        !!opts.applyDefaults,
+        !!opts?.duplicateFinder,
+        opts.nestedSchemas ? nestedPlansFor(table, this.analysis, nestedDepth) : {}
+      );
       const formatted = await formatCode(
         buildHeader(opts.outputHeader) + code,
         filePath,

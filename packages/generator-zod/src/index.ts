@@ -11,19 +11,26 @@ import type {
   LengthCheck,
   RowCheck,
 } from '@drzl/validation-core';
+import type { NestedNode, NestedMode } from '@drzl/validation-core';
 import {
   formatCode,
   parseCheck,
   renderDuplicateFinder,
   resolveConfiguredImport,
+  buildNestedPlan,
   COERCIBLE_DATE_STRING,
   COLUMN_FORMATS,
   insertColumns,
   isIntegerColumn,
   moduleFileName,
   moduleSpecifier,
+  nestedArmNotes,
+  nestedNodeColumns,
+  nestedSchemaName,
+  nestedTypeName,
   nonFiniteAccepted,
   resolveAffix,
+  resolveNestedDepth,
   schemaName,
   selectColumns,
   typeName,
@@ -68,7 +75,10 @@ function numericBounds(
     else if (k.operator === '<') hi = { op: 'lt', value: k.value };
   }
 
-  return [lo, hi].filter(Boolean).map((x) => `.${x!.op}(${literal(x!.value)})`).join('');
+  return [lo, hi]
+    .filter(Boolean)
+    .map((x) => `.${x!.op}(${literal(x!.value)})`)
+    .join('');
 }
 
 /**
@@ -491,13 +501,119 @@ function rowRefinements(rows: RowCheck[], cols: Column[]): string {
   );
 }
 
+/** Every CHECK on a table that the shared parser understands, split by what it constrains. */
+function parsedChecksFor(table: Table) {
+  const parsed = (table.checks ?? []).map((k) => parseCheck(k.expression, k.name));
+  return {
+    checks: parsed.flatMap((p) => (p.ok ? p.checks : [])),
+    sets: parsed.flatMap((p) => (p.ok ? (p.sets ?? []) : [])),
+    rows: parsed.flatMap((p) => (p.ok ? (p.rows ?? []) : [])),
+    lengths: parsed.flatMap((p) => (p.ok ? (p.lengths ?? []) : [])),
+    cardinalities: parsed.flatMap((p) => (p.ok ? (p.cardinalities ?? []) : [])),
+  };
+}
+
+/** Push a rendered block one level deeper, so the nested object reads as one. */
+function indentBlock(code: string, by = '  '): string {
+  return code
+    .split('\n')
+    .map((line) => (line ? by + line : line))
+    .join('\n');
+}
+
+/**
+ * One object of a nested payload, with its relations expanded inline.
+ *
+ * Inline rather than by reference to a sibling schema. `.omit()` is the obvious way to say "the
+ * child's insert schema without its foreign key", and it does not work: measured on zod 4.4.3,
+ * `.omit()` on a schema carrying a `.refine()` **throws** `.omit() cannot be used on object
+ * schemas containing refinements`, so every table with a row-level CHECK would emit a module that
+ * threw the moment anything imported it. Rendering from the columns runs the same
+ * `renderObjectShape` the plain schemas use, so a nested field cannot drift from its flat twin.
+ */
+function renderNestedObject(
+  node: NestedNode,
+  mode: NestedMode,
+  coerceDates: NonNullable<ValidationGenerateOptions['coerceDates']>,
+  typedJson: { allColumns?: boolean } | undefined,
+  applyDefaults: boolean
+): string {
+  const all = mode === 'insert' ? insertColumns(node.table) : selectColumns(node.table);
+  const cols = nestedNodeColumns(all, node);
+  const { checks, sets, rows, lengths, cardinalities } = parsedChecksFor(node.table);
+  const tj = typedJson
+    ? { table: node.table.tsName, mode, allColumns: typedJson.allColumns }
+    : undefined;
+  const fields = renderObjectShape(
+    cols,
+    mode,
+    coerceDates,
+    checks,
+    tj,
+    sets,
+    applyDefaults,
+    lengths,
+    cardinalities
+  );
+
+  const arms = node.arms.map((arm) => {
+    const notes = nestedArmNotes(arm)
+      .map((n) => `  // ${n}\n`)
+      .join('');
+    const child = renderNestedObject(arm.child, mode, coerceDates, typedJson, applyDefaults);
+    // A to-one may come back null: a relational query returns null where there is no matching
+    // row, and accepting it never turns away something the query produced. Optional throughout,
+    // because which relations a payload carries is the caller's choice on a write and the `with`
+    // clause's on a read.
+    const value = arm.single
+      ? `${indentBlock(child).trimStart()}.nullable()`
+      : `z.array(\n${indentBlock(indentBlock(child))}\n  )`;
+    return `${notes}  ${JSON.stringify(arm.key)}: ${value}.optional(),`;
+  });
+
+  const body = [fields, ...arms].filter(Boolean).join('\n');
+  return `z.object({\n${body}\n})${rowRefinements(rows, cols)}`;
+}
+
+/** The nested exports for one table, or nothing when it has no relations to describe. */
+function renderNestedSchemas(
+  table: Table,
+  affix: ResolvedAffix,
+  coerceDates: NonNullable<ValidationGenerateOptions['coerceDates']>,
+  typedJson: { allColumns?: boolean } | undefined,
+  applyDefaults: boolean,
+  plans: Partial<Record<NestedMode, NestedNode>>
+): string {
+  const out: string[] = [];
+  for (const mode of ['insert', 'select'] as const) {
+    const plan = plans[mode];
+    if (!plan) continue;
+    const name = nestedSchemaName(mode, table.tsName, affix);
+    const tname = nestedTypeName(mode, table.tsName, affix);
+    const expr = renderNestedObject(plan, mode, coerceDates, typedJson, applyDefaults);
+    const infer = mode === 'insert' ? 'input' : 'output';
+    out.push(
+      `export const ${name} = ${expr};\n\nexport type ${tname} = z.${infer}<typeof ${name}>;`
+    );
+  }
+  return out.length ? `\n${out.join('\n\n')}\n` : '';
+}
+
+/** Every table a plan reaches, so a type-only import can name all of them. */
+function nestedTables(node: NestedNode, into = new Set<string>()): Set<string> {
+  into.add(node.table.tsName);
+  for (const arm of node.arms) nestedTables(arm.child, into);
+  return into;
+}
+
 function renderTableSchemas(
   table: Table,
   affix: ResolvedAffix,
   coerceDates: NonNullable<ValidationGenerateOptions['coerceDates']>,
   typedJson?: { schemaSpecifier: string; allColumns?: boolean },
   applyDefaults = false,
-  wantsDuplicateFinder = false
+  wantsDuplicateFinder = false,
+  nested: Partial<Record<NestedMode, NestedNode>> = {}
 ) {
   const T = table.tsName;
   const insertSchema = schemaName('insert', T, affix);
@@ -560,8 +676,16 @@ function renderTableSchemas(
   );
   // A type-only import: it disappears at build time, so this adds no runtime dependency on the
   // schema module and cannot create an import cycle at runtime.
+  //
+  // A nested shape references the columns of *other* tables, so those tables have to be named
+  // here too or the reference would not resolve. Without this the module compiled fine until
+  // `typedJson` and `nestedSchemas` were combined, and then named an identifier nothing imported.
+  const referenced = new Set<string>([table.tsName]);
+  for (const plan of Object.values(nested)) {
+    if (plan) for (const name of nestedTables(plan)) referenced.add(name);
+  }
   const schemaImport = typedJson
-    ? `import type { ${table.tsName} } from '${typedJson.schemaSpecifier}';\n`
+    ? `import type { ${[...referenced].join(', ')} } from '${typedJson.schemaSpecifier}';\n`
     : '';
   // A materialized view refuses every write, so an insert or update schema for one would describe
   // an operation the database always rejects. The select schema is the only meaningful one.
@@ -582,21 +706,30 @@ ${bodyUpdate}
 export type ${updateType} = z.input<typeof ${updateSchema}>;
 `;
 
-    // Uniqueness is a fact about the table, so no per-row schema can see it. This checks the
+  // Uniqueness is a fact about the table, so no per-row schema can see it. This checks the
   // half that needs no database: whether a batch collides with itself.
   const finder = wantsDuplicateFinder
     ? renderDuplicateFinder(table, `findDuplicate${T}`, insertType)
     : undefined;
   const duplicates = finder ? `\n${finder}\n` : '';
 
-return `import { z } from 'zod';
+  const nestedCode = renderNestedSchemas(
+    table,
+    affix,
+    coerceDates,
+    typedJson,
+    applyDefaults,
+    nested
+  );
+
+  return `import { z } from 'zod';
 ${schemaImport}
 ${writes}export const ${selectSchema} = z.object({
 ${bodySelect}
 })${rowRefinements(rows, selectCols)};
 
 ${writeTypes}export type ${selectType} = z.output<typeof ${selectSchema}>;
-${duplicates}`;
+${nestedCode}${duplicates}`;
 }
 
 export interface ZodGenerateOptions extends ValidationGenerateOptions {
@@ -610,6 +743,28 @@ export interface ZodGenerateOptions extends ValidationGenerateOptions {
    * generated code ships in the consumer's bundle.
    */
   duplicateFinder?: boolean;
+}
+
+/**
+ * The nested plans for one table, built once per mode.
+ *
+ * Returned as a partial map because the two modes disagree per table: `comments` is a child and
+ * nothing else, so it has a nested select and no nested insert, and emitting an insert one anyway
+ * would put a byte-for-byte copy of `InsertcommentsSchema` in the file under a second name.
+ */
+function nestedPlansFor(
+  table: Table,
+  analysis: Analysis,
+  depth: number
+): Partial<Record<NestedMode, NestedNode>> {
+  const out: Partial<Record<NestedMode, NestedNode>> = {};
+  for (const mode of ['insert', 'select'] as const) {
+    // A read-only relation refuses every write, so it has no insert schema to nest into.
+    if (mode === 'insert' && table.readOnly) continue;
+    const plan = buildNestedPlan(table, analysis.tables, analysis.relations ?? [], mode, depth);
+    if (plan) out[mode] = plan;
+  }
+  return out;
 }
 
 export class ZodGenerator implements ValidationRenderer<ZodGenerateOptions> {
@@ -647,12 +802,22 @@ export class ZodGenerator implements ValidationRenderer<ZodGenerateOptions> {
         '[drzl] typedJson was requested but the schema path is unknown, so json columns keep their wide type.'
       );
     }
+    const nestedDepth = opts.nestedSchemas
+      ? resolveNestedDepth(opts.nestedDepth, (m) => console.warn(m))
+      : 0;
     // File names deliberately stay on the raw Drizzle export name: affixes and tableCase
     // rename identifiers, never modules, so the barrel and importPath keep resolving.
     for (const table of this.analysis.tables) {
       const filePath = path.join(out, moduleFileName(table.tsName, fileSuffix));
-      const code = renderTableSchemas(table, affix, coerceDates, typedJson, !!opts.applyDefaults,
-      !!opts?.duplicateFinder);
+      const code = renderTableSchemas(
+        table,
+        affix,
+        coerceDates,
+        typedJson,
+        !!opts.applyDefaults,
+        !!opts?.duplicateFinder,
+        opts.nestedSchemas ? nestedPlansFor(table, this.analysis, nestedDepth) : {}
+      );
       const formatted = await formatCode(
         buildHeader(opts.outputHeader) + code,
         filePath,

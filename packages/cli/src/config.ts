@@ -107,6 +107,22 @@ export const GeneratorSchema = z.object({
    * fact about the table rather than the row. This checks the half that needs no database.
    */
   duplicateFinder: z.boolean().optional(),
+  /**
+   * Emit `NestedInsert<Table>` and `NestedSelect<Table>` beside the flat schemas: the table plus
+   * one key per relation, so `{ ...user, posts: [...] }` can be validated whole.
+   *
+   * Nothing in the Drizzle validator ecosystem describes that payload, and `db.insert` drops the
+   * relation key silently rather than refusing it, so the children are never written and nothing
+   * says so.
+   */
+  nestedSchemas: z.boolean().optional(),
+  /**
+   * How many levels of children a nested schema describes. Defaults to 1, capped at 3.
+   *
+   * Nesting is expanded inline rather than by reference, so this multiplies the emitted size, and
+   * it is also what terminates a cycle: `users -> posts -> users` stops here.
+   */
+  nestedDepth: z.number().int().optional(),
   naming: NamingSchema.optional(),
   outputHeader: z
     .object({
@@ -272,10 +288,7 @@ const ROUTER_KINDS = new Set(['orpc', 'trpc']);
  * Exported because `computeGeneratorOutputDirs` has to agree with the dispatch in cli.ts about
  * this, and the watcher ignoring the wrong directory is an infinite regeneration loop.
  */
-export function trpcOutDir(
-  g: { path?: string },
-  cfg: { outDir: string }
-): string {
+export function trpcOutDir(g: { path?: string }, cfg: { outDir: string }): string {
   return g.path ?? cfg.outDir;
 }
 
