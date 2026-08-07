@@ -39,6 +39,25 @@ describe('@drzl/cli config', () => {
   });
 });
 
+describe('@drzl/cli config meta', () => {
+  const base = (generators: any[]) => ({ schema: 'src/db/schema.ts', generators });
+
+  it('keeps the boolean shorthand and the object form through parse', () => {
+    const shorthand: any = ConfigSchema.parse(base([{ kind: 'zod', meta: true }]));
+    expect(shorthand.generators[0].meta).toBe(true);
+    const full: any = ConfigSchema.parse(base([{ kind: 'zod', meta: { description: true } }]));
+    expect(full.generators[0].meta).toEqual({ description: true });
+  });
+
+  it('refuses a key it does not know, rather than dropping it in silence', () => {
+    // The failure this guards is the one the repository has already had twice: a documented option
+    // parses, is stripped, and the feature does nothing while nothing says so.
+    expect(() =>
+      ConfigSchema.parse(base([{ kind: 'zod', meta: { descriptions: true } }]))
+    ).toThrow();
+  });
+});
+
 describe('@drzl/cli config affix', () => {
   const base = (generators: any[]) => ({ schema: 'src/db/schema.ts', generators });
 

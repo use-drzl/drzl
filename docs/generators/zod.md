@@ -613,6 +613,195 @@ round trip.
 
 Off by default: generated code ships in your bundle.
 
+## `meta`: what the schema cannot say about itself
+
+A validator says what a value must look like. It does not say where the value came from, and a
+consumer holding only the schema cannot recover it: `z.string()` is a `text`, a `varchar(40)`, a
+`citext` and a `char(3)` alike, nothing on it says whether the database fills the column in, and
+nothing names the key.
+
+`meta: true` attaches those facts with zod's own `.meta()`, on every field and on every table
+schema.
+
+```ts
+export default {
+  schema: './src/db/schema.ts',
+  outDir: './src/api',
+  generators: [{ kind: 'zod', path: './src/validators/zod', meta: true }],
+};
+```
+
+emits:
+
+```ts
+export const SelectusersSchema = z
+  .object({
+    id: z.number().int().gte(-2147483648).lte(2147483647).meta({
+      sqlType: 'serial',
+      hasDefault: true,
+    }),
+    email: z
+      .string()
+      .refine((v) => [...v].length <= 254, { message: 'at most 254 characters' })
+      .meta({ sqlType: 'varchar(254)', maxLength: 254 }),
+    bio: z.string().nullable().meta({ sqlType: 'text' }),
+    age: z
+      .number()
+      .int()
+      .gte(18)
+      .lte(2147483647)
+      .nullable()
+      .meta({ sqlType: 'integer', checks: ['adult: age >= 18'] }),
+  })
+  .meta({
+    table: 'user_accounts',
+    dialect: 'postgres',
+    mode: 'select',
+    primaryKey: ['id'],
+    unique: [['email'], ['handle', 'role']],
+    unenforcedChecks: ["email_shape: email LIKE '%@%'"],
+  });
+```
+
+and reads back off the schema object:
+
+```ts
+SelectusersSchema.shape.bio.meta(); // { sqlType: 'text' }
+SelectusersSchema.meta().primaryKey; // ['id']
+```
+
+Off by default. Every byte lands in your bundle, and on a narrow table this roughly doubles the
+emitted size: measured on a ten-column table, about 48 bytes per field and 156 per schema.
+
+### Why it is attached last in the chain
+
+This is the one design decision worth knowing about, because it looks wrong until you measure it.
+
+`.meta()` returns a **clone** carrying the entry, so an operation that clones keeps it and an
+operation that _wraps_ does not. Measured on zod 4.4.3:
+
+| chained after `.meta({ x: 1 })`                                    | `.meta()` on the result |
+| ------------------------------------------------------------------ | ----------------------- |
+| `.refine()`, `.min()`, `.describe()`, `.brand()`                   | `{ x: 1 }`              |
+| `.nullable()`, `.optional()`, `.default()`, `z.array()`, `.pipe()` | `undefined`             |
+
+DRZL wraps every nullable column, every field of an update schema, every array column and every
+optional-on-insert column. So attaching the metadata to the base type loses it for most of the
+output: it survives only at `schema.def.innerType`, an internal you should not be walking.
+
+Attaching after every wrapper is also the position `z.toJSONSchema` reads as the property's own
+keywords rather than as one arm of its `anyOf`:
+
+```jsonc
+// attached last, which is what DRZL emits
+"bio": { "anyOf": [{ "type": "string" }, { "type": "null" }], "sqlType": "text" }
+
+// attached to the base type, which an OpenAPI reader would never find
+"bio": { "anyOf": [{ "type": "string", "sqlType": "text" }, { "type": "null" }] }
+```
+
+### What each key is, and why it earns its bytes
+
+A key is here only if it says something the schema does not already say. `nullable` is the
+counter-example and is deliberately absent: `.nullable()` is right there in the chain and
+`anyOf: [..., { "type": "null" }]` is right there in the JSON Schema.
+
+On each field:
+
+| key          | what it adds                                                                                                                                                                                                                                                                                                                     |
+| ------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `sqlType`    | The type as the database declares it, from Drizzle's own `getSQLType()`. Nothing in the schema distinguishes a `text` from a `varchar(40)`.                                                                                                                                                                                      |
+| `maxLength`  | The declared character limit. DRZL enforces it as a `.refine()`, and `z.toJSONSchema` **drops every refinement in silence**, so without this the JSON Schema says the column is an unbounded string. `maxLength` is also the JSON Schema keyword, so this puts the constraint back where a validator acts on it.                 |
+| `maxBytes`   | The declared byte limit, which MySQL's TEXT and BLOB families carry instead of a character one.                                                                                                                                                                                                                                  |
+| `hasDefault` | The database supplies a value when the write omits one. Not recoverable: a defaulted column and a nullable one are **both** `.optional()` on insert.                                                                                                                                                                             |
+| `generated`  | The database computes the value and refuses to be given one.                                                                                                                                                                                                                                                                     |
+| `checks`     | The CHECK constraints this field enforces, named as the failure messages name them. Not a restatement of the bound beside it: DRZL folds a CHECK into the column's own range, so `minimum: 18` is indistinguishable from a type bound, and this carries the provenance and the constraint name a database error will quote back. |
+
+On each table schema:
+
+| key                | what it adds                                                                                                                                                                                                                                                            |
+| ------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `table`            | The SQL table name, which is not the Drizzle export name the schema is named after.                                                                                                                                                                                     |
+| `dialect`          | The same declaration means different things across databases.                                                                                                                                                                                                           |
+| `mode`             | `insert`, `update` or `select`. The export name says it; the schema object does not.                                                                                                                                                                                    |
+| `primaryKey`       | The key columns, in order. A per-field flag cannot carry the order or the grouping.                                                                                                                                                                                     |
+| `unique`           | The unique constraints. The one thing a per-row validator structurally cannot check, which is why [`duplicateFinder`](#duplicatefinder) exists.                                                                                                                         |
+| `readOnly`         | The relation refuses writes, which today means a materialized view.                                                                                                                                                                                                     |
+| `checks`           | Row-level CHECKs, enforced as object refinements and invisible for the same reason.                                                                                                                                                                                     |
+| `unenforcedChecks` | CHECK constraints the database enforces and this schema does not, whether the parser declined the expression or the column's shape has no way to state it. Nothing else in the emitted module mentions these at all; `drzl doctor` is the only other place they appear. |
+
+On an array column the metadata describes the column, and `maxLength` describes the element,
+because that is where the emitted schema applies it.
+
+### `description`
+
+`{ meta: { description: true } }` additionally writes a `description`, which `z.toJSONSchema` maps
+to the JSON Schema keyword of that name. That is what a Swagger or Redoc viewer renders to a human,
+and it is the only key here that any OpenAPI tool understands without being taught.
+
+```ts
+{ kind: 'zod', path: 'src/validators/zod', meta: { description: true } }
+```
+
+```jsonc
+"email":  { "type": "string", "description": "at most 254 characters" },
+"age":    { "anyOf": [...], "description": "CHECK adult: age >= 18" }
+```
+
+It is separate from `meta: true` because it is prose that repeats what the machine-readable keys
+beside it already say, and prose costs the most bytes of anything here.
+
+It is built only from what the schema enforces and cannot show, plus the constraints it does not
+enforce. It is never a restatement of the type, and it is never a user comment.
+
+### Two things to know before pointing `z.toJSONSchema` at an emitted schema
+
+**It throws on a column it cannot represent**, with or without this option. A `Date` column
+answers `Date cannot be represented in JSON Schema` and a `bytea`, a `customType` or a
+`typedColumns` narrowing answers `Custom types cannot be represented in JSON Schema`. Pass
+`{ unrepresentable: 'any' }` to get a document instead of an exception:
+
+```ts
+z.toJSONSchema(SelectusersSchema, { unrepresentable: 'any' });
+```
+
+**OpenAPI 3.0 refuses the keys.** The Schema Object in 3.0 is closed, so a key it does not know is
+an error rather than something a reader ignores. Measured against the official 3.0 schema through
+`@seriousme/openapi-schema-validator`: a document carrying `sqlType` on a property and `table` on a
+schema is invalid, the same document with `x-sqlType` and `x-table` is valid, and `maxLength`,
+`description` and `readOnly` are real 3.0 keywords and pass either way. OpenAPI 3.1 and JSON Schema
+2020-12 both ignore unknown keywords, so nothing here needs renaming for them. If you target 3.0,
+rename the DRZL keys onto `x-` as you build the document, and leave the three real keywords alone.
+
+### There are no column comments to carry, measured
+
+The obvious thing to want here is the comment you wrote on the column. It does not exist.
+`drizzle-orm` exposes no column comments at all, on either major:
+
+```
+comment-ish own keys on a built column     none
+comment-ish methods on its prototype       none
+pg.text('a', { comment: 'hello' })         TypeScript refuses the literal; at runtime the key is
+                                           dropped and the string is not reachable from the built
+                                           column by any path
+```
+
+Column options objects are not strict at runtime, so a `comment` key passed through a variable is
+accepted and silently discarded. There is no source for DRZL to read, which is why every key above
+is a fact the analyzer derived rather than text you wrote.
+
+### zod only, for now
+
+The other four validation generators do not take this option, and are not passed it. Each has a
+metadata facility of its own, and _where the metadata has to attach_ is the entire difficulty here:
+the answer for zod came out of measuring its clone-versus-wrap behaviour, and it does not transfer.
+TypeBox is the obvious next one, because a TypeBox schema **is** a JSON Schema and there is no
+placement question at all.
+
+The `json-schema` generator does not read this either. It builds its documents from the same
+analysis rather than from a zod schema, so there is nothing to read; it already states what JSON
+Schema cannot express as a `description` of its own.
+
 ## Nested relation schemas
 
 `nestedSchemas: true` also emits `NestedInsert<Table>` and `NestedSelect<Table>`, the table plus one

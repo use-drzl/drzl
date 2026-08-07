@@ -28,6 +28,7 @@ const generator = {
   duplicateFinder: true,
   nestedSchemas: true,
   nestedDepth: 2,
+  meta: { description: true },
 };
 const config = { schema: 'src/db/schema.ts' };
 
@@ -53,6 +54,18 @@ describe('the shared options', () => {
       nestedSchemas: true,
       nestedDepth: 2,
     });
+  });
+
+  it('withholds metadata from the four generators that have no measured place to put it', () => {
+    // zod is the only one that takes `meta` today. The other four each have a facility of their
+    // own, and where the metadata has to attach in each is the whole difficulty; passing the
+    // option to a generator that ignores it reads as a promise that something happened.
+    expect(validationOptions(generator, config, 'out', { schemaTypes: true })).not.toHaveProperty(
+      'meta'
+    );
+    expect(
+      validationOptions(generator, config, 'out', { schemaTypes: true, meta: true })
+    ).toMatchObject({ meta: { description: true } });
   });
 
   it('withholds the schema-import options from a generator that cannot use them', () => {

@@ -118,6 +118,25 @@ export const GeneratorSchema = z.object({
    */
   duplicateFinder: z.boolean().optional(),
   /**
+   * zod only. Attach the facts the analyzer knows and a zod schema cannot state, as `.meta()` on
+   * every field and every table schema: the declared SQL type, the primary key, the unique
+   * constraints, whether the database generates or defaults the value, and the CHECK constraints,
+   * including the ones DRZL declined to enforce.
+   *
+   * `z.toJSONSchema` copies these through, so they are also how an OpenAPI document built from the
+   * emitted schemas gets the declared width back: DRZL enforces one as a `.refine()`, and
+   * `toJSONSchema` drops every refinement in silence.
+   *
+   * `true` is the shorthand for `{ enabled: true }`. `{ description: true }` additionally writes a
+   * `description`, which is what an OpenAPI viewer renders to a human.
+   */
+  meta: z
+    .union([
+      z.boolean(),
+      z.object({ enabled: z.boolean().optional(), description: z.boolean().optional() }).strict(),
+    ])
+    .optional(),
+  /**
    * TypeBox only. Give every emitted schema a `~standard` key, so it can be handed to a tRPC or
    * oRPC route.
    *

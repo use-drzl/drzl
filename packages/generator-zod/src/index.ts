@@ -13,11 +13,13 @@ import type {
 } from '@drzl/validation-core';
 import type { NestedNode, NestedMode } from '@drzl/validation-core';
 import {
+  columnMetaFacts,
   formatCode,
   parseCheck,
   renderDuplicateFinder,
   resolveConfiguredImport,
   buildNestedPlan,
+  tableMetaFacts,
   COERCIBLE_DATE_STRING,
   COLUMN_FORMATS,
   insertColumns,
@@ -38,6 +40,38 @@ import {
 } from '@drzl/validation-core';
 
 type Mode = 'insert' | 'update' | 'select';
+
+/**
+ * What `meta` is asking for, once the boolean shorthand is expanded.
+ *
+ * `undefined` means off, which is the default: every byte here ships in the consumer's bundle and
+ * most consumers never read it.
+ */
+interface MetaPlan {
+  /** Also write prose, which is what an OpenAPI viewer renders. Its own flag; see the option. */
+  description: boolean;
+  /** A fact about the analysis rather than about any one table, so it travels with the plan. */
+  dialect?: string;
+}
+
+/**
+ * `.meta({ ... })`, or nothing when the facts are empty and the call would say nothing.
+ *
+ * `JSON.stringify` rather than a hand-rolled object literal: every value here comes from a schema
+ * the user wrote, so a table named `it's` or a CHECK holding a quote has to survive into valid
+ * TypeScript. The formatter unquotes the keys that do not need quoting.
+ */
+function metaCall(facts: object): string {
+  if (!Object.keys(facts).length) return '';
+  return `.meta(${JSON.stringify(facts)})`;
+}
+
+function resolveMeta(opt: ZodGenerateOptions['meta'], dialect?: string): MetaPlan | undefined {
+  if (!opt) return undefined;
+  if (opt === true) return { description: false, dialect };
+  if (opt.enabled === false) return undefined;
+  return { description: !!opt.description, dialect };
+}
 
 /**
  * Suffix appended to the Drizzle export name for every emitted file. The barrel derives
@@ -394,7 +428,9 @@ function zodField(
    * type worth checking. This one is appended, so the checks stay and only the static type
    * narrows.
    */
-  narrowRef?: string
+  narrowRef?: string,
+  /** The column's metadata, already rendered. Appended last; see the call below for why. */
+  metaSuffix = ''
 ): string {
   let expr = zodExprForColumn(c, mode, coerceDates, typedJsonRef, sets, checks);
   // `.array()` does not give the column its own class in Drizzle, so everything above describes
@@ -431,7 +467,14 @@ function zodField(
   // parsed result and the inferred type, checked against zod rather than assumed, so the runtime
   // schema is untouched and only the static type narrows.
   if (narrowRef) expr = `${expr}.pipe(z.custom<${narrowRef}>())`;
-  return expr;
+  // After everything, including the pipe. `.meta()` returns a clone carrying the entry, so a
+  // *clone* operation keeps it and a *wrapping* one does not: measured on zod 4.4.3, `.refine()`,
+  // `.min()` and `.describe()` all preserve it, while `.nullable()`, `.optional()`, `.default()`,
+  // `z.array()` and `.pipe()` each build a new schema whose own `.meta()` answers undefined. So
+  // anywhere but last loses the metadata for every nullable column, every field of an update
+  // schema, and every array. It is also the position `z.toJSONSchema` reads as the property's own
+  // keywords rather than as one arm of its `anyOf`.
+  return expr + metaSuffix;
 }
 
 function renderObjectShape(
@@ -443,7 +486,8 @@ function renderObjectShape(
   sets: ColumnSet[] = [],
   applyDefaults = false,
   lengths: LengthCheck[] = [],
-  cardinalities: CardinalityCheck[] = []
+  cardinalities: CardinalityCheck[] = [],
+  meta?: { plan: MetaPlan; table: Table }
 ) {
   return cols
     .map((c) => {
@@ -455,7 +499,10 @@ function renderObjectShape(
       const replaces = c.tsType === 'any' || c.shape?.kind === 'custom';
       const ref = typedJson && replaces ? refFor(typedJson) : undefined;
       const narrow = typedJson?.allColumns && !replaces ? refFor(typedJson) : undefined;
-      return `  ${JSON.stringify(c.name)}: ${zodField(c, mode, coerceDates, checks, ref, sets, applyDefaults, lengths, cardinalities, narrow)},`;
+      const metaSuffix = meta
+        ? metaCall(columnMetaFacts(c, meta.table, { description: meta.plan.description }))
+        : '';
+      return `  ${JSON.stringify(c.name)}: ${zodField(c, mode, coerceDates, checks, ref, sets, applyDefaults, lengths, cardinalities, narrow, metaSuffix)},`;
     })
     .join('\n');
 }
@@ -536,7 +583,8 @@ function renderNestedObject(
   mode: NestedMode,
   coerceDates: NonNullable<ValidationGenerateOptions['coerceDates']>,
   typedJson: { allColumns?: boolean } | undefined,
-  applyDefaults: boolean
+  applyDefaults: boolean,
+  meta?: MetaPlan
 ): string {
   const all = mode === 'insert' ? insertColumns(node.table) : selectColumns(node.table);
   const cols = nestedNodeColumns(all, node);
@@ -553,14 +601,15 @@ function renderNestedObject(
     sets,
     applyDefaults,
     lengths,
-    cardinalities
+    cardinalities,
+    meta ? { plan: meta, table: node.table } : undefined
   );
 
   const arms = node.arms.map((arm) => {
     const notes = nestedArmNotes(arm)
       .map((n) => `  // ${n}\n`)
       .join('');
-    const child = renderNestedObject(arm.child, mode, coerceDates, typedJson, applyDefaults);
+    const child = renderNestedObject(arm.child, mode, coerceDates, typedJson, applyDefaults, meta);
     // A to-one may come back null: a relational query returns null where there is no matching
     // row, and accepting it never turns away something the query produced. Optional throughout,
     // because which relations a payload carries is the caller's choice on a write and the `with`
@@ -572,7 +621,19 @@ function renderNestedObject(
   });
 
   const body = [fields, ...arms].filter(Boolean).join('\n');
-  return `z.object({\n${body}\n})${rowRefinements(rows, cols)}`;
+  // After the row refinements, for the same reason a field's metadata goes after its wrappers: on
+  // an object `.refine()` is a clone rather than a wrap, so this order is not forced, but keeping
+  // one rule for both positions means there is nothing to get wrong when either side changes.
+  const tableMeta = meta
+    ? metaCall(
+        tableMetaFacts(node.table, {
+          mode,
+          dialect: meta.dialect,
+          description: meta.description,
+        })
+      )
+    : '';
+  return `z.object({\n${body}\n})${rowRefinements(rows, cols)}${tableMeta}`;
 }
 
 /** The nested exports for one table, or nothing when it has no relations to describe. */
@@ -582,7 +643,8 @@ function renderNestedSchemas(
   coerceDates: NonNullable<ValidationGenerateOptions['coerceDates']>,
   typedJson: { allColumns?: boolean } | undefined,
   applyDefaults: boolean,
-  plans: Partial<Record<NestedMode, NestedNode>>
+  plans: Partial<Record<NestedMode, NestedNode>>,
+  meta?: MetaPlan
 ): string {
   const out: string[] = [];
   for (const mode of ['insert', 'select'] as const) {
@@ -590,7 +652,7 @@ function renderNestedSchemas(
     if (!plan) continue;
     const name = nestedSchemaName(mode, table.tsName, affix);
     const tname = nestedTypeName(mode, table.tsName, affix);
-    const expr = renderNestedObject(plan, mode, coerceDates, typedJson, applyDefaults);
+    const expr = renderNestedObject(plan, mode, coerceDates, typedJson, applyDefaults, meta);
     const infer = mode === 'insert' ? 'input' : 'output';
     out.push(
       `export const ${name} = ${expr};\n\nexport type ${tname} = z.${infer}<typeof ${name}>;`
@@ -613,7 +675,8 @@ function renderTableSchemas(
   typedJson?: { schemaSpecifier: string; allColumns?: boolean },
   applyDefaults = false,
   wantsDuplicateFinder = false,
-  nested: Partial<Record<NestedMode, NestedNode>> = {}
+  nested: Partial<Record<NestedMode, NestedNode>> = {},
+  meta?: MetaPlan
 ) {
   const T = table.tsName;
   const insertSchema = schemaName('insert', T, affix);
@@ -641,6 +704,7 @@ function renderTableSchemas(
   const tjInsert = typedJson
     ? { table: table.tsName, mode: 'insert' as const, allColumns: typedJson.allColumns }
     : undefined;
+  const forMeta = meta ? { plan: meta, table } : undefined;
   const bodyInsert = renderObjectShape(
     insertCols,
     'insert',
@@ -650,7 +714,8 @@ function renderTableSchemas(
     sets,
     applyDefaults,
     lengths,
-    cardinalities
+    cardinalities,
+    forMeta
   );
   const bodyUpdate = renderObjectShape(
     updateCols,
@@ -661,7 +726,8 @@ function renderTableSchemas(
     sets,
     applyDefaults,
     lengths,
-    cardinalities
+    cardinalities,
+    forMeta
   );
   const bodySelect = renderObjectShape(
     selectCols,
@@ -672,8 +738,16 @@ function renderTableSchemas(
     sets,
     applyDefaults,
     lengths,
-    cardinalities
+    cardinalities,
+    forMeta
   );
+  // One per mode, because the mode is the only thing that differs and it is one of the facts.
+  const tableMetaFor = (mode: Mode) =>
+    meta
+      ? metaCall(
+          tableMetaFacts(table, { mode, dialect: meta.dialect, description: meta.description })
+        )
+      : '';
   // A type-only import: it disappears at build time, so this adds no runtime dependency on the
   // schema module and cannot create an import cycle at runtime.
   //
@@ -693,11 +767,11 @@ function renderTableSchemas(
     ? ''
     : `export const ${insertSchema} = z.object({
 ${bodyInsert}
-})${rowRefinements(rows, insertCols)};
+})${rowRefinements(rows, insertCols)}${tableMetaFor('insert')};
 
 export const ${updateSchema} = z.object({
 ${bodyUpdate}
-})${rowRefinements(rows, updateCols)};
+})${rowRefinements(rows, updateCols)}${tableMetaFor('update')};
 
 `;
   const writeTypes = table.readOnly
@@ -719,14 +793,15 @@ export type ${updateType} = z.input<typeof ${updateSchema}>;
     coerceDates,
     typedJson,
     applyDefaults,
-    nested
+    nested,
+    meta
   );
 
   return `import { z } from 'zod';
 ${schemaImport}
 ${writes}export const ${selectSchema} = z.object({
 ${bodySelect}
-})${rowRefinements(rows, selectCols)};
+})${rowRefinements(rows, selectCols)}${tableMetaFor('select')};
 
 ${writeTypes}export type ${selectType} = z.output<typeof ${selectSchema}>;
 ${nestedCode}${duplicates}`;
@@ -743,6 +818,28 @@ export interface ZodGenerateOptions extends ValidationGenerateOptions {
    * generated code ships in the consumer's bundle.
    */
   duplicateFinder?: boolean;
+  /**
+   * Attach the facts the analyzer knows and a zod schema cannot state, as `.meta()` on every
+   * field and on every table schema.
+   *
+   * A validator says what a value must look like. It does not say where the value came from, and
+   * nothing on `z.string()` distinguishes a `text` from a `varchar(40)`, says whether the database
+   * fills it in, or names the key columns. This carries those, plus the two things the schema does
+   * enforce and cannot show: a declared width and every CHECK constraint, both of which are
+   * `.refine()` calls that `z.toJSONSchema` drops in silence.
+   *
+   * Off by default. Every byte lands in the consumer's bundle, and most consumers never read it.
+   *
+   * `{ description: true }` additionally writes a `description`, which `toJSONSchema` maps to the
+   * JSON Schema keyword of that name and is what an OpenAPI viewer renders to a human. It is prose
+   * and it repeats what the machine-readable keys beside it already say, so it is asked for
+   * separately.
+   *
+   * zod only, deliberately. It is the one validator DRZL emits whose metadata has a defined
+   * destination outside itself, and the placement question this answers had to be measured against
+   * zod's own clone-versus-wrap behaviour rather than reasoned about. See the docs page.
+   */
+  meta?: boolean | { enabled?: boolean; description?: boolean };
 }
 
 /**
@@ -805,6 +902,9 @@ export class ZodGenerator implements ValidationRenderer<ZodGenerateOptions> {
     const nestedDepth = opts.nestedSchemas
       ? resolveNestedDepth(opts.nestedDepth, (m) => console.warn(m))
       : 0;
+    // The dialect is a fact about the analysis rather than about any one table, and the same
+    // declaration means different things across dialects, so it travels with the plan.
+    const metaPlan = resolveMeta(opts.meta, this.analysis.dialect);
     // File names deliberately stay on the raw Drizzle export name: affixes and tableCase
     // rename identifiers, never modules, so the barrel and importPath keep resolving.
     for (const table of this.analysis.tables) {
@@ -816,7 +916,8 @@ export class ZodGenerator implements ValidationRenderer<ZodGenerateOptions> {
         typedJson,
         !!opts.applyDefaults,
         !!opts?.duplicateFinder,
-        opts.nestedSchemas ? nestedPlansFor(table, this.analysis, nestedDepth) : {}
+        opts.nestedSchemas ? nestedPlansFor(table, this.analysis, nestedDepth) : {},
+        metaPlan
       );
       const formatted = await formatCode(
         buildHeader(opts.outputHeader) + code,
@@ -847,7 +948,9 @@ export class ZodGenerator implements ValidationRenderer<ZodGenerateOptions> {
       opts?.coerceDates ?? 'input',
       undefined,
       !!opts?.applyDefaults,
-      !!opts?.duplicateFinder
+      !!opts?.duplicateFinder,
+      {},
+      resolveMeta(opts?.meta, this.analysis.dialect)
     );
   }
 

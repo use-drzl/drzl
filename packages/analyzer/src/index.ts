@@ -51,7 +51,35 @@ export interface Relation {
 export interface Column {
   name: string;
   tsType: string;
+  /**
+   * A coarse label for the column's kind, not its type.
+   *
+   * `varchar`, `char` and `text` are all `TEXT` here, deliberately: exactly one consumer reads
+   * this, `isIntegerColumn`, and it only asks whether a number is whole. Use `sqlType` for the
+   * question this name suggests it answers.
+   */
   dbType: string;
+  /**
+   * The column's type as the database declares it, from Drizzle's own `getSQLType()`:
+   * `varchar(255)`, `numeric(10, 2)`, `timestamp with time zone`, `text[]`, or an enum's type
+   * name.
+   *
+   * The one fact about a column that no validator schema can carry, and the one every other fact
+   * here is a consequence of. A generator that emits metadata beside its schemas has nothing else
+   * to put in it: `dbType` is a label rather than a type, and the declared width lives in
+   * `maxLength`, the precision in `min`/`max`, and neither of those says which type produced it.
+   *
+   * The two Drizzle majors disagree about an array and are reconciled here, measured rather than
+   * assumed: 0.4x wraps the column in a `PgArray` whose own answer is already `text[]`, while v1
+   * leaves the class alone and raises `dimensions`, so its answer is the bare `text`. The suffix
+   * is added from `arrayDimensions` when the type does not already carry one, so a consumer
+   * cannot tell which major produced its metadata.
+   *
+   * Absent where the builder has no `getSQLType` or it throws. Nothing is guessed from the class
+   * name: an invented type string reads exactly like a real one, and there is no way for a
+   * consumer to tell them apart.
+   */
+  sqlType?: string;
   nullable: boolean;
   hasDefault: boolean;
   isGenerated: boolean;
@@ -2354,10 +2382,29 @@ export class SchemaAnalyzer {
         });
       }
 
+      // The type as declared, read from the outer column so a 0.4x `PgArray` answers for the
+      // array rather than for its element. See `Column.sqlType` for the major-to-major
+      // reconciliation and for why nothing is invented when the builder cannot answer.
+      const dims = arrayDims || v1?.arrayDimensions || 0;
+      const declaredSqlType = ((): string | undefined => {
+        let raw: unknown;
+        try {
+          raw =
+            typeof (outerCol as any)?.getSQLType === 'function'
+              ? (outerCol as any).getSQLType()
+              : undefined;
+        } catch {
+          return undefined;
+        }
+        if (typeof raw !== 'string' || !raw) return undefined;
+        return raw.endsWith(']') ? raw : raw + '[]'.repeat(dims);
+      })();
+
       columns.push({
         name: colName,
         tsType,
         dbType,
+        ...(declaredSqlType ? { sqlType: declaredSqlType } : {}),
         nullable,
         hasDefault,
         isGenerated,

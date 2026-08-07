@@ -9,6 +9,7 @@ import type { AffixOptions } from './naming.js';
 
 export * from './checks.js';
 export * from './files.js';
+export * from './meta.js';
 export * from './naming.js';
 export * from './nested.js';
 
