@@ -402,6 +402,26 @@ export default {
     // that DRZL generated, so running only that one exercised no cross-module specifier and
     // missed the service import being emitted bare and extensionless.
     { kind: 'orpc', template: '@drzl/template-orpc-service', includeRelations: true },
+    // Its own `path`, because oRPC claims `outDir`. The service template and the shared-schema
+    // option are what put this tree through the specifier sweep below, which is the only stage
+    // that compiles the emitted `.js` imports the way a consumer's compiler will under bundler,
+    // node16 and nodenext.
+    //
+    // No `databaseInjection` here, and the reason is a real constraint rather than an omission.
+    // Injection is a contract between a router and a service: the router emits
+    // `Service.get(ctx.db, id)` and only a service generated in the same mode takes that
+    // parameter. There is one service generator in this config and two routers, and oRPC above
+    // does not inject, so no single service can satisfy both. Setting it here emitted ten
+    // TS2554s. The config also runs `dataAccess: 'stub'`, whose bodies take no database whatever
+    // the flag says, which the CLI warns about. Injection is covered by the generator's own
+    // tests; what this entry is here for is the specifier sweep.
+    {
+      kind: 'trpc',
+      path: './src/generated/trpc',
+      template: 'service',
+      includeRelations: true,
+      validation: { useShared: true },
+    },
   ],
 };
 CONFIG
@@ -428,7 +448,7 @@ node -e "
 # consumer who wants formatted output does, and it makes this run cover the peer resolving from
 # a real install. The stage further down removes it again to cover the other case.
 npm install --no-audit --no-fund --loglevel=error \
-  "$TARS"/*.tgz drizzle-orm zod valibot arktype @orpc/server typescript tsx prettier >/dev/null
+  "$TARS"/*.tgz drizzle-orm zod valibot arktype @orpc/server @trpc/server typescript tsx prettier >/dev/null
 
 if [ ! -e node_modules/.bin/drzl ]; then
   echo "FAIL: the drzl bin did not resolve after a real install." >&2
@@ -454,6 +474,21 @@ done
 # The relation endpoint the foreign key above should have produced.
 grep -q 'listByAuthorId' src/generated/api/posts.ts || {
   echo "FAIL: includeRelations did not emit a lookup for the authorId foreign key." >&2
+  exit 1
+}
+grep -q 'listByAuthorId' src/generated/trpc/posts.ts || {
+  echo "FAIL: the tRPC router emitted no relation lookup for the authorId foreign key." >&2
+  exit 1
+}
+
+# The addressing procedures have to take the table's real key. The sibling oRPC generator emits
+# `z.object({ id: z.number() })` for every table whatever its key is, which names a column that
+# need not exist and types a uuid as a number, and this is the check that stops the tRPC one
+# regressing to the same shape. `books` is keyed on a varchar `isbn` in the dialect fixture
+# below, so a hardcoded numeric `id` fails there rather than here; here it is enough that the
+# key columns reach the router at all.
+grep -q 'byId' src/generated/trpc/posts.ts || {
+  echo "FAIL: the tRPC router emitted no byId procedure for a table that has a primary key." >&2
   exit 1
 }
 
@@ -579,6 +614,15 @@ CONFIG
     echo "FAIL [$dialect]: no relation lookup emitted for the authorId foreign key." >&2
     exit 1
   }
+  # The tRPC addressing input, against the same natural key. A generator that hardcodes
+  # `{ id: number }` passes every typecheck in this file and fails the moment a table is keyed on
+  # anything else, so the column name has to appear in the router that addresses by it.
+  if [ -f "src/dia-$dialect/trpc/books.ts" ]; then
+    grep -q 'isbn' "src/dia-$dialect/trpc/books.ts" || {
+      echo "FAIL [$dialect]: the tRPC books router does not address by the real key 'isbn'." >&2
+      exit 1
+    }
+  fi
 
   cat > "tsconfig.$dialect.json" <<EOF
 {
@@ -616,6 +660,7 @@ export default {
     { kind: 'zod', path: './src/unformatted/zod' },
     { kind: 'service', path: './src/unformatted/services' },
     { kind: 'orpc' },
+    { kind: 'trpc', path: './src/unformatted/trpc' },
   ],
 };
 CONFIG
@@ -634,6 +679,14 @@ mv node_modules/.prettier-hidden node_modules/prettier
 grep -q "export \* from './users.zod.js';" src/unformatted/zod/index.ts || {
   echo "FAIL: the unformatted barrel is not what the generator emits. Was:" >&2
   cat src/unformatted/zod/index.ts >&2
+  exit 1
+}
+# The tRPC entry point is not a barrel: it calls `router()` and exports `type AppRouter`, which
+# is the entire contract a typed client infers its API from. So the check is on that, not on a
+# re-export line, and it is the exact unformatted bytes for the same reason as above.
+grep -q "export type AppRouter = typeof appRouter;" src/unformatted/trpc/index.ts || {
+  echo "FAIL: the unformatted tRPC entry point does not export the router type. Was:" >&2
+  cat src/unformatted/trpc/index.ts >&2
   exit 1
 }
 cat > tsconfig.unformatted.json <<'EOF'

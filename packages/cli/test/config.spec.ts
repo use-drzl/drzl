@@ -1,5 +1,12 @@
 import { describe, it, expect } from 'vitest';
-import { loadConfig, defineConfig, ConfigSchema, resolveConfig } from '../src/config';
+import {
+  computeGeneratorOutputDirs,
+  ConfigSchema,
+  defineConfig,
+  loadConfig,
+  resolveConfig,
+  trpcOutDir,
+} from '../src/config';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -245,5 +252,124 @@ describe('@drzl/cli config affix', () => {
     expect(withoutExtension(config)).toEqual(withoutExtension(before));
     expect(config.generators.map((g) => g.importExtension)).toEqual(['js', 'js']);
     expect(warnings).toEqual([]);
+  });
+});
+
+describe('@drzl/cli config: the trpc generator', () => {
+  const base = (generators: any[]) => ({ schema: 'src/db/schema.ts', generators });
+
+  it('is a kind the schema accepts', () => {
+    expect(() => ConfigSchema.parse(base([{ kind: 'trpc' }]))).not.toThrow();
+  });
+
+  it('writes to outDir by default and to path when given one', () => {
+    const cfg = ConfigSchema.parse({ ...base([{ kind: 'trpc' }]), outDir: 'src/api' });
+    expect(trpcOutDir(cfg.generators[0], cfg)).toBe('src/api');
+    const withPath = ConfigSchema.parse({
+      ...base([{ kind: 'trpc', path: 'src/trpc' }]),
+      outDir: 'src/api',
+    });
+    expect(trpcOutDir(withPath.generators[0], withPath)).toBe('src/trpc');
+  });
+
+  it('is watched-around, so a rebuild does not retrigger itself', () => {
+    // The watcher ignores every generator's output directory. A tRPC directory missing from that
+    // list is an infinite regeneration loop, not a cosmetic omission.
+    const cfg = ConfigSchema.parse({
+      ...base([{ kind: 'trpc', path: 'src/trpc' }]),
+      outDir: 'src/api',
+    });
+    const dirs = computeGeneratorOutputDirs(cfg, '/proj');
+    expect(dirs).toContain(path.join('/proj', 'src/trpc'));
+  });
+
+  it('inherits the sibling validation generator affix, exactly as orpc does', () => {
+    const { config } = resolveConfig(
+      ConfigSchema.parse(
+        base([
+          { kind: 'zod', affix: { tableCase: 'pascal' } },
+          {
+            kind: 'trpc',
+            validation: { useShared: true, library: 'zod', importPath: '../validators/zod' },
+          },
+        ])
+      )
+    );
+    const trpc = config.generators.find((g) => g.kind === 'trpc')!;
+    expect(trpc.validation?.affix?.tableCase).toBe('pascal');
+  });
+
+  it('refuses an affix that disagrees with the generator it imports from', () => {
+    expect(() =>
+      resolveConfig(
+        ConfigSchema.parse(
+          base([
+            { kind: 'zod', affix: { tableCase: 'pascal' } },
+            {
+              kind: 'trpc',
+              validation: {
+                useShared: true,
+                library: 'zod',
+                importPath: '../validators/zod',
+                affix: { tableCase: 'preserve' },
+              },
+            },
+          ])
+        )
+      )
+    ).toThrow(/"trpc" generator imports shared zod schemas/);
+  });
+
+  it('pushes databaseInjection onto the service generator that has to match it', () => {
+    // A router in injection mode calls `Service.getById(ctx.db, id)`. Declaring the block twice is
+    // how the two halves drift into a project that compiles separately and not together.
+    const { config, warnings } = resolveConfig(
+      ConfigSchema.parse(
+        base([
+          { kind: 'service', dataAccess: 'drizzle', schemaImportPath: 'src/db/schema' },
+          {
+            kind: 'trpc',
+            template: 'service',
+            databaseInjection: { enabled: true, databaseType: 'Database' },
+          },
+        ])
+      )
+    );
+    const service = config.generators.find((g) => g.kind === 'service')!;
+    expect(service.databaseInjection).toEqual({ enabled: true, databaseType: 'Database' });
+    expect(warnings).toEqual([]);
+  });
+
+  it('says so when injection is asked of a service generator that emits stubs', () => {
+    // `@drzl/generator-service` honours the flag only while emitting real Drizzle queries. Its
+    // stub bodies take no database parameter whatever they are told, so the router's calls would
+    // not compile.
+    const { warnings } = resolveConfig(
+      ConfigSchema.parse(
+        base([
+          { kind: 'service' },
+          { kind: 'trpc', template: 'service', databaseInjection: { enabled: true } },
+        ])
+      )
+    );
+    expect(warnings.join('\n')).toMatch(/emits stub bodies/);
+  });
+
+  it('keeps databaseInjection through a parse, rather than stripping it in silence', () => {
+    // It was documented on the oRPC generator and absent from this schema, so zod dropped the key
+    // and the option did nothing at all when set from a config file.
+    const parsed = ConfigSchema.parse(
+      base([
+        {
+          kind: 'orpc',
+          databaseInjection: {
+            enabled: true,
+            databaseType: 'Database',
+            databaseTypeImport: { name: 'Database', from: 'src/db/db' },
+          },
+        },
+      ])
+    );
+    expect(parsed.generators[0].databaseInjection?.databaseTypeImport?.from).toBe('src/db/db');
   });
 });

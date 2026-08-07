@@ -71,7 +71,7 @@ export const AffixSchema = z
 export const ImportExtensionSchema = z.enum(IMPORT_EXTENSIONS);
 
 export const GeneratorSchema = z.object({
-  kind: z.enum(['orpc', 'service', 'zod', 'valibot', 'arktype', 'typebox', 'json-schema']),
+  kind: z.enum(['orpc', 'trpc', 'service', 'zod', 'valibot', 'arktype', 'typebox', 'json-schema']),
   /**
    * Overrides the top-level `importExtension` for this generator alone, for a project whose
    * generated directories are compiled by different tsconfigs.
@@ -146,7 +146,24 @@ export const GeneratorSchema = z.object({
    * Omitting it reproduces the output of every previous release exactly.
    */
   affix: AffixSchema.optional(),
-  // orpc validation sharing
+  /**
+   * How the router generators reach a database handle: through the request context, rather than
+   * through a module-level import in the service layer.
+   *
+   * Documented on the oRPC generator since it was added and, until now, absent from this schema
+   * entirely. `GeneratorSchema` is not strict, so zod stripped the key without a word and the
+   * option did nothing at all when set from a config file. It was only ever reachable by calling
+   * the generator's API directly.
+   */
+  databaseInjection: z
+    .object({
+      enabled: z.boolean().optional(),
+      /** The type annotation for the injected handle, e.g. `DrizzleD1Database`. */
+      databaseType: z.string().optional(),
+      databaseTypeImport: z.object({ name: z.string(), from: z.string() }).optional(),
+    })
+    .optional(),
+  // router validation sharing (orpc, trpc)
   validation: z
     .object({
       useShared: z.boolean().default(false).optional(),
@@ -241,6 +258,27 @@ export function defineConfig<T extends DrzlConfigInput>(cfg: T): T {
 
 type GeneratorConfig = DrzlConfig['generators'][number];
 
+/** The generators that emit an RPC router, and so share `outDir` and `validation`. */
+const ROUTER_KINDS = new Set(['orpc', 'trpc']);
+
+/**
+ * Where the tRPC generator writes.
+ *
+ * `outDir` by default, exactly like oRPC, so a config that names one router generator puts its
+ * output where the top-level setting says. `path` is the escape hatch, and a config that runs
+ * *both* router generators needs it: they would otherwise write two different `index.ts` files to
+ * the same directory and the second would win.
+ *
+ * Exported because `computeGeneratorOutputDirs` has to agree with the dispatch in cli.ts about
+ * this, and the watcher ignoring the wrong directory is an infinite regeneration loop.
+ */
+export function trpcOutDir(
+  g: { path?: string },
+  cfg: { outDir: string }
+): string {
+  return g.path ?? cfg.outDir;
+}
+
 function sharedSchemaNames(opts: { affix?: AffixOptions; schemaSuffix?: string }): string[] {
   const resolved = resolveAffix(opts);
   return NAME_MODES.map((mode) => schemaName(mode, AFFIX_PROBE_TABLE, resolved));
@@ -271,7 +309,47 @@ export function resolveConfig(cfg: DrzlConfig): { config: DrzlConfig; warnings: 
   }));
 
   for (const g of generators) {
-    if (g.kind !== 'orpc') continue;
+    // Both router generators import the validation generators' exports by name, so both have to
+    // spell them the way the sibling generator wrote them.
+    if (!ROUTER_KINDS.has(g.kind)) continue;
+
+    /**
+     * `databaseInjection` describes a contract between two generators, not a setting of one.
+     *
+     * A router in injection mode emits `Service.getById(ctx.db, id)`, and only a service
+     * generated in the same mode has a `db` parameter to receive it. Declared once on the router
+     * and pushed onto the service generator here, exactly as `validation.affix` is pulled the
+     * other way, because the alternative is writing the same block twice and a project that
+     * compiles in halves and not as a whole.
+     *
+     * `@drzl/generator-service` honours the flag only while emitting real Drizzle queries: its
+     * stub bodies take no database whatever they are told. That combination cannot be repaired
+     * from here without changing what an existing config emits, so it is reported instead.
+     */
+    if (g.databaseInjection?.enabled) {
+      for (const s of generators.filter((x) => x.kind === 'service')) {
+        if (!s.databaseInjection) {
+          s.databaseInjection = g.databaseInjection;
+        } else if (!s.databaseInjection.enabled) {
+          warnings.push(
+            `drzl config: the "${g.kind}" generator sets databaseInjection.enabled while the ` +
+              `"service" generator sets it to false. The router will call ` +
+              `Service.method(ctx.db, ...) against services that take no database parameter, so ` +
+              `the generated project will not compile. Set both, or neither.`
+          );
+        }
+        if ((s.dataAccess ?? 'stub') === 'stub') {
+          warnings.push(
+            `drzl config: the "${g.kind}" generator sets databaseInjection.enabled, so its ` +
+              `handlers call Service.method(ctx.db, ...). The "service" generator emits stub ` +
+              `bodies, which take no database parameter whatever this option says, so those ` +
+              `calls will not compile. Set dataAccess: 'drizzle' on the "service" generator, or ` +
+              `drop databaseInjection.`
+          );
+        }
+      }
+    }
+
     const v = g.validation;
     if (!v?.useShared) continue;
 
@@ -303,7 +381,7 @@ export function resolveConfig(cfg: DrzlConfig): { config: DrzlConfig; warnings: 
       const mine = sharedSchemaNames({ schemaSuffix: v.schemaSuffix });
       if (mine.join(',') !== theirs.join(',')) {
         warnings.push(
-          `drzl config: the "orpc" generator's validation.schemaSuffix ` +
+          `drzl config: the "${g.kind}" generator's validation.schemaSuffix ` +
             `(${JSON.stringify(v.schemaSuffix ?? 'Schema')}) does not match the "${library}" ` +
             `generator's schemaSuffix (${JSON.stringify(sibling.schemaSuffix ?? 'Schema')}). ` +
             `The router will import ${mine.join(', ')} but the "${library}" generator exports ` +
@@ -320,7 +398,7 @@ export function resolveConfig(cfg: DrzlConfig): { config: DrzlConfig; warnings: 
     });
     if (mine.join(',') !== theirs.join(',')) {
       throw new Error(
-        `drzl config: the "orpc" generator imports shared ${library} schemas, but its ` +
+        `drzl config: the "${g.kind}" generator imports shared ${library} schemas, but its ` +
           `validation.affix disagrees with the "${library}" generator's own naming. The router ` +
           `would import ${mine.join(', ')} while the "${library}" generator exports ` +
           `${theirs.join(', ')}. Make them match, or drop validation.affix and let it be ` +
@@ -403,6 +481,7 @@ export function computeGeneratorOutputDirs(cfg: DrzlConfig, cwd = process.cwd())
   const dirs = new Set<string>();
   dirs.add(abs(cfg.outDir)); // orpc
   for (const g of cfg.generators) {
+    if (g.kind === 'trpc') dirs.add(abs(trpcOutDir(g, cfg)));
     if (g.kind === 'service') dirs.add(abs(g.path ?? 'src/services'));
     if (g.kind === 'zod') dirs.add(abs(g.path ?? 'src/validators/zod'));
     if (g.kind === 'valibot') dirs.add(abs(g.path ?? 'src/validators/valibot'));
@@ -422,7 +501,10 @@ export function resolveTemplateDirsSync(cfg: DrzlConfig, cwd = process.cwd()): s
 
   for (const g of cfg.generators) {
     const t = g.template;
-    if (!t || t === 'standard' || t === 'minimal') continue;
+    // Built-in template names, not packages. `service` is the tRPC generator's, and without it
+    // here every run would try to resolve a package called "service" and then watch a directory
+    // of that name, neither of which exists.
+    if (!t || t === 'standard' || t === 'minimal' || t === 'service') continue;
 
     // Try package resolution relative to cwd
     let pkgDir: string | null = null;
