@@ -10,6 +10,7 @@ import type { AffixOptions } from './naming.js';
 export * from './checks.js';
 export * from './files.js';
 export * from './naming.js';
+export * from './nested.js';
 
 // Minimal local Table shape for codegen logic and tests
 export interface Table {
@@ -108,6 +109,29 @@ export interface ValidationGenerateOptions {
    */
   affix?: AffixOptions;
   coerceDates?: 'input' | 'all' | 'none';
+  /**
+   * Also emit `NestedInsert<Table>` and `NestedSelect<Table>`: the table's own schema plus one key
+   * per relation, so `{ ...user, posts: [...] }` can be validated whole.
+   *
+   * Nothing in the Drizzle validator ecosystem describes this payload. Measured across both majors
+   * and all four libraries, `createInsertSchema(users)` emits column keys only, and
+   * `db.insert(users).values({ name, posts: [...] })` drops the `posts` key without a word rather
+   * than refusing it, so the children are silently never written.
+   *
+   * Off by default, like every other option that adds bytes to the consumer's bundle. See
+   * `NestedMode` in `@drzl/validation-core` for why there is no nested update schema, and
+   * `KINDS_BY_MODE` for why a `one` relation appears on select and not on insert.
+   */
+  nestedSchemas?: boolean;
+  /**
+   * How many levels of children a nested schema describes. Defaults to 1, capped at
+   * `MAX_NESTED_DEPTH`.
+   *
+   * Nesting is expanded inline rather than by reference, so this multiplies the emitted size: a
+   * schema whose tables average R relations emits R^depth child shapes per root table. It is also
+   * what terminates a cycle, since `users -> posts -> users` simply stops here.
+   */
+  nestedDepth?: number;
   emit?: {
     select?: boolean;
     insert?: boolean;
@@ -119,6 +143,13 @@ export interface ValidationRenderer<
   TOptions extends ValidationGenerateOptions = ValidationGenerateOptions,
 > {
   readonly library: ValidationLibrary;
+  /**
+   * One table's schemas, without the nested variants even under `nestedSchemas`.
+   *
+   * Structural rather than an omission: relations live on the `Analysis` and this is handed a
+   * `Table`, so there is nothing here to read them from. `typedJson` is absent for the same
+   * reason. Nothing but the generators' own tests calls this; `generate` is the path that emits.
+   */
   renderTable(table: Table, opts?: TOptions): string;
   renderIndex?(analysis: Analysis, opts?: TOptions): string;
   generate(opts: TOptions): Promise<string[]>;

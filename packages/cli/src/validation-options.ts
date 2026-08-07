@@ -24,6 +24,8 @@ type GeneratorConfig = {
   typedJson?: unknown;
   typedColumns?: unknown;
   duplicateFinder?: unknown;
+  nestedSchemas?: unknown;
+  nestedDepth?: unknown;
 };
 
 export interface GeneratorCapabilities {
@@ -55,6 +57,8 @@ export function validationOptions(
     coerceDates: g.coerceDates,
     applyDefaults: g.applyDefaults,
     duplicateFinder: g.duplicateFinder,
+    nestedSchemas: g.nestedSchemas,
+    nestedDepth: g.nestedDepth,
     // Only where the generator can act on them, so an unsupported option is absent rather than
     // present and ignored.
     ...(caps.schemaTypes

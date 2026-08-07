@@ -9,8 +9,15 @@ import type {
   ValidationRenderer,
   ValidationGenerateOptions,
 } from '@drzl/validation-core';
+import type { NestedMode, NestedNode } from '@drzl/validation-core';
 import {
+  buildNestedPlan,
   formatCode,
+  nestedArmNotes,
+  nestedNodeColumns,
+  nestedSchemaName,
+  nestedTypeName,
+  resolveNestedDepth,
   COERCIBLE_DATE_STRING,
   COLUMN_FORMATS,
   insertColumns,
@@ -285,7 +292,10 @@ function tbShapeExpr(c: Column, mode: Mode, typedJsonRef?: string): string | und
  * of either, but a length is an integer, so `> 2` is exactly `minItems: 3` and nothing is
  * approximated by the rewrite. `<>` has no keyword at all and is left unstated.
  */
-function tbCardinalityOptions(c: Column, cardinalities: CardinalityCheck[]): Array<[string, string]> {
+function tbCardinalityOptions(
+  c: Column,
+  cardinalities: CardinalityCheck[]
+): Array<[string, string]> {
   if (!c.arrayDimensions) return [];
   const out = new Map<string, string>();
   const step = (v: string, by: number) => String(BigInt(v) + BigInt(by));
@@ -497,13 +507,148 @@ function renderObjectShape(
     .join('\n');
 }
 
+/** Every CHECK on a table that the shared parser understands, split by what it constrains. */
+function parsedChecksFor(table: Table) {
+  const parsed = (table.checks ?? []).map((k) => parseCheck(k.expression, k.name));
+  return {
+    checks: parsed.flatMap((p) => (p.ok ? p.checks : [])),
+    sets: parsed.flatMap((p) => (p.ok ? (p.sets ?? []) : [])),
+    rows: parsed.flatMap((p) => (p.ok ? (p.rows ?? []) : [])),
+    lengths: parsed.flatMap((p) => (p.ok ? (p.lengths ?? []) : [])),
+    cardinalities: parsed.flatMap((p) => (p.ok ? (p.cardinalities ?? []) : [])),
+  };
+}
+
+/** Push a rendered block one level deeper, so the nested object reads as one. */
+function indentBlock(code: string, by = '  '): string {
+  return code
+    .split('\n')
+    .map((line) => (line ? by + line : line))
+    .join('\n');
+}
+
+/** The columns one node of a plan contributes, in the mode it is rendered for. */
+function nestedNodeCols(node: NestedNode, mode: NestedMode): Column[] {
+  const all = mode === 'insert' ? insertColumns(node.table) : selectColumns(node.table);
+  return nestedNodeColumns(all, node);
+}
+
+/** Every node of a plan, so the preamble decisions can see the whole of what will be emitted. */
+function nestedNodes(node: NestedNode, into: NestedNode[] = []): NestedNode[] {
+  into.push(node);
+  for (const arm of node.arms) nestedNodes(arm.child, into);
+  return into;
+}
+
+/**
+ * One object of a nested payload, with its relations expanded inline.
+ *
+ * Rendered from the columns rather than derived from the sibling schema with `Type.Omit`. Measured
+ * on TypeBox 0.34.52: `Type.Omit` over the `Type.Intersect` that a table with a row-level CHECK
+ * emits rewrites the `DrzlRowCheck` branch into an empty `Type.Object({})` and keeps every
+ * property of the first branch required, so the derived schema both lost its row check and
+ * refused rows the original accepted.
+ */
+function renderNestedObject(
+  node: NestedNode,
+  mode: NestedMode,
+  coerceDates: NonNullable<ValidationGenerateOptions['coerceDates']>,
+  typedJson: { allColumns?: boolean } | undefined,
+  applyDefaults: boolean
+): string {
+  const cols = nestedNodeCols(node, mode);
+  const { checks, sets, rows, lengths, cardinalities } = parsedChecksFor(node.table);
+  const tj = typedJson
+    ? { table: node.table.tsName, mode, allColumns: typedJson.allColumns }
+    : undefined;
+  const fields = renderObjectShape(
+    cols,
+    mode,
+    coerceDates,
+    checks,
+    tj,
+    sets,
+    applyDefaults,
+    cardinalities
+  );
+
+  const arms = node.arms.map((arm) => {
+    const notes = nestedArmNotes(arm)
+      .map((n) => `  // ${n}\n`)
+      .join('');
+    const child = renderNestedObject(arm.child, mode, coerceDates, typedJson, applyDefaults);
+    // A to-one may come back null: a relational query returns null where there is no matching
+    // row, and accepting it never turns away something the query produced. Optional throughout,
+    // because which relations a payload carries is the caller's choice on a write and the `with`
+    // clause's on a read.
+    const inner = arm.single
+      ? `Type.Union([\n${indentBlock(indentBlock(child))},\n    Type.Null(),\n  ])`
+      : `Type.Array(\n${indentBlock(indentBlock(child))}\n  )`;
+    return `${notes}  ${JSON.stringify(arm.key)}: Type.Optional(${inner}),`;
+  });
+
+  const body = [fields, ...arms].filter(Boolean).join('\n');
+  return tbWrapRows(`Type.Object({\n${body}\n})`, rows, cols, lengths);
+}
+
+/** The nested exports for one table, or nothing when it has no relations to describe. */
+function renderNestedSchemas(
+  table: Table,
+  affix: ResolvedAffix,
+  coerceDates: NonNullable<ValidationGenerateOptions['coerceDates']>,
+  typedJson: { allColumns?: boolean } | undefined,
+  applyDefaults: boolean,
+  plans: Partial<Record<NestedMode, NestedNode>>
+): string {
+  const out: string[] = [];
+  for (const mode of ['insert', 'select'] as const) {
+    const plan = plans[mode];
+    if (!plan) continue;
+    const name = nestedSchemaName(mode, table.tsName, affix);
+    const tname = nestedTypeName(mode, table.tsName, affix);
+    const expr = renderNestedObject(plan, mode, coerceDates, typedJson, applyDefaults);
+    out.push(`export const ${name} = ${expr};\n\nexport type ${tname} = Static<typeof ${name}>;`);
+  }
+  return out.length ? `\n${out.join('\n\n')}\n` : '';
+}
+
+/** Every table a plan reaches, so a type-only import can name all of them. */
+function nestedTables(node: NestedNode, into = new Set<string>()): Set<string> {
+  into.add(node.table.tsName);
+  for (const arm of node.arms) nestedTables(arm.child, into);
+  return into;
+}
+
+/**
+ * The nested plans for one table, built once per mode.
+ *
+ * Returned as a partial map because the two modes disagree per table: a table that is only ever a
+ * child has a nested select and no nested insert, and emitting an insert one anyway would put a
+ * byte-for-byte copy of the plain insert schema in the file under a second name.
+ */
+function nestedPlansFor(
+  table: Table,
+  analysis: Analysis,
+  depth: number
+): Partial<Record<NestedMode, NestedNode>> {
+  const out: Partial<Record<NestedMode, NestedNode>> = {};
+  for (const mode of ['insert', 'select'] as const) {
+    // A read-only relation refuses every write, so it has no insert schema to nest into.
+    if (mode === 'insert' && table.readOnly) continue;
+    const plan = buildNestedPlan(table, analysis.tables, analysis.relations ?? [], mode, depth);
+    if (plan) out[mode] = plan;
+  }
+  return out;
+}
+
 function renderTableSchemas(
   table: Table,
   affix: ResolvedAffix,
   coerceDates: NonNullable<ValidationGenerateOptions['coerceDates']>,
   typedJson?: { schemaSpecifier: string; allColumns?: boolean },
   applyDefaults = false,
-  wantsDuplicateFinder = false
+  wantsDuplicateFinder = false,
+  nested: Partial<Record<NestedMode, NestedNode>> = {}
 ) {
   const T = table.tsName;
   const insertSchema = schemaName('insert', T, affix);
@@ -562,15 +707,33 @@ function renderTableSchemas(
     cardinalities
   );
 
+  // A nested shape references the columns of *other* tables, so those tables have to be named here
+  // too or the reference would not resolve. Without this the module compiled fine until `typedJson`
+  // and `nestedSchemas` were combined, and then named an identifier nothing imported.
+  const referenced = new Set<string>([T]);
+  for (const plan of Object.values(nested)) {
+    if (plan) for (const name of nestedTables(plan)) referenced.add(name);
+  }
   const schemaImport = typedJson
-    ? `import type { ${T} } from '${typedJson.schemaSpecifier}';\n`
+    ? `import type { ${[...referenced].join(', ')} } from '${typedJson.schemaSpecifier}';\n`
     : '';
+
+  // Every column and every check the nested shapes will emit, alongside this table's own. Both
+  // preambles below are conditional, so a json column or a row check reachable only through a
+  // relation would otherwise name `DrzlJsonValue` or the `DrzlRowCheck` kind and never define or
+  // register it: the first is a compile error, the second a TypeBox throw at validation time.
+  const nestedByMode = (['insert', 'select'] as const).flatMap((m) => {
+    const plan = nested[m];
+    return plan ? nestedNodes(plan).map((n) => [nestedNodeCols(n, m), m, n.table] as const) : [];
+  });
 
   // Emitted only where a json column exists, and not when `typedJson` has replaced it with the
   // inferred type, so a file never carries an unused declaration.
   const needsJson =
     !typedJson &&
-    [...insertCols, ...updateCols, ...selectCols].some((c) => c.shape?.kind === 'json');
+    [...insertCols, ...updateCols, ...selectCols, ...nestedByMode.flatMap(([cs]) => cs)].some(
+      (c) => c.shape?.kind === 'json'
+    );
 
   const rowCols = [insertCols, updateCols, selectCols].map(
     (cols) => new Set(cols.map((c) => c.name))
@@ -586,20 +749,39 @@ function renderTableSchemas(
       ] as Array<[Column[], Mode]>
     ).some(([cs, m]) =>
       cs.some(
-        (c) =>
-          tbNeedsCapKind(c) || tbNeedsNonFiniteKind(c) || tbNeedsDateKind(c, m, coerceDates)
+        (c) => tbNeedsCapKind(c) || tbNeedsNonFiniteKind(c) || tbNeedsDateKind(c, m, coerceDates)
       )
-    );
+    ) ||
+    nestedByMode.some(([cs, m, tbl]) => {
+      const present = new Set(cs.map((c) => c.name));
+      const own = parsedChecksFor(tbl);
+      return (
+        own.rows.some((r) => present.has(r.left) && present.has(r.right)) ||
+        own.lengths.some((k) => present.has(k.column)) ||
+        cs.some(
+          (c) => tbNeedsCapKind(c) || tbNeedsNonFiniteKind(c) || tbNeedsDateKind(c, m, coerceDates)
+        )
+      );
+    });
   const rowImport = needsRows ? `, Kind, TypeRegistry` : '';
 
-    // Uniqueness is a fact about the table, so no per-row schema can see it. This checks the
+  // Uniqueness is a fact about the table, so no per-row schema can see it. This checks the
   // half that needs no database: whether a batch collides with itself.
   const finder = wantsDuplicateFinder
     ? renderDuplicateFinder(table, `findDuplicate${T}`, insertType)
     : undefined;
   const duplicates = finder ? `\n${finder}\n` : '';
 
-return `import { Type${rowImport} } from '@sinclair/typebox';
+  const nestedCode = renderNestedSchemas(
+    table,
+    affix,
+    coerceDates,
+    typedJson,
+    applyDefaults,
+    nested
+  );
+
+  return `import { Type${rowImport} } from '@sinclair/typebox';
 import type { Static } from '@sinclair/typebox';
 ${schemaImport}${needsJson ? `\n${JSON_PREAMBLE}` : ''}${needsRows ? `\n${ROW_PREAMBLE}` : ''}
 export const ${insertSchema} = ${tbWrapRows(`Type.Object({\n${bodyInsert}\n})`, rows, insertCols, lengths)};
@@ -611,7 +793,7 @@ export const ${selectSchema} = ${tbWrapRows(`Type.Object({\n${bodySelect}\n})`, 
 export type ${insertType} = Static<typeof ${insertSchema}>;
 export type ${updateType} = Static<typeof ${updateSchema}>;
 export type ${selectType} = Static<typeof ${selectSchema}>;
-${duplicates}`;
+${nestedCode}${duplicates}`;
 }
 
 /**
@@ -743,9 +925,12 @@ function tbCapExpr(c: Column, base: string, mode: Mode): string {
     );
     return `Type.Intersect([${base}, ${out.join(', ')}])`;
   }
-  if (c.maxLength) out.push(branch(`at most ${c.maxLength} characters`, `[...v].length <= ${c.maxLength}`));
+  if (c.maxLength)
+    out.push(branch(`at most ${c.maxLength} characters`, `[...v].length <= ${c.maxLength}`));
   if (c.maxBytes) {
-    out.push(branch(`at most ${c.maxBytes} bytes`, `new TextEncoder().encode(v).length <= ${c.maxBytes}`));
+    out.push(
+      branch(`at most ${c.maxBytes} bytes`, `new TextEncoder().encode(v).length <= ${c.maxBytes}`)
+    );
   }
   // Intersected onto the field rather than onto the object, so a per-field comparison can still
   // see the constraint. On the object it was invisible to the parity harness, which reads
@@ -800,7 +985,9 @@ function tbWrapRows(
     .map((r) => {
       const l = `o[${JSON.stringify(r.left)}]`;
       const rt = `o[${JSON.stringify(r.right)}]`;
-      const msg = JSON.stringify(`${r.name ? `${r.name}: ` : ''}${r.left} ${r.operator} ${r.right}`);
+      const msg = JSON.stringify(
+        `${r.name ? `${r.name}: ` : ''}${r.left} ${r.operator} ${r.right}`
+      );
       // Null on either side means SQL never applied the comparison, so neither does this.
       return `Type.Unsafe<unknown>({
     [Kind]: 'DrzlRowCheck',
@@ -862,10 +1049,20 @@ export class TypeBoxGenerator implements ValidationRenderer<TypeBoxGenerateOptio
       );
     }
 
+    const nestedDepth = opts.nestedSchemas
+      ? resolveNestedDepth(opts.nestedDepth, (m) => console.warn(m))
+      : 0;
     for (const table of this.analysis.tables) {
       const filePath = path.join(out, moduleFileName(table.tsName, fileSuffix));
-      const code = renderTableSchemas(table, affix, coerceDates, typedJson, !!opts.applyDefaults,
-      !!opts?.duplicateFinder);
+      const code = renderTableSchemas(
+        table,
+        affix,
+        coerceDates,
+        typedJson,
+        !!opts.applyDefaults,
+        !!opts?.duplicateFinder,
+        opts.nestedSchemas ? nestedPlansFor(table, this.analysis, nestedDepth) : {}
+      );
       const formatted = await formatCode(
         buildHeader(opts.outputHeader) + code,
         filePath,

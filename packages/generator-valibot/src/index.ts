@@ -6,16 +6,23 @@ import type {
   RowCheck,
 } from '@drzl/validation-core';
 import type { CardinalityCheck, ColumnCheck, ColumnSet, LengthCheck } from '@drzl/validation-core';
+import type { NestedMode, NestedNode } from '@drzl/validation-core';
 import {
+  buildNestedPlan,
   COERCIBLE_DATE_STRING,
   COLUMN_FORMATS,
   insertColumns,
   isIntegerColumn,
+  nestedArmNotes,
+  nestedNodeColumns,
+  nestedSchemaName,
+  nestedTypeName,
   nonFiniteAccepted,
   parseCheck,
   parsesToADate,
   renderDuplicateFinder,
   resolveConfiguredImport,
+  resolveNestedDepth,
   updateColumns,
   selectColumns,
   formatCode,
@@ -84,11 +91,7 @@ function vDateExpr(
  * so they are pasted rather than parsed. `literal` spells each one, which is the only difference
  * between the number and bigint cases.
  */
-function vBounds(
-  c: Column,
-  literal: (v: string) => string,
-  checks: ColumnCheck[] = []
-): string[] {
+function vBounds(c: Column, literal: (v: string) => string, checks: ColumnCheck[] = []): string[] {
   let lo = c.min !== undefined ? { action: 'minValue', value: c.min } : undefined;
   let hi = c.max !== undefined ? { action: 'maxValue', value: c.max } : undefined;
 
@@ -377,12 +380,7 @@ function vExprForColumn(
           `v.check((val) => new TextEncoder().encode(val).length <= ${c.maxBytes}, 'at most ${c.maxBytes} bytes')`
         );
       }
-      return piped(
-        'v.string()',
-        caps.length
-          ? caps
-          : []
-      );
+      return piped('v.string()', caps.length ? caps : []);
     case 'number': {
       const bounds = vBounds(c, (v) => v, checks);
       const actions = [...(isIntegerColumn(c) ? ['v.integer()'] : []), ...bounds];
@@ -511,16 +509,149 @@ function vRowChecks(rows: RowCheck[], cols: Column[]): string[] {
     '=': '===',
     '<>': '!==',
   };
-  return rows
-    // A check naming a column this mode does not carry cannot be evaluated: an insert schema
-    // omits generated columns, so the comparison would read undefined and always pass or fail.
-    .filter((r) => present.has(r.left) && present.has(r.right))
-    .map((r) => {
-      const l = `o[${JSON.stringify(r.left)}]`;
-      const rt = `o[${JSON.stringify(r.right)}]`;
-      const msg = JSON.stringify(`${r.name ? `${r.name}: ` : ''}${r.left} ${r.operator} ${r.right}`);
-      return `v.check((o) => ${l} == null || ${rt} == null || ${l} ${OPS[r.operator]} ${rt}, ${msg})`;
-    });
+  return (
+    rows
+      // A check naming a column this mode does not carry cannot be evaluated: an insert schema
+      // omits generated columns, so the comparison would read undefined and always pass or fail.
+      .filter((r) => present.has(r.left) && present.has(r.right))
+      .map((r) => {
+        const l = `o[${JSON.stringify(r.left)}]`;
+        const rt = `o[${JSON.stringify(r.right)}]`;
+        const msg = JSON.stringify(
+          `${r.name ? `${r.name}: ` : ''}${r.left} ${r.operator} ${r.right}`
+        );
+        return `v.check((o) => ${l} == null || ${rt} == null || ${l} ${OPS[r.operator]} ${rt}, ${msg})`;
+      })
+  );
+}
+
+/** Every CHECK on a table that the shared parser understands, split by what it constrains. */
+function parsedChecksFor(table: Table) {
+  const parsed = (table.checks ?? []).map((k) => parseCheck(k.expression, k.name));
+  return {
+    checks: parsed.flatMap((p) => (p.ok ? p.checks : [])),
+    sets: parsed.flatMap((p) => (p.ok ? (p.sets ?? []) : [])),
+    rows: parsed.flatMap((p) => (p.ok ? (p.rows ?? []) : [])),
+    lengths: parsed.flatMap((p) => (p.ok ? (p.lengths ?? []) : [])),
+    cardinalities: parsed.flatMap((p) => (p.ok ? (p.cardinalities ?? []) : [])),
+  };
+}
+
+/** Push a rendered block one level deeper, so the nested object reads as one. */
+function indentBlock(code: string, by = '  '): string {
+  return code
+    .split('\n')
+    .map((line) => (line ? by + line : line))
+    .join('\n');
+}
+
+/**
+ * One object of a nested payload, with its relations expanded inline.
+ *
+ * Rendered from the columns rather than derived from the sibling schema with `v.omit`. Measured on
+ * valibot 1.4.2: `v.omit` applied to the `v.pipe(v.object(...), v.check(...))` that a table with a
+ * row-level CHECK emits returns a bare object schema and **drops the checks**, with no error. A
+ * derived nested schema would therefore have silently stopped enforcing every row-level constraint
+ * on the child.
+ */
+function renderNestedObject(
+  node: NestedNode,
+  mode: NestedMode,
+  coerceDates: NonNullable<ValidationGenerateOptions['coerceDates']>,
+  applyDefaults: boolean,
+  typedColumns: boolean
+): string {
+  const all = mode === 'insert' ? insertColumns(node.table) : selectColumns(node.table);
+  const cols = nestedNodeColumns(all, node);
+  const { checks, sets, rows, lengths, cardinalities } = parsedChecksFor(node.table);
+  const tc = typedColumns ? { table: node.table.tsName, mode } : undefined;
+  const fields = renderObjectShape(
+    cols,
+    mode,
+    coerceDates,
+    checks,
+    sets,
+    applyDefaults,
+    lengths,
+    cardinalities,
+    tc
+  );
+
+  const arms = node.arms.map((arm) => {
+    const notes = nestedArmNotes(arm)
+      .map((n) => `  // ${n}\n`)
+      .join('');
+    const child = renderNestedObject(arm.child, mode, coerceDates, applyDefaults, typedColumns);
+    // A to-one may come back null: a relational query returns null where there is no matching
+    // row, and accepting it never turns away something the query produced. Optional throughout,
+    // because which relations a payload carries is the caller's choice on a write and the `with`
+    // clause's on a read.
+    const inner = arm.single
+      ? `v.nullable(\n${indentBlock(indentBlock(child))}\n  )`
+      : `v.array(\n${indentBlock(indentBlock(child))}\n  )`;
+    return `${notes}  ${JSON.stringify(arm.key)}: v.optional(${inner}),`;
+  });
+
+  const body = [fields, ...arms].filter(Boolean).join('\n');
+  return wrapRows(`v.object({\n${body}\n})`, rows, cols);
+}
+
+/** The nested exports for one table, or nothing when it has no relations to describe. */
+function renderNestedSchemas(
+  table: Table,
+  affix: ResolvedAffix,
+  coerceDates: NonNullable<ValidationGenerateOptions['coerceDates']>,
+  applyDefaults: boolean,
+  typedColumns: boolean,
+  plans: Partial<Record<NestedMode, NestedNode>>
+): string {
+  const out: string[] = [];
+  for (const mode of ['insert', 'select'] as const) {
+    const plan = plans[mode];
+    if (!plan) continue;
+    const name = nestedSchemaName(mode, table.tsName, affix);
+    const tname = nestedTypeName(mode, table.tsName, affix);
+    const expr = renderNestedObject(plan, mode, coerceDates, applyDefaults, typedColumns);
+    const infer = mode === 'insert' ? 'InferInput' : 'InferOutput';
+    out.push(`export const ${name} = ${expr};\n\nexport type ${tname} = ${infer}<typeof ${name}>;`);
+  }
+  return out.length ? `\n${out.join('\n\n')}\n` : '';
+}
+
+/** Every table a plan reaches, so a type-only import can name all of them. */
+function nestedTables(node: NestedNode, into = new Set<string>()): Set<string> {
+  into.add(node.table.tsName);
+  for (const arm of node.arms) nestedTables(arm.child, into);
+  return into;
+}
+
+/** Every column a plan reaches, so the file knows whether it still needs the JSON preamble. */
+function nestedColumns(node: NestedNode, into: Column[] = []): Column[] {
+  into.push(...node.table.columns);
+  for (const arm of node.arms) nestedColumns(arm.child, into);
+  return into;
+}
+
+/**
+ * The nested plans for one table, built once per mode.
+ *
+ * Returned as a partial map because the two modes disagree per table: a table that is only ever a
+ * child has a nested select and no nested insert, and emitting an insert one anyway would put a
+ * byte-for-byte copy of the plain insert schema in the file under a second name.
+ */
+function nestedPlansFor(
+  table: Table,
+  analysis: Analysis,
+  depth: number
+): Partial<Record<NestedMode, NestedNode>> {
+  const out: Partial<Record<NestedMode, NestedNode>> = {};
+  for (const mode of ['insert', 'select'] as const) {
+    // A read-only relation refuses every write, so it has no insert schema to nest into.
+    if (mode === 'insert' && table.readOnly) continue;
+    const plan = buildNestedPlan(table, analysis.tables, analysis.relations ?? [], mode, depth);
+    if (plan) out[mode] = plan;
+  }
+  return out;
 }
 
 function renderTableSchemas(
@@ -529,7 +660,8 @@ function renderTableSchemas(
   coerceDates: NonNullable<ValidationGenerateOptions['coerceDates']>,
   applyDefaults = false,
   typedColumns?: { schemaSpecifier: string },
-  wantsDuplicateFinder = false
+  wantsDuplicateFinder = false,
+  nested: Partial<Record<NestedMode, NestedNode>> = {}
 ) {
   const T = table.tsName;
   const insertSchema = schemaName('insert', T, affix);
@@ -553,8 +685,16 @@ function renderTableSchemas(
   const tjInsert = typedColumns ? { table: T, mode: 'insert' as const } : undefined;
   // A type-only import: erased at build time, so it adds no runtime dependency on the schema
   // module and cannot create an import cycle.
+  //
+  // A nested shape references the columns of *other* tables, so those tables have to be named here
+  // too or the reference would not resolve. Without this the module compiled fine until
+  // `typedColumns` and `nestedSchemas` were combined, and then named an identifier nothing imported.
+  const referenced = new Set<string>([T]);
+  for (const plan of Object.values(nested)) {
+    if (plan) for (const name of nestedTables(plan)) referenced.add(name);
+  }
   const schemaImport = typedColumns
-    ? `import type { ${T} } from '${typedColumns.schemaSpecifier}';\n`
+    ? `import type { ${[...referenced].join(', ')} } from '${typedColumns.schemaSpecifier}';\n`
     : '';
 
   const bodyInsert = renderObjectShape(
@@ -590,19 +730,31 @@ function renderTableSchemas(
     cardinalities,
     tj
   );
-  // Emitted only where a json column exists, so a file without one gains nothing unused.
-  const needsJson = [...insertCols, ...updateCols, ...selectCols].some(
+  // Emitted only where a json column exists, so a file without one gains nothing unused. The
+  // nested shapes carry other tables' columns, so a json column reachable only through a relation
+  // still needs the preamble: without this the module named `DrzlJsonValue` and never defined it.
+  const nestedCols = Object.values(nested).flatMap((plan) => (plan ? nestedColumns(plan) : []));
+  const needsJson = [...insertCols, ...updateCols, ...selectCols, ...nestedCols].some(
     (c) => c.shape?.kind === 'json'
   );
 
-    // Uniqueness is a fact about the table, so no per-row schema can see it. This checks the
+  // Uniqueness is a fact about the table, so no per-row schema can see it. This checks the
   // half that needs no database: whether a batch collides with itself.
   const finder = wantsDuplicateFinder
     ? renderDuplicateFinder(table, `findDuplicate${T}`, insertType)
     : undefined;
   const duplicates = finder ? `\n${finder}\n` : '';
 
-return `import * as v from 'valibot';
+  const nestedCode = renderNestedSchemas(
+    table,
+    affix,
+    coerceDates,
+    applyDefaults,
+    !!typedColumns,
+    nested
+  );
+
+  return `import * as v from 'valibot';
 import type { InferInput, InferOutput } from 'valibot';
 ${schemaImport}${needsJson ? `\n${JSON_PREAMBLE}` : ''}
 export const ${insertSchema} = ${wrapRows(`v.object({\n${bodyInsert}\n})`, rows, insertCols)};
@@ -614,7 +766,7 @@ export const ${selectSchema} = ${wrapRows(`v.object({\n${bodySelect}\n})`, rows,
 export type ${insertType} = InferInput<typeof ${insertSchema}>;
 export type ${updateType} = InferInput<typeof ${updateSchema}>;
 export type ${selectType} = InferOutput<typeof ${selectSchema}>;
-${duplicates}`;
+${nestedCode}${duplicates}`;
 }
 
 export interface ValibotGenerateOptions extends ValidationGenerateOptions {
@@ -662,6 +814,9 @@ export class ValibotGenerator implements ValidationRenderer<ValibotGenerateOptio
         '[drzl] typedColumns was requested but the schema path is unknown, so column types stay wide.'
       );
     }
+    const nestedDepth = opts.nestedSchemas
+      ? resolveNestedDepth(opts.nestedDepth, (m) => console.warn(m))
+      : 0;
     // File names deliberately stay on the raw Drizzle export name: affixes and tableCase
     // rename identifiers, never modules, so the barrel and importPath keep resolving.
     for (const table of this.analysis.tables) {
@@ -672,7 +827,8 @@ export class ValibotGenerator implements ValidationRenderer<ValibotGenerateOptio
         coerceDates,
         !!opts.applyDefaults,
         typedColumns,
-      !!opts?.duplicateFinder
+        !!opts?.duplicateFinder,
+        opts.nestedSchemas ? nestedPlansFor(table, this.analysis, nestedDepth) : {}
       );
       const formatted = await formatCode(
         buildHeader(opts.outputHeader) + code,
