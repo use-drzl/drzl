@@ -568,6 +568,9 @@ function renderObjectShape(
         atCapNarrows(c, mode) +
         atBigintNarrow(c, checks) +
         atNonFiniteNarrow(c, checks) +
+        // Mutually exclusive with the one above it: that one is reached only where the column
+        // admits `NaN` and this one only where it does not.
+        atNanNarrow(c, mode, checks, sets, !!dflt) +
         atDateNarrow(c, mode, coerceDates);
       // A defaultable definition is only valid as an object *property*: `type("bigint = 7")`
       // throws "Defaultable definitions like 'number = 0' are only valid as properties in an
@@ -758,6 +761,77 @@ function atNonFiniteNarrow(c: Column, checks: ColumnCheck[]): string {
     (v) => `(!Number.isFinite(${v}) || (${parts.map((p) => p(v)).join(' && ')}))`,
     `NaN, an infinity, or between ${lower?.value ?? 'any'} and ${upper?.value ?? 'any'}`
   );
+}
+
+/**
+ * Whether the rendered field will be one branch of a union rather than a type standing alone.
+ *
+ * Two things this file writes put a number beside a unit branch. `| null` for a nullable column is
+ * one, and it is visible on the object itself. The `?` for an optional key is the other, and it is
+ * visible through `schema.get(key)`, where the field comes back as `T | undefined`; the object
+ * keeps checking a present key against `T` alone, so a whole row parses correctly and the field
+ * pulled out of the same schema does not.
+ *
+ * Read off `atField` rather than guessed, and it has to stay that way: the `?` is applied there
+ * under exactly this condition, and a default replaces it rather than joining it, which is what
+ * `defaulted` carries. A default does not spare a *nullable* column, whose `| null` is still there.
+ */
+function atUnionArm(c: Column, mode: Mode, defaulted: boolean): boolean {
+  if (c.nullable) return true;
+  if (mode === 'select' || defaulted) return false;
+  return mode === 'update' || c.hasDefault;
+}
+
+/**
+ * `NaN` refused on a column that stores none, in the two places the string DSL stops refusing it.
+ *
+ * The mirror image of `atNonFiniteNarrow`, and the dialect is the whole of the difference. Postgres
+ * really does store `NaN` in a float, so `allowsNaN` is true there and the schema must take it; a
+ * real MySQL 8.4 refuses it on `float` and on `double` and silently writes `0.00` for a
+ * `decimal(10,2)`, so `allowsNaN` is false and the schema must not. One flag, set by the analyzer,
+ * decides which, and nothing here reads the dialect.
+ *
+ * The mechanism is ArkType's, measured on the installed version and asserted in this package's
+ * `nan-union-arm` spec rather than remembered:
+ *
+ *   `min <= number <= max`            refuses NaN
+ *   `(min <= number <= max | null)`   ACCEPTS NaN, and still refuses an infinity and 1e300
+ *   `{ "x?": "min <= number <= max" }`  the object refuses NaN, `.get("x")` ACCEPTS it
+ *   `number`                          refuses NaN
+ *   `(number | null)`                 ACCEPTS NaN
+ *   `(number.integer | null)`         refuses NaN
+ *
+ * It is `NaN` alone, because `NaN` is the one value that compares false against both ends of a
+ * range: an infinity fails a bound inside a union exactly as it does outside one. And it spares the
+ * integers, because integrality is a predicate rather than a comparison and `NaN` fails it, so no
+ * integer column pays for this.
+ *
+ * A narrow rather than a union branch or a keyword, because there is no keyword for it. Every
+ * number keyword ArkType has was tried inside a `| null`: `number.integer` and `number.epoch`
+ * refuse `NaN` and also refuse `1.5`, `number.safe` leaks exactly as a bare range does, and the
+ * three unit keywords intersect with a range to an unsatisfiable type that throws at import.
+ *
+ * The guards below mirror the arms of `atTypeForColumn` that render something other than a bare or
+ * ranged `number`. A set, an enum and an equality all render as literals, which `NaN` is not, so a
+ * narrow beside them would be bytes in the consumer's bundle for a verdict already reached.
+ */
+function atNanNarrow(
+  c: Column,
+  mode: Mode,
+  checks: ColumnCheck[],
+  sets: ColumnSet[],
+  defaulted: boolean
+): string {
+  if (c.tsType !== 'number' || c.shape) return '';
+  // The column stores `NaN` and the schema has to take it. `atNonFiniteNarrow` holds that side.
+  if (nonFiniteAccepted(c).nan) return '';
+  if (!atUnionArm(c, mode, defaulted)) return '';
+  if (c.enumValues && c.enumValues.length) return '';
+  if (sets.some((s) => s.column === c.name)) return '';
+  // The same discard `atTypeForColumn` makes: a scalar check describes an element, never the list.
+  if (atNarrowRange(c, c.arrayDimensions ? [] : checks).equals !== undefined) return '';
+  if (isIntegerColumn(c)) return '';
+  return atNarrow(c, (v) => `!Number.isNaN(${v})`, 'a number, not NaN');
 }
 
 /**
