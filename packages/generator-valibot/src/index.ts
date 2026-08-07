@@ -56,9 +56,25 @@ function vDateExpr(
     `v.pipe(v.string(), v.regex(new RegExp(${JSON.stringify(COERCIBLE_DATE_STRING)})), ` +
     `v.transform((s) => new Date(s)), ` +
     `v.check((d) => ${parsesToADate('d')}, 'a date the runtime can parse'))`;
-  if (coerceDates === 'all') return `v.union([v.date(), ${coercer}])`;
+  // An epoch number, which `coerceDates` documents beside the string and which only the zod
+  // generator ever accepted. `Date.now()` went into a zod schema and bounced off the other three,
+  // so the same table validated differently depending on which validator you had chosen.
+  //
+  // No pattern here, because there is no notation to be wrong about: a number is milliseconds
+  // since the epoch and nothing else, which is why the string's regex has no counterpart on this
+  // branch.
+  //
+  // The result check does have one, and it is not redundant. `v.number()` refuses `NaN` on its own
+  // and takes both infinities, measured, so `Infinity` would otherwise reach `new Date` and come
+  // back an Invalid Date. Finite is not enough either: the `Date` range ends at +-8.64e15, so
+  // `1e300` is a perfectly good number and not a date. One check answers all three.
+  const fromNumber =
+    `v.pipe(v.number(), v.transform((n) => new Date(n)), ` +
+    `v.check((d) => ${parsesToADate('d')}, 'a date the runtime can parse'))`;
+  const coerced = `v.union([v.date(), ${coercer}, ${fromNumber}])`;
+  if (coerceDates === 'all') return coerced;
   // 'input'
-  return mode === 'select' ? 'v.date()' : `v.union([v.date(), ${coercer}])`;
+  return mode === 'select' ? 'v.date()' : coerced;
 }
 
 /**

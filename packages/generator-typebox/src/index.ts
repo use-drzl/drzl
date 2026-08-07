@@ -85,6 +85,13 @@ function tbDateType(
   // The cost is that the extra branch does not survive serialisation to JSON Schema, where the
   // `pattern` beside it does. Emitting nothing rather than a check JSON Schema cannot state is not
   // a better trade: JSON has no notion of a string that parses, and the pattern still serialises.
+  //
+  // The number branch is the epoch `coerceDates` documents beside the string and that only the zod
+  // generator ever had, so `Date.now()` went into a zod schema and bounced off this one. It has no
+  // `pattern` counterpart, because a number carries no notation to be wrong about, and it keeps the
+  // result check for a reason that is not the string's: `Type.Number()` already refuses `NaN` and
+  // both infinities on its own, measured, and it takes `1e300`, which is a good number and not a
+  // date, since the `Date` range ends at +-8.64e15. That is the case the kind is here for.
   if (coerceDates === 'none') return 'Type.Date()';
   const coercible =
     `Type.Intersect([Type.String({ pattern: ${JSON.stringify(COERCIBLE_DATE_STRING)} }), ` +
@@ -93,7 +100,14 @@ function tbDateType(
     description: 'a date the runtime can parse',
     assert: (v: any) => typeof v === 'string' && ${parsesToADate('new Date(v)')},
   })])`;
-  const union = `Type.Union([Type.Date(), ${coercible}])`;
+  const fromNumber =
+    `Type.Intersect([Type.Number(), ` +
+    `Type.Unsafe<unknown>({
+    [Kind]: 'DrzlRowCheck',
+    description: 'a date the runtime can parse',
+    assert: (v: any) => typeof v === 'number' && ${parsesToADate('new Date(v)')},
+  })])`;
+  const union = `Type.Union([Type.Date(), ${coercible}, ${fromNumber}])`;
   if (coerceDates === 'all') return union;
   return mode === 'select' ? 'Type.Date()' : union;
 }

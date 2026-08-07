@@ -50,7 +50,19 @@ function atDateType(
   // The regex is only half of it, and the other half cannot be written here: this is the gate on
   // the *shape* of the string, and what the string turns into is a question about the result of
   // `new Date`, which no DSL string can ask. That half is `atDateNarrow`.
-  const coercible = `Date | /${COERCIBLE_DATE_STRING}/`;
+  //
+  // `number` is the epoch branch `coerceDates` documents beside the string and that only the zod
+  // generator ever had, so `Date.now()` went into a zod schema and bounced off this one. It carries
+  // no pattern because a number has no notation to be wrong about, and it needs no branch of its
+  // own in the narrow: `atDateNarrow` asks one question of both.
+  //
+  // Three branches, and the union defect recorded on `atNumberPlan` does not reach them. That one
+  // is the discriminator failing to match `NaN` specifically, so the rule is that any number of
+  // branches is safe with no `NaN` among them, and there is none here. A nullable date column now
+  // emits four, `(Date | number | /.../ | null)`, and it was run rather than assumed: null, a
+  // `Date`, an epoch and `'2020-01-01'` are all accepted, and `NaN`, `Infinity` and `'hello'` are
+  // not.
+  const coercible = `Date | number | /${COERCIBLE_DATE_STRING}/`;
   if (coerceDates === 'all') return coercible;
   // 'input'
   return mode === 'select' ? 'Date' : coercible;
@@ -749,13 +761,19 @@ function atNonFiniteNarrow(c: Column, checks: ColumnCheck[]): string {
 }
 
 /**
- * The other half of a coerced date: that the string really is one.
+ * The other half of a coerced date: that what is being coerced really is one.
  *
  * `atDateType` above puts `COERCIBLE_DATE_STRING` in the DSL, which gates the *shape* of the
  * string. Nothing gated the result, and the two are not the same question: `'hello'`, `'zzz'`,
  * `'25:99:99'`, `'not-a-uuid'`, `'10.0.0.1'` and a 300-character run of `x` are none of them bare
  * numbers, so every one of them matched the pattern and this generator accepted it while Postgres
  * refuses all of them. See `parsesToADate`.
+ *
+ * The same question, asked once, covers the epoch branch beside it. A number carries no notation to
+ * gate, so the DSL says only `number`, and every number that is not a date is caught here instead:
+ * ArkType's `number` refuses `NaN` on its own and takes both infinities, measured, and being finite
+ * is not enough either, since the `Date` range ends at +-8.64e15 and `1e300` is a good number and
+ * not a date.
  *
  * A narrow rather than a union branch, because a branch is the wrong direction: a union admits
  * more and this has to admit less. The constraint is a predicate over the result of a call, which
@@ -765,19 +783,20 @@ function atNonFiniteNarrow(c: Column, checks: ColumnCheck[]): string {
  * The union defect recorded on `atNumberPlan` is *not* the reason, and it does not apply. That one
  * is the discriminator failing to match `NaN` specifically, which is why the rule there is that
  * two branches are always safe and so is any number of them with no `NaN` among them. A nullable
- * date column emits three here, `(Date | /.../ | null)`, and it was run rather than assumed: null,
- * a `Date` and `'2020-01-01'` are all accepted and `'hello'` is not.
+ * date column emits four here, `(Date | number | /.../ | null)`, and it was run rather than
+ * assumed: null, a `Date`, an epoch and `'2020-01-01'` are all accepted and `'hello'` is not.
  *
  * The narrow sits on the whole value, as every other narrow in this file does, so it has to let a
- * `Date` through: the union's other branch is a real `Date` and this must not turn it away. That
+ * `Date` through: another branch of the union is a real `Date` and this must not turn it away. That
  * is what the `typeof` guard is for, and it is why the predicate is a disjunction where the
- * TypeBox branch carries a conjunction, since there the same check sits on the string alone.
+ * TypeBox branch carries a conjunction, since there each check sits on one branch alone.
  *
- * The guard changes no verdict, and that was measured rather than assumed: an Invalid `Date`
- * instance is refused by ArkType's own `Date` keyword before a narrow is consulted, on all three
- * `coerceDates` settings and in all four generators. What reaches this predicate is therefore a
- * valid `Date` or a string, and `new Date(aValidDate)` has the same timestamp. So the guard buys
- * clarity and one skipped allocation rather than a different answer.
+ * The guard changes no verdict for a `Date`, and that was measured rather than assumed: an Invalid
+ * `Date` instance is refused by ArkType's own `Date` keyword before a narrow is consulted, on all
+ * three `coerceDates` settings and in all four generators. What reaches this predicate is therefore
+ * a valid `Date`, a string or a number, and `new Date(aValidDate)` has the same timestamp. So for a
+ * `Date` the guard buys clarity and one skipped allocation rather than a different answer; for a
+ * number it is load-bearing, since that is the branch nothing else checks.
  */
 function atDateNarrow(
   c: Column,
@@ -786,12 +805,14 @@ function atDateNarrow(
 ): string {
   if (c.tsType !== 'Date' || c.shape) return '';
   // The same three-way answer `atDateType` gives, so the narrow is present exactly where the
-  // string branch it narrows is.
+  // coercing branches it narrows are.
   if (coerceDates === 'none') return '';
   if (coerceDates === 'input' && mode === 'select') return '';
   return atNarrow(
     c,
-    (v) => `(typeof ${v} !== 'string' || ${parsesToADate(`new Date(${v})`)})`,
+    (v) =>
+      `((typeof ${v} !== 'string' && typeof ${v} !== 'number') || ` +
+      `${parsesToADate(`new Date(${v})`)})`,
     'a date the runtime can parse'
   );
 }
