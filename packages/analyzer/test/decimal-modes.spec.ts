@@ -140,26 +140,38 @@ describe.each(Object.keys(SOURCES))('%s decimal/numeric modes on drizzle 0.4x', 
 });
 
 describe('what the modes must not pick up on the way', () => {
-  it('leaves the number mode unbounded and non-integer, as it is today', async () => {
-    // Addendum AK is open on exactly this: a `numeric(10,2)` in number mode admits 2^53 where the
-    // column enforces 10^8. Pinned as it stands so this fix cannot be read as having settled it,
-    // and so a later change to the bound is a deliberate edit here rather than a silent one.
+  it('bounds the number mode by the declared precision, on every dialect that declares one', async () => {
+    // This is the deliberate edit the previous version of this test asked for. It pinned the state
+    // addendum AK was filed against: MySQL and SingleStore carried no bound at all, and Postgres
+    // carried +/-9007199254740991, which is 2^53 on a column that stops at 10^8. Both servers were
+    // then asked and both refuse 100000000, 2147483648 and 9007199254740991 into a `(10,2)`
+    // column, so the bound is the declaration's now on all four dialects.
     //
-    // Postgres is the one dialect that already carries a bound, `PgNumericNumber` in
-    // INEXACT_RANGES; MySQL, SingleStore and SQLite carry none. Both states are recorded.
+    // The measurement, the two servers and the one deliberate divergence at the rounding boundary
+    // are written out in numeric-precision.spec.ts, which owns this fact. What is asserted here is
+    // that the four modes of this family keep answering as a family.
     const my = (await columnsOf('decimal-modes-mysql', MYSQL_SOURCE)).byName.get('d_num');
-    expect(my).toMatchObject({ tsType: 'number' });
-    expect(my?.min).toBeUndefined();
-    expect(my?.max).toBeUndefined();
-    expect(my?.integer).toBeUndefined();
+    expect(my).toMatchObject({
+      tsType: 'number',
+      integer: false,
+      min: '-99999999.99',
+      max: '99999999.99',
+    });
 
     const pg = (await columnsOf('decimal-modes-pg', PG_SOURCE)).byName.get('n_num');
     expect(pg).toMatchObject({
       tsType: 'number',
       integer: false,
-      min: '-9007199254740991',
-      max: '9007199254740991',
+      min: '-99999999.99',
+      max: '99999999.99',
     });
+
+    // SQLite declares neither number, on either major, so nothing bounds it and inventing a bound
+    // would refuse values the engine stores. It states `integer: false` and no range.
+    const sq = (await columnsOf('decimal-modes-sqlite', SQLITE_SOURCE)).byName.get('s_num');
+    expect(sq).toMatchObject({ tsType: 'number', integer: false });
+    expect(sq?.min).toBeUndefined();
+    expect(sq?.max).toBeUndefined();
   });
 
   it('leaves the string modes without a numeric format, as the 0.4x path does everywhere', async () => {

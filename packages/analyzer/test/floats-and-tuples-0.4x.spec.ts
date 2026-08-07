@@ -206,9 +206,15 @@ describe('an inexact numeric column on 0.4x', () => {
     expect(cols.d).toMatchObject({ tsType: 'number', dbType: 'DOUBLE', integer: false });
     expect(cols.d.min).toBeUndefined();
     expect(cols.d.max).toBeUndefined();
+    // `numeric({ precision: 10, scale: 2, mode: 'number' })`, bounded by the width it declares
+    // rather than by what a JS number can carry. This used to read +/-9007199254740991, which is
+    // 2^53 on a column PGlite refuses 100000000 into with `22003 numeric field overflow`. The
+    // measurement and the reasoning are in numeric-precision.spec.ts, which owns this fact; the
+    // assertion is here too because this file is where the two range tables are held apart, and a
+    // `numeric` reaching neither of them is the thing it is holding apart.
     expect(cols.n).toMatchObject({
-      min: '-9007199254740991',
-      max: '9007199254740991',
+      min: '-99999999.99',
+      max: '99999999.99',
       integer: false,
     });
   });
