@@ -80,6 +80,7 @@ Runtime
 - `packages/analyzer`: schema analysis
 - `packages/cli`: CLI (`drzl`)
 - `packages/generator-orpc`: oRPC router generator
+- `packages/generator-trpc`: tRPC v11 router generator
 - `packages/generator-service`: typed service generator
 - `packages/generator-zod`: Zod generator
 - `packages/generator-valibot`: Valibot generator

@@ -15,12 +15,9 @@ export default defineConfig({
       kind: 'service',
       path: 'src/services',
       dataAccess: 'drizzle',
-      schemaImportPath: 'src/db/schema',
-      databaseInjection: {
-        enabled: true,
-        databaseType: 'Database',
-        databaseTypeImport: { name: 'Database', from: 'src/db/db' },
-      },
+      // The same module `schema` above names, so the emitted services import the tables
+      // themselves. Point it at the directory or at the file; either resolves.
+      schemaImportPath: 'src/db/schemas',
     },
     {
       kind: 'orpc',
@@ -30,13 +27,52 @@ export default defineConfig({
       validation: { library: 'valibot' },
       databaseInjection: {
         enabled: true,
-        databaseType: 'Database',
-        databaseTypeImport: { name: 'Database', from: 'src/db/db' },
+        databaseType: "import('drizzle-orm/node-postgres').NodePgDatabase",
       },
-      servicesDir: 'src/services',
     },
   ],
 });
+```
+
+Two things are deliberately *not* written twice here.
+
+`servicesDir` is derived from the `service` generator's `path`, so naming it on the router as well
+is how the two drift apart.
+
+`databaseInjection` is declared on the router generator alone and pushed onto the `service`
+generator for you, because it describes a contract between the two: the router emits
+`Service.getById(ctx.db, id)`, and only a service generated in the same mode has a `db` parameter to
+receive it. It needs `dataAccess: 'drizzle'` on the service generator, because that generator's stub
+bodies take no database parameter whatever they are told; `drzl generate` warns if you pair it with
+`stub`.
+
+### Naming the database type
+
+`databaseType` is emitted verbatim, so an inline `import(...)` type as above needs no import
+statement and cannot resolve to the wrong file. The two-key form is available when you would rather
+name it once:
+
+```ts
+databaseInjection: {
+  enabled: true,
+  databaseType: 'Database',
+  // Resolved by *your* compiler from the emitted file, so it is relative to the output
+  // directory, not to the project root. A bare `src/db/db` is a package specifier to both
+  // Node and tsc, and resolves to nothing.
+  databaseTypeImport: { name: 'Database', from: '../db/client.js' },
+},
+```
+
+## Router generators share `outDir`
+
+Both `orpc` and `trpc` write to the top-level `outDir` by default, and both write an `index.ts`
+there, so a config that runs both needs a `path` on at least one of them:
+
+```ts
+generators: [
+  { kind: 'orpc' },                    // -> outDir
+  { kind: 'trpc', path: 'src/trpc' },  // -> its own directory
+],
 ```
 
 ## Choosing which tables to generate for
@@ -142,9 +178,9 @@ export type UserProfiles = z.output<typeof SelectUserProfilesSchema>;
 - A config that would emit a name TypeScript cannot parse, or two exports in one file with
   the same name, is rejected before any file is written.
 
-### Sharing names with the oRPC generator
+### Sharing names with a router generator
 
-An oRPC generator with `validation.useShared` imports those schemas by name, so both
+An `orpc` or `trpc` generator with `validation.useShared` imports those schemas by name, so both
 generators have to agree. You do not have to say it twice: when exactly one other generator
 produces the library named in `validation.library`, its `affix` is copied over automatically.
 

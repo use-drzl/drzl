@@ -136,6 +136,39 @@ Options:
 - `--template <name>` (default `standard`): can be `standard` or a custom path
 - `--includeRelations`: include relation endpoints
 
+### generate:trpc
+
+Quickly generate tRPC v11 routers without a config.
+
+::: code-group
+
+```bash [pnpm]
+pnpm dlx @drzl/cli generate:trpc <schema> -o src/api --template standard --includeRelations
+```
+
+```bash [npm]
+npx @drzl/cli generate:trpc <schema> -o src/api --template standard --includeRelations
+```
+
+```bash [yarn]
+yarn dlx @drzl/cli generate:trpc <schema> -o src/api --template standard --includeRelations
+```
+
+```bash [bun]
+bunx @drzl/cli generate:trpc <schema> -o src/api --template standard --includeRelations
+```
+
+:::
+
+Options:
+
+- `-o, --outDir <dir>` (default `src/api`)
+- `--template <name>` (default `standard`): `standard` or `service`
+- `--includeRelations`: include a lookup per single-column foreign key
+- `--servicesDir <dir>` (default `src/services`): only consulted by `--template service`
+
+See [Generate (tRPC)](/cli/generate-trpc).
+
 ### watch
 
 Watch schema (and template paths) and regenerate on changes.
@@ -200,6 +233,7 @@ See also:
 - Config reference: [/guide/configuration](/guide/configuration)
 - Generators:
   - [/generators/orpc](/generators/orpc)
+  - [/generators/trpc](/generators/trpc)
   - [/generators/service](/generators/service)
   - [/generators/zod](/generators/zod)
   - [/generators/valibot](/generators/valibot)

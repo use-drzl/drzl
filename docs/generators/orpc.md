@@ -42,10 +42,18 @@ validation: { library: 'valibot' },
 databaseInjection: {
   enabled: true,
   databaseType: 'Database',
-  databaseTypeImport: { name: 'Database', from: 'src/db/db' },
+  // Resolved by *your* compiler from the emitted file, so it is relative to the output
+  // directory, not to the project root. A bare `src/db/db` is a package specifier to both Node
+  // and tsc, and resolves to nothing. `databaseType` alone also takes an inline
+  // `import('...').T` type, which needs no import statement at all.
+  databaseTypeImport: { name: 'Database', from: '../db/db.js' },
 },
-servicesDir: 'src/services',
 ```
+
+`servicesDir` is not set here: the CLI derives it from the `service` generator's `path`. Declare
+`databaseInjection` on this generator only, too. It describes a contract between the router and the
+services, so the CLI pushes it onto the `service` generator, which has to be in `dataAccess:
+'drizzle'` mode to honour it.
 
 In the generated router:
 

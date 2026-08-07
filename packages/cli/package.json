@@ -68,6 +68,7 @@
     "url": "https://github.com/sponsors/omar-dulaimi"
   },
   "optionalDependencies": {
-    "@drzl/generator-json-schema": "workspace:^"
+    "@drzl/generator-json-schema": "workspace:^",
+    "@drzl/generator-trpc": "workspace:^"
   }
 }

@@ -92,6 +92,7 @@ it('found every publishable package', () => {
     'generator-json-schema',
     'generator-orpc',
     'generator-service',
+    'generator-trpc',
     'generator-typebox',
     'generator-valibot',
     'generator-zod',

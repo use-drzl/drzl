@@ -8,7 +8,7 @@
  * survived because nothing in this repo had ever loaded a CJS build: every other test imports
  * from source, and vitest resolves those imports through vite against the workspace, so an
  * in-process `import` says nothing about what tsup emitted. One package is covered by
- * `packages/validation-core/test/no-bundled-formatter.spec.ts`; this covers the other eleven.
+ * `packages/validation-core/test/no-bundled-formatter.spec.ts`; this covers the other twelve.
  *
  * Hence a child process, plain Node, absolute paths into `dist`: `require()` for the CommonJS
  * twin and `import()` for the ESM entry, with the two export surfaces then compared, because a
@@ -31,11 +31,11 @@
  * **What this does and does not prove.** The child inherits the Node running the tests, which in
  * this repo is 22.13 or newer, because pnpm 11 declares that floor and the workspace cannot be
  * installed below it. From Node 22.12 onwards `require()` of an ES module is allowed, so a green
- * run in this block can be carried by a feature the packages do not advertise: eleven manifests
+ * run in this block can be carried by a feature the packages do not advertise: twelve manifests
  * say `engines.node: ">=18.17.0"` and `@drzl/cli` says `">=22"`, and every one of those floors
  * predates 22.12. That last sentence is checked rather than trusted, by the first test below,
  * because the previous version of this paragraph asserted a number that was wrong for one of the
- * twelve. So a green run here means the bundles load on the Node this repo develops on, and says
+ * set. So a green run here means the bundles load on the Node this repo develops on, and says
  * nothing about the floor the packages claim. The gap is measured rather than left to a comment,
  * at the bottom of this file.
  *
@@ -114,7 +114,7 @@ interface Entry {
  *
  * `exports` when there is one, `main` otherwise. The twin is taken from the `require` condition
  * where the map declares it and derived from the ESM filename where it does not, which is nine of
- * the twelve packages: they publish a `.cjs` that no condition names.
+ * the thirteen packages: they publish a `.cjs` that no condition names.
  */
 function entryPoints(m: Manifest): Entry[] {
   const bins = new Set(Object.values(m.bin ?? {}).map(rel));
@@ -143,8 +143,8 @@ function entryPoints(m: Manifest): Entry[] {
 /**
  * Loads both formats of every entry and reports what each exported, or how it failed.
  *
- * One child per package: `execFileSync` is synchronous and twelve processes cost less than
- * twenty-four. Written to a temp directory rather than into the package, because resolution for
+ * One child per package: `execFileSync` is synchronous and thirteen processes cost less than
+ * twenty-six. Written to a temp directory rather than into the package, because resolution for
  * an absolute path does not consult the caller's location and a probe file left in `dist` would
  * be published by `files: ["dist"]`.
  */
@@ -240,6 +240,7 @@ it('found every publishable package', () => {
     'generator-json-schema',
     'generator-orpc',
     'generator-service',
+    'generator-trpc',
     'generator-typebox',
     'generator-valibot',
     'generator-zod',
@@ -253,7 +254,7 @@ it('found every publishable package', () => {
 it('advertises a Node floor older than require(esm) everywhere', () => {
   // The premise of the table at the bottom of this file, and of the header's claim about it,
   // turned into something that fails rather than something a reader has to believe. The floors
-  // are not uniform: eleven manifests say 18.17.0 and @drzl/cli says 22, and a comment that said
+  // are not uniform: twelve manifests say 18.17.0 and @drzl/cli says 22, and a comment that said
   // otherwise shipped once already.
   const tooNew = publishable
     .map(({ dir, manifest }) => {
@@ -335,7 +336,7 @@ describe.each(cases)('$name $entry.subpath', ({ dir, version, entry }) => {
 /**
  * The same CommonJS files, on the Node the packages say they run on.
  *
- * `engines.node` names a floor below 22.12 in all twelve manifests: eleven say `">=18.17.0"` and
+ * `engines.node` names a floor below 22.12 in all thirteen manifests: twelve say `">=18.17.0"` and
  * `@drzl/cli` says `">=22"`, which still predates it. That is asserted further up rather than
  * left as a sentence here. `require()` of an ES module did not exist before 22.12, so a bundle
  * that needs it throws `ERR_REQUIRE_ESM` on the advertised floor. The block above cannot see that,
@@ -348,7 +349,7 @@ describe.each(cases)('$name $entry.subpath', ({ dir, version, entry }) => {
  * Ten of these entries used to fail here, all for one reason: each CommonJS bundle did
  * `require("@drzl/<sibling>")` and every DRZL package was `"type": "module"` with an ESM `main`
  * and no `exports` map, so the only file a sibling `require` could reach was an ES module. The
- * eleven library manifests now carry an `exports` map whose `require` condition names the `.cjs`
+ * twelve library manifests now carry an `exports` map whose `require` condition names the `.cjs`
  * beside the `.js`, and the chain resolves to CommonJS the whole way down.
  *
  * One entry still fails, and not for a reason DRZL owns: `@drzl/cli`'s own bundle requires
@@ -371,6 +372,7 @@ const ON_THE_ADVERTISED_ENGINE_FLOOR: Record<string, 'loads' | 'ERR_REQUIRE_ESM'
   'generator-json-schema .': 'loads',
   'generator-orpc .': 'loads',
   'generator-service .': 'loads',
+  'generator-trpc .': 'loads',
   'generator-typebox .': 'loads',
   'generator-valibot .': 'loads',
   'generator-zod .': 'loads',

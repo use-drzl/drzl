@@ -7,6 +7,7 @@ import cliProgress from 'cli-progress';
 import { Command } from 'commander';
 import * as path from 'node:path';
 import ora from 'ora';
+import { trpcOptions } from './trpc-options.js';
 import { validationOptions } from './validation-options';
 import {
   computeGeneratorOutputDirs,
@@ -154,12 +155,40 @@ program
             templateOptions: g.templateOptions,
             importExtension: g.importExtension,
             validation: g.validation,
+            // Documented on this generator since it was added and never reachable from a config
+            // file, because the config schema had no such key and zod stripped it in silence.
+            databaseInjection: g.databaseInjection,
             servicesDir,
             onProgress: ({ index }) => progress.update(index),
           });
           progress.stop();
           ora().succeed(chalk.green(`Generated (${g.kind}): ${files.length} files`));
           files.forEach((f: string) => console.log('  -', chalk.cyan(f)));
+        } else if (g.kind === 'trpc') {
+          try {
+            // An optional dependency, like the json-schema generator and unlike oRPC. A package
+            // that has never been published cannot publish through npm's trusted-publisher OIDC
+            // flow, so its first version has to go out by hand; naming it as a hard dependency of
+            // the CLI in the same release breaks `npm i @drzl/cli` for everyone until it exists.
+            // A missing optional dependency is skipped by the installer rather than failing it,
+            // which is why this one really can be absent on an ordinary install.
+            const { TRPCGenerator } = await loadGenerator(
+              '@drzl/generator-trpc',
+              () => import('@drzl/generator-trpc')
+            );
+            const gen = new TRPCGenerator(analysis);
+            const { files } = await gen.generate({
+              ...trpcOptions(g, cfg, servicesDir),
+              onProgress: ({ index }: { index: number }) => progress.update(index),
+            });
+            progress.stop();
+            ora().succeed(chalk.green(`Generated (trpc): ${files.length} files`));
+            files.forEach((f: string) => console.log('  -', chalk.cyan(f)));
+          } catch (e: any) {
+            progress.stop();
+            reportGeneratorFailure(g.kind, e);
+            process.exit(1);
+          }
         } else if (g.kind === 'service') {
           try {
             const { ServiceGenerator } = await loadGenerator(
@@ -176,6 +205,11 @@ program
               dbImportPath: g.dbImportPath,
               schemaImportPath: g.schemaImportPath,
               importExtension: g.importExtension,
+              // The other half of `databaseInjection`. A router generator in injection mode
+              // emits `Service.getById(ctx.db, id)`, and only a service generated in the same
+              // mode has a `db` parameter to receive it. This branch never passed the option, so
+              // the two halves of one generated project disagreed about the signature.
+              databaseInjection: g.databaseInjection,
             });
             progress.stop();
             ora().succeed(chalk.green(`Generated (service): ${files.length} files`));
@@ -355,10 +389,48 @@ program
   });
 
 program
+  .command('generate:trpc')
+  .argument('<schema>', 'path to drizzle schema (TS)')
+  .option('-o, --outDir <dir>', 'output directory', 'src/api')
+  .option('--template <name>', 'standard | service', 'standard')
+  .option('--includeRelations', 'include relation endpoints')
+  .option('--servicesDir <dir>', 'where the service generator writes', 'src/services')
+  .action(async (schema: string, opts: any) => {
+    try {
+      const analyzer = new SchemaAnalyzer(schema);
+      const analysis = await analyzer.analyze({
+        includeRelations: !!opts.includeRelations,
+        validateConstraints: true,
+      });
+      const { TRPCGenerator } = await loadGenerator(
+        '@drzl/generator-trpc',
+        () => import('@drzl/generator-trpc')
+      );
+      const gen = new TRPCGenerator(analysis);
+      const { files } = await gen.generate({
+        outputDir: opts.outDir,
+        template: opts.template,
+        includeRelations: !!opts.includeRelations,
+        // Only consulted by `--template service`, and passed unconditionally so this command
+        // cannot become the branch that forgets it.
+        servicesDir: opts.servicesDir,
+      });
+      console.log(
+        chalk.green(`Generated:`),
+        files.map((f: string) => chalk.cyan(f)).join(', ')
+      );
+      maybeShowSponsorMessage({ reason: 'generate:trpc' });
+    } catch (e: any) {
+      reportGeneratorFailure('trpc', e);
+      process.exit(1);
+    }
+  });
+
+program
   .command('watch')
   .description('Watch schema and regenerate on changes')
   .option('-c, --config <path>', 'path to drzl.config')
-  .option('--pipeline <name>', 'all | analyze | generate-orpc', 'all')
+  .option('--pipeline <name>', 'all | analyze | generate-orpc | generate-trpc', 'all')
   .option('--debounce <ms>', 'debounce ms', '200')
   .option('--json', 'emit JSON logs', false)
   .option('--poll', 'force polling (helps WSL/Docker/remote FS)', false)
@@ -489,11 +561,20 @@ program
 
         const newFiles: string[] = [];
 
+        // Must match the `g.path ?? 'src/services'` the service branch below uses, or a router
+        // template that imports services spells a path nothing ever wrote. `generate` has always
+        // computed this; `watch` did not, so a rebuild silently emitted the default.
+        const servicesDir =
+          cfg.generators.find((x: { kind: string }) => x.kind === 'service')?.path ??
+          'src/services';
+
+        const PIPELINE_KINDS: Record<string, string> = {
+          'generate-orpc': 'orpc',
+          'generate-trpc': 'trpc',
+        };
+
         for (const g of cfg.generators) {
-          if (
-            opts.pipeline !== 'all' &&
-            !(opts.pipeline === 'generate-orpc' && g.kind === 'orpc')
-          ) {
+          if (opts.pipeline !== 'all' && PIPELINE_KINDS[opts.pipeline] !== g.kind) {
             continue;
           }
 
@@ -509,6 +590,8 @@ program
               templateOptions: g.templateOptions,
               importExtension: g.importExtension,
               validation: g.validation,
+              databaseInjection: g.databaseInjection,
+              servicesDir,
             });
             opts.json
               ? console.log(JSON.stringify({ event: 'generate_complete', kind: g.kind, files }))
@@ -517,6 +600,27 @@ program
                   files.map((f: string) => chalk.cyan(f)).join(', ')
                 );
             newFiles.push(...files);
+          } else if (g.kind === 'trpc') {
+            try {
+              const { TRPCGenerator } = await loadGenerator(
+                '@drzl/generator-trpc',
+                () => import('@drzl/generator-trpc')
+              );
+              const gen = new TRPCGenerator(analysis);
+              // The same builder `generate` uses, so the two dispatch loops cannot disagree
+              // about what this generator is given.
+              const { files } = await gen.generate(trpcOptions(g, cfg, servicesDir));
+              opts.json
+                ? console.log(JSON.stringify({ event: 'generate_complete', kind: g.kind, files }))
+                : console.log(
+                    chalk.green(`Generated (trpc): ${files.length} files`),
+                    files.map((f: string) => chalk.cyan(f)).join(', ')
+                  );
+              newFiles.push(...files);
+            } catch (e: any) {
+              reportGeneratorFailure(g.kind, e);
+              return;
+            }
           } else if (g.kind === 'service') {
             try {
               const { ServiceGenerator } = await loadGenerator(
@@ -533,6 +637,7 @@ program
                 dbImportPath: g.dbImportPath,
                 schemaImportPath: g.schemaImportPath,
                 importExtension: g.importExtension,
+                databaseInjection: g.databaseInjection,
               });
               opts.json
                 ? console.log(JSON.stringify({ event: 'generate_complete', kind: g.kind, files }))
@@ -702,11 +807,17 @@ program
     const fs = await import('node:fs/promises');
     const path = await import('node:path');
     const target = path.resolve(process.cwd(), 'drzl.config.ts');
+    // One router generator, not both: they default to the same `outDir` and would each write an
+    // `index.ts` there, so a scaffold naming both would emit a config whose second generator
+    // silently overwrote the first. Swapping the kind is a one-word edit; running both needs a
+    // `path` on one of them, which is what the comment says.
     const template = `export default {
   schema: 'src/db/schema.ts',
   outDir: 'src/api',
   analyzer: { includeRelations: true, validateConstraints: true },
   generators: [
+    // For tRPC instead: { kind: 'trpc', template: 'standard', includeRelations: true }
+    // To run both, give one of them its own \`path\`; they share \`outDir\` otherwise.
     { kind: 'orpc', template: 'standard', includeRelations: true }
   ]
 } as const\n`;

@@ -48,6 +48,7 @@ export default {
           { text: 'Analyze', link: '/cli/analyze' },
           { text: 'Generate', link: '/cli/generate' },
           { text: 'Generate (oRPC)', link: '/cli/generate-orpc' },
+          { text: 'Generate (tRPC)', link: '/cli/generate-trpc' },
           { text: 'Watch', link: '/cli/watch' },
         ],
       },
@@ -56,6 +57,7 @@ export default {
         collapsed: false,
         items: [
           { text: 'oRPC', link: '/generators/orpc' },
+          { text: 'tRPC', link: '/generators/trpc' },
           { text: 'Service', link: '/generators/service' },
           { text: 'Zod', link: '/generators/zod' },
           { text: 'Valibot', link: '/generators/valibot' },

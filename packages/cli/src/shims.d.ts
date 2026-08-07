@@ -17,3 +17,6 @@ declare module '@drzl/generator-arktype' {
 declare module '@drzl/generator-typebox' {
   export const TypeBoxGenerator: any;
 }
+declare module '@drzl/generator-trpc' {
+  export const TRPCGenerator: any;
+}
