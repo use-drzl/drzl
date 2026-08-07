@@ -1,6 +1,6 @@
 {
   "name": "@drzl/analyzer",
-  "version": "1.17.6",
+  "version": "1.17.7",
   "private": false,
   "license": "Apache-2.0",
   "type": "module",
