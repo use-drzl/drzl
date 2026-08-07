@@ -64,6 +64,7 @@ export default {
           { text: 'ArkType', link: '/generators/arktype' },
           { text: 'TypeBox', link: '/generators/typebox' },
           { text: 'JSON Schema', link: '/generators/json-schema' },
+          { text: 'OpenAPI Document', link: '/generators/openapi' },
           { text: 'Nested Relations', link: '/generators/nested-relations' },
           { text: 'Adapters (Overview)', link: '/adapters/overview' },
           { text: 'Router Adapters', link: '/adapters/router' },

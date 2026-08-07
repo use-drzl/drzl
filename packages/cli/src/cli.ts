@@ -7,6 +7,7 @@ import cliProgress from 'cli-progress';
 import { Command } from 'commander';
 import * as path from 'node:path';
 import ora from 'ora';
+import { jsonSchemaOptions } from './json-schema-options.js';
 import { trpcOptions } from './trpc-options.js';
 import { validationOptions } from './validation-options';
 import {
@@ -288,12 +289,7 @@ program
             );
             const gen = new JsonSchemaGenerator(analysis);
             const target = g.path ?? 'src/validators/json-schema';
-            const files = await gen.generate({
-              // JSON Schema is data, so nothing here references a type from the schema module.
-              ...(validationOptions(g, cfg, target, { schemaTypes: false }) as object),
-              target: g.target,
-              components: g.components,
-            } as never);
+            const files = await gen.generate(jsonSchemaOptions(g, cfg, target) as never);
             progress.stop();
             ora().succeed(chalk.green(`Generated (json-schema): ${files.length} files`));
             files.forEach((f: string) => console.log('  -', chalk.cyan(f)));
@@ -763,12 +759,9 @@ program
               );
               const gen = new JsonSchemaGenerator(analysis);
               const target = g.path ?? 'src/validators/json-schema';
-              const files = await gen.generate({
-                // JSON Schema is data, so nothing here references a type from the schema module.
-                ...(validationOptions(g, cfg, target, { schemaTypes: false }) as object),
-                target: g.target,
-                components: g.components,
-              } as never);
+              // The same builder `generate` uses, so the two dispatch loops cannot disagree about
+              // what this generator is given.
+              const files = await gen.generate(jsonSchemaOptions(g, cfg, target) as never);
               opts.json
                 ? console.log(JSON.stringify({ event: 'generate_complete', kind: g.kind, files }))
                 : console.log(

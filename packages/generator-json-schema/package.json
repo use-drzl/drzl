@@ -33,6 +33,7 @@
     "@drzl/validation-core": "workspace:^"
   },
   "devDependencies": {
+    "@seriousme/openapi-schema-validator": "^2.9.1",
     "ajv": "^8.17.1",
     "ajv-formats": "^3.0.1",
     "tsup": "^8.5.1",

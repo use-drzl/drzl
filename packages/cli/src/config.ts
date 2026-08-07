@@ -149,6 +149,44 @@ export const GeneratorSchema = z.object({
   target: z.enum(['draft-2020-12', 'openapi-3.1', 'openapi-3.0']).optional(),
   /** Also emit `components.ts` for the `json-schema` generator, ready for an OpenAPI document. */
   components: z.boolean().optional(),
+  /**
+   * Also emit the whole OpenAPI document for the `json-schema` generator: paths, verbs, request and
+   * response bodies per table, with `components.schemas` embedded so the file stands alone.
+   *
+   * `true` is the short form. The object form carries the three things a Drizzle schema genuinely
+   * cannot say: what the API is called, where it is served, and which status code that particular
+   * server answers a request that fails its schema with.
+   */
+  document: z
+    .union([
+      z.boolean(),
+      z
+        .object({
+          enabled: z.boolean().optional(),
+          /** `ts` (default) writes a module, `json` the file OpenAPI tooling reads directly. */
+          format: z.enum(['ts', 'json', 'both']).optional(),
+          info: z
+            .object({
+              title: z.string().optional(),
+              version: z.string().optional(),
+              description: z.string().optional(),
+            })
+            .strict()
+            .optional(),
+          /**
+           * Omitted by default, which the specification reads as a single server at `/`: the
+           * document describes whatever is serving it. A placeholder host would be a fabrication
+           * that tooling then follows.
+           */
+          servers: z
+            .array(z.object({ url: z.string(), description: z.string().optional() }).strict())
+            .optional(),
+          /** 400 by default. 422 is the other defensible reading; exactly one is emitted. */
+          validationStatus: z.union([z.literal(400), z.literal(422)]).optional(),
+        })
+        .strict(),
+    ])
+    .optional(),
   // service generator specific options
   path: z.string().optional(),
   dataAccess: z.enum(['stub', 'drizzle']).default('stub').optional(),
