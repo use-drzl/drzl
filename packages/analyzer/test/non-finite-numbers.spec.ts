@@ -75,11 +75,26 @@ describe('the codec path, which drizzle v1 takes', () => {
     });
   });
 
-  it('admits NaN alone on a postgres numeric in number mode', () => {
+  it('splits the two on a postgres numeric in number mode, by the declared precision', () => {
+    // The split the header of this file records and the analyzer could not act on: an
+    // unconstrained `numeric` stores and returns both infinities, and a `numeric(10,2)` answers
+    // `22003 numeric field overflow` for either, while both take `NaN`. This used to be a flat
+    // `allowsInfinity: false` because nothing here read precision, which is exactly the reason the
+    // narrower of the two answers was chosen and is exactly the reason that is now gone:
+    // `declaredDecimalRange` reads it, and the two declarations are no longer the same column.
     expect(describeV1Column(v1col('number', 'numeric:number'))).toMatchObject({
       dbType: 'NUMERIC',
       allowsNaN: true,
+      allowsInfinity: true,
+    });
+    expect(
+      describeV1Column({ ...v1col('number', 'numeric:number'), precision: 10, scale: 2 })
+    ).toMatchObject({
+      dbType: 'NUMERIC',
+      allowsNaN: true,
       allowsInfinity: false,
+      min: '-99999999.99',
+      max: '99999999.99',
     });
   });
 

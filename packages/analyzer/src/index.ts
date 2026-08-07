@@ -50,8 +50,16 @@ export interface Column {
    *
    * Strings rather than numbers because a 64 bit bound is not representable as a JS number:
    * `9223372036854775807` rounds to `9223372036854775808` the moment it becomes one, so a
-   * numeric field here would silently emit a wrong bound. Absent for floats and for `numeric`,
-   * which have no integer range.
+   * numeric field here would silently emit a wrong bound. A 20 digit `numeric(20,0)` bound is
+   * further past that again.
+   *
+   * Not an integer range, despite the name this field used to be described by. An inexact column
+   * carries one too: a `real` is bounded by the magnitude the database refuses past, and a
+   * `numeric(10,2)` by the width its own declaration states. `integer` says which kind it is, and
+   * saying it is what stops a bounded float schema refusing 1.5.
+   *
+   * Absent where nothing declares a bound: an 8 byte float holds every finite JS number, and a
+   * `numeric` with no precision holds arbitrary precision.
    */
   min?: string;
   max?: string;
@@ -80,14 +88,22 @@ export interface Column {
    * does too, but a `numeric(10,2)` refuses either infinity with `22003 numeric field overflow`
    * while still taking `NaN`, and `integer`/`bigint` refuse all three.
    *
-   * So `numeric` in `{ mode: 'number' }` states `allowsInfinity: false` deliberately, and it is a
-   * narrowing rather than an oversight: nothing here reads a column's precision or scale, so the
-   * two `numeric` declarations are indistinguishable, and admitting the infinities would make the
-   * schema promise what the server refuses for the commoner of the two.
+   * So `numeric` in `{ mode: 'number' }` answers each of the two separately: `allowsNaN` at any
+   * width, and `allowsInfinity` only where the declaration carries no precision. That used to be a
+   * flat `false`, and the recorded reason was that nothing here read a column's precision or scale,
+   * so the two declarations were indistinguishable and the narrower answer was the safer one.
+   * `declaredDecimalRange` reads both numbers now, the two are distinguishable, and each says what
+   * its own server does.
    *
-   * Postgres only, today. MySQL refuses all three on a `float`/`double` and silently stores `0.00`
-   * for a `decimal`. SQLite returns both infinities and silently turns `NaN` into NULL, which is
-   * real and is filed on its own: a column needs both halves of that answer or none.
+   * Postgres and Gel. MySQL refuses all three on a `float`/`double`, and on a `decimal` refuses
+   * them outright rather than storing `0.00`: measured on MySQL 8.4.11 in `STRICT_TRANS_TABLES`,
+   * all three answer `Incorrect decimal value`. SQLite returns both infinities and silently turns
+   * `NaN` into NULL, which is real and is filed on its own: a column needs both halves of that
+   * answer or none.
+   *
+   * Gel joined on a measurement of its own rather than on being Postgres-backed: a live Gel 7.1
+   * stored `nan`, `inf` and `-inf` in both `std::float32` and `std::float64` and handed all three
+   * back unchanged, through a cast and through a stored property.
    *
    * Absent on every other column, including the string mode of `numeric`, which already carries the
    * same fact as a pattern; see `COLUMN_FORMATS.numeric` in `@drzl/validation-core`.
@@ -406,12 +422,17 @@ const MYSQL_FLOAT_RANGE: [string, string] = [`-${FLOAT32_MAX}`, FLOAT32_MAX];
 /**
  * The range a JS number holds every integer of.
  *
- * What a `numeric`/`decimal` column in `{ mode: 'number' }` is bounded by, because the value
- * arrives as a JS number and the column's own precision is wider than one can carry. Narrower
- * than the database on that column too: PGlite refuses 2147483648 into a `numeric(10,2)` with
- * `numeric field overflow`, so this admits values that column will not take. It is what both
- * drizzle majors and `drizzle-zod` emit, and reading the declared precision instead would make
- * DRZL disagree with all three.
+ * What a `numeric`/`decimal` column in `{ mode: 'number' }` is bounded by **when its declaration
+ * carries no precision**, which is then the only thing left to bound it by. Where a precision is
+ * declared it is the column's own width instead; see `declaredDecimalRange`.
+ *
+ * This used to apply to every such column, on the reasoning that it is what both drizzle majors and
+ * `drizzle-zod` emit and that reading the declared precision would put DRZL out of step with all
+ * three. The database was asked and it is stricter than all three: PGlite refuses 100000000,
+ * 2147483648 and 9007199254740991 into a `numeric(10,2)` with `22003 numeric field overflow`, and
+ * MySQL 8.4.11 refuses the same three from a `decimal(10,2)`. Being out of step with validators
+ * that read neither number is the right outcome when the server reads both, and the divergence is
+ * carried with that measurement attached in both parity passes.
  */
 const JS_SAFE_INTEGER_BOUNDS: [string, string] = ['-9007199254740991', '9007199254740991'];
 
@@ -585,6 +606,24 @@ export function describeV1Column(column: any): Partial<Column> | null {
     case 'int53':
     case 'uint53':
     case 'int64': {
+      // `numeric({ mode: 'bigint' })` is not an int64 column and v1 says it is: all four
+      // dialects' bigint-mode classes carry `dataType: 'bigint int64'`, so a `numeric(20,0)` took
+      // the range below and was labelled BIGINT with it. It is a NUMERIC column whose width is its
+      // own declared precision, which is wider than a signed 64 bit integer at 20 digits and
+      // narrower at 10. See `DECIMAL_BIGINT_MODE`.
+      if (DECIMAL_BIGINT_MODE.test(entityKind)) {
+        out.tsType = 'bigint';
+        out.dbType = 'NUMERIC';
+        // A bigint holds whole numbers by construction, so this states what the value already is
+        // rather than narrowing anything. It is the number mode that must not say it: measured on
+        // PGlite, a `numeric(1,0)` accepts 9.4 and stores 9, so `integer: true` there would refuse
+        // a value the server takes.
+        out.integer = true;
+        // Absent where nothing states a width, rather than guessed at; see `decimalModeRange`.
+        const range = decimalModeRange(column, entityKind, 'bigint');
+        if (range) [out.min, out.max] = range;
+        break;
+      }
       // Every width Drizzle names. Missing `int8` and `int24` did not leave MySQL's `tinyint` and
       // `mediumint` alone: they fell through to the bare-number arm below, whose safe-integer
       // bounds then *overrode* the correct ones the class-name table had supplied, so a tinyint
@@ -810,18 +849,40 @@ export function describeV1Column(column: any): Partial<Column> | null {
         out.tsType = 'number';
         out.dbType = 'NUMERIC';
         out.integer = false;
-        [out.min, out.max] = JS_SAFE_INTEGER_BOUNDS;
+        // The column's own width where it declares one, and what a JS number can carry where it
+        // does not. The declared width replaces the safe-integer range outright rather than
+        // narrowing it, because it is the truthful answer in both directions: a `numeric(10,2)`
+        // refuses 2147483648, and a `numeric(30,0)` in this mode hands back 1e30 on SELECT, which
+        // the safe-integer bound refuses on a row the column itself returned.
+        //
+        // Ungated, because this arm is the number mode and nothing else. Swept over every column
+        // builder all six v1 cores export, in five argument shapes each: the columns whose
+        // `dataType` is a bare `number` with no semantic half are `PgNumericNumber`,
+        // `MySqlDecimalNumber`, `SQLiteNumericNumber`, `SingleStoreDecimalNumber`,
+        // `MsSqlDecimalNumber`, `MsSqlNumericNumber` and `CockroachDecimalNumber`, and no other
+        // builder on any of the six reaches here at all. So there is no column here whose
+        // `precision` means something other than a decimal width, and gating on the class name
+        // would only have excluded the four dialects that state no codec. The sweep is asserted in
+        // numeric-precision.spec.ts rather than left as this sentence.
+        const range = decimalModeRange(column, entityKind, 'number');
+        if (range) [out.min, out.max] = range;
         // Postgres stores `NaN` in a `numeric` of any width and returns it, so the bounds above
-        // describe the finite values and this says the rest. Not the infinities: an unconstrained
-        // `numeric` takes them and a `numeric(10,2)` answers `22003 numeric field overflow`, and
-        // nothing here reads precision or scale, so the two cannot be told apart. Admitting them
-        // would promise what the server refuses for the commoner declaration.
+        // describe the finite values and this says the rest. The infinities are the half that
+        // depends on the declaration: measured through PGlite, an unconstrained `numeric` stores
+        // and returns both, and a `numeric(10,2)` answers `22003 numeric field overflow` for
+        // either. That used to be stated as a flat `false` because nothing here read precision, so
+        // the two declarations were indistinguishable; they are distinguishable now.
         //
         // `numeric:number` is Postgres's codec for the number mode. MySQL and SingleStore say
-        // `decimal:number` and store `0.00` for all three, and SQLite says nothing at all.
+        // `decimal:number` and refuse all three outright, measured on MySQL 8.4.11 as
+        // `Incorrect decimal value: 'NaN'`, and SQLite says nothing at all.
         if (codec === 'numeric:number') {
           out.allowsNaN = true;
-          out.allowsInfinity = false;
+          // The *declared* precision, not the effective bound: Postgres is the only dialect here
+          // and its bare `numeric` really is unconstrained, so the two agree, but the question this
+          // asks is whether the declaration carries a typmod rather than whether anything bounds
+          // the column.
+          out.allowsInfinity = !declaredDecimalRange(column);
         }
       } else if (js === 'string') {
         out.tsType = 'string';
@@ -887,6 +948,132 @@ function unwrapArrayColumn(column: any): { element: any; dimensions: number } {
 function declaredLength(column: any): number | undefined {
   const n = column?.length ?? column?.config?.length ?? column?.config?.dimensions;
   return typeof n === 'number' && Number.isFinite(n) && n > 0 ? n : undefined;
+}
+
+/**
+ * The magnitude a `numeric(p, s)` / `decimal(p, s)` column really holds, or nothing where the
+ * declaration carries no precision.
+ *
+ * Both numbers have always been on the column, on both majors, and nothing read either of them, so
+ * a `numeric(10,2)` and an unconstrained `numeric` were the same column to this file. The number
+ * mode was bounded at the safe-integer range instead, which is 2^53 on a column that stops at 10^8.
+ *
+ * Measured against PostgreSQL 18.3 through PGlite and MySQL 8.4.11 in Docker, both on the
+ * bound-parameter path a validator guards, and the two agree value for value:
+ *
+ *   numeric(10,2)   99999999.99            accepted
+ *   numeric(10,2)   100000000              refused, 22003 / ER_WARN_DATA_OUT_OF_RANGE
+ *   numeric(10,2)   2147483648             refused
+ *   numeric(10,2)   9007199254740991       refused, which is the bound this replaces
+ *   numeric(20,0)   99999999999999999999   accepted
+ *   numeric(20,0)   100000000000000000000  refused
+ *   numeric(5,3)    99.999 / 100           accepted / refused
+ *
+ * So the value is `(10^p - 1)` shifted right by `s` decimal places, spelled out digit by digit
+ * rather than computed, because a 20 digit bound is not representable as a JS number and this file
+ * carries every other bound as a decimal string for that reason.
+ *
+ * Three shapes of declaration, each measured rather than assumed:
+ *
+ *   `{ precision, scale }`   the ordinary case
+ *   `{ precision }`          scale 0. `numeric(10)` is `numeric(10,0)` to Postgres, read back
+ *                            through `format_type`, and it stores 0.1 as 0.
+ *   `{ scale }`              no constraint at all. Drizzle renders a bare `numeric` with no
+ *                            typmod when no precision is given, on both majors, so there is
+ *                            nothing declared to bound by.
+ *
+ * `s >= p` is a real declaration rather than a mistake: Postgres takes `numeric(2,5)`, which holds
+ * two significant digits five places right of the point, and measured on the same server it accepts
+ * 0.00001 and refuses 0.001. That is the third branch below.
+ *
+ * **One measured divergence, and it is deliberate.** Both servers round the value to the scale
+ * *before* they check the integer digits, so both accept 99999999.994 into a `numeric(10,2)` and
+ * store 99999999.99, and both refuse 99999999.995. The accepted set is therefore open at the top
+ * and no inclusive bound describes it exactly. This is the closed set of values the column can hold
+ * and hand back, so a select schema built on it accepts every row the column returns, and the band
+ * an insert schema turns away is the band the server would have rounded away.
+ */
+function declaredDecimalRange(column: any): [string, string] | undefined {
+  const cfg = column?.config ?? {};
+  const precision = column?.precision ?? cfg.precision;
+  const scale = column?.scale ?? cfg.scale ?? 0;
+  if (typeof precision !== 'number' || !Number.isInteger(precision) || precision < 1)
+    return undefined;
+  if (typeof scale !== 'number' || !Number.isInteger(scale) || scale < 0) return undefined;
+  const nines = '9'.repeat(precision);
+  const max =
+    scale === 0
+      ? nines
+      : scale < precision
+        ? `${nines.slice(0, precision - scale)}.${nines.slice(precision - scale)}`
+        : `0.${'0'.repeat(scale - precision)}${nines}`;
+  return [`-${max}`, max];
+}
+
+/**
+ * The two numeric modes of `numeric`/`decimal`, by `drizzle:entityKind` and by constructor name,
+ * which are the same string for every class either one matches.
+ *
+ * Drizzle spells the mode as a distinct class on every dialect: `PgNumericNumber`,
+ * `MySqlDecimalBigInt`, `SingleStoreDecimalNumber`, `SQLiteNumericBigInt`. That suffix is the only
+ * signal both majors share. The codec would do for Postgres and MySQL, which say `numeric:number`
+ * and `decimal:bigint`, and SingleStore and SQLite state no codec at all on 1.0.0-rc.4, so half the
+ * family would be left behind by it; 0.4x states no codec anywhere.
+ *
+ * The bigint half matters most. v1 stamps `dataType: 'bigint int64'` on all four bigint-mode
+ * classes, so a `numeric(20,0)` reached the int64 arm below, came back bounded at
+ * +/-9223372036854775807 and labelled a BIGINT column. Measured on both servers, that column
+ * accepts 18446744073709551615 and 99999999999999999999, so the emitted schema refused values the
+ * column stores and hands back.
+ */
+const DECIMAL_NUMBER_MODE = /(?:Numeric|Decimal)Number$/;
+const DECIMAL_BIGINT_MODE = /(?:Numeric|Decimal)BigInt$/;
+
+/**
+ * A bare `decimal` on MySQL and SingleStore, which is not the unconstrained column it reads as.
+ *
+ * Measured on MySQL 8.4.11: `create table dd (v decimal)` reports `decimal(10,0)` in
+ * `information_schema.columns`, and the column then accepts 9999999999 and refuses both
+ * 10000000000 and 9007199254740991 with `ER_WARN_DATA_OUT_OF_RANGE`. So the declaration carries no
+ * precision and the column has one anyway, and the safe-integer fallback was ninety thousand times
+ * wider than the column.
+ *
+ * SingleStore takes MySQL's, which is where every other answer in this file for that dialect comes
+ * from: it is MySQL wire compatible, ships the same three mode classes, and there is no in-process
+ * SingleStore here to read a row back from.
+ *
+ * Deliberately not extended to MSSQL, whose `DECIMAL` documents a different default width and which
+ * was not measured for this. It keeps the safe-integer fallback, which is what it had.
+ */
+const MYSQL_IMPLICIT_DECIMAL_RANGE: [string, string] = ['-9999999999', '9999999999'];
+
+/**
+ * The bound to state for a `numeric`/`decimal` column in one of its two numeric modes, or nothing.
+ *
+ * Three answers, and which one applies is a property of the dialect rather than of the mode:
+ *
+ *   declared precision   the column's own width, whatever the dialect
+ *   MySQL, SingleStore   `decimal(10,0)` where nothing is declared; see the constant above
+ *   SQLite               nothing, ever. `NUMERIC` there is an affinity rather than a type: it takes
+ *                        no precision argument on either major, and it stores whatever it is given
+ *                        as an INTEGER or a REAL. Measured through `node:sqlite`, a `numeric`
+ *                        column stores 1e300 and 1e32 as REALs and hands each back unchanged, so
+ *                        any of the bounds above would refuse rows the column itself returns.
+ *   everything else      the safe-integer range in the number mode, because the value arrives as a
+ *                        JS number and nothing else bounds it, and nothing in the bigint mode,
+ *                        because an unconstrained Postgres `numeric` really does hold any integer.
+ */
+function decimalModeRange(
+  column: any,
+  kind: string,
+  mode: 'number' | 'bigint'
+): [string, string] | undefined {
+  const declared = declaredDecimalRange(column);
+  if (declared) return declared;
+  if (kind.startsWith('MySql') || kind.startsWith('SingleStore'))
+    return MYSQL_IMPLICIT_DECIMAL_RANGE;
+  if (kind.startsWith('SQLite')) return undefined;
+  return mode === 'number' ? JS_SAFE_INTEGER_BOUNDS : undefined;
 }
 
 /**
@@ -1345,11 +1532,29 @@ export class SchemaAnalyzer {
     SQLiteReal: null,
     SingleStoreDouble: null,
     SingleStoreReal: null,
-    // `numeric({ mode: 'number' })`, which v1 reaches through the bare-number arm of
-    // `describeV1Column`. This one is about what a JS number can carry rather than about the
-    // column, which Postgres caps far lower: it refuses 2147483648 into a `numeric(10,2)`.
-    PgNumericNumber: JS_SAFE_INTEGER_BOUNDS,
+    // Gel, whose `real` is a `std::float32` and whose `doublePrecision` is a `std::float64`. Both
+    // used to be answered by a `/Real|DoublePrecision/i` arm that said NUMERIC and stated nothing
+    // else at all, so a `real` column accepted 1e300 and the server refused it.
+    //
+    // Measured on a live Gel 7.1 (`geldata/gel:7`, sys::get_version_as_str() -> 7.1+08db576)
+    // through the `gel` client, casting each literal so the server parses it, and again through a
+    // stored property on a real object type. The float32 edge is Postgres's exactly, to the double:
+    //
+    //   3.4028234663852886e38   accepted, returned unchanged
+    //   3.4028235677973366e38   accepted, and stored as 3.4028234663852886e38
+    //   3.402823567797337e38    refused, "is out of range for type std::float32"
+    //   1e300                   refused, the same way
+    //
+    // The same value accepted, the same next double up refused, and the same rounding down of the
+    // midpoint, so it takes the constant already here rather than a second name for one number.
+    // float64 took 1e300 and Number.MAX_VALUE faithfully, for the reason no 8 byte float has a
+    // truthful finite bound.
+    GelReal: PG_FLOAT4_RANGE,
+    GelDoublePrecision: null,
   };
+  // `numeric`/`decimal` in either of its two numeric modes is deliberately not in the table above.
+  // Its bound is not a fixed magnitude per class but the precision each column declares for itself,
+  // which no table keyed on a class name can hold; see `declaredDecimalRange`.
 
   /**
    * The Postgres number columns that hold a non-finite double, and which of the three each holds.
@@ -1361,17 +1566,25 @@ export class SchemaAnalyzer {
    * table also answers for a v1 column and the two answers are identical rather than merely
    * compatible. non-finite-numbers.spec.ts asserts that agreement through the real analyzer.
    *
-   * Postgres only. No MySQL, SingleStore or SQLite class belongs here: MySQL refuses all three on a
-   * `float`/`double` and stores `0.00` for a `decimal`, and SQLite returns both infinities while
-   * silently turning `NaN` into NULL, which is a different answer that has to arrive whole.
+   * No MySQL, SingleStore or SQLite class belongs here: MySQL refuses all three on a `float`/
+   * `double` and stores `0.00` for a `decimal`, and SQLite returns both infinities while silently
+   * turning `NaN` into NULL, which is a different answer that has to arrive whole.
+   *
+   * Gel does belong, and is the fourth and fifth entries. Measured on a live Gel 7.1 rather than
+   * inferred from it being Postgres-backed: both `std::float32` and `std::float64` stored `nan`,
+   * `inf` and `-inf` and handed all three back as `NaN`, `Infinity` and `-Infinity`, through a cast
+   * and again through a stored property. Without them every row of such a column failed validation.
    *
    * `PgNumeric` is absent because its value is a string, and its pattern already accepts `NaN` and
-   * `Infinity`. `PgNumericNumber` states `infinity: false` on purpose; see `Column.allowsNaN`.
+   * `Infinity`. `PgNumericNumber` is absent because its answer is no longer flat: it takes `NaN` at
+   * any width and an infinity only where no precision is declared, which is a per-column question
+   * this table cannot ask. `columnConstraints` answers it beside the bound that decides it.
    */
   private static readonly PG_NON_FINITE: Record<string, { nan: boolean; infinity: boolean }> = {
     PgReal: { nan: true, infinity: true },
     PgDoublePrecision: { nan: true, infinity: true },
-    PgNumericNumber: { nan: true, infinity: false },
+    GelReal: { nan: true, infinity: true },
+    GelDoublePrecision: { nan: true, infinity: true },
   };
 
   /**
@@ -1427,6 +1640,34 @@ export class SchemaAnalyzer {
     if (nonFinite) {
       out.allowsNaN = nonFinite.nan;
       out.allowsInfinity = nonFinite.infinity;
+    }
+
+    // The two numeric modes of `numeric`/`decimal`, whose bound is the precision the column
+    // declares rather than a magnitude fixed per class. The class-name half of what
+    // `describeV1Column` reads off the same column, computed by the same function so the two
+    // cannot drift: a fact stated on one path and not the other is a schema that changes when the
+    // user upgrades drizzle, which the cross-major diff in `scripts/verify-packed.sh` fails on.
+    // numeric-precision.spec.ts asserts that agreement through the real analyzer, per dialect.
+    if (DECIMAL_NUMBER_MODE.test(ctor)) {
+      const range = decimalModeRange(column, ctor, 'number');
+      if (range) [out.min, out.max] = range;
+      // `integer: false` beside the bound, not instead of it. `isIntegerColumn` falls back to
+      // "declares both bounds" when the flag is absent, so adding a range here without the flag is
+      // what makes the emitted schema call `.int()` and refuse 1234.56 on a `decimal(10,2)`. It is
+      // stated on the SQLite column too, which carries no bound for the flag to guard, because it
+      // is true of the column either way.
+      out.integer = false;
+      // Postgres alone, and split by the declaration for the reason written out at the v1 copy of
+      // this: `NaN` goes into a `numeric` of any width, either infinity only into one carrying no
+      // precision.
+      if (ctor === 'PgNumericNumber') {
+        out.allowsNaN = true;
+        out.allowsInfinity = !declaredDecimalRange(column);
+      }
+    } else if (DECIMAL_BIGINT_MODE.test(ctor)) {
+      const range = decimalModeRange(column, ctor, 'bigint');
+      if (range) [out.min, out.max] = range;
+      out.integer = true;
     }
 
     if (/^(Pg)?UUID$/i.test(ctor) || /Uuid$/i.test(ctor)) out.format = 'uuid';
@@ -1782,8 +2023,13 @@ export class SchemaAnalyzer {
           if (/BigInt64/i.test(ctor)) return { tsType: 'bigint', dbType: 'BIGINT' };
           if (/Int53|Integer|SmallInt/i.test(ctor)) return { tsType: 'number', dbType: 'INTEGER' };
 
-          // Floating/decimal
-          if (/Real|DoublePrecision/i.test(ctor)) return { tsType: 'number', dbType: 'NUMERIC' };
+          // Floating/decimal. The two float widths were one arm answering NUMERIC for both, which
+          // is the label Postgres's own `numeric` carries and neither of these is: `real` is a
+          // `std::float32` and `doublePrecision` a `std::float64`, and the two have different
+          // magnitudes the server refuses past. They are the only two classes `gel-core` exports
+          // whose name holds either word, swept over its exports on 0.45.2.
+          if (/DoublePrecision/i.test(ctor)) return { tsType: 'number', dbType: 'DOUBLE' };
+          if (/Real/i.test(ctor)) return { tsType: 'number', dbType: 'REAL' };
           if (/Decimal/i.test(ctor)) return { tsType: 'string', dbType: 'NUMERIC' };
 
           // UUID
@@ -1941,7 +2187,9 @@ export class SchemaAnalyzer {
       // type tells them apart. v1 states a codec and reaches the same table through
       // `describeV1Column`; on 0.4x nothing set a cap at all and a longtext and a tinytext were
       // equally unconstrained.
-      const sqlKind = String((outerCol as any)?.constructor?.[Symbol.for('drizzle:entityKind')] ?? '');
+      const sqlKind = String(
+        (outerCol as any)?.constructor?.[Symbol.for('drizzle:entityKind')] ?? ''
+      );
       const sqlType =
         sqlKind.startsWith('MySql') && typeof (col as any)?.getSQLType === 'function'
           ? String((col as any).getSQLType()).toLowerCase()

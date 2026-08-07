@@ -2125,15 +2125,22 @@ const ALLOWED: Record<string, Waiver> = {
   // All four libraries now carry the same signature, where zod and typebox used to differ from
   // valibot and arktype on the infinities. That convergence is the fix: the two that refused a
   // non-finite number no longer do.
-  // NaN and not the infinities, and the asymmetry is the point. Postgres takes NaN into a numeric
-  // whether or not it carries a precision, and takes an infinity only when it does not: a
-  // `numeric(10,2)` answers `22003 numeric field overflow`. The analyzer does not read precision
-  // or scale at all, so it cannot tell the two declarations apart, and accepting would make the
-  // schema admit what the server refuses for the commoner one. Narrower on purpose (AW).
+  // Two facts, and the second one is new. Postgres takes NaN into a numeric whether or not it
+  // carries a precision, so DRZL is looser there and right to be. It now also **refuses** what the
+  // column refuses: `numeric(10,2)` answers `22003 numeric field overflow` for 2147483648, and
+  // official accepts it because neither drizzle major nor `drizzle-zod` reads precision or scale.
+  // Being out of step with them is the correct outcome when the database is the arbiter (AK).
   //
-  // arktype on update is excepted because official already accepts NaN there, so there is nothing
-  // to waive. It is the one cell of the twelve that reports parity.
-  'pg/c_numeric_n': { libs: LIB_NAMES, modes: MODE_NAMES, except: ['update/arktype'], why: 'Postgres stores NaN in a numeric column and returns it; official refuses the value the database hands back', divergence: { '*/*': `L: NaN | T: ` } },
+  // The infinity half of the old note is gone, and so is its reason. It read "the analyzer does not
+  // read precision or scale at all, so it cannot tell the two declarations apart". It reads both
+  // now, so the split it could not make is the split it makes: an unconstrained `numeric` takes
+  // both infinities and one carrying a precision answers 22003, which is exactly `allowsInfinity =
+  // !declaredPrecision`. A recorded reason that stops being true is a reason to revisit the
+  // decision it justified, not a sentence to leave standing.
+  //
+  // No `except` any more. It named update/arktype as the one cell of twelve reporting parity, and
+  // that cell diverges now: official accepts the value the column refuses there too.
+  'pg/c_numeric_n': { libs: LIB_NAMES, modes: MODE_NAMES, why: 'Postgres stores NaN in a numeric column and returns it, and refuses a value past the declared precision; official reads no precision so it accepts what the column will not hold', divergence: { 'select,insert/*': `L: NaN | T: 2147483648`, 'update/zod,valibot,typebox': `L: NaN | T: 2147483648`, 'update/arktype': `L:  | T: 2147483648` } },
   'pg/c_double': { libs: LIB_NAMES, modes: MODE_NAMES, why: 'no finite bound is true of an 8 byte float, which holds every finite JS number. Non-finite values were added on top: Postgres stores NaN and both infinities in a float column and returns them, and a Select schema refusing what the database hands back fails on real rows (AW).', divergence: { 'select,insert/*': `L: 9007199254740993, 3.4028235e38, NaN, Infinity | T: `, 'update/zod,valibot,typebox': `L: 9007199254740993, 3.4028235e38, NaN, Infinity | T: `, 'update/arktype': `L: 9007199254740993, 3.4028235e38, Infinity | T: ` } },
   'mysql/m_real': { libs: LIB_NAMES, modes: MODE_NAMES, why: 'as pg/c_double; MySQL REAL is a synonym for DOUBLE', divergence: { '*/zod,typebox': `L: 9007199254740993, 3.4028235e38 | T: `, '*/valibot': `L: 9007199254740993, 3.4028235e38, Infinity | T: `, 'update/arktype': `L: 9007199254740993, 3.4028235e38, Infinity | T: NaN`, 'select,insert/arktype': `L: 9007199254740993, 3.4028235e38, Infinity | T: ` } },
   'mysql/m_double': { libs: LIB_NAMES, modes: MODE_NAMES, why: 'as pg/c_double', divergence: { '*/zod,typebox': `L: 9007199254740993, 3.4028235e38 | T: `, '*/valibot': `L: 9007199254740993, 3.4028235e38, Infinity | T: `, 'update/arktype': `L: 9007199254740993, 3.4028235e38, Infinity | T: NaN`, 'select,insert/arktype': `L: 9007199254740993, 3.4028235e38, Infinity | T: ` } },
@@ -7288,11 +7295,10 @@ const ALLOWED: Record<string, Entry> = {
     official: 'a number within +/-8388607, which refuses rows the column returns',
     filed: 'not a defect: the database is the arbiter, see the same key in the v1 pass',
   },
-  // NaN and not the infinities, because Postgres takes an infinity into a numeric only when the
-  // column carries no precision and the analyzer does not read precision at all. arktype on update
-  // is excepted: official already accepts NaN there, so there is nothing to waive. See the v1 copy
-  // of this entry for the full reasoning.
-  'pg/c_numeric_n': { libs: LIB_NAMES, modes: MODE_NAMES, except: ['update/arktype'], divergence: { '*/*': `L: NaN | T: ` }, drzl: 'a number, plus the NaN Postgres stores in a numeric column', official: 'a number, refusing the NaN the database hands back', filed: 'not a defect: as pg/c_real' },
+  // The analyzer reads precision and scale now, so this bounds where the column bounds and refuses
+  // 2147483648, which `numeric(10,2)` answers 22003 for. Official reads neither number, so it
+  // accepts a value the column will not hold. See the v1 copy for the full reasoning (AK).
+  'pg/c_numeric_n': { libs: LIB_NAMES, modes: MODE_NAMES, divergence: { 'select,insert/*': `L: NaN | T: 2147483648`, 'update/zod,valibot,typebox': `L: NaN | T: 2147483648`, 'update/arktype': `L:  | T: 2147483648` }, drzl: 'a number bounded by the declared precision, plus the NaN Postgres stores', official: 'an unbounded number that refuses the NaN the database hands back', filed: 'not a defect: the database is the arbiter, as pg/c_real' },
   // Not `as pg/c_real` in the signature, which it was until MySQL was measured: the two 4 byte
   // floats have different edges, and `3.4028235e38` is the probe that says so.
   'mysql/m_float': { libs: LIB_NAMES, modes: MODE_NAMES, divergence: { '*/zod,valibot,typebox': `L: 9000000, 2147483648, 9007199254740993 | T: `, 'update/arktype': `L: 9000000, 2147483648, 9007199254740993 | T: NaN`, 'select,insert/arktype': `L: 9000000, 2147483648, 9007199254740993 | T: ` }, drzl: 'as pg/c_real, at the narrower MySQL edge', official: 'as pg/c_real', filed: 'as pg/c_real' },
