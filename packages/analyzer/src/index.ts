@@ -517,6 +517,24 @@ const BYTE_STRING_CLASSES = new Set([
 ]);
 
 /**
+ * 0.4x classes that hand back a real byte buffer rather than a string of bytes.
+ *
+ * The distinction from `BYTE_STRING_CLASSES` above is drizzle's own: those four define a
+ * `mapFromDriverValue` that decodes the driver's Buffer into a string, and this one does not.
+ * Asked of drizzle 0.45.2 directly, `blob({ mode: 'buffer' }).mapFromDriverValue(Buffer.from([1]))`
+ * hands the Buffer straight back.
+ *
+ * One class covers both spellings on this major: `blob()` and `blob({ mode: 'buffer' })` are the
+ * same `SQLiteBlobBuffer`, and only `json` and `bigint` mode build something else. On v1 a bare
+ * `blob()` builds a `SQLiteBlobJson` instead, so the two majors genuinely disagree about that one
+ * column and each is reported as it is; the two explicit modes agree.
+ *
+ * A set rather than a `GEOMETRIC_CLASS_SHAPES` entry only for consistency with the three sets
+ * beside it, which each name one family; a buffer shape carries no width.
+ */
+const BUFFER_CLASSES = new Set(['SQLiteBlobBuffer']);
+
+/**
  * Everything Drizzle v1 states about a column outright, or `null` on an older Drizzle.
  *
  * v1 stamps each column with a `dataType` of the form `"<js type> <semantic>"` (`"number
@@ -1424,12 +1442,36 @@ export class SchemaAnalyzer {
           tsType: column?.config?.mode === 'timestamp' ? 'Date' : 'number',
           dbType: 'INTEGER',
         };
+      // Both timestamp modes of `integer()`, which are one class and one type. `timestamp` and
+      // `timestamp_ms` differ in the scale of the number on the wire, seconds against
+      // milliseconds, and `mapFromDriverValue` consumes that difference and hands back a `Date`
+      // either way; nothing downstream of the analyzer ever sees the integer. So an arm keyed on
+      // the class covers both, where the mode check that used to answer this fell through the
+      // switch to a default arm testing `config.mode === 'timestamp'` and named only the first.
+      // The second came back `unknown`, and every generator emitted a schema accepting anything.
+      //
+      // `DATE` rather than the `INTEGER` that mode check returned, so the two majors describe the
+      // column identically. `dbType` is read in exactly one place outside this file,
+      // `isIntegerColumn`, which the generators consult only for a `tsType` of `number`, so the
+      // relabel reaches no output. Measured rather than argued: emitting a `Date` column under
+      // both labels, nullable and not, through all five generators gives ten byte-identical pairs.
+      case 'SQLiteTimestamp':
+        return { tsType: 'Date', dbType: 'DATE' };
       case 'SQLiteText':
         return { tsType: 'string', dbType: 'TEXT' };
       case 'SQLiteReal':
         return { tsType: 'number', dbType: 'REAL' };
+      // No 0.4x column is a `SQLiteBlob`: `sqlite-core` builds a `SQLiteBlobBuffer`, a
+      // `SQLiteBlobJson` or a `SQLiteBigInt`, one per mode, and exports no class of this name at
+      // all. The arm answers the hand-built column in sqlite-types.spec.ts and nothing drizzle
+      // produces, which is why a real `blob()` reached neither it nor anything else.
       case 'SQLiteBlob':
         return { tsType: 'Uint8Array', dbType: 'BLOB' };
+      // The class a real `blob()` and `blob({ mode: 'buffer' })` both build. See `BUFFER_CLASSES`
+      // for the measurement; the answers here are v1's own for the same column, so this is the
+      // two majors agreeing rather than a new opinion.
+      case 'SQLiteBlobBuffer':
+        return { tsType: 'Buffer', dbType: 'BYTEA' };
       // SQLite spells a mode as a distinct class rather than as config, so `text({mode:'json'})`
       // is a `SQLiteTextJson` and matched no arm at all: the column came back UNKNOWN, which is
       // wider than the `any` a json column at least used to get.
@@ -1915,11 +1957,13 @@ export class SchemaAnalyzer {
           ? { kind: 'json' }
           : BYTE_STRING_CLASSES.has(ctorName)
             ? { kind: 'byteString', length: declaredLength(col) }
-            : NUMBER_VECTOR_CLASSES.has(ctorName)
-              ? { kind: 'numberVector', length: declaredLength(col) }
-              : BIT_STRING_CLASSES.has(ctorName)
-                ? { kind: 'bitstring', length: declaredLength(col), exact: true }
-                : GEOMETRIC_CLASS_SHAPES[ctorName];
+            : BUFFER_CLASSES.has(ctorName)
+              ? { kind: 'buffer' }
+              : NUMBER_VECTOR_CLASSES.has(ctorName)
+                ? { kind: 'numberVector', length: declaredLength(col) }
+                : BIT_STRING_CLASSES.has(ctorName)
+                  ? { kind: 'bitstring', length: declaredLength(col), exact: true }
+                  : GEOMETRIC_CLASS_SHAPES[ctorName];
       // The same reason the v1 branch above drops it, reached from the other path: the declared
       // `length` of a binary column is not a character limit, and `maxLength` is applied as one in
       // every mode by every generator. Left in place the column carried the width twice under two
