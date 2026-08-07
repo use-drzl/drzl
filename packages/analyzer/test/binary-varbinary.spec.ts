@@ -156,16 +156,48 @@ describe('drizzle v1, the four column classes that share a dataType with a Postg
     });
   });
 
-  it('leaves Cockroach bit and varbit where they were', () => {
+  it('separates a Cockroach bit from a Cockroach varbit', () => {
+    // Both used to answer `exact: false`, because `exact` was `codec === 'bit'` and neither of
+    // these carries a codec, so `bit(8)` and `varbit(8)` were the same column to this file.
+    //
+    // GROUND TRUTH, CockroachDB v24.3.5 (`cockroachdb/cockroach:v24.3.5`), on `bit(3)` and
+    // `varbit(8)` in one table:
+    //
+    //   bit(3)      ''           refused, "bit string length 0 does not match type BIT(3)"
+    //   bit(3)      '1'          refused, length 1 does not match
+    //   bit(3)      '101'        accepted, read back as the string '101'
+    //   bit(3)      '1011'       refused, length 4 does not match
+    //   varbit(8)   ''           accepted
+    //   varbit(8)   '1'          accepted
+    //   varbit(8)   '10101010'   accepted, read back as '10101010'
+    //   varbit(8)   '101010101'  refused, "bit string length 9 too large for type VARBIT(8)"
+    //
+    // So the fixed-width one is exact and the varying one is a maximum, which is the same split
+    // Postgres draws and which the codec was standing in for. `drizzle-orm/zod` at 1.0.0-rc.4
+    // agrees with the server on all eight values.
+    //
+    // Both entity kinds are asserted here rather than only the one that changed, because the
+    // discriminator has to distinguish them: an arm matching a `Cockroach` prefix would have made
+    // `varbit` exact too and this file would still have been green on the half that moved.
     expect(describeV1Column(v1col('CockroachBit', undefined, 8))?.shape).toEqual({
       kind: 'bitstring',
       length: 8,
-      exact: false,
+      exact: true,
     });
     expect(describeV1Column(v1col('CockroachVarbit', undefined, 8))?.shape).toEqual({
       kind: 'bitstring',
       length: 8,
       exact: false,
     });
+  });
+
+  it('labels both of them BIT, as it labels the Postgres one', () => {
+    // They used to be BINARY, which is the label this file gives a MySQL `binary(n)`: a run of
+    // arbitrary bytes handed over as a string. A cockroach `bit` is a string of '0' and '1', per
+    // the server readings above, and is labelled like the Postgres bit it behaves as.
+    expect(describeV1Column(v1col('CockroachBit', undefined, 8))?.dbType).toBe('BIT');
+    expect(describeV1Column(v1col('CockroachVarbit', undefined, 8))?.dbType).toBe('BIT');
+    expect(describeV1Column(v1col('MySqlBinary', 'binary', 16))?.dbType).toBe('BINARY');
+    expect(describeV1Column(v1col('SingleStoreBinary', undefined, 16))?.dbType).toBe('BINARY');
   });
 });

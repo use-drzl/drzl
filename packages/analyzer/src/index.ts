@@ -600,6 +600,7 @@ export function describeV1Column(column: any): Partial<Column> | null {
 
   switch (semantic) {
     case 'int8':
+    case 'uint8':
     case 'int16':
     case 'int24':
     case 'int32':
@@ -628,8 +629,22 @@ export function describeV1Column(column: any): Partial<Column> | null {
       // `mediumint` alone: they fell through to the bare-number arm below, whose safe-integer
       // bounds then *overrode* the correct ones the class-name table had supplied, so a tinyint
       // went from +/-127 to +/-9007199254740991 and stopped being an integer at all.
+      //
+      // `uint8` is that same defect one width later, and it had nowhere else to fall: mssql is
+      // v1-only, so no class-name table supplies anything for it. A `MsSqlTinyInt` states
+      // `dataType: 'number uint8'`, reached the bare-number arm, and came back NUMERIC with
+      // `integer: false` and the safe-integer bounds, so the emitted schema accepted -1, 3.7, 256
+      // and 9007199254740991. Measured on SQL Server 2022: that column refuses -1 and 256 with
+      // Msg 220 and 9007199254740991 with Msg 8115, accepts 0 and 255, and stores 3 for 3.7.
+      // `drizzle-orm/zod` at 1.0.0-rc.4 bounds the same column 0 to 255 and calls it an integer.
+      //
+      // Unsigned, which is the whole difference from `int8` beside it: SQL Server's `tinyint`
+      // holds 0 to 255 where MySQL's holds -128 to 127, and drizzle names the two accordingly.
+      // The only builder on any of the six v1 cores stating `uint8` is mssql's `tinyint`, swept
+      // over every builder each core exports.
       const range = {
         int8: ['-128', '127'],
+        uint8: ['0', '255'],
         int16: ['-32768', '32767'],
         int24: ['-8388608', '8388607'],
         int32: ['-2147483648', '2147483647'],
@@ -643,7 +658,7 @@ export function describeV1Column(column: any): Partial<Column> | null {
       out.integer = true;
       out.tsType = js === 'bigint' ? 'bigint' : 'number';
       out.dbType =
-        semantic === 'int8'
+        semantic === 'int8' || semantic === 'uint8'
           ? 'TINYINT'
           : semantic === 'int16'
             ? 'SMALLINT'
@@ -744,6 +759,16 @@ export function describeV1Column(column: any): Partial<Column> | null {
       out.dbType = codec?.startsWith('timestamp') ? 'TIMESTAMP' : 'DATE';
       break;
     case 'timestamp':
+    // `datetime` is the same fact under MySQL's name for it, and it had no arm, so every column
+    // stating it fell to the bare-string arm and was labelled TEXT. The columns that reach this
+    // are the string modes of `datetime` on mssql, mysql and singlestore, plus mssql's
+    // `datetime2` and `datetimeoffset`, swept over every builder the six v1 cores export; the
+    // `{ mode: 'date' }` half of the same builders states `object date` and takes the arm above.
+    // A label only, since `dbType` is read outside this file in exactly one place,
+    // `isIntegerColumn`, which the generators consult for a `tsType` of `number`. It matters
+    // because the class-name path already answers TIMESTAMP for the same 0.4x column, and the
+    // two majors disagreeing about a column is what the cross-major diff exists to catch.
+    case 'datetime':
       out.tsType = js === 'string' ? 'string' : 'Date';
       out.dbType = 'TIMESTAMP';
       break;
@@ -781,7 +806,11 @@ export function describeV1Column(column: any): Partial<Column> | null {
       const entity = String(column?.constructor?.[Symbol.for('drizzle:entityKind')] ?? '');
       const bytes = entity.startsWith('MySql') || entity.startsWith('SingleStore');
       out.tsType = 'string';
-      out.dbType = codec === 'bit' ? 'BIT' : 'BINARY';
+      // The label follows the family rather than the codec. Cockroach's `bit`/`varbit` carry no
+      // codec, so `codec === 'bit'` called both of them BINARY, which is the label this file
+      // gives a MySQL `binary(n)`: a run of arbitrary bytes. They are strings of '0' and '1',
+      // like the Postgres `bit(n)` beside them, and are labelled the same way.
+      out.dbType = bytes ? 'BINARY' : 'BIT';
       out.shape = bytes
         ? { kind: 'byteString', length: declaredLength(column) }
         : {
@@ -789,7 +818,19 @@ export function describeV1Column(column: any): Partial<Column> | null {
             length: declaredLength(column),
             // A Postgres `bit(3)` holds exactly three digits; a Cockroach `varbit(16)` holds at
             // most that many, which is why `''` is valid there and not here.
-            exact: codec === 'bit',
+            //
+            // `codec === 'bit'` alone was Postgres's answer applied to everything, and Cockroach
+            // states no codec, so both of its builders came back `exact: false` and a `bit(3)`
+            // was indistinguishable from a `varbit(3)`. Measured on CockroachDB v24.3.5: a
+            // `bit(3)` refuses '', '1', '10' and '1011' with "bit string length n does not match
+            // type BIT(3)" and takes '101'; a `varbit(8)` takes '', '1' and '10101010' and
+            // refuses nine digits with "too large for type VARBIT(8)". `drizzle-orm/zod` at
+            // 1.0.0-rc.4 answers the same for both columns.
+            //
+            // The class rather than a prefix, because `CockroachVarbit` starts with neither
+            // `CockroachBit` nor anything else this could key on without catching the varying
+            // half too.
+            exact: codec === 'bit' || entity === 'CockroachBit',
           };
       break;
     }

@@ -34,6 +34,7 @@
   },
   "devDependencies": {
     "@sinclair/typebox": "^0.34.0",
+    "drizzle-orm-v1": "npm:drizzle-orm@1.0.0-rc.4",
     "tsup": "^8.5.1",
     "typescript": "^5.9.3"
   },

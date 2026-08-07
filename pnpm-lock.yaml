@@ -223,6 +223,9 @@ importers:
       '@sinclair/typebox':
         specifier: ^0.34.0
         version: 0.34.52
+      drizzle-orm-v1:
+        specifier: npm:drizzle-orm@1.0.0-rc.4
+        version: drizzle-orm@1.0.0-rc.4(@sinclair/typebox@0.34.52)(arktype@2.2.3)(valibot@1.4.2(typescript@5.9.3))(zod@4.4.3)
       tsup:
         specifier: ^8.5.1
         version: 8.5.1(jiti@2.7.0)(postcss@8.5.23)(supports-color@7.2.0)(typescript@5.9.3)

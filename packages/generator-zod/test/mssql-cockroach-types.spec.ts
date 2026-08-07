@@ -97,8 +97,12 @@ const COCKROACH_SOURCE = `
     tm: time('tm'),
     iv: interval('iv'),
     ip: inet('ip'),
-    bt: bit('bt', { dimensions: 3 }),
-    vb: varbit('vb', { dimensions: 8 }),
+    // A length, not a dimensions. This fixture passed dimensions for a round, and cockroach
+    // ignores it: the column that reached the analyzer was a default bit, whose SQL type is a
+    // bare "bit" and whose width is 1, so the declared 3 and 8 never existed. Postgres is the
+    // builder that takes dimensions, and copying its call shape is how it got here.
+    bt: bit('bt', { length: 3 }),
+    vb: varbit('vb', { length: 8 }),
     g: geometry('g', { type: 'point', mode: 'tuple' }),
     vec: vector('vec', { dimensions: 3 }),
     m: mood('m'),
@@ -240,12 +244,51 @@ describe('mssql, against a real mssqlTable on drizzle v1', () => {
     expect(accepts(name, 12345), 'a number in a varchar column').toBe(false);
 
     expect(accepts(field(a, 'code'), 'ab  '), 'the padded char(4) the server returned').toBe(true);
-    expect(accepts(field(a, 'ncode'), 'cd  '), 'the padded nchar(4) the server returned').toBe(true);
+    expect(accepts(field(a, 'ncode'), 'cd  '), 'the padded nchar(4) the server returned').toBe(
+      true
+    );
     expect(accepts(field(a, 'code'), 'abcde'), 'past the char(4) width').toBe(false);
 
     expect(accepts(field(a, 'body'), 'body text')).toBe(true);
     expect(accepts(field(a, 'nbody'), 'nbody text')).toBe(true);
     expect(accepts(field(a, 'body'), { a: 1 }), 'an object in a text column').toBe(false);
+  });
+
+  it('holds tinyint to the whole numbers 0 to 255 SQL Server stores', async () => {
+    // `MsSqlTinyInt` states `dataType: 'number uint8'`, and the semantic range table had no
+    // `uint8`, so the column fell to the bare-number arm: NUMERIC, `integer: false`, and the
+    // safe-integer bounds. mssql is v1-only, so there was no class-name table to override it the
+    // way MySQL's `tinyint` is overridden.
+    //
+    // GROUND TRUTH, SQL Server 2022 (`mcr.microsoft.com/mssql/server:2022-latest`), one `tinyint`
+    // column, each value sent as its own INSERT:
+    //
+    //   -1                 refused, Msg 220 arithmetic overflow
+    //    0                 accepted
+    //    255               accepted
+    //    256               refused, Msg 220
+    //    9007199254740991  refused, Msg 8115
+    //    3.7               accepted, and the stored row reads back as 3
+    //
+    // The select schema describes what the column hands back, and it hands back whole numbers in
+    // 0 to 255: the five rows written above read back as 0, 1, 3, 255, 255. `drizzle-orm/zod` at
+    // 1.0.0-rc.4 refuses -1, 3.7 and 256 for the same column, so official agrees.
+    const a = await mssql();
+    expect(a.byName.get('ti')).toMatchObject({
+      tsType: 'number',
+      dbType: 'TINYINT',
+      integer: true,
+      min: '0',
+      max: '255',
+    });
+    const ti = field(a, 'ti');
+    expect(accepts(ti, 0), 'the 0 the server stored').toBe(true);
+    expect(accepts(ti, 255), 'the 255 the server stored').toBe(true);
+    expect(accepts(ti, 3), 'the row 3.7 was stored as').toBe(true);
+    expect(accepts(ti, -1), 'the value the server refused with Msg 220').toBe(false);
+    expect(accepts(ti, 256), 'the value the server refused with Msg 220').toBe(false);
+    expect(accepts(ti, 9007199254740991), 'the value the server refused with Msg 8115').toBe(false);
+    expect(accepts(ti, 3.7), 'a fraction, which this column never hands back').toBe(false);
   });
 
   it('keeps a real column at the float32 edge SQL Server stops at', async () => {
@@ -333,6 +376,39 @@ describe('cockroach, against a real cockroachTable on drizzle v1', () => {
     expect(accepts(tags, []), 'the empty array the server returned').toBe(true);
     expect(accepts(tags, 'a'), 'the bare string the server refused').toBe(false);
     expect(accepts(tags, [1, 2]), 'numbers in a string[] column').toBe(false);
+  });
+
+  it('holds bit to its exact width and varbit to a maximum', async () => {
+    // `exact` was `codec === 'bit'`, and cockroach carries no codec, so both came back
+    // `exact: false` and `bit(3)` accepted what only a `varbit` takes.
+    //
+    // GROUND TRUTH, CockroachDB v24.3.5 (`cockroachdb/cockroach:v24.3.5`), one table with a
+    // `bit(3)` and a `varbit(8)`, each value sent as its own INSERT:
+    //
+    //   bit(3)      ''           refused, "bit string length 0 does not match type BIT(3)"
+    //   bit(3)      '1'          refused, length 1 does not match
+    //   bit(3)      '10'         refused, length 2 does not match
+    //   bit(3)      '101'        accepted, and SELECT hands back the string '101'
+    //   bit(3)      '1011'       refused, length 4 does not match
+    //   varbit(8)   ''           accepted
+    //   varbit(8)   '1'          accepted
+    //   varbit(8)   '10101010'   accepted, and SELECT hands back '10101010'
+    //   varbit(8)   '101010101'  refused, "bit string length 9 too large for type VARBIT(8)"
+    const a = await cockroach();
+    expect(a.byName.get('bt')?.shape).toEqual({ kind: 'bitstring', length: 3, exact: true });
+    expect(a.byName.get('vb')?.shape).toEqual({ kind: 'bitstring', length: 8, exact: false });
+
+    const bt = field(a, 'bt');
+    expect(accepts(bt, '101'), 'the value the server stored and returned').toBe(true);
+    expect(accepts(bt, ''), 'the empty string the server refused').toBe(false);
+    expect(accepts(bt, '1'), 'one digit, refused as length 1').toBe(false);
+    expect(accepts(bt, '1011'), 'four digits, refused as length 4').toBe(false);
+
+    const vb = field(a, 'vb');
+    expect(accepts(vb, ''), 'the empty string the server accepted').toBe(true);
+    expect(accepts(vb, '1'), 'one digit, which varbit takes').toBe(true);
+    expect(accepts(vb, '10101010'), 'the value the server returned').toBe(true);
+    expect(accepts(vb, '101010101'), 'nine digits, past the declared width').toBe(false);
   });
 
   it('bounds a real column where Postgres does, not where MySQL does', async () => {
