@@ -11,7 +11,7 @@
  * is worth checking, because it is the half a user can fix before sending anything.
  *
  * The emitted function is plain TypeScript with no reference to any validation library, so all
- * four generators emit the same thing. It is rendered from one place for that reason.
+ * five generators emit the same thing. It is rendered from one place for that reason.
  */
 import type { Key, Table } from '@drzl/analyzer';
 

@@ -20,7 +20,7 @@ export interface Table {
   primaryKey?: { columns: string[] };
 }
 
-export type ValidationLibrary = 'zod' | 'valibot' | 'arktype' | 'typebox';
+export type ValidationLibrary = 'zod' | 'valibot' | 'arktype' | 'typebox' | 'effect';
 
 export interface FormatOptions {
   enabled?: boolean;
@@ -306,11 +306,11 @@ export function parsesToADate(expr: string): string {
  * Refusing a user's emoji is the failure mode this avoids, and it is the same rule applied
  * everywhere else here: never reject what the database accepts.
  *
- * All four generators count code points. `@sinclair/typebox` and ArkType cannot say it in their
- * declarative forms, so neither uses `maxLength` or `string <= n`: TypeBox intersects a registered
- * kind onto the field and ArkType puts a Type carrying a narrow there. Both cost something,
- * TypeBox's cap no longer serialising into a JSON Schema, and emitting a number that means a
- * different measurement is not a better trade.
+ * All five generators count code points. `@sinclair/typebox`, ArkType and Effect cannot say it in
+ * their declarative forms, so none of them uses `maxLength` or `string <= n`: TypeBox intersects a
+ * registered kind onto the field, ArkType puts a Type carrying a narrow there, and Effect pipes a
+ * `Schema.filter`. Each costs the same thing, the cap no longer serialising into a JSON Schema, and
+ * emitting a number that means a different measurement is not a better trade.
  *
  * MySQL's TEXT family is a byte budget rather than a character count, carried separately as
  * `maxBytes`. Two measurements on string columns in the same database, verified against a real
@@ -327,18 +327,24 @@ export function isIntegerColumn(c: Column): boolean {
  * The non-finite doubles the emitted schema must admit beside the column's range, as the analyzer
  * stated them.
  *
- * One reading of two flags, shared so that four generators cannot drift on what they mean, and not
- * a shared *rendering*: the four libraries do not need the same repair. `z.number()` and
+ * One reading of two flags, shared so that five generators cannot drift on what they mean, and not
+ * a shared *rendering*: the five libraries do not need the same repair. `z.number()` and
  * `Type.Number()` refuse `NaN` and both infinities outright, `v.number()` and ArkType's `number`
- * refuse only `NaN`, and any bound at all makes all four refuse the infinities, so what each has to
- * add depends on the library and on whether the column carries a range.
+ * refuse only `NaN`, and any bound at all makes all of those refuse the infinities, so what each
+ * has to add depends on the library and on whether the column carries a range.
+ *
+ * Effect is the one that runs the other way, measured on 3.22.1: `Schema.Number` *accepts* `NaN`
+ * and both infinities, so the flags being false is what makes that generator emit something. It
+ * builds on `Schema.Finite` rather than `Schema.Number` for exactly that reason, and does so
+ * unconditionally rather than leaning on the range, since `Infinity >= 0` is true and a lower bound
+ * alone therefore excludes nothing.
  *
  * Guarded on `tsType` so an enum, a shape or a string can never pick these up from a stale
  * analysis. `@drzl/generator-json-schema` deliberately does not call this at all: JSON has no `NaN`
  * and no `Infinity`, so there is nothing for a JSON Schema to admit.
  *
  * A numeric CHECK folded into one end of the column's range does not take a branch away, in any of
- * the four. That is a decision rather than an oversight, and it is deliberately the loose one: what
+ * the five. That is a decision rather than an oversight, and it is deliberately the loose one: what
  * Postgres does with `CHECK (c >= 0)` and a `NaN` was not measured for this change, and dropping
  * the branch on a column that carries a CHECK would put back, for that column, exactly the
  * read-path failure this exists to remove.

@@ -64,6 +64,7 @@ export default {
           { text: 'Valibot', link: '/generators/valibot' },
           { text: 'ArkType', link: '/generators/arktype' },
           { text: 'TypeBox', link: '/generators/typebox' },
+          { text: 'Effect', link: '/generators/effect' },
           { text: 'JSON Schema', link: '/generators/json-schema' },
           { text: 'OpenAPI Document', link: '/generators/openapi' },
           { text: 'Nested Relations', link: '/generators/nested-relations' },

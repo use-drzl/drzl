@@ -116,7 +116,7 @@ By default the validation generators name their exports `Insert<Table>Schema`,
 name from your Drizzle schema, used exactly as written, so `export const users = ...` gives
 `InsertusersSchema`.
 
-The `affix` option on a `zod`, `valibot`, `arktype`, `typebox` or `json-schema` generator changes all of
+The `affix` option on a `zod`, `valibot`, `arktype`, `typebox`, `effect` or `json-schema` generator changes all of
 that. Leaving
 it out keeps the names above unchanged.
 
@@ -208,9 +208,10 @@ compile.
 
 ## Naming generated files
 
-A `zod`, `valibot`, `arktype`, `typebox` or `json-schema` generator writes one file per table,
-named after the Drizzle export name plus a suffix that defaults to `.zod.ts`, `.valibot.ts`,
-`.arktype.ts`, `.typebox.ts` or `.schema.ts`, and an `index.ts` barrel that re-exports them.
+A `zod`, `valibot`, `arktype`, `typebox`, `effect` or `json-schema` generator writes one file per
+table, named after the Drizzle export name plus a suffix that defaults to `.zod.ts`,
+`.valibot.ts`, `.arktype.ts`, `.typebox.ts`, `.effect.ts` or `.schema.ts`, and an `index.ts`
+barrel that re-exports them.
 `fileSuffix` replaces that suffix.
 
 ```ts

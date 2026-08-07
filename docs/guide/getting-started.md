@@ -122,7 +122,7 @@ This writes validators to `src/validators/zod`, routers to `src/api`, and servic
 Notes
 
 - Router generation is adapter‑based (currently oRPC). Additional adapters (tRPC, Express, NestJS, Next.js, Prisma, etc.) can be added via templates.
-- For Zod/Valibot/ArkType or Service generators, install the matching package in your app (as shown above).
+- For Zod/Valibot/ArkType/TypeBox/Effect or Service generators, install the matching package in your app (as shown above). `effect` is an optional peer, so it is never installed for you; see [Effect](/generators/effect#which-effect) for why.
 - Config file formats supported: `drzl.config.ts`, `.mjs`, `.js`, `.json`.
 
 Next steps

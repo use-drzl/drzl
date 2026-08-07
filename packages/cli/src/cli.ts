@@ -380,6 +380,25 @@ program
             reportGeneratorFailure(g.kind, e);
             process.exit(1);
           }
+        } else if (g.kind === 'effect') {
+          try {
+            const { EffectGenerator } = await loadGenerator(
+              '@drzl/generator-effect',
+              () => import('@drzl/generator-effect')
+            );
+            const gen = new EffectGenerator(analysis);
+            const target = g.path ?? 'src/validators/effect';
+            const files = await gen.generate(
+              validationOptions(g, cfg, target, { schemaTypes: true }) as never
+            );
+            progress.stop();
+            ora().succeed(chalk.green(`Generated (effect): ${files.length} files`));
+            files.forEach((f: string) => console.log('  -', chalk.cyan(f)));
+          } catch (e: any) {
+            progress.stop();
+            reportGeneratorFailure(g.kind, e);
+            process.exit(1);
+          }
         }
       }
       if (driftBefore) {
@@ -807,6 +826,31 @@ program
                 ? console.log(JSON.stringify({ event: 'generate_complete', kind: g.kind, files }))
                 : console.log(
                     chalk.green(`Generated (typebox): ${files.length} files`),
+                    files.map((f: string) => chalk.cyan(f)).join(', ')
+                  );
+              newFiles.push(...files);
+            } catch (e: any) {
+              reportGeneratorFailure(g.kind, e);
+              return;
+            }
+          } else if (g.kind === 'effect') {
+            try {
+              const { EffectGenerator } = await loadGenerator(
+                '@drzl/generator-effect',
+                () => import('@drzl/generator-effect')
+              );
+              const gen = new EffectGenerator(analysis);
+              const target = g.path ?? 'src/validators/effect';
+              // The same builder `generate` uses, and the same default path, which is also the one
+              // `computeGeneratorOutputDirs` has to spell: a watcher that does not ignore this
+              // directory regenerates on its own output forever.
+              const files = await gen.generate(
+                validationOptions(g, cfg, target, { schemaTypes: true }) as never
+              );
+              opts.json
+                ? console.log(JSON.stringify({ event: 'generate_complete', kind: g.kind, files }))
+                : console.log(
+                    chalk.green(`Generated (effect): ${files.length} files`),
                     files.map((f: string) => chalk.cyan(f)).join(', ')
                   );
               newFiles.push(...files);

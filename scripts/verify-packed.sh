@@ -415,6 +415,7 @@ export default {
     // TS2554s. The config also runs `dataAccess: 'stub'`, whose bodies take no database whatever
     // the flag says, which the CLI warns about. Injection is covered by the generator's own
     // tests; what this entry is here for is the specifier sweep.
+    { kind: 'effect', path: './src/generated/effect' },
     {
       kind: 'trpc',
       path: './src/generated/trpc',
@@ -448,7 +449,7 @@ node -e "
 # consumer who wants formatted output does, and it makes this run cover the peer resolving from
 # a real install. The stage further down removes it again to cover the other case.
 npm install --no-audit --no-fund --loglevel=error \
-  "$TARS"/*.tgz drizzle-orm zod valibot arktype @orpc/server @trpc/server typescript tsx prettier >/dev/null
+  "$TARS"/*.tgz drizzle-orm zod valibot arktype effect @orpc/server @trpc/server typescript tsx prettier >/dev/null
 
 if [ ! -e node_modules/.bin/drzl ]; then
   echo "FAIL: the drzl bin did not resolve after a real install." >&2
@@ -3766,6 +3767,15 @@ PARITY_HARNESS
 # real Postgres of its own: where the official validator crashes on a value there is nothing left
 # to compare DRZL against, and a database is what settles whether DRZL's answer is right. The
 # ground-truth stage in this same tree used to install it on its own line and now inherits it.
+# No effect in this tree, and it is not an omission. This tree pins drizzle-orm 1.0.0-rc.4, whose
+# own optional peer asks for effect >=4.0.0-beta.83, while @drzl/generator-effect targets the
+# released 3.x. npm enforces an optional peer whenever the package is present, so the two cannot
+# share a tree in either direction: a bare `effect` resolves to the 4 beta and fails against the
+# generator, and `effect@^3` fails against drizzle-orm. Measured both ways.
+#
+# So effect is generated in the app tree above instead, which pins no drizzle major, and it takes
+# no part in the parity pass here. That is the same shape as json-schema's exclusion and a stronger
+# reason: there is an official drizzle-orm/effect, and it targets a major this generator does not.
 npm install --no-audit --no-fund --loglevel=error \
   "$TARS"/*.tgz drizzle-orm@1.0.0-rc.4 zod valibot arktype @sinclair/typebox tsx typescript \
   ajv@^8.17.1 ajv-formats@^3.0.1 @seriousme/openapi-schema-validator@^2.9.1 \
@@ -4349,6 +4359,10 @@ report_size src/gen/pg/arktype  arktype  280  || size_fail=1
 # with no headroom stops being a tripwire and becomes a tax on the next edit. Note arktype sits at
 # 275 against 280 for the same reason, and is the one to watch next.
 report_size src/gen/pg/typebox  typebox  460  || size_fail=1
+# No effect budget here. These paths are the parity tree, which cannot hold effect at all: see the
+# note on its npm install above. Measured at 438 bytes per column on this fixture, within five
+# bytes of TypeBox and for the same reason, so a budget of 460 is the right number the day that
+# tree can carry it.
 [ "$size_fail" = 0 ] || exit 1
 
 if ! npx tsx src/parity.ts; then
