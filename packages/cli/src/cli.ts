@@ -17,6 +17,7 @@ import {
   filterTables,
   loadConfig,
 } from './config.js';
+import { filterColumns } from './column-filter.js';
 import { buildDoctorReport, renderDoctorReport } from './doctor.js';
 import { diffSnapshots, restoreSnapshot, snapshotAll } from './drift.js';
 import { GeneratorNotInstalledError, loadGenerator } from './generator-loader.js';
@@ -184,10 +185,19 @@ program
         validateConstraints: cfg.analyzer.validateConstraints,
         includeHeuristicRelations: cfg.analyzer.includeHeuristicRelations,
       });
-      // Applied before any generator sees the analysis, so every one of them honours it without
-      // needing to know the option exists.
-      analysis.tables = filterTables(analysis.tables, cfg);
+      // After the spinner rather than before it, because `filterColumns` throws on a config it
+      // cannot honour and a thrown error under a live ora spinner prints into a line the spinner
+      // then overwrites.
       spinner.succeed(`Analysis complete in ${Date.now() - t0}ms`);
+      // Both filters are applied before any generator sees the analysis, so every one of them
+      // honours them without needing to know the options exist.
+      //
+      // Columns first. Both orders leave the same tables, since one narrows columns and the other
+      // drops whole tables, but only this one lets a `columns` entry name a table that `exclude`
+      // also removes without that reading as a typo, and a typo is refused.
+      const narrowed = filterColumns(analysis.tables, cfg.columns);
+      analysis.tables = filterTables(narrowed.tables, cfg);
+      for (const w of narrowed.warnings) console.warn(chalk.yellow(w));
       reportWideColumns(analysis.issues);
       // Under --check the existing output is captured before anything overwrites it, so the
       // regenerated result can be compared against it and the tree put back either way.
@@ -621,7 +631,12 @@ program
           validateConstraints: cfg.analyzer.validateConstraints,
           includeHeuristicRelations: cfg.analyzer.includeHeuristicRelations,
         });
-        analysis.tables = filterTables(analysis.tables, cfg);
+        // Same order and the same reasons as `generate`. A config edited mid-watch that names a
+        // column that does not exist throws here, and `run`'s own catch reports it and keeps
+        // watching, so the next save can fix it.
+        const narrowed = filterColumns(analysis.tables, cfg.columns);
+        analysis.tables = filterTables(narrowed.tables, cfg);
+        if (!opts.json) for (const w of narrowed.warnings) console.warn(chalk.yellow(w));
         if (!opts.json) reportWideColumns(analysis.issues);
 
         if (opts.pipeline === 'analyze') {

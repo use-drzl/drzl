@@ -90,8 +90,13 @@ function splitPath(path: string | undefined): { table?: string; column?: string 
   return { table: path.slice(0, dot), column: path.slice(dot + 1) };
 }
 
-/** Every column name a parsed CHECK talks about, paired with the kind of constraint it came from. */
-function namedColumns(parsed: Extract<ReturnType<typeof parseCheck>, { ok: true }>) {
+/**
+ * Every column name a parsed CHECK talks about, paired with the kind of constraint it came from.
+ *
+ * Exported because the column filter needs the same answer: a constraint stops being enforced when
+ * any column it names is dropped, and "which columns does this name" has to mean one thing.
+ */
+export function namedColumns(parsed: Extract<ReturnType<typeof parseCheck>, { ok: true }>) {
   const out: Array<{ column: string; scalar: boolean }> = [];
   // A comparison against a literal and an `IN` list are both statements about a scalar value, so
   // neither describes an array or a structured column. The other three kinds are not: a length or

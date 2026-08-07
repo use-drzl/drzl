@@ -12,6 +12,7 @@ import * as fs from 'node:fs';
 import { createRequire } from 'node:module';
 import * as path from 'node:path';
 import { z } from 'zod';
+import { matchesAny } from './patterns.js';
 
 export const NamingSchema = z
   .object({
@@ -277,6 +278,20 @@ export const GeneratorSchema = z.object({
   templateOptions: z.record(z.string(), z.any()).optional(),
 });
 
+/**
+ * One table's column rules. Strict, so `ommit` is refused by the parser rather than dropped.
+ *
+ * The whole option exists to remove a column, and a key zod strips in silence is a config that
+ * looks like it removed one and did not. `GeneratorSchema` is deliberately not strict and has
+ * already cost this repo two options that parsed and then did nothing.
+ */
+export const ColumnRulesSchema = z
+  .object({
+    omit: z.array(z.string()).optional(),
+    pick: z.array(z.string()).optional(),
+  })
+  .strict();
+
 export const AnalyzerSchema = z.object({
   includeRelations: z.boolean().default(true),
   validateConstraints: z.boolean().default(true),
@@ -305,6 +320,37 @@ export const ConfigSchema = z
      */
     include: z.array(z.string()).optional(),
     exclude: z.array(z.string()).optional(),
+    /**
+     * Which columns of those tables to generate for, keyed by table.
+     *
+     * `include`/`exclude` is all or nothing per table, and the column that should not be in a
+     * generated schema is usually sitting in a table you do want: `passwordHash` on `users`, an
+     * internal note beside the public fields, a `tenantId` the server sets from the session and a
+     * request body must not carry. Editing the emitted file is not an answer, because the next
+     * `drzl generate` overwrites it.
+     *
+     * ```ts
+     * columns: {
+     *   users: { omit: ['passwordHash'] },
+     *   'app_*': { omit: ['deleted_at'] },
+     * }
+     * ```
+     *
+     * The key is a table pattern in the same language `include`/`exclude` uses: the database table
+     * name, anchored, with `*` as the only metacharacter. Column patterns are the same language
+     * again. Every matching entry applies, in the order written; within one entry `pick` narrows
+     * first and `omit` then removes, so `omit` wins, exactly as `exclude` wins over `include`.
+     *
+     * Applies to every mode and every generator at once, because it narrows the analysis rather
+     * than any one generator's output. A column cannot be kept in `select` and dropped from
+     * `insert`: see the docs for why that form was not taken on.
+     *
+     * A pattern that matches nothing is an error rather than a no-op, because a typo in `omit`
+     * that silently does nothing leaves the column exactly where it was while reading like a fix.
+     * Dropping a primary key column is an error too; dropping a NOT NULL column with no default is
+     * a warning.
+     */
+    columns: z.record(z.string(), ColumnRulesSchema).optional(),
     /**
      * How every relative specifier drzl invents spells its extension, for every generator.
      * A generator may override it. Defaults to `js`, which is the only form that resolves
@@ -634,22 +680,9 @@ export function filterTables<T extends { name: string }>(
   tables: T[],
   opts: { include?: string[]; exclude?: string[] }
 ): T[] {
-  const toRegExp = (pattern: string) =>
-    new RegExp(
-      '^' +
-        pattern
-          .split('*')
-          .map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
-          .join('.*') +
-        '$'
-    );
-
-  const matches = (patterns: string[], name: string) =>
-    patterns.some((p) => toRegExp(p).test(name));
-
   let out = tables;
-  if (opts.include?.length) out = out.filter((t) => matches(opts.include!, t.name));
-  if (opts.exclude?.length) out = out.filter((t) => !matches(opts.exclude!, t.name));
+  if (opts.include?.length) out = out.filter((t) => matchesAny(opts.include!, t.name));
+  if (opts.exclude?.length) out = out.filter((t) => !matchesAny(opts.exclude!, t.name));
   return out;
 }
 
