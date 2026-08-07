@@ -46,6 +46,7 @@ export default {
           { text: 'Overview', link: '/cli' },
           { text: 'Init', link: '/cli/init' },
           { text: 'Analyze', link: '/cli/analyze' },
+          { text: 'Doctor', link: '/cli/doctor' },
           { text: 'Generate', link: '/cli/generate' },
           { text: 'Generate (oRPC)', link: '/cli/generate-orpc' },
           { text: 'Generate (tRPC)', link: '/cli/generate-trpc' },

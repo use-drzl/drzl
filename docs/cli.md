@@ -28,6 +28,7 @@ Jump to commands:
 
 - Init: set up a starter config → [/cli/init](/cli/init)
 - Analyze: inspect a schema → [/cli/analyze](/cli/analyze)
+- Doctor: what DRZL cannot type or enforce → [/cli/doctor](/cli/doctor)
 - Generate: run configured generators → [/cli/generate](/cli/generate)
 - Generate (oRPC): quick oRPC without config → [/cli/generate-orpc](/cli/generate-orpc)
 - Watch: watch schema and regenerate → [/cli/watch](/cli/watch)
@@ -68,6 +69,44 @@ Options:
 - `--json` (default false): print JSON to stdout (overrides `--out`)
 
 Exits non‑zero when errors are found in `issues`.
+
+### doctor
+
+Report what DRZL cannot type or enforce in your schema, and why. Not `analyze`: that prints the
+whole `Analysis` and leaves you to spot the trouble in it, this prints only what will silently not
+work.
+
+::: code-group
+
+```bash [pnpm]
+pnpm dlx @drzl/cli doctor [schema] [--json] [--strict] [-c drzl.config.ts]
+```
+
+```bash [npm]
+npx @drzl/cli doctor [schema] [--json] [--strict] [-c drzl.config.ts]
+```
+
+```bash [yarn]
+yarn dlx @drzl/cli doctor [schema] [--json] [--strict] [-c drzl.config.ts]
+```
+
+```bash [bun]
+bunx @drzl/cli doctor [schema] [--json] [--strict] [-c drzl.config.ts]
+```
+
+:::
+
+Options:
+
+- `[schema]`: path to the schema. Read from `drzl.config.*` when omitted.
+- `-c, --config <path>`: which config to read the schema path from
+- `--json`: print the report as JSON instead of prose
+- `--strict`: exit `2` when anything is reported
+
+Exits `0` by default even with findings, because a schema carrying a `customType` is normal and
+usable. Exits `1` only when the schema could not be read at all.
+
+See [Doctor](/cli/doctor).
 
 ### generate
 

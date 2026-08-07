@@ -458,6 +458,119 @@ fi
 echo "==> running the README's headline command"
 npx drzl generate >/dev/null
 
+# ---------------------------------------------------------------------------------------------
+# `drzl doctor`, against the analyzer it is reporting on.
+#
+# A doctor that under-reports is worse than none, because it tells the reader their schema is
+# fine when it is not, and nothing about a green run would say otherwise. So the assertion is not
+# that doctor prints something; it is that the set of columns doctor calls untypeable is exactly
+# the set the analyzer raised `DRZL_ANL_UNKNOWN_COLUMN` for. A filter that drifts on either side
+# fails here rather than in a user's schema.
+#
+# Both directions matter and neither is the obvious one. Doctor missing a column the analyzer
+# flagged is silence about a real defect. Doctor naming a column the analyzer did not is a report
+# that sends someone to fix nothing, which is how a tool stops being read.
+echo "==> doctor names exactly the columns the analyzer cannot type"
+# Its own fixture, because the app schema has nothing wrong with it. Run against that, both sets
+# are empty, the equality holds trivially and the stage reports success having compared nothing.
+# That is the failure this file has been bitten by more than any other, so the assertion below
+# refuses an empty set as well as a mismatched one.
+#
+# A `customType` is the honest case to build it from: it has no runtime shape any analyzer can
+# read, on either drizzle major, so it is untypeable by construction rather than by omission and
+# no future arm will quietly fix it and make this vacuous again.
+cat > src/db/doctor-fixture.ts <<'DOCTOR_FIXTURE'
+import { pgTable, integer, text, customType, check } from 'drizzle-orm/pg-core';
+import { sql } from 'drizzle-orm';
+
+const money = customType<{ data: string; driverData: string }>({
+  dataType: () => 'numeric(12,2)',
+});
+
+export const invoices = pgTable(
+  'invoices',
+  {
+    id: integer().primaryKey(),
+    reference: text().notNull(),
+    balance: money().notNull(),
+  },
+  (t) => [check('ref_or_id', sql`${t.reference} <> '' OR ${t.id} > 0`)]
+);
+DOCTOR_FIXTURE
+
+npx drzl analyze src/db/doctor-fixture.ts --json > "$WORK/analyze.json"
+npx drzl doctor src/db/doctor-fixture.ts --json > "$WORK/doctor.json"
+
+node --input-type=module -e "
+import { readFile } from 'node:fs/promises';
+const analysis = JSON.parse(await readFile('$WORK/analyze.json', 'utf8'));
+const report = JSON.parse(await readFile('$WORK/doctor.json', 'utf8'));
+
+const fromAnalyzer = new Set(
+  (analysis.issues ?? []).filter((i) => i.code === 'DRZL_ANL_UNKNOWN_COLUMN').map((i) => i.path)
+);
+// Doctor splits the analyzer's dotted path into a table field and a column field, which is the
+// better shape for a consumer and means the two sides are not directly comparable. Rejoining here
+// rather than asking doctor to carry both: a report with two spellings of one fact is a report
+// where they can disagree.
+//
+// No backticks anywhere in this script block. It reaches node inside a double-quoted -e argument,
+// so bash reads a backtick as command substitution: a comment mentioning them ran the real
+// /usr/bin/column, which blocked reading stdin and hung the whole run with no output and no error.
+const fromDoctor = new Set(
+  (report.findings ?? [])
+    .filter((f) => f.kind === 'unknown-column')
+    .map((f) => [f.table, f.column].filter(Boolean).join('.'))
+);
+
+const missing = [...fromAnalyzer].filter((x) => !fromDoctor.has(x));
+const invented = [...fromDoctor].filter((x) => !fromAnalyzer.has(x));
+if (missing.length || invented.length) {
+  if (missing.length) console.error('    FAIL: the analyzer cannot type these and doctor is silent about them:');
+  for (const m of missing) console.error('      ' + m);
+  if (invented.length) console.error('    FAIL: doctor reports these and the analyzer typed them fine:');
+  for (const i of invented) console.error('      ' + i);
+  process.exit(1);
+}
+// Both empty compares equal, so the equality alone is satisfied by a fixture with nothing wrong
+// and by a doctor that reports nothing whatever it is given. The fixture above guarantees one
+// untypeable column; this is what notices if it ever stops doing so.
+if (fromAnalyzer.size === 0) {
+  console.error('    FAIL: the fixture produced no untypeable column, so the comparison above');
+  console.error('          compared two empty sets and proved nothing.');
+  process.exit(1);
+}
+const declined = (report.findings ?? []).filter((f) => f.kind === 'check-declined');
+if (declined.length === 0) {
+  console.error('    FAIL: the fixture CHECK uses OR, which no generator translates, and doctor');
+  console.error('          did not report it. Silence about an unenforced constraint is the');
+  console.error('          failure this command exists to prevent.');
+  process.exit(1);
+}
+console.log(
+  '    ' + fromDoctor.size + ' untypeable column(s) named identically by both, and ' +
+    declined.length + ' unenforced CHECK(s) reported'
+);
+" || { echo "FAIL: doctor and the analyzer disagree about which columns cannot be typed." >&2; exit 1; }
+
+# The exit codes are the contract a CI job depends on, and nothing else here reads one from the
+# packed artifact. `doctor` reports without failing a pipeline, `--strict` turns findings into a
+# failure, and an unreadable schema is a different answer from either.
+doctor_code() { npx drzl doctor "$@" >/dev/null 2>&1; echo $?; }
+got_plain=$(doctor_code src/db/doctor-fixture.ts)
+got_missing=$(doctor_code no-such-schema.ts)
+if [ "$got_plain" != 0 ]; then
+  echo "FAIL: drzl doctor exited $got_plain on a readable schema. A doctor that fails a build" >&2
+  echo "      for reporting is a doctor nobody leaves switched on." >&2
+  exit 1
+fi
+if [ "$got_missing" != 1 ]; then
+  echo "FAIL: drzl doctor exited $got_missing on a schema that does not exist, expected 1." >&2
+  exit 1
+fi
+echo "    exit codes: 0 on a readable schema, 1 on one it cannot read"
+rm -f src/db/doctor-fixture.ts
+
 BARREL="src/generated/zod/index.ts"
 [ -f "$BARREL" ] || { echo "FAIL: no barrel emitted at $BARREL" >&2; exit 1; }
 for f in src/generated/zod/users.zod.ts src/generated/zod/posts.zod.ts; do

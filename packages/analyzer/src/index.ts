@@ -10,8 +10,31 @@ export interface Issue {
   level: 'info' | 'warn' | 'error';
   message: string;
   hint?: string;
+  /**
+   * Where the issue is, as `table` or `table.column`.
+   *
+   * Declared since this interface existed and set by nothing, so every consumer wanting to group
+   * warnings by table had to read the names back out of the English in `message`. `drzl doctor` is
+   * the first such consumer and a report built by regex over prose breaks the first time a message
+   * is reworded, so the names are stated here instead.
+   *
+   * Still optional: an issue about the schema as a whole, such as an unidentifiable dialect, is
+   * about no table and says so by omitting this.
+   */
   path?: string;
 }
+
+/**
+ * Why a column has no type, where "nobody has modelled it" is not the answer.
+ *
+ * The distinction exists because it changes the advice. A column class this file has no arm for is
+ * a gap someone can close, and the warning tells its author to say so. A Gel temporal column is
+ * not: the value is an instance of a class from the `gel` package, DRZL cannot import that package,
+ * and no generator could emit a check for it even knowing the name. Leaving it `unknown` is the
+ * measured answer rather than an omission, and its warning should say that instead of asking for a
+ * bug report that is already closed.
+ */
+export type UnnameableReason = 'gel-temporal';
 
 export interface ColumnRef {
   table: string;
@@ -1237,6 +1260,7 @@ export function readRelationsV2(val: any, issues: Issue[] = []): Relation[] {
           code: 'DRZL_ANL_REL_V2',
           level: 'warn',
           message: `Relation "${fieldName}" on "${from}" names no target table and was skipped.`,
+          path: from,
         });
         continue;
       }
@@ -1250,6 +1274,34 @@ export function readRelationsV2(val: any, issues: Issue[] = []): Relation[] {
     }
   }
   return out;
+}
+
+/**
+ * What to tell the author of a column that has no type.
+ *
+ * Three different situations reach the same warning, and they do not have the same fix, so they do
+ * not get the same sentence. A `customType` and a Gel temporal are both *correctly* untyped and
+ * asking for a bug report on either wastes the reader's time; only the third case is a gap in this
+ * file.
+ */
+function unknownColumnHint(reason: 'custom' | UnnameableReason | undefined): string {
+  if (reason === 'custom') {
+    return (
+      'A customType has no runtime shape to read. Declare it with .$type<T>() and turn on ' +
+      'typedColumns to give the validator the type.'
+    );
+  }
+  if (reason === 'gel-temporal') {
+    return (
+      'A Gel temporal column holds an instance of a class from the `gel` package, which DRZL ' +
+      'cannot import, so it is left untyped on purpose rather than guessed at. Turn on ' +
+      'typedColumns to recover the declared type, and validate the value yourself.'
+    );
+  }
+  return (
+    'Open an issue naming the column type so it can be modelled, or declare it with .$type<T>() ' +
+    'and turn on typedColumns.'
+  );
 }
 
 export class SchemaAnalyzer {
@@ -1305,6 +1357,7 @@ export class SchemaAnalyzer {
         code: 'DRZL_ANL_EXTRACONFIG',
         level: 'warn',
         message: `Could not evaluate the extra-config callback for table "${tableName}": ${(e as Error).message}`,
+        path: tableName,
         hint: 'Indexes, composite keys, checks and table-level foreign keys will be missing for this table.',
       });
       return [];
@@ -1455,6 +1508,7 @@ export class SchemaAnalyzer {
         code: 'DRZL_ANL_RELATIONS',
         level: 'warn',
         message: `Could not read the relations declared in "${exportName}": ${(e as Error).message}`,
+        path: from,
         hint: 'Relations for this table will be missing from the analysis.',
       });
       return [];
@@ -1716,7 +1770,11 @@ export class SchemaAnalyzer {
     return out;
   }
 
-  private mapColumnType(column: any): { tsType: string; dbType: string } {
+  private mapColumnType(column: any): {
+    tsType: string;
+    dbType: string;
+    unnameable?: UnnameableReason;
+  } {
     const ctor = column?.constructor?.name ?? '';
     switch (ctor) {
       case 'SQLiteInteger':
@@ -2123,8 +2181,14 @@ export class SchemaAnalyzer {
           // it and rerunning `gel-types.spec.ts` and `uncovered-dialects.spec.ts`, both of which
           // stayed green. It is here so the six read as measured and decided rather than
           // forgotten, which is how they came to be `string`.
+          //
+          // `unnameable` is what separates these from a column class nobody has looked at. Both
+          // come back `unknown`, and the warning raised for them used to carry the same hint:
+          // "open an issue naming the column type so it can be modelled". For these six that hint
+          // sends the author to file an issue this arm already answers, so the marker travels with
+          // the answer rather than being recovered from the SQL type at the warning site.
           if (/Timestamp|LocalDateString|LocalTime|DateDuration|RelDuration|Duration/i.test(ctor))
-            return { tsType: 'unknown', dbType: 'UNKNOWN' };
+            return { tsType: 'unknown', dbType: 'UNKNOWN', unnameable: 'gel-temporal' };
         }
         return { tsType: 'unknown', dbType: 'UNKNOWN' };
     }
@@ -2144,7 +2208,8 @@ export class SchemaAnalyzer {
       // Everything describing the *value* reads the element; everything describing the *column*
       // (nullability, defaults, generated) stays on the outer one, which is where Drizzle keeps it.
       const { element: col, dimensions: arrayDims } = unwrapArrayColumn(outerCol);
-      let { tsType, dbType } = this.mapColumnType(col);
+      const mapped = this.mapColumnType(col);
+      let { tsType, dbType } = mapped;
       if (tsType === 'unknown' && /At$/.test(colName)) {
         // Heuristic for timestamp fields
         tsType = 'Date';
@@ -2284,10 +2349,8 @@ export class SchemaAnalyzer {
           message: `Column "${colName}" on table "${tsName}" has no known type${
             sqlType ? ` (SQL type ${sqlType})` : ''
           }, so its validator will accept any value.`,
-          hint:
-            shape === 'custom'
-              ? 'A customType has no runtime shape to read. Declare it with .$type<T>() and turn on typedColumns to give the validator the type.'
-              : 'Open an issue naming the column type so it can be modelled, or declare it with .$type<T>() and turn on typedColumns.',
+          path: `${tsName}.${colName}`,
+          hint: unknownColumnHint(shape === 'custom' ? 'custom' : mapped.unnameable),
         });
       }
 
@@ -2535,6 +2598,7 @@ export class SchemaAnalyzer {
           code: 'DRZL_ANL_TABLE',
           level: 'warn',
           message: `Failed to analyze export ${name}: ${String(e)}`,
+          path: name,
         });
       }
     }

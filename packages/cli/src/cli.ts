@@ -17,6 +17,7 @@ import {
   filterTables,
   loadConfig,
 } from './config.js';
+import { buildDoctorReport, renderDoctorReport } from './doctor.js';
 import { diffSnapshots, restoreSnapshot, snapshotAll } from './drift.js';
 import { GeneratorNotInstalledError, loadGenerator } from './generator-loader.js';
 import { maybeShowSponsorMessage } from './sponsor.js';
@@ -88,6 +89,68 @@ program
       else
         console.error(
           chalk.red('Analyze failed (DRZL_CLI_ANALYZE):'),
+          msg,
+          '\nTip: run with --json for structured output.'
+        );
+      process.exit(1);
+    }
+  });
+
+program
+  .command('doctor')
+  .description('Report what DRZL cannot type or enforce in your schema, and why')
+  .argument('[schema]', 'path to drizzle schema (TS); defaults to the schema in drzl.config')
+  .option('-c, --config <path>', 'path to drzl.config, read when no schema argument is given')
+  .option('--json', 'print the report as JSON instead of prose', false)
+  .option('--strict', 'exit 2 when anything is reported', false)
+  .action(async (schema: string | undefined, opts: any) => {
+    try {
+      // A schema path argument, like `analyze`, or the one already named in the config, since a
+      // user who has a config should not have to retype the path they put in it.
+      let target = schema;
+      if (!target) {
+        const cfg = await loadConfig(opts.config);
+        target = cfg?.schema;
+      }
+      if (!target) {
+        const msg = 'No schema given. Pass a path, or run from a directory with a drzl.config.';
+        if (opts.json)
+          console.log(JSON.stringify({ event: 'error', code: 'DRZL_CLI_DOCTOR', message: msg }));
+        else console.error(chalk.red('Doctor failed (DRZL_CLI_DOCTOR):'), msg);
+        process.exit(1);
+        return;
+      }
+
+      const analyzer = new SchemaAnalyzer(target);
+      // Both on, unconditionally. Doctor's job is to look at everything, and a warning that only
+      // appears when relations are read would be hidden by a flag turning them off.
+      const analysis = await analyzer.analyze({
+        includeRelations: true,
+        validateConstraints: true,
+      });
+      const report = buildDoctorReport(analysis, target);
+
+      if (opts.json) console.log(JSON.stringify(report, null, 2));
+      else console.log(renderDoctorReport(report));
+
+      // An error-level issue means the schema was never read: the file is missing, or importing it
+      // threw. There is no report to act on, so this exits like `analyze`'s failure path rather
+      // than pretending the empty analysis was a clean bill of health.
+      if (report.findings.some((f) => f.level === 'error')) {
+        process.exit(1);
+        return;
+      }
+      // Zero by default, and that is the whole point. A schema carrying a customType or a CHECK
+      // this parser will not guess at is normal and usable, and a doctor that failed every
+      // pipeline reading one would be switched off within a week. `--strict` is the opt-in.
+      process.exit(opts.strict && report.findings.length ? 2 : 0);
+    } catch (e: any) {
+      const msg = e?.message ?? String(e);
+      if (opts.json)
+        console.log(JSON.stringify({ event: 'error', code: 'DRZL_CLI_DOCTOR', message: msg }));
+      else
+        console.error(
+          chalk.red('Doctor failed (DRZL_CLI_DOCTOR):'),
           msg,
           '\nTip: run with --json for structured output.'
         );
@@ -892,6 +955,10 @@ function reportWideColumns(issues: Array<{ code?: string; message?: string; hint
   // One hint for the set, since they are almost always the same two.
   const hints = [...new Set(wide.map((i) => i.hint).filter(Boolean))];
   for (const h of hints) console.warn(chalk.gray(`  ${h}`));
+  // Untypeable columns are the only thing this line can see. A CHECK constraint the generators
+  // decline produces no output at all and so cannot be counted here without parsing every one of
+  // them on the generate path, which is what `doctor` is for.
+  console.warn(chalk.gray('  Run `drzl doctor` for the full report.'));
 }
 
 program.parseAsync(process.argv);
