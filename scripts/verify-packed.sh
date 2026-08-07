@@ -2394,7 +2394,17 @@ const presenceAllowed = (dialect: string, lib: string, col: string, mode: string
  * Cross-generator gaps that follow from what each library can express, not from a defect in one
  * generator. Keyed `<dialect>/<column>` and carrying its reason, for the same reason ALLOWED is.
  */
-const CROSS_ALLOWED: Record<string, { why: string; divergence: string }> = {
+/**
+ * A difference between DRZL's own four generators that is deliberate.
+ *
+ * `modes` rather than three keys per column, because the same difference usually holds in all
+ * three and a key per mode would say it three times and rot in three places. It is asserted
+ * exactly, like every other ledger here: a mode that diverges and is not declared is a finding,
+ * and a declared mode that does not diverge fails the run.
+ */
+type CrossWaiver = { modes: string[]; why: string; divergence: Record<string, string> };
+
+const CROSS_ALLOWED: Record<string, CrossWaiver> = {
   // ArkType's string DSL has no recursive JSON value, so this generator emits
   // `number | object | string | boolean | null`, which takes NaN, Infinity and any object at all.
   // The other three build a real JSON value check. A capability difference between the libraries:
@@ -2405,13 +2415,13 @@ const CROSS_ALLOWED: Record<string, { why: string; divergence: string }> = {
   // five values, arktype alone accepting each. Before it was here, `crossAllowed` discarded every
   // row for its column whatever the rows said, so making DRZL's typebox `c_jsonb` reject `{}` was
   // absorbed and the stage still printed that all four generators agree on every column and value.
-  'pg/c_json': { why: "arktype's string DSL cannot state a recursive JSON value", divergence: `NaN: arktype accept, zod/valibot/typebox reject; Infinity: arktype accept, zod/valibot/typebox reject; Date: arktype accept, zod/valibot/typebox reject; Buffer: arktype accept, zod/valibot/typebox reject; Uint8Array: arktype accept, zod/valibot/typebox reject` },
-  'pg/c_jsonb': { why: 'as pg/c_json', divergence: `NaN: arktype accept, zod/valibot/typebox reject; Infinity: arktype accept, zod/valibot/typebox reject; Date: arktype accept, zod/valibot/typebox reject; Buffer: arktype accept, zod/valibot/typebox reject; Uint8Array: arktype accept, zod/valibot/typebox reject` },
-  'pg/c_jsonb_typed': { why: 'as pg/c_json', divergence: `NaN: arktype accept, zod/valibot/typebox reject; Infinity: arktype accept, zod/valibot/typebox reject; Date: arktype accept, zod/valibot/typebox reject; Buffer: arktype accept, zod/valibot/typebox reject; Uint8Array: arktype accept, zod/valibot/typebox reject` },
-  'mysql/m_json': { why: 'as pg/c_json', divergence: `NaN: arktype accept, zod/valibot/typebox reject; Infinity: arktype accept, zod/valibot/typebox reject; Date: arktype accept, zod/valibot/typebox reject; Buffer: arktype accept, zod/valibot/typebox reject; Uint8Array: arktype accept, zod/valibot/typebox reject` },
-  'sqlite/s_text_json': { why: 'as pg/c_json', divergence: `NaN: arktype accept, zod/valibot/typebox reject; Infinity: arktype accept, zod/valibot/typebox reject; Date: arktype accept, zod/valibot/typebox reject; Buffer: arktype accept, zod/valibot/typebox reject; Uint8Array: arktype accept, zod/valibot/typebox reject` },
-  'sqlite/s_blob_json': { why: 'as pg/c_json', divergence: `NaN: arktype accept, zod/valibot/typebox reject; Infinity: arktype accept, zod/valibot/typebox reject; Date: arktype accept, zod/valibot/typebox reject; Buffer: arktype accept, zod/valibot/typebox reject; Uint8Array: arktype accept, zod/valibot/typebox reject` },
-  'sqlite/s_blob': { why: 'as pg/c_json; a bare blob() is Drizzle json mode', divergence: `NaN: arktype accept, zod/valibot/typebox reject; Infinity: arktype accept, zod/valibot/typebox reject; Date: arktype accept, zod/valibot/typebox reject; Buffer: arktype accept, zod/valibot/typebox reject; Uint8Array: arktype accept, zod/valibot/typebox reject` },
+  'pg/c_json': { modes: ['select', 'insert', 'update'], why: "arktype's string DSL cannot state a recursive JSON value", divergence: { '*': `NaN: arktype accept, zod/valibot/typebox reject; Infinity: arktype accept, zod/valibot/typebox reject; Date: arktype accept, zod/valibot/typebox reject; Buffer: arktype accept, zod/valibot/typebox reject; Uint8Array: arktype accept, zod/valibot/typebox reject` } },
+  'pg/c_jsonb': { modes: ['select', 'insert', 'update'], why: 'as pg/c_json', divergence: { '*': `NaN: arktype accept, zod/valibot/typebox reject; Infinity: arktype accept, zod/valibot/typebox reject; Date: arktype accept, zod/valibot/typebox reject; Buffer: arktype accept, zod/valibot/typebox reject; Uint8Array: arktype accept, zod/valibot/typebox reject` } },
+  'pg/c_jsonb_typed': { modes: ['select', 'insert', 'update'], why: 'as pg/c_json', divergence: { '*': `NaN: arktype accept, zod/valibot/typebox reject; Infinity: arktype accept, zod/valibot/typebox reject; Date: arktype accept, zod/valibot/typebox reject; Buffer: arktype accept, zod/valibot/typebox reject; Uint8Array: arktype accept, zod/valibot/typebox reject` } },
+  'mysql/m_json': { modes: ['select', 'insert', 'update'], why: 'as pg/c_json', divergence: { '*': `NaN: arktype accept, zod/valibot/typebox reject; Infinity: arktype accept, zod/valibot/typebox reject; Date: arktype accept, zod/valibot/typebox reject; Buffer: arktype accept, zod/valibot/typebox reject; Uint8Array: arktype accept, zod/valibot/typebox reject` } },
+  'sqlite/s_text_json': { modes: ['select', 'insert', 'update'], why: 'as pg/c_json', divergence: { '*': `NaN: arktype accept, zod/valibot/typebox reject; Infinity: arktype accept, zod/valibot/typebox reject; Date: arktype accept, zod/valibot/typebox reject; Buffer: arktype accept, zod/valibot/typebox reject; Uint8Array: arktype accept, zod/valibot/typebox reject` } },
+  'sqlite/s_blob_json': { modes: ['select', 'insert', 'update'], why: 'as pg/c_json', divergence: { '*': `NaN: arktype accept, zod/valibot/typebox reject; Infinity: arktype accept, zod/valibot/typebox reject; Date: arktype accept, zod/valibot/typebox reject; Buffer: arktype accept, zod/valibot/typebox reject; Uint8Array: arktype accept, zod/valibot/typebox reject` } },
+  'sqlite/s_blob': { modes: ['select', 'insert', 'update'], why: 'as pg/c_json; a bare blob() is Drizzle json mode', divergence: { '*': `NaN: arktype accept, zod/valibot/typebox reject; Infinity: arktype accept, zod/valibot/typebox reject; Date: arktype accept, zod/valibot/typebox reject; Buffer: arktype accept, zod/valibot/typebox reject; Uint8Array: arktype accept, zod/valibot/typebox reject` } },
   // The four generators split on `Infinity` for every 8 byte float column, and only since those
   // columns stopped carrying a magnitude bound. That is not a difference in what DRZL asked for:
   // all four are handed the same column, with `integer: false` and no range, and `z.number()` and
@@ -2421,14 +2431,14 @@ const CROSS_ALLOWED: Record<string, { why: string; divergence: string }> = {
   //
   // No `real` entry: the float4 bound refuses Infinity in all four, so they agree there for a
   // reason that has nothing to do with the libraries.
-  'mysql/m_real': { why: 'as pg/c_double', divergence: `Infinity: valibot/arktype accept, zod/typebox reject` },
-  'mysql/m_double': { why: 'as pg/c_double', divergence: `Infinity: valibot/arktype accept, zod/typebox reject` },
-  'sqlite/s_real': { why: 'as pg/c_double', divergence: `Infinity: valibot/arktype accept, zod/typebox reject` },
+  'mysql/m_real': { modes: ['select', 'insert', 'update'], why: 'as pg/c_double', divergence: { 'select': `Infinity: valibot/arktype accept, zod/typebox reject`, 'insert': `Infinity: valibot/arktype accept, zod/typebox reject`, 'update': `NaN: arktype accept, zod/valibot/typebox reject; Infinity: valibot/arktype accept, zod/typebox reject` } },
+  'mysql/m_double': { modes: ['select', 'insert', 'update'], why: 'as pg/c_double', divergence: { 'select': `Infinity: valibot/arktype accept, zod/typebox reject`, 'insert': `Infinity: valibot/arktype accept, zod/typebox reject`, 'update': `NaN: arktype accept, zod/valibot/typebox reject; Infinity: valibot/arktype accept, zod/typebox reject` } },
+  'sqlite/s_real': { modes: ['select', 'insert', 'update'], why: 'as pg/c_double', divergence: { 'select': `Infinity: valibot/arktype accept, zod/typebox reject`, 'insert': `Infinity: valibot/arktype accept, zod/typebox reject`, 'update': `NaN: arktype accept, zod/valibot/typebox reject; Infinity: valibot/arktype accept, zod/typebox reject` } },
   // The same two splits on the nullable table, which is what says the wrapper each generator puts
   // round a nullable column does not change which library can express what.
-  'pg/n_json': { why: 'as pg/c_json', divergence: `NaN: arktype accept, zod/valibot/typebox reject; Infinity: arktype accept, zod/valibot/typebox reject; Date: arktype accept, zod/valibot/typebox reject; Buffer: arktype accept, zod/valibot/typebox reject; Uint8Array: arktype accept, zod/valibot/typebox reject` },
-  'mysql/m_n_json': { why: 'as pg/c_json', divergence: `NaN: arktype accept, zod/valibot/typebox reject; Infinity: arktype accept, zod/valibot/typebox reject; Date: arktype accept, zod/valibot/typebox reject; Buffer: arktype accept, zod/valibot/typebox reject; Uint8Array: arktype accept, zod/valibot/typebox reject` },
-  'sqlite/s_n_json': { why: 'as pg/c_json', divergence: `NaN: arktype accept, zod/valibot/typebox reject; Infinity: arktype accept, zod/valibot/typebox reject; Date: arktype accept, zod/valibot/typebox reject; Buffer: arktype accept, zod/valibot/typebox reject; Uint8Array: arktype accept, zod/valibot/typebox reject` },
+  'pg/n_json': { modes: ['select', 'insert', 'update'], why: 'as pg/c_json', divergence: { '*': `NaN: arktype accept, zod/valibot/typebox reject; Infinity: arktype accept, zod/valibot/typebox reject; Date: arktype accept, zod/valibot/typebox reject; Buffer: arktype accept, zod/valibot/typebox reject; Uint8Array: arktype accept, zod/valibot/typebox reject` } },
+  'mysql/m_n_json': { modes: ['select', 'insert', 'update'], why: 'as pg/c_json', divergence: { '*': `NaN: arktype accept, zod/valibot/typebox reject; Infinity: arktype accept, zod/valibot/typebox reject; Date: arktype accept, zod/valibot/typebox reject; Buffer: arktype accept, zod/valibot/typebox reject; Uint8Array: arktype accept, zod/valibot/typebox reject` } },
+  'sqlite/s_n_json': { modes: ['select', 'insert', 'update'], why: 'as pg/c_json', divergence: { '*': `NaN: arktype accept, zod/valibot/typebox reject; Infinity: arktype accept, zod/valibot/typebox reject; Date: arktype accept, zod/valibot/typebox reject; Buffer: arktype accept, zod/valibot/typebox reject; Uint8Array: arktype accept, zod/valibot/typebox reject` } },
   /**
    * A split that exists on the nullable path and on no other, which is the whole reason this table
    * is here. ArkType's `number` refuses NaN, and `number | null` accepts it. Four measurements,
@@ -2451,8 +2461,8 @@ const CROSS_ALLOWED: Record<string, { why: string; divergence: string }> = {
    * strict ones, exactly as with `Infinity` on the 8 byte floats above, and the honest description
    * of a Postgres float column still needs a union in every generator rather than a range.
    */
-  'mysql/m_n_float': { why: 'as pg/n_real', divergence: `NaN: arktype accept, zod/valibot/typebox reject` },
-  'sqlite/s_n_real': { why: 'as pg/n_real on NaN, and as pg/c_double on Infinity, which no bound holds back here', divergence: `NaN: arktype accept, zod/valibot/typebox reject; Infinity: valibot/arktype accept, zod/typebox reject` },
+  'mysql/m_n_float': { modes: ['select', 'insert', 'update'], why: 'as pg/n_real', divergence: { '*': `NaN: arktype accept, zod/valibot/typebox reject` } },
+  'sqlite/s_n_real': { modes: ['select', 'insert', 'update'], why: 'as pg/n_real on NaN, and as pg/c_double on Infinity, which no bound holds back here', divergence: { '*': `NaN: arktype accept, zod/valibot/typebox reject; Infinity: valibot/arktype accept, zod/typebox reject` } },
   // No bigint entry either, for the reason given in ALLOWED: arktype now bounds a bigint with a
   // narrow, so the four generators agree about `c_bigint_b`, `m_bigint_b` and `s_blob_bigint`.
   // No `c_char` entry. There was one, reading "zod and valibot count code points; TypeBox and
@@ -2462,16 +2472,62 @@ const CROSS_ALLOWED: Record<string, { why: string; divergence: string }> = {
   // marked used by the column merely existing; see the note at the crossAllowed call site.
 };
 
+
+/**
+ * Differences between DRZL's own four generators that are defects rather than choices.
+ *
+ * Same shape and same both-directions assertion as CROSS_ALLOWED, kept apart from it for the
+ * reason the round-trip stage keeps its two ledgers apart: that one says the difference is
+ * intended, this one says it is a bug nobody has fixed yet. A pin here that stops firing fails the
+ * run, which is how the fix reports itself.
+ *
+ * Every entry is the same defect. `coerceDates` is documented as accepting a date string or an
+ * epoch number on write, and only the zod generator has a number branch at all; the other three
+ * never had one. So every date and timestamp column takes an epoch number in one of four
+ * generators and refuses it in the other three, on insert and on update alike, and which of your
+ * schemas accepts `Date.now()` depends on which validator you chose.
+ *
+ * Invisible until this pass read the write modes (BB). It was noticed during an unrelated change
+ * and confirmed by re-measuring on master rather than deduced from a diff, but nothing in the gate
+ * could see it: select mode has no coercion, so all four agreed there. Filed as BC.
+ */
+const CROSS_DEFECTS: Record<string, CrossWaiver> = {
+  // Not the same defect as the rest of this ledger, and not a waiver either. ArkType's optional
+  // union arm accepts NaN where its bare `number` refuses one, which is the behaviour the
+  // `pg/n_real` waiver already documents for the nullable arm. There it is waived because Postgres
+  // stores NaN in a float column, so accepting it is right. Here the database is MySQL, which
+  // stores no NaN in any numeric column at all: measured against a real MySQL 8.4, `float` and
+  // `double` reject it outright and `decimal` silently writes 0.00. So arktype alone accepts a
+  // value the server will refuse, on update only, because that is the only mode whose fields are
+  // optional. Filed as BD.
+  'mysql/m_float': { modes: ['update'], why: 'arktype accepts NaN through the optional union arm; MySQL stores no NaN in any numeric column', divergence: { '*': `NaN: arktype accept, zod/valibot/typebox reject` } },
+  'pg/c_date_d': { modes: ['insert', 'update'], why: 'coerceDates takes an epoch number in the zod arm alone; the other three have no number branch', divergence: { '*': `0: zod accept, valibot/arktype/typebox reject; 1: zod accept, valibot/arktype/typebox reject; 1.5: zod accept, valibot/arktype/typebox reject; -1: zod accept, valibot/arktype/typebox reject; 200: zod accept, valibot/arktype/typebox reject; 40000: zod accept, valibot/arktype/typebox reject; 9000000: zod accept, valibot/arktype/typebox reject; 2147483648: zod accept, valibot/arktype/typebox reject; 1900: zod accept, valibot/arktype/typebox reject; 2000: zod accept, valibot/arktype/typebox reject; 2500: zod accept, valibot/arktype/typebox reject; 17: zod accept, valibot/arktype/typebox reject; 18: zod accept, valibot/arktype/typebox reject; 50: zod accept, valibot/arktype/typebox reject; 100: zod accept, valibot/arktype/typebox reject; 101: zod accept, valibot/arktype/typebox reject` } },
+  'mysql/m_date': { modes: ['insert', 'update'], why: 'as pg/c_date_d', divergence: { '*': `0: zod accept, valibot/arktype/typebox reject; 1: zod accept, valibot/arktype/typebox reject; 1.5: zod accept, valibot/arktype/typebox reject; -1: zod accept, valibot/arktype/typebox reject; 200: zod accept, valibot/arktype/typebox reject; 40000: zod accept, valibot/arktype/typebox reject; 9000000: zod accept, valibot/arktype/typebox reject; 2147483648: zod accept, valibot/arktype/typebox reject; 1900: zod accept, valibot/arktype/typebox reject; 2000: zod accept, valibot/arktype/typebox reject; 2500: zod accept, valibot/arktype/typebox reject; 17: zod accept, valibot/arktype/typebox reject; 18: zod accept, valibot/arktype/typebox reject; 50: zod accept, valibot/arktype/typebox reject; 100: zod accept, valibot/arktype/typebox reject; 101: zod accept, valibot/arktype/typebox reject` } },
+  'mysql/m_datetime': { modes: ['insert', 'update'], why: 'as pg/c_date_d', divergence: { '*': `0: zod accept, valibot/arktype/typebox reject; 1: zod accept, valibot/arktype/typebox reject; 1.5: zod accept, valibot/arktype/typebox reject; -1: zod accept, valibot/arktype/typebox reject; 200: zod accept, valibot/arktype/typebox reject; 40000: zod accept, valibot/arktype/typebox reject; 9000000: zod accept, valibot/arktype/typebox reject; 2147483648: zod accept, valibot/arktype/typebox reject; 1900: zod accept, valibot/arktype/typebox reject; 2000: zod accept, valibot/arktype/typebox reject; 2500: zod accept, valibot/arktype/typebox reject; 17: zod accept, valibot/arktype/typebox reject; 18: zod accept, valibot/arktype/typebox reject; 50: zod accept, valibot/arktype/typebox reject; 100: zod accept, valibot/arktype/typebox reject; 101: zod accept, valibot/arktype/typebox reject` } },
+  'mysql/m_n_datetime': { modes: ['insert', 'update'], why: 'as pg/c_date_d', divergence: { '*': `0: zod accept, valibot/arktype/typebox reject; 1: zod accept, valibot/arktype/typebox reject; 1.5: zod accept, valibot/arktype/typebox reject; -1: zod accept, valibot/arktype/typebox reject; 200: zod accept, valibot/arktype/typebox reject; 40000: zod accept, valibot/arktype/typebox reject; 9000000: zod accept, valibot/arktype/typebox reject; 2147483648: zod accept, valibot/arktype/typebox reject; 1900: zod accept, valibot/arktype/typebox reject; 2000: zod accept, valibot/arktype/typebox reject; 2500: zod accept, valibot/arktype/typebox reject; 17: zod accept, valibot/arktype/typebox reject; 18: zod accept, valibot/arktype/typebox reject; 50: zod accept, valibot/arktype/typebox reject; 100: zod accept, valibot/arktype/typebox reject; 101: zod accept, valibot/arktype/typebox reject` } },
+  'mysql/m_ts': { modes: ['insert', 'update'], why: 'as pg/c_date_d', divergence: { '*': `0: zod accept, valibot/arktype/typebox reject; 1: zod accept, valibot/arktype/typebox reject; 1.5: zod accept, valibot/arktype/typebox reject; -1: zod accept, valibot/arktype/typebox reject; 200: zod accept, valibot/arktype/typebox reject; 40000: zod accept, valibot/arktype/typebox reject; 9000000: zod accept, valibot/arktype/typebox reject; 2147483648: zod accept, valibot/arktype/typebox reject; 1900: zod accept, valibot/arktype/typebox reject; 2000: zod accept, valibot/arktype/typebox reject; 2500: zod accept, valibot/arktype/typebox reject; 17: zod accept, valibot/arktype/typebox reject; 18: zod accept, valibot/arktype/typebox reject; 50: zod accept, valibot/arktype/typebox reject; 100: zod accept, valibot/arktype/typebox reject; 101: zod accept, valibot/arktype/typebox reject` } },
+  'pg/c_ts_d': { modes: ['insert', 'update'], why: 'as pg/c_date_d', divergence: { '*': `0: zod accept, valibot/arktype/typebox reject; 1: zod accept, valibot/arktype/typebox reject; 1.5: zod accept, valibot/arktype/typebox reject; -1: zod accept, valibot/arktype/typebox reject; 200: zod accept, valibot/arktype/typebox reject; 40000: zod accept, valibot/arktype/typebox reject; 9000000: zod accept, valibot/arktype/typebox reject; 2147483648: zod accept, valibot/arktype/typebox reject; 1900: zod accept, valibot/arktype/typebox reject; 2000: zod accept, valibot/arktype/typebox reject; 2500: zod accept, valibot/arktype/typebox reject; 17: zod accept, valibot/arktype/typebox reject; 18: zod accept, valibot/arktype/typebox reject; 50: zod accept, valibot/arktype/typebox reject; 100: zod accept, valibot/arktype/typebox reject; 101: zod accept, valibot/arktype/typebox reject` } },
+  'pg/n_ts': { modes: ['insert', 'update'], why: 'as pg/c_date_d', divergence: { '*': `0: zod accept, valibot/arktype/typebox reject; 1: zod accept, valibot/arktype/typebox reject; 1.5: zod accept, valibot/arktype/typebox reject; -1: zod accept, valibot/arktype/typebox reject; 200: zod accept, valibot/arktype/typebox reject; 40000: zod accept, valibot/arktype/typebox reject; 9000000: zod accept, valibot/arktype/typebox reject; 2147483648: zod accept, valibot/arktype/typebox reject; 1900: zod accept, valibot/arktype/typebox reject; 2000: zod accept, valibot/arktype/typebox reject; 2500: zod accept, valibot/arktype/typebox reject; 17: zod accept, valibot/arktype/typebox reject; 18: zod accept, valibot/arktype/typebox reject; 50: zod accept, valibot/arktype/typebox reject; 100: zod accept, valibot/arktype/typebox reject; 101: zod accept, valibot/arktype/typebox reject` } },
+  'sqlite/s_int_ts': { modes: ['insert', 'update'], why: 'as pg/c_date_d', divergence: { '*': `0: zod accept, valibot/arktype/typebox reject; 1: zod accept, valibot/arktype/typebox reject; 1.5: zod accept, valibot/arktype/typebox reject; -1: zod accept, valibot/arktype/typebox reject; 200: zod accept, valibot/arktype/typebox reject; 40000: zod accept, valibot/arktype/typebox reject; 9000000: zod accept, valibot/arktype/typebox reject; 2147483648: zod accept, valibot/arktype/typebox reject; 1900: zod accept, valibot/arktype/typebox reject; 2000: zod accept, valibot/arktype/typebox reject; 2500: zod accept, valibot/arktype/typebox reject; 17: zod accept, valibot/arktype/typebox reject; 18: zod accept, valibot/arktype/typebox reject; 50: zod accept, valibot/arktype/typebox reject; 100: zod accept, valibot/arktype/typebox reject; 101: zod accept, valibot/arktype/typebox reject` } },
+  'sqlite/s_int_ts_ms': { modes: ['insert', 'update'], why: 'as pg/c_date_d', divergence: { '*': `0: zod accept, valibot/arktype/typebox reject; 1: zod accept, valibot/arktype/typebox reject; 1.5: zod accept, valibot/arktype/typebox reject; -1: zod accept, valibot/arktype/typebox reject; 200: zod accept, valibot/arktype/typebox reject; 40000: zod accept, valibot/arktype/typebox reject; 9000000: zod accept, valibot/arktype/typebox reject; 2147483648: zod accept, valibot/arktype/typebox reject; 1900: zod accept, valibot/arktype/typebox reject; 2000: zod accept, valibot/arktype/typebox reject; 2500: zod accept, valibot/arktype/typebox reject; 17: zod accept, valibot/arktype/typebox reject; 18: zod accept, valibot/arktype/typebox reject; 50: zod accept, valibot/arktype/typebox reject; 100: zod accept, valibot/arktype/typebox reject; 101: zod accept, valibot/arktype/typebox reject` } },
+  'sqlite/s_n_ts': { modes: ['insert', 'update'], why: 'as pg/c_date_d', divergence: { '*': `0: zod accept, valibot/arktype/typebox reject; 1: zod accept, valibot/arktype/typebox reject; 1.5: zod accept, valibot/arktype/typebox reject; -1: zod accept, valibot/arktype/typebox reject; 200: zod accept, valibot/arktype/typebox reject; 40000: zod accept, valibot/arktype/typebox reject; 9000000: zod accept, valibot/arktype/typebox reject; 2147483648: zod accept, valibot/arktype/typebox reject; 1900: zod accept, valibot/arktype/typebox reject; 2000: zod accept, valibot/arktype/typebox reject; 2500: zod accept, valibot/arktype/typebox reject; 17: zod accept, valibot/arktype/typebox reject; 18: zod accept, valibot/arktype/typebox reject; 50: zod accept, valibot/arktype/typebox reject; 100: zod accept, valibot/arktype/typebox reject; 101: zod accept, valibot/arktype/typebox reject` } },
+  'sqlite/s_n_ts_ms': { modes: ['insert', 'update'], why: 'as pg/c_date_d', divergence: { '*': `0: zod accept, valibot/arktype/typebox reject; 1: zod accept, valibot/arktype/typebox reject; 1.5: zod accept, valibot/arktype/typebox reject; -1: zod accept, valibot/arktype/typebox reject; 200: zod accept, valibot/arktype/typebox reject; 40000: zod accept, valibot/arktype/typebox reject; 9000000: zod accept, valibot/arktype/typebox reject; 2147483648: zod accept, valibot/arktype/typebox reject; 1900: zod accept, valibot/arktype/typebox reject; 2000: zod accept, valibot/arktype/typebox reject; 2500: zod accept, valibot/arktype/typebox reject; 17: zod accept, valibot/arktype/typebox reject; 18: zod accept, valibot/arktype/typebox reject; 50: zod accept, valibot/arktype/typebox reject; 100: zod accept, valibot/arktype/typebox reject; 101: zod accept, valibot/arktype/typebox reject` } },
+};
+
 const usedCrossWaivers = new Set<string>();
 // What each cross-generator waiver actually discarded, so the declaration can be compared with the
 // run. `crossAllowed` used to return a boolean and the caller threw the rows away unread.
 const crossWaived = new Map<string, string>();
-const crossAllowed = (dialect: string, col: string, rows: string[]) => {
+const crossAllowed = (dialect: string, mode: string, col: string, rows: string[]) => {
   const key = `${dialect}/${col}`;
-  if (!CROSS_ALLOWED[key]) return false;
+  const entry = CROSS_ALLOWED[key] ?? CROSS_DEFECTS[key];
+  // A mode the entry does not name is not covered by it. Falling through to a finding is the
+  // fail-closed direction: the alternative lets a waiver written for one mode silently absorb a
+  // difference in another, which is the shape of the defect that made this pass read all three.
+  if (!entry || !entry.modes.includes(mode)) return false;
   usedCrossWaivers.add(key);
   // The column name is stripped so the signature reads as the difference rather than as the row.
-  crossWaived.set(key, rows.map((r) => r.trim().replace(`${col} on `, '')).join('; '));
+  crossWaived.set(`${key}/${mode}`, rows.map((r) => r.trim().replace(`${col} on `, '')).join('; '));
   return true;
 };
 
@@ -2806,24 +2862,48 @@ for (const d of DIALECTS) {
   }
 
   // Pass 2, on every dialect that has all four generators, which is now all three.
+  //
+  // All three modes, and it read `Select` and nothing else until a defect made the cost visible.
+  // Three of the four generators accepted `'hello'` on a date column's insert schema while zod
+  // refused it, which is precisely the internal inconsistency this pass exists to surface, and it
+  // sat here silently because the divergence was write only. The file had even written the
+  // limitation down, on the crash ledger, and demonstrated it by making the typebox Insert and
+  // Update schemas accept `null` on a NOT NULL column and watching the run stay byte identical to
+  // green. The observation was recorded and the consequence was not drawn (BB).
   if (d.libs.length === 4) {
     const disagreements: string[] = [];
+    for (const mode of MODE_NAMES) {
+    const Mode = mode[0].toUpperCase() + mode.slice(1);
     for (const t of d.tables) {
-    const oShape = OFFICIAL.zod.select(t.table as never).shape;
+    // The mode's own column set, not select's. An insert schema drops generated columns, so
+    // reading select's keys here would ask four generators about a field none of them emits and
+    // report it as missing from all four.
+    const oShape = (OFFICIAL.zod as any)[mode](t.table as never).shape;
     for (const k of Object.keys(oShape)) {
       const fields: Record<string, any> = {};
-      for (const lib of d.libs) fields[lib] = safeField(LIBS[lib], loaded[t.name][lib][`Select${t.name}Schema`], k);
+      for (const lib of d.libs) fields[lib] = safeField(LIBS[lib], loaded[t.name][lib][`${Mode}${t.name}Schema`], k);
       const found: string[] = [];
       const absent = Object.entries(fields).filter(([, f]) => !f).map(([n]) => n);
       if (absent.length) {
         found.push(`        ${k}: missing from ${absent.join(', ')}`);
       } else {
         for (const [label, x] of POOL) {
+          // `undefined` is not asked here, and skipping it is not a gap: the presence axis above
+          // asks the same question properly, of the object rather than of the field.
+          //
+          // Measured, because it produced 169 findings that were all representation and no
+          // behaviour. An optional field is `z.optional(X)` in zod, valibot and arktype, so the
+          // extracted field takes `undefined`; TypeBox marks optionality on the parent's property
+          // and leaves `X` alone, so the extracted field refuses it. Both objects accept `{}`,
+          // which is the fact that matters and the fact they agree on. Probing the field measures
+          // where each library records optionality. It never showed on select because every
+          // column there is required, so all four refused `undefined` and agreed by accident.
+          if (label === 'undefined') continue;
           const verdicts = d.libs.map((n) => [n, probe(LIBS[n], fields[n], x)] as const);
           // A generator that crashed is not one that rejected. Recorded on the DRZL side, where
           // nothing is declared, so any crash out of DRZL's own output fails this script.
           for (const [n, r] of verdicts) {
-            if (r === 'threw') recordThrow(`${d.name}/${n}/${k}`, 'drzl', 'select', label);
+            if (r === 'threw') recordThrow(`${d.name}/${n}/${k}`, 'drzl', mode, label);
           }
           const yes = verdicts.filter(([, r]) => r === 'accept').map(([n]) => n);
           const no = verdicts.filter(([, r]) => r === 'reject').map(([n]) => n);
@@ -2837,8 +2917,9 @@ for (const d of DIALECTS) {
       // marked the key used because the column exists in the fixture, which made the dead-waiver
       // check below true of `ALLOWED` and false of `CROSS_ALLOWED`: a waiver naming a real column
       // the four generators agree about sat there indefinitely, and `pg/c_char` was one.
-      if (crossAllowed(d.name, k, found)) continue;
-      disagreements.push(...found);
+      if (crossAllowed(d.name, mode, k, found)) continue;
+      disagreements.push(...found.map((r) => r.replace(/^ {8}/, `        ${mode} `)));
+    }
     }
     }
     // Printed rather than implied, because the line below used to claim universal agreement while
@@ -3165,6 +3246,7 @@ console.log(
 const deadWaivers = [
   ...Object.keys(ALLOWED).filter((k) => !usedWaivers.has(k)).map((k) => `ALLOWED[${k}]`),
   ...Object.keys(CROSS_ALLOWED).filter((k) => !usedCrossWaivers.has(k)).map((k) => `CROSS_ALLOWED[${k}]`),
+  ...Object.keys(CROSS_DEFECTS).filter((k) => !usedCrossWaivers.has(k)).map((k) => `CROSS_DEFECTS[${k}]`),
   ...Object.keys(PRESENCE_ALLOWED)
     .filter((k) => !usedPresenceWaivers.has(k))
     .map((k) => `PRESENCE_ALLOWED[${k}]`),
@@ -3243,10 +3325,26 @@ if (waiverProblems.length) {
 // is here because the deferral that left it out last round turned out to be exploitable in exactly
 // the way the previous one was.
 const crossProblems: string[] = [];
-for (const [key, sig] of crossWaived) {
-  const want = CROSS_ALLOWED[key].divergence;
+for (const [keyMode, sig] of crossWaived) {
+  const i = keyMode.lastIndexOf('/');
+  const key = keyMode.slice(0, i);
+  const mode = keyMode.slice(i + 1);
+  const entry = CROSS_ALLOWED[key] ?? CROSS_DEFECTS[key];
+  const want = entry.divergence[mode] ?? entry.divergence['*'];
+  if (want === undefined) {
+    crossProblems.push(`CROSS_ALLOWED[${key}] names mode ${mode} and declares no divergence for it`);
+    continue;
+  }
   if (want === sig) continue;
-  crossProblems.push(`CROSS_ALLOWED[${key}] declares\n        ${want}\n      and measured\n        ${sig}`);
+  crossProblems.push(`CROSS_ALLOWED[${key}] on ${mode} declares\n        ${want}\n      and measured\n        ${sig}`);
+}
+// The other direction: a declared mode that produced nothing to suppress.
+for (const [key, entry] of [...Object.entries(CROSS_ALLOWED), ...Object.entries(CROSS_DEFECTS)]) {
+  for (const mode of entry.modes) {
+    if (!crossWaived.has(`${key}/${mode}`)) {
+      crossProblems.push(`CROSS_ALLOWED[${key}] names mode ${mode}, which suppressed nothing on this run`);
+    }
+  }
 }
 if (crossProblems.length) {
   console.error('FAIL: a cross-generator waiver no longer covers what it was written for:');
