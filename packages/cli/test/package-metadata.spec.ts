@@ -89,6 +89,7 @@ it('found every publishable package', () => {
     'analyzer',
     'cli',
     'generator-arktype',
+    'generator-effect',
     'generator-json-schema',
     'generator-orpc',
     'generator-service',

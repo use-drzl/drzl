@@ -1,7 +1,7 @@
 /**
  * The options every validation generator receives, built in one place.
  *
- * Each of the four branches used to assemble this by hand, and three documented options were
+ * Each generator branch used to assemble this by hand, and three documented options were
  * found silently dead as a result: `typedJson` never reached typebox, and `coerceDates` and
  * `applyDefaults` never reached anything but zod. The config parsed them, the CLI dropped them,
  * and the feature simply did nothing while nothing said so. Building it once removes the class

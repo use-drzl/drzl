@@ -22,7 +22,7 @@ let shownThisProcess = false;
 const tips = [
   'Pair DRZL watch mode with drizzle-kit to keep schema & API synced.',
   'Templatize your ORPC routers to roll out new endpoints safely.',
-  'Need typed validators? Enable the zod, valibot, arktype, or typebox generators.',
+  'Need typed validators? Enable the zod, valibot, arktype, typebox, or effect generators.',
   'Need JSON Schema or OpenAPI? The json-schema generator emits both, with no runtime dependency.',
   'Use output headers to track generated files and trim noisy diffs.',
 ];

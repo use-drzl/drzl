@@ -40,7 +40,7 @@ export const posts = pgTable('posts', {
 `;
 
 /** Every generator that takes the option, each writing somewhere of its own. */
-const LIBS = ['zod', 'valibot', 'arktype', 'typebox'] as const;
+const LIBS = ['zod', 'valibot', 'arktype', 'typebox', 'effect'] as const;
 
 const CONFIG = `export default {
   schema: './src/db/schema.ts',

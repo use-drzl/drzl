@@ -27,9 +27,9 @@
  *
  * - A CHECK that DRZL does translate. `age >= 18` folds into `.gte(18)` and `start < end` becomes
  *   an object-level refinement; listing them as findings would drown the ones that matter.
- * - `length(col)` and `cardinality(col)` landing on a column that cannot take them. Two of the four
- *   validation generators drop those and two emit something for them, so no single sentence here is
- *   true of all four. It is also unreachable from a working schema: Postgres has no
+ * - `length(col)` and `cardinality(col)` landing on a column that cannot take them. Some of the
+ *   validation generators drop those and some emit something for them, so no single sentence here
+ *   is true of all of them. It is also unreachable from a working schema: Postgres has no
  *   `length(anyarray)` and no `cardinality(integer)`, so the DDL is refused before DRZL sees it.
  */
 import type { Analysis, Column, Issue, Table } from '@drzl/analyzer';

@@ -1,5 +1,5 @@
 /**
- * What a relations-aware nested schema describes, decided once for all four generators.
+ * What a relations-aware nested schema describes, decided once for all five generators.
  *
  * A caller who inserts a parent and its children in one payload, `{ ...user, posts: [...] }`, has
  * nothing to validate it against. Every first-party Drizzle validator emits columns only: measured
@@ -256,7 +256,7 @@ function buildNode(
 /**
  * The comment lines that go above an arm, without their `//`.
  *
- * Shared so the four generators say the same thing about the same relation, and returned unmarked
+ * Shared so the five generators say the same thing about the same relation, and returned unmarked
  * because each of them indents its object literal differently.
  */
 export function nestedArmNotes(arm: NestedArm): string[] {
