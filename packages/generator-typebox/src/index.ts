@@ -202,6 +202,35 @@ const JSON_PREAMBLE = `const ${JSON_CONST} = Type.Recursive((This) =>
 `;
 
 /**
+ * The one expression a column whose type nothing can name emits, and the test for having emitted
+ * it.
+ *
+ * Both live here because the nullable wrapper further down has to recognise its own input, and
+ * the alternative is a second copy of the four branch conditions that produce this, which would
+ * drift. A `customType`, a column the analyzer could not name, an `any` column and a typed json
+ * one all arrive as this expression, alone or inside a `Type.Unsafe<T>` that narrows only the
+ * static type.
+ *
+ * What makes the test necessary rather than cosmetic, measured on TypeBox 0.34.52: a required
+ * property is checked against `value[key]`, which is `undefined` when the key is absent, and
+ * `Type.Unknown()` accepts `undefined`. The only thing that then refuses the row is a guard
+ * beside that check reading `IsAnyOrUnknown(property)`, which tests `property[Kind]`. So a bare
+ * `Type.Unknown()` keeps its key, and `Type.Union([Type.Unknown(), Type.Null()])` does not: its
+ * kind is `Union`, the guard does not fire, and the union's own check passes on `undefined`
+ * through the unknown arm. The `required` array names the key either way, so the emitted text and
+ * the serialised JSON Schema both claim a key that one of them did not have.
+ *
+ * `Type.Unsafe<T>(...)` copies the wrapped schema's kind, so a narrowed unknown is still one.
+ */
+const UNKNOWN_EXPR = 'Type.Unknown()';
+
+function isUnknownExpr(expr: string): boolean {
+  return (
+    expr === UNKNOWN_EXPR || (expr.startsWith('Type.Unsafe<') && expr.endsWith(`(${UNKNOWN_EXPR})`))
+  );
+}
+
+/**
  * A column whose value is structured rather than scalar.
  *
  * These used to land on `Type.Unknown()`, or for the tuple types on `Type.String()`, which
@@ -213,12 +242,12 @@ function tbShapeExpr(c: Column, mode: Mode, typedJsonRef?: string): string | und
   switch (s.kind) {
     case 'json':
       // `typedJson` still wins, since the inferred type is narrower than "any JSON".
-      if (typedJsonRef) return `Type.Unsafe<${typedJsonRef}>(Type.Unknown())`;
+      if (typedJsonRef) return `Type.Unsafe<${typedJsonRef}>(${UNKNOWN_EXPR})`;
       return JSON_CONST;
     case 'custom':
       // Nothing to check at runtime: see the zod generator for why guessing from `getSQLType()`
       // would be wrong. `Type.Unsafe<T>` is TypeBox's escape hatch for exactly this.
-      return typedJsonRef ? `Type.Unsafe<${typedJsonRef}>(Type.Unknown())` : 'Type.Unknown()';
+      return typedJsonRef ? `Type.Unsafe<${typedJsonRef}>(${UNKNOWN_EXPR})` : UNKNOWN_EXPR;
     case 'buffer':
       return 'Type.Uint8Array()';
     case 'tuple':
@@ -351,10 +380,10 @@ function tbExprForColumn(
     case 'any':
       // `typedJson` swaps the wide type for the one Drizzle inferred. `Type.Unsafe<T>` is
       // TypeBox's own escape hatch for a static type it cannot narrow at runtime.
-      if (typedJsonRef) return `Type.Unsafe<${typedJsonRef}>(Type.Unknown())`;
-      return 'Type.Unknown()';
+      if (typedJsonRef) return `Type.Unsafe<${typedJsonRef}>(${UNKNOWN_EXPR})`;
+      return UNKNOWN_EXPR;
     default:
-      return 'Type.Unknown()';
+      return UNKNOWN_EXPR;
   }
 }
 
@@ -402,7 +431,24 @@ function tbField(
   }
   // Nullability wraps the constrained type, so null skips the constraint. That reproduces SQL,
   // where a CHECK passes when it evaluates to TRUE or NULL.
-  if (c.nullable) expr = `Type.Union([${expr}, Type.Null()])`;
+  //
+  // Except over an unknown, where the union is the whole of a defect rather than a wrapper: it
+  // adds nothing, since `Type.Unknown()` already accepts `null`, and it takes the key away, since
+  // TypeBox keeps a required unknown key only while the property's kind *is* `Unknown`. See
+  // `isUnknownExpr` for the measurement. So a select schema for a nullable `customType` accepted a
+  // row that never mentioned the column, while the same column declared `notNull` refused one.
+  //
+  // Nothing is lost by leaving it off. The runtime check is the same set of values either way, and
+  // the static type is too: a bare unknown already admits `null`, and where `typedJson` or
+  // `typedColumns` has narrowed it the type comes from drizzle's own `$inferSelect`, which spells
+  // a nullable column `T | null` on its own. The union was restating that, not adding it.
+  //
+  // The test is on the expression rather than on the column, because an array of unknowns is not
+  // one: `Type.Array(...)` has its own kind, keeps its key, and still needs the null arm.
+  //
+  // This says nothing about whether the key is optional in a write schema. That is decided below,
+  // by `Type.Optional`, and `Type.Optional(Type.Unknown())` lets the key go missing as it should.
+  if (c.nullable && !isUnknownExpr(expr)) expr = `Type.Union([${expr}, Type.Null()])`;
   // The default goes on the schema itself, before anything wraps it. Applied after the
   // `Type.Unsafe` wrapper instead, it landed on the wrapper, where `withDefault` declines to
   // touch it and the default was silently dropped: the field carried none at all and nothing

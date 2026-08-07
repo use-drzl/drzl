@@ -2291,7 +2291,25 @@ const allowed = (dialect: string, lib: string, col: string, mode: string, signat
  * asserted exactly like ALLOWED, in both directions, so an entry that suppresses nothing fails and
  * an entry whose pairings have moved fails with the measured reading printed.
  */
-const PRESENCE_ALLOWED: Record<string, Waiver> = {};
+const PRESENCE_ALLOWED: Record<string, Waiver> = {
+  // DRZL is the stricter side here, and that is the whole point of the change that produced it.
+  // A nullable `customType` cannot be named by any analyzer, so its schema is an unknown. TypeBox
+  // used to wrap that in `Type.Union([Type.Unknown(), Type.Null()])`, and a union's own kind is
+  // `Union`, so the guard that refuses an absent key for an `Unknown` property never fired: a row
+  // that never mentioned the column validated clean against a schema declaring it, while the
+  // serialised JSON Schema said `"required": ["s_n_custom"]` either way.
+  //
+  // Official emits the identical union, so both sides agreed and no differential check could see
+  // it. It took an absolute assertion, that a select schema requires every key, to find at all.
+  // Now that DRZL emits a bare unknown, which already admits null and keeps its key, this pairing
+  // is the one place the fix is visible as a divergence (AQ).
+  'sqlite/typebox/s_n_custom': {
+    libs: ['typebox'],
+    modes: ['select'],
+    why: 'a nullable unknown keeps its key in DRZL; official wraps it in a union whose key TypeBox lets go missing',
+    divergence: { 'select/typebox': `official optional, DRZL required` },
+  },
+};
 
 /**
  * Where the presence axis cannot read a side at all, because that side's schema for the column
@@ -2336,7 +2354,6 @@ let presenceUnreadable = 0;
  * would go dead.
  */
 const SELECT_OPTIONAL: Record<string, string> = {
-  'sqlite/typebox/s_n_custom': 'a nullable customType is unknown on both majors, and official emits the same union',
 };
 const usedSelectOptional = new Set<string>();
 const selectOptionalProblems: string[] = [];
@@ -7096,6 +7113,20 @@ const WRITE = ['insert', 'update'];
  * in its own ALLOWED map, except where noted on `c_char`.
  */
 const ALLOWED: Record<string, Entry> = {
+  // ---- five columns that stopped being defects when the class-name path learned their names ----
+  // Each of these was `unknown, which accepts every value in the pool`. `SQLiteBlobBuffer` and the
+  // millisecond timestamp mode now have arms, so what is left is the ordinary divergence the rest
+  // of this ledger already carries: a byte column typed as `Uint8Array` where official demands a
+  // `Buffer`, and a date column that coerces on write where official does not.
+  //
+  // Note the timestamp pair is write modes only. On select the two agree exactly, which is the
+  // shape of a defect fixed rather than moved.
+  'sqlite/s_blob': { libs: LIB_NAMES, modes: MODE_NAMES, divergence: { '*/*': `L: Uint8Array | T: ` }, drzl: 'as pg/c_bytea', official: 'as pg/c_bytea', filed: 'not a defect: as pg/c_bytea' },
+  'sqlite/s_blob_buf': { libs: LIB_NAMES, modes: MODE_NAMES, divergence: { '*/*': `L: Uint8Array | T: ` }, drzl: 'as sqlite/s_blob', official: 'as sqlite/s_blob', filed: 'as sqlite/s_blob' },
+  'sqlite/s_n_blob': { libs: LIB_NAMES, modes: MODE_NAMES, divergence: { '*/*': `L: Uint8Array | T: ` }, drzl: 'as sqlite/s_blob', official: 'as sqlite/s_blob', filed: 'as sqlite/s_blob' },
+  'sqlite/s_int_ts_ms': { libs: LIB_NAMES, modes: WRITE, divergence: { '*/*': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', 17, 18, 50, 100, 101 | T: ` }, drzl: 'as pg/c_date_d', official: 'as pg/c_date_d', filed: 'not a defect: as pg/c_date_d' },
+  'sqlite/s_n_ts_ms': { libs: LIB_NAMES, modes: WRITE, divergence: { '*/*': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', 17, 18, 50, 100, 101 | T: ` }, drzl: 'as sqlite/s_int_ts_ms', official: 'as sqlite/s_int_ts_ms', filed: 'as sqlite/s_int_ts_ms' },
+
   // Two independent differences meet on this column, and only the first of them is in the v1 pass.
   //
   //   code points   a character limit counts characters; official counts `.length`, which is
@@ -7408,42 +7439,6 @@ const DEFECTS: Record<string, Entry> = {
   // diverges from official any more. `pg/c_geometry` and `pg/n_geometry` moved to `ALLOWED` above,
   // narrowed from all four libraries and twelve pairings to valibot and three, in the one direction
   // where DRZL is the stricter and correct side.
-  'sqlite/s_blob': {
-    libs: LIB_NAMES,
-    modes: MODE_NAMES,
-    divergence: {
-      'select,insert/*': allProbes(62, ['Buffer']),
-      'update/zod,valibot,arktype': allProbes(61, ['undefined', 'Buffer']),
-      'update/typebox': allProbes(62, ['Buffer']),
-    },
-    drzl: 'unknown, which accepts every value in the pool',
-    official: 'a Buffer',
-    filed: 'new: no SQLiteBlobBuffer arm in the class-name path',
-  },
-  'sqlite/s_blob_buf': {
-    libs: LIB_NAMES,
-    modes: MODE_NAMES,
-    divergence: {
-      'select,insert/*': allProbes(62, ['Buffer']),
-      'update/zod,valibot,arktype': allProbes(61, ['undefined', 'Buffer']),
-      'update/typebox': allProbes(62, ['Buffer']),
-    },
-    drzl: 'unknown, which accepts every value in the pool',
-    official: 'a Buffer',
-    filed: 'new: as sqlite/s_blob',
-  },
-  'sqlite/s_int_ts_ms': {
-    libs: LIB_NAMES,
-    modes: MODE_NAMES,
-    divergence: {
-      'select,insert/*': allProbes(62, ['Date']),
-      'update/zod,valibot,arktype': allProbes(61, ['undefined', 'Date']),
-      'update/typebox': allProbes(62, ['Date']),
-    },
-    drzl: 'unknown, which accepts every value in the pool',
-    official: 'a Date',
-    filed: 'new: integer({ mode: timestamp_ms }) is unnamed on 0.4x',
-  },
 
   // ---- a wrong type on MySQL -----------------------------------------------------------------
   // The class-name path answering with the wrong JavaScript type rather than with nothing.
@@ -7508,30 +7503,6 @@ const DEFECTS: Record<string, Entry> = {
   // `pg/n_geometry` and `pg/n_bit` were here, the nullable twins of the two above, and went
   // the same way for the same reason: the classes are named, so a nullable one is no longer an
   // unknown wrapped in a union.
-  'sqlite/s_n_blob': {
-    libs: LIB_NAMES,
-    modes: MODE_NAMES,
-    divergence: {
-      'select/*': allProbes(61, ['null', 'Buffer']),
-      'insert,update/zod,valibot,arktype': allProbes(60, ['null', 'undefined', 'Buffer']),
-      'insert,update/typebox': allProbes(61, ['null', 'Buffer']),
-    },
-    drzl: 'unknown, which accepts every value in the pool',
-    official: 'a Buffer, or null',
-    filed: 'as sqlite/s_blob_buf: no SQLiteBlobBuffer arm in the class-name path',
-  },
-  'sqlite/s_n_ts_ms': {
-    libs: LIB_NAMES,
-    modes: MODE_NAMES,
-    divergence: {
-      'select/*': allProbes(61, ['null', 'Date']),
-      'insert,update/zod,valibot,arktype': allProbes(60, ['null', 'undefined', 'Date']),
-      'insert,update/typebox': allProbes(61, ['null', 'Date']),
-    },
-    drzl: 'unknown, which accepts every value in the pool',
-    official: 'a Date, or null',
-    filed: 'as sqlite/s_int_ts_ms: integer({ mode: timestamp_ms }) has no arm on 0.4x',
-  },
   'sqlite/s_n_int': {
     libs: ['valibot', 'arktype', 'typebox'],
     modes: MODE_NAMES,
@@ -7636,33 +7607,28 @@ const SELECT_OPTIONAL: Record<string, string> = {
   // `vector`, `geometry` and `bit` means those columns no longer emit an unknown, so their nullable
   // form is no longer the union whose TypeBox key may go missing, and this check retired each one
   // by name as its arm landed. Only SQLite is left, where two classes are still unnamed.
-  'sqlite/typebox/s_n_blob': 'no SQLiteBlobBuffer arm, so a nullable unknown whose TypeBox key may be missing',
-  'sqlite/typebox/s_n_ts_ms': 'as sqlite/typebox/s_n_blob, with no timestamp_ms arm',
-  'sqlite/typebox/s_n_custom': 'a nullable customType is unknown on both majors, and official emits the same union',
 };
 
 const PRESENCE: Record<string, Entry> = {
   // `pg/n_geometry` sat here for the same reason and left with the rest of them.
-  'sqlite/s_n_blob': {
+  // The two entries that stood here said DRZL was the looser side, its TypeBox key going missing
+  // where official's stayed required. Both columns are named now, so neither is an unknown and
+  // neither key can go missing. What replaces them points the other way (AQ).
+  //
+  // `s_n_custom` cannot be named by anything: a `customType` has no runtime shape to read. So it
+  // is the one column where the fix is visible as a divergence, and the direction is DRZL being
+  // stricter than the first-party module rather than looser.
+  'sqlite/s_n_custom': {
     libs: ['typebox'],
     modes: ['select'],
-    divergence: { '*/*': 'official required, DRZL optional' },
-    drzl: 'as pg/n_vector',
-    official: 'as pg/n_vector',
-    filed: 'as sqlite/s_blob_buf: no SQLiteBlobBuffer arm in the class-name path',
+    divergence: { '*/*': 'official optional, DRZL required' },
+    drzl: 'a bare unknown, which admits null and keeps its key',
+    official: 'Type.Union([Type.Unknown(), Type.Null()]), whose key TypeBox lets go missing',
+    filed: 'not a defect: a row missing a declared column should not validate',
   },
-  'sqlite/s_n_ts_ms': {
-    libs: ['typebox'],
-    modes: ['select'],
-    divergence: { '*/*': 'official required, DRZL optional' },
-    drzl: 'as pg/n_vector',
-    official: 'as pg/n_vector',
-    filed: 'as sqlite/s_int_ts_ms: integer({ mode: timestamp_ms }) has no arm on 0.4x',
-  },
-  // No `pg/n_bit` entry, and its absence is the reason SELECT_OPTIONAL exists next to this map:
+  // No `pg/n_bit` entry, and its absence is the reason SELECT_OPTIONAL existed next to this map:
   // official's TypeBox schema throws on the object with that key omitted rather than reporting it
-  // missing, so this differential comparison has no verdict to differ from. `s_n_custom` is absent
-  // for the opposite reason: official emits the same union DRZL does, so the two agree.
+  // missing, so this differential comparison has no verdict to differ from.
 };
 
 // A field lookup that throws yields nothing, and nothing is not read as agreement anywhere below:
@@ -7793,9 +7759,6 @@ const THREW: Record<string, Crash> = {
 const UNNAMED: Record<string, string> = {
   // No SQLiteBlobBuffer arm in the class-name path, and a bare `blob()` really is a buffer column
   // on 0.45.2. Both also carry a DEFECTS entry above, which is the relative half of the finding.
-  'sqlite/matrix.s_blob': 'no SQLiteBlobBuffer arm in the class-name path',
-  'sqlite/matrix.s_blob_buf': 'as sqlite/matrix.s_blob',
-  'sqlite/matrix.s_int_ts_ms': 'integer({ mode: timestamp_ms }) has no arm; only mode timestamp does',
   // The one the comparison cannot see, and the reason this absolute check earns its place. The
   // analyzer names no type for a 0.4x mysqlEnum and prints "so its validator will accept any
   // value", and that sentence is false: every generator reads `enumValues` off the column
@@ -7805,8 +7768,6 @@ const UNNAMED: Record<string, string> = {
   // The nullable table's share of the same two gaps. Both are the same class as their `matrix`
   // twin, so listing them is the check that the gap is about the column class rather than about
   // `notNull`, which is the only thing that differs between the two.
-  'sqlite/nullable.s_n_blob': 'as sqlite/matrix.s_blob_buf',
-  'sqlite/nullable.s_n_ts_ms': 'as sqlite/matrix.s_int_ts_ms',
   // Unnamed on both majors rather than on this one, and correctly so: a customType's JavaScript
   // type exists at compile time and nowhere else. It is here because this list is the absolute
   // record of what the analyzer cannot name, not of what it names differently per major.
