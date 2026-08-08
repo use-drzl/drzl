@@ -77,6 +77,13 @@ function build(pkg: string): Promise<string> {
 /**
  * The built validation-core, copied somewhere Node's resolver cannot reach this repo's
  * node_modules, so an optional peer is genuinely missing rather than mocked away.
+ *
+ * Everything the manifest declares as a `dependencies` entry is linked in, and nothing else.
+ * A consumer really does get those installed, so leaving them out would make this sandbox
+ * describe an install nobody has, and the first runtime import of one would fail here for a
+ * reason that has nothing to do with a formatter. Declared-and-only-declared is also the
+ * stricter statement: an import of a package the manifest does not list still fails, which is
+ * the missing-dependency defect worth catching.
  */
 const sandboxed = new Map<string, Promise<string>>();
 function sandbox(): Promise<string> {
@@ -90,6 +97,18 @@ function sandbox(): Promise<string> {
     }
     // Without this, `.js` in a directory with no manifest is read as CommonJS.
     await fs.writeFile(path.join(to, 'package.json'), '{"type":"module"}');
+
+    const manifest = JSON.parse(
+      await fs.readFile(path.join(repoRoot, 'packages/validation-core/package.json'), 'utf8')
+    );
+    for (const dep of Object.keys(manifest.dependencies ?? {})) {
+      // Symlinked from the workspace rather than installed, so the sandbox sees the package as
+      // it is right now rather than whatever the registry last published.
+      const from = path.join(repoRoot, 'packages/validation-core/node_modules', dep);
+      const at = path.join(to, 'node_modules', dep);
+      await fs.mkdir(path.dirname(at), { recursive: true });
+      await fs.symlink(await fs.realpath(from), at, 'dir');
+    }
     return to;
   })();
   sandboxed.set('validation-core', run);

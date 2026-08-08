@@ -41,11 +41,22 @@ export interface ColumnRef {
   column: string;
 }
 
+/**
+ * A link between two tables, each end named by `qualifiedTableName`.
+ *
+ * Qualified rather than bare, because a bare database name identifies a table only while no two
+ * SQL schemas hold it: `to: 'users'` cannot say whether it means `public.users` or
+ * `reporting.users`, and every consumer resolves these strings back to a table object. A table in
+ * the default schema has no prefix, so nothing about a single-schema analysis changes.
+ */
 export interface Relation {
   kind: 'one' | 'many' | 'manyToMany';
-  from: string; // table name
-  to: string; // table name
-  via?: string; // join table name for m2m
+  /** Qualified table name: `users`, or `reporting.users`. */
+  from: string;
+  /** Qualified table name: `users`, or `reporting.users`. */
+  to: string;
+  /** Qualified name of the join table, for m2m. */
+  via?: string;
 }
 
 export interface Column {
@@ -84,7 +95,14 @@ export interface Column {
   hasDefault: boolean;
   isGenerated: boolean;
   defaultExpression?: string;
-  references?: { table: string; column: string; onDelete?: string; onUpdate?: string };
+  references?: {
+    table: string;
+    /** SQL schema of the referenced table, absent for the default one. See `ForeignKey`. */
+    schema?: string;
+    column: string;
+    onDelete?: string;
+    onUpdate?: string;
+  };
   enumValues?: string[];
 
   /**
@@ -313,6 +331,17 @@ export interface ForeignKey {
   name?: string;
   columns: string[];
   foreignTable: string;
+  /**
+   * The SQL schema the referenced table lives in, absent for the default one, exactly as
+   * `Table.schema` is.
+   *
+   * `foreignTable` is a bare database name and Postgres lets two schemas hold the same one, so a
+   * key pointing at `reporting.users` recorded the identical string a key pointing at
+   * `public.users` records. Every consumer that resolves a key back to a table object did so by
+   * that string, and therefore resolved to whichever of the two it saw first. Use
+   * `qualifiedForeignTable` rather than reading the two fields apart.
+   */
+  foreignSchema?: string;
   foreignColumns: string[];
   onDelete?: string;
   onUpdate?: string;
@@ -321,6 +350,15 @@ export interface ForeignKey {
 export interface Table {
   name: string;
   tsName: string;
+  /**
+   * The SQL schema the table was declared in, from `pgSchema('reporting').table(...)` and the
+   * MySQL and SingleStore equivalents. Absent for a table declared with plain `pgTable`, which is
+   * the only spelling of the default schema there is: Drizzle refuses `pgSchema('public')`
+   * outright, with "Postgres is using public schema by default".
+   *
+   * `name` stays bare, so two tables in two schemas share one. `qualifiedTableName` is what tells
+   * them apart, and is what every name-addressed surface in DRZL matches against.
+   */
   schema?: string;
   columns: Column[];
   primaryKey?: Key;
@@ -340,6 +378,31 @@ export interface Table {
 export interface Enum {
   name: string;
   values: string[];
+}
+
+/**
+ * The one name that identifies a table across every SQL schema in an analysis.
+ *
+ * `reporting.users` where the table names a schema, and the bare `users` where it does not. The
+ * bare form for the default schema is deliberate and is what makes this safe to reach for
+ * everywhere: on a schema module that never calls `pgSchema`, and that is nearly all of them, this
+ * returns exactly `table.name`, so every file name, every export, every config pattern and every
+ * emitted path is byte for byte what it was.
+ *
+ * `public.users` is not produced here. Drizzle refuses `pgSchema('public')`, so no analysis can
+ * ever carry `schema: 'public'`, and a table with no schema *is* the public one. `public.` exists
+ * only as a spelling a config may use, resolved by `@drzl/cli`.
+ */
+export function qualifiedTableName(table: { name: string; schema?: string }): string {
+  return table.schema ? `${table.schema}.${table.name}` : table.name;
+}
+
+/** The same name, for the far end of a foreign key. */
+export function qualifiedForeignTable(fk: {
+  foreignTable: string;
+  foreignSchema?: string;
+}): string {
+  return fk.foreignSchema ? `${fk.foreignSchema}.${fk.foreignTable}` : fk.foreignTable;
 }
 
 export interface Analysis {
@@ -1269,6 +1332,20 @@ export function isRelationsV2(val: any): boolean {
 }
 
 /**
+ * The qualified name of a Drizzle table object, or `undefined` when it is not one.
+ *
+ * Both halves come off the same object, which is the only place they agree: reading
+ * `drizzle:Name` alone gives a bare name that two SQL schemas can both answer to, and a relation
+ * built from it names a table rather than *the* table.
+ */
+function qualifiedNameOfDrizzleTable(tbl: unknown): string | undefined {
+  const name = getSymbolOf(tbl, 'drizzle:Name');
+  if (typeof name !== 'string' || !name) return undefined;
+  const schema = getSymbolOf(tbl, 'drizzle:Schema');
+  return typeof schema === 'string' && schema ? `${schema}.${name}` : name;
+}
+
+/**
  * Read the relations declared by `defineRelations`.
  *
  * Simpler than the v1 reader, which has to invoke a callback with a stand-in builder to find
@@ -1280,9 +1357,16 @@ export function isRelationsV2(val: any): boolean {
 export function readRelationsV2(val: any, issues: Issue[] = []): Relation[] {
   const out: Relation[] = [];
   for (const [tableKey, entry] of Object.entries<any>(val)) {
-    const from = (getSymbolOf(entry.table, 'drizzle:Name') as string) ?? entry.name ?? tableKey;
+    const from = qualifiedNameOfDrizzleTable(entry.table) ?? entry.name ?? tableKey;
     for (const [fieldName, r] of Object.entries<any>(entry.relations ?? {})) {
-      const to = r?.targetTableName;
+      // `targetTable` before `targetTableName`, because the two do not hold the same thing.
+      // Measured against drizzle-orm 1.0.0-rc.4: `targetTableName` is the *key* the table has in
+      // the object handed to `defineRelations`, so for `export const rUsers =
+      // reporting.table('users', ...)` it is `rUsers`, while the other end of this relation is a
+      // database name. Every consumer resolves `to` against `Table.name`, so the two never met
+      // and the arm was dropped in silence for any export whose name differs from its table's.
+      // The object states the database name and the schema, which is what is wanted at both ends.
+      const to = qualifiedNameOfDrizzleTable(r?.targetTable) ?? r?.targetTableName;
       if (typeof to !== 'string' || !to) {
         issues.push({
           code: 'DRZL_ANL_REL_V2',
@@ -1294,8 +1378,8 @@ export function readRelationsV2(val: any, issues: Issue[] = []): Relation[] {
       }
       // `through` is the join table of a many-to-many, which v1 leaves to a heuristic.
       const via =
-        (getSymbolOf(r.throughTable, 'drizzle:Name') as string) ??
-        (getSymbolOf(r.through?.sourceTable, 'drizzle:Name') as string) ??
+        qualifiedNameOfDrizzleTable(r.throughTable) ??
+        qualifiedNameOfDrizzleTable(r.through?.sourceTable) ??
         undefined;
       if (via) out.push({ kind: 'manyToMany', from, to, via });
       else out.push({ kind: r.relationType === 'many' ? 'many' : 'one', from, to });
@@ -1443,9 +1527,14 @@ export class SchemaAnalyzer {
     const foreignColumnsObj = this.getSymbol(ref.foreignTable, 'drizzle:Columns') ?? {};
     const toForeignTs = this.dbToTsNames(foreignColumnsObj);
 
+    // Read off the referenced table itself, the same way the referencing table reads its own.
+    // Without it the key states a bare name, which two schemas can both answer to.
+    const foreignSchema = this.getSymbol(ref.foreignTable, 'drizzle:Schema') as string | undefined;
+
     return {
       columns: (ref.columns ?? []).map((c: any) => toTs(c?.name)),
       foreignTable: (this.getSymbol(ref.foreignTable, 'drizzle:Name') as string) ?? 'unknown',
+      ...(foreignSchema ? { foreignSchema } : {}),
       foreignColumns: (ref.foreignColumns ?? []).map((c: any) => toForeignTs(c?.name)),
       onDelete: action(fk?.onDelete, fk?._onDelete),
       onUpdate: action(fk?.onUpdate, fk?._onUpdate),
@@ -1512,7 +1601,7 @@ export class SchemaAnalyzer {
    * on each returned value, so the stand-in results must carry that method or the call throws.
    */
   private readRelationsObject(val: any, exportName: string, issues: Issue[]): Relation[] {
-    const from = (this.getSymbol(val.table, 'drizzle:Name') as string) ?? exportName;
+    const from = qualifiedNameOfDrizzleTable(val.table) ?? exportName;
     const make = (kind: 'one' | 'many') => (table: any, cfg: any) => ({
       kind,
       referencedTable: table,
@@ -1527,7 +1616,7 @@ export class SchemaAnalyzer {
       const built = val.config({ one: make('one'), many: make('many') });
       const out: Relation[] = [];
       for (const rel of Object.values(built ?? {}) as any[]) {
-        const to = this.getSymbol(rel?.referencedTable, 'drizzle:Name') as string | undefined;
+        const to = qualifiedNameOfDrizzleTable(rel?.referencedTable);
         if (to) out.push({ kind: rel.kind, from, to });
       }
       return out;
@@ -1558,10 +1647,11 @@ export class SchemaAnalyzer {
       if (fks.length < 2) continue;
       const fkCols = new Set(fks.flatMap((f) => f.columns));
       if (!t.columns.every((c) => fkCols.has(c.name))) continue;
-      const targets = [...new Set(fks.map((f) => f.foreignTable))];
+      const targets = [...new Set(fks.map(qualifiedForeignTable))];
       if (targets.length !== 2) continue;
-      out.push({ kind: 'manyToMany', from: targets[0], to: targets[1], via: t.name });
-      out.push({ kind: 'manyToMany', from: targets[1], to: targets[0], via: t.name });
+      const via = qualifiedTableName(t);
+      out.push({ kind: 'manyToMany', from: targets[0], to: targets[1], via });
+      out.push({ kind: 'manyToMany', from: targets[1], to: targets[0], via });
     }
     return out;
   }
@@ -2508,6 +2598,7 @@ export class SchemaAnalyzer {
       if (!col) continue;
       col.references = {
         table: fk.foreignTable,
+        ...(fk.foreignSchema ? { schema: fk.foreignSchema } : {}),
         column: fk.foreignColumns[0],
         onDelete: fk.onDelete,
         onUpdate: fk.onUpdate,
@@ -2611,10 +2702,18 @@ export class SchemaAnalyzer {
 
           // A foreign key is a relation in both directions: the child has one parent, and
           // the parent has many children. Generators need both to emit nested endpoints.
+          //
+          // Both ends are named by `qualifiedTableName`, not by the bare database name. Two
+          // tables in two schemas share a bare name, so `to: 'users'` from a key that really
+          // points at `reporting.users` is a relation a consumer resolves against whichever of
+          // the two it finds first. On a schema that calls no `pgSchema`, which is nearly all of
+          // them, the qualified name *is* the bare name and nothing about this changes.
           if (opts.includeRelations) {
+            const self = qualifiedTableName(table);
             for (const fk of table.foreignKeys ?? []) {
-              relations.push({ kind: 'one', from: table.name, to: fk.foreignTable });
-              relations.push({ kind: 'many', from: fk.foreignTable, to: table.name });
+              const target = qualifiedForeignTable(fk);
+              relations.push({ kind: 'one', from: self, to: target });
+              relations.push({ kind: 'many', from: target, to: self });
             }
           }
         } else if (this.isRelationsObject(val)) {
@@ -2737,11 +2836,26 @@ export class SchemaAnalyzer {
     // Name-based guessing, off by default. It only fires for columns that carry no real
     // foreign key, so a schema with proper constraints is never second-guessed by a heuristic.
     if (opts.includeRelations && opts.includeHeuristicRelations) {
-      const tableNames = new Set(tables.map((t) => t.name));
-      const findTarget = (base: string): string | undefined => {
-        if (tableNames.has(base)) return base;
-        if (tableNames.has(base + 's')) return base + 's';
-        if (tableNames.has(base + 'es')) return base + 'es';
+      // Every table that answers to a given bare name. More than one means two SQL schemas hold
+      // it, and `authorId` says nothing about which was meant, so the guess is declined rather
+      // than made: a heuristic that picks the wrong schema is worse than one that stays quiet,
+      // and this whole block is already opt-in.
+      const byBareName = new Map<string, Table[]>();
+      for (const t of tables) {
+        const list = byBareName.get(t.name);
+        if (list) list.push(t);
+        else byBareName.set(t.name, [t]);
+      }
+      const findTarget = (base: string, from: Table): string | undefined => {
+        for (const candidate of [base, base + 's', base + 'es']) {
+          const hits = byBareName.get(candidate);
+          if (!hits?.length) continue;
+          // A table in the referencing table's own schema is the reading a person would take.
+          const sameSchema = hits.filter((t) => t.schema === from.schema);
+          if (sameSchema.length === 1) return qualifiedTableName(sameSchema[0]);
+          if (hits.length === 1) return qualifiedTableName(hits[0]);
+          return undefined;
+        }
         return undefined;
       };
       for (const t of tables) {
@@ -2749,8 +2863,8 @@ export class SchemaAnalyzer {
           if (c.references) continue;
           if (c.name.endsWith('Id')) {
             const base = c.name.slice(0, -2);
-            const target = findTarget(base);
-            if (target) relations.push({ kind: 'one', from: t.name, to: target });
+            const target = findTarget(base, t);
+            if (target) relations.push({ kind: 'one', from: qualifiedTableName(t), to: target });
           }
         }
       }

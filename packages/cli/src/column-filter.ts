@@ -41,7 +41,14 @@
 import type { Table } from '@drzl/analyzer';
 import { parseCheck } from '@drzl/validation-core';
 import { namedColumns } from './doctor.js';
-import { matchesAny } from './patterns.js';
+import {
+  addressableName,
+  ambiguousPatternWarnings,
+  displayTableName,
+  hasNamedSchemas,
+  matchesAny,
+  matchesTable,
+} from './patterns.js';
 
 /** What to do with one table's columns. Both are patterns, in the language `patterns.ts` defines. */
 export interface ColumnRules {
@@ -51,7 +58,11 @@ export interface ColumnRules {
   pick?: string[];
 }
 
-/** Keyed by table pattern, matched against the database table name exactly as `include` is. */
+/**
+ * Keyed by table pattern, matched against the database table name exactly as `include` is, and
+ * against the schema-qualified name too: `reporting.users` names one of two same-named tables and
+ * `reporting.*` names a whole schema.
+ */
 export type ColumnFilter = Record<string, ColumnRules>;
 
 export interface ColumnFilterResult {
@@ -84,6 +95,9 @@ export function filterColumns(tables: Table[], spec: ColumnFilter | undefined): 
 
   const errors: string[] = [];
   const warnings: string[] = [];
+  // Only where the analysis really has more than one schema. A project with one has no `public.`
+  // to write, so offering it as the spelling to copy names something its schema file never says.
+  const nameForConfig = hasNamedSchemas(tables) ? addressableName : displayTableName;
 
   /**
    * Every pattern has to name something that exists.
@@ -98,11 +112,11 @@ export function filterColumns(tables: Table[], spec: ColumnFilter | undefined): 
    * `deleted_at` from every `app_*` table that has one is the main thing a wildcard key is for.
    */
   for (const [tablePattern, rules] of entries) {
-    const matched = tables.filter((t) => matchesAny([tablePattern], t.name));
+    const matched = tables.filter((t) => matchesTable([tablePattern], t));
     if (!matched.length) {
       errors.push(
         `columns[${JSON.stringify(tablePattern)}] matches no table. ` +
-          `The schema declares: ${tables.map((t) => t.name).join(', ') || '(no tables)'}.`
+          `The schema declares: ${tables.map(nameForConfig).join(', ') || '(no tables)'}.`
       );
       continue;
     }
@@ -112,15 +126,25 @@ export function filterColumns(tables: Table[], spec: ColumnFilter | undefined): 
         if (available.some((name) => matchesAny([pattern], name))) continue;
         errors.push(
           `columns[${JSON.stringify(tablePattern)}].${which} names ${JSON.stringify(pattern)}, ` +
-            `which matches no column of ${matched.map((t) => t.name).join(', ')}. ` +
+            `which matches no column of ${matched.map(nameForConfig).join(', ')}. ` +
             `Available: ${available.join(', ')}.`
         );
       }
     }
   }
 
+  // Said once per pattern, before anything is narrowed, because the consequence is that the rules
+  // below run over more tables than the writer had in mind and every one of them is a real table.
+  warnings.push(
+    ...ambiguousPatternWarnings(
+      entries.map(([p]) => p),
+      tables,
+      'columns'
+    )
+  );
+
   const out = tables.map((table) => {
-    const mine = entries.filter(([pattern]) => matchesAny([pattern], table.name));
+    const mine = entries.filter(([pattern]) => matchesTable([pattern], table));
     if (!mine.length) return table;
 
     // Applied in the order the entries are written, so a reader works down the config the way they
@@ -139,7 +163,7 @@ export function filterColumns(tables: Table[], spec: ColumnFilter | undefined): 
 
     if (!keep.length) {
       errors.push(
-        `columns leaves table "${table.name}" with no columns at all. An empty schema describes ` +
+        `columns leaves table "${displayTableName(table)}" with no columns at all. An empty schema describes ` +
           `no row, so this is never a narrower API. Exclude the table instead, with the top-level ` +
           `"exclude" option.`
       );
@@ -167,7 +191,7 @@ export function filterColumns(tables: Table[], spec: ColumnFilter | undefined): 
     if (lostKey.length) {
       errors.push(
         `columns drops ${lostKey.map((n) => JSON.stringify(n)).join(', ')} from table ` +
-          `"${table.name}", which is part of its primary key ` +
+          `"${displayTableName(table)}", which is part of its primary key ` +
           `(${table.primaryKey?.columns.join(', ')}). The generated getById, update and delete ` +
           `address rows by that key, so the emitted schemas would describe a row nothing can ` +
           `address. Keep the key, or leave the whole table out with the top-level "exclude" option.`
@@ -191,7 +215,7 @@ export function filterColumns(tables: Table[], spec: ColumnFilter | undefined): 
     for (const c of dropped) {
       if (c.nullable || c.hasDefault || c.isGenerated || table.readOnly) continue;
       warnings.push(
-        `drzl config: the "columns" option drops "${c.name}" from table "${table.name}", and the ` +
+        `drzl config: the "columns" option drops "${c.name}" from table "${displayTableName(table)}", and the ` +
           `database requires it: NOT NULL with no default. The emitted insert schema therefore ` +
           `describes a payload that is not a complete row, so whatever calls db.insert has to ` +
           `supply "${c.name}" itself.`
@@ -211,7 +235,7 @@ export function filterColumns(tables: Table[], spec: ColumnFilter | undefined): 
       );
       if (!lost.length) continue;
       warnings.push(
-        `drzl config: CHECK ${k.name ? `"${k.name}"` : '(unnamed)'} on table "${table.name}" ` +
+        `drzl config: CHECK ${k.name ? `"${k.name}"` : '(unnamed)'} on table "${displayTableName(table)}" ` +
           `names ${lost.map((n) => JSON.stringify(n)).join(', ')}, which the "columns" option ` +
           `drops, so nothing DRZL emits enforces it. Your database still does.`
       );

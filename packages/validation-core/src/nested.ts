@@ -19,6 +19,7 @@
  * which relations appear or which columns a child carries.
  */
 import type { Relation, Table } from '@drzl/analyzer';
+import { qualifiedForeignTable, qualifiedTableName } from '@drzl/analyzer';
 import { schemaName, typeName, type NameMode, type ResolvedAffix } from './naming.js';
 
 /**
@@ -159,14 +160,18 @@ const KIND_ORDER: Record<Relation['kind'], number> = { many: 0, manyToMany: 1, o
  * both foreign keys present exactly as the plain insert schema has them, and a comment saying why.
  */
 function omittedColumnsFor(parent: Table, child: Table): { omitted: string[]; note?: string } {
-  const back = (child.foreignKeys ?? []).filter((fk) => fk.foreignTable === parent.name);
+  // Qualified on both sides. Matched on the bare name, a key pointing at `reporting.users`
+  // answered for `public.users` as well, so the parent's payload omitted a column belonging to
+  // the other schema's child.
+  const parentName = qualifiedTableName(parent);
+  const back = (child.foreignKeys ?? []).filter((fk) => qualifiedForeignTable(fk) === parentName);
   if (back.length === 1) return { omitted: [...back[0].columns] };
   if (back.length === 0) return { omitted: [] };
   const named = back.map((fk) => fk.columns.join('+')).join(', ');
   return {
     omitted: [],
     note:
-      `${child.tsName} has ${back.length} foreign keys to ${parent.name} (${named}), so which one ` +
+      `${child.tsName} has ${back.length} foreign keys to ${parentName} (${named}), so which one ` +
       `this relation uses is not stated. None were omitted: supply them yourself.`,
   };
 }
@@ -210,20 +215,25 @@ function buildNode(
 ): NestedNode {
   if (depth <= 0) return { table, omitted, arms: [] };
 
-  const byDbName = new Map(tables.map((t) => [t.name, t]));
+  // Keyed on the qualified name, which is what a `Relation` states at both ends. Keyed on the
+  // bare one, two tables of the same name in two SQL schemas built one entry and the later table
+  // silently replaced the earlier, so every relation naming either of them resolved to whichever
+  // the analyzer happened to emit last.
+  const byName = new Map(tables.map((t) => [qualifiedTableName(t), t]));
   const allowed = KINDS_BY_MODE[mode];
   // A relation key sits in the same object as the columns, so a column of the same name would be
   // overwritten by it. The columns are the row and win.
   const columnNames = new Set(table.columns.map((c) => c.name));
   const taken = new Set<string>();
   const arms: NestedArm[] = [];
+  const self = qualifiedTableName(table);
 
   const candidates = relations
-    .filter((r) => r.from === table.name && allowed.has(r.kind))
+    .filter((r) => r.from === self && allowed.has(r.kind))
     .sort((a, b) => KIND_ORDER[a.kind] - KIND_ORDER[b.kind]);
 
   for (const rel of candidates) {
-    const child = byDbName.get(rel.to);
+    const child = byName.get(rel.to);
     if (!child) continue;
     const key = child.tsName;
     if (columnNames.has(key)) continue;

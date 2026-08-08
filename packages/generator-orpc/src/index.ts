@@ -1,4 +1,5 @@
 import type { Analysis, Column, Table } from '@drzl/analyzer';
+import { qualifiedTableName } from '@drzl/analyzer';
 import type { AffixOptions, ImportExtension } from '@drzl/validation-core';
 import {
   formatCode,
@@ -453,15 +454,20 @@ export class ORPCGenerator {
     const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
     const T = cap(table.tsName);
     const specs: ProcedureSpec[] = [];
-    const byDbName = new Map(analysis.tables.map((t) => [t.name, t]));
+    // Keyed on the qualified name, which is what a `Relation` states at both ends. On the bare
+    // one, two tables of the same name in two SQL schemas built a single entry and the later
+    // silently replaced the earlier, so a relation naming either resolved to whichever the
+    // analyzer emitted last.
+    const byName = new Map(analysis.tables.map((t) => [qualifiedTableName(t), t]));
+    const self = qualifiedTableName(table);
 
     const wanted = (analysis.relations ?? []).filter(
-      (r) => r.from === table.name && (r.kind === 'many' || r.kind === 'manyToMany')
+      (r) => r.from === self && (r.kind === 'many' || r.kind === 'manyToMany')
     );
 
     for (const rel of wanted) {
-      const target = byDbName.get(rel.to);
-      if (!target || target.name === table.name) continue;
+      const target = byName.get(rel.to);
+      if (!target || qualifiedTableName(target) === self) continue;
 
       const name = `list${cap(target.tsName)}`;
       if (taken.has(name)) continue;

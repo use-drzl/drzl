@@ -16,6 +16,7 @@ import {
   DrzlConfig,
   filterTables,
   loadConfig,
+  tableFilterWarnings,
 } from './config.js';
 import { filterColumns } from './column-filter.js';
 import { buildDoctorReport, renderDoctorReport } from './doctor.js';
@@ -196,8 +197,11 @@ program
       // drops whole tables, but only this one lets a `columns` entry name a table that `exclude`
       // also removes without that reading as a typo, and a typo is refused.
       const narrowed = filterColumns(analysis.tables, cfg.columns);
+      // Before the filter runs, so the tables it reports on are the ones the pattern really
+      // reached rather than what survived it.
+      const filterWarnings = tableFilterWarnings(narrowed.tables, cfg);
       analysis.tables = filterTables(narrowed.tables, cfg);
-      for (const w of narrowed.warnings) console.warn(chalk.yellow(w));
+      for (const w of [...narrowed.warnings, ...filterWarnings]) console.warn(chalk.yellow(w));
       reportWideColumns(analysis.issues);
       // Under --check the existing output is captured before anything overwrites it, so the
       // regenerated result can be compared against it and the tree put back either way.
@@ -635,8 +639,10 @@ program
         // column that does not exist throws here, and `run`'s own catch reports it and keeps
         // watching, so the next save can fix it.
         const narrowed = filterColumns(analysis.tables, cfg.columns);
+        const filterWarnings = tableFilterWarnings(narrowed.tables, cfg);
         analysis.tables = filterTables(narrowed.tables, cfg);
-        if (!opts.json) for (const w of narrowed.warnings) console.warn(chalk.yellow(w));
+        if (!opts.json)
+          for (const w of [...narrowed.warnings, ...filterWarnings]) console.warn(chalk.yellow(w));
         if (!opts.json) reportWideColumns(analysis.issues);
 
         if (opts.pipeline === 'analyze') {

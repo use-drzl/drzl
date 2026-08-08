@@ -12,7 +12,7 @@ import * as fs from 'node:fs';
 import { createRequire } from 'node:module';
 import * as path from 'node:path';
 import { z } from 'zod';
-import { matchesAny } from './patterns.js';
+import { ambiguousPatternWarnings, matchesTable } from './patterns.js';
 
 export const NamingSchema = z
   .object({
@@ -702,15 +702,34 @@ export function resolveTemplateDirsSync(cfg: DrzlConfig, cwd = process.cwd()): s
  * Matching is on the database table name, anchored, with `*` as the only metacharacter. Anchored
  * matters: `user` must not also drop `users`, and a substring match would. `exclude` is applied
  * after `include`, so the safer direction wins when both name the same table.
+ *
+ * A table also answers to its schema-qualified name, so `reporting.users` addresses one of two
+ * same-named tables and `reporting.*` addresses a whole schema. See `tableAliases`.
  */
-export function filterTables<T extends { name: string }>(
+export function filterTables<T extends { name: string; schema?: string }>(
   tables: T[],
   opts: { include?: string[]; exclude?: string[] }
 ): T[] {
   let out = tables;
-  if (opts.include?.length) out = out.filter((t) => matchesAny(opts.include!, t.name));
-  if (opts.exclude?.length) out = out.filter((t) => !matchesAny(opts.exclude!, t.name));
+  if (opts.include?.length) out = out.filter((t) => matchesTable(opts.include!, t));
+  if (opts.exclude?.length) out = out.filter((t) => !matchesTable(opts.exclude!, t));
   return out;
+}
+
+/**
+ * What to warn about the table filter, before it is applied.
+ *
+ * Separate from `filterTables` so that returns a plain array, as every caller and every test
+ * already expects it to.
+ */
+export function tableFilterWarnings(
+  tables: readonly { name: string; schema?: string }[],
+  opts: { include?: string[]; exclude?: string[] }
+): string[] {
+  return [
+    ...ambiguousPatternWarnings(opts.include ?? [], tables, 'include'),
+    ...ambiguousPatternWarnings(opts.exclude ?? [], tables, 'exclude'),
+  ];
 }
 
 export function computeWatchTargets(cfg: DrzlConfig, cwd = process.cwd()): string[] {
