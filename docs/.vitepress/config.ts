@@ -40,6 +40,15 @@ export default {
         ],
       },
       {
+        text: 'Provider Quickstarts',
+        collapsed: false,
+        items: [
+          { text: 'Supabase and Neon', link: '/quickstarts/supabase-neon' },
+          { text: 'PlanetScale (MySQL)', link: '/quickstarts/planetscale' },
+          { text: 'Cloudflare D1', link: '/quickstarts/cloudflare-d1' },
+        ],
+      },
+      {
         text: 'CLI',
         collapsed: false,
         items: [
