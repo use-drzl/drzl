@@ -450,7 +450,7 @@ node -e "
 # consumer who wants formatted output does, and it makes this run cover the peer resolving from
 # a real install. The stage further down removes it again to cover the other case.
 npm install --no-audit --no-fund --loglevel=error \
-  "$TARS"/*.tgz drizzle-orm zod valibot arktype effect @orpc/server @trpc/server hono @hono/standard-validator express @types/express fastify typescript tsx prettier >/dev/null
+  "$TARS"/*.tgz drizzle-orm zod valibot arktype effect @orpc/server @trpc/server hono @hono/standard-validator express @types/express fastify @nestjs/common typescript tsx prettier >/dev/null
 
 if [ ! -e node_modules/.bin/drzl ]; then
   echo "FAIL: the drzl bin did not resolve after a real install." >&2
@@ -3777,7 +3777,17 @@ PARITY_HARNESS
 # So effect is generated in the app tree above instead, which pins no drizzle major, and it takes
 # no part in the parity pass here. That is the same shape as json-schema's exclusion and a stronger
 # reason: there is an official drizzle-orm/effect, and it targets a major this generator does not.
-npm install --no-audit --no-fund --loglevel=error \
+#
+# --legacy-peer-deps, because "no effect in this tree" must hold by construction, not by luck.
+# The generator-effect tarball's optional peer (effect >=3.13.0) and drizzle rc.4's optional peer
+# (>=4.0.0-beta.83) are disjoint under prerelease semver, and arborist sometimes materialises a
+# node for an optional peer anyway; whether it does depends on its walk order, which any unrelated
+# registry publish can reshuffle. That fired on 2026-08-08: this stage passed locally, then
+# ERESOLVEd in CI minutes later with no change to the repo, and an effect 4.0.0-beta.106 publish
+# the same morning kept it failing everywhere after. Every library this stage compares is an
+# explicit root dependency on this line, so peer auto-install has nothing left to add and the
+# flag only removes the walk-order sensitivity.
+npm install --no-audit --no-fund --loglevel=error --legacy-peer-deps \
   "$TARS"/*.tgz drizzle-orm@1.0.0-rc.4 zod valibot arktype @sinclair/typebox tsx typescript \
   ajv@^8.17.1 ajv-formats@^3.0.1 @seriousme/openapi-schema-validator@^2.9.1 \
   @electric-sql/pglite >/dev/null
@@ -6285,7 +6295,9 @@ npm install --no-audit --no-fund --loglevel=error \
 # The same tarballs and the other major. `zod` because the generate step below runs in the 0.4x
 # tree; this one only analyzes, and installing the same set keeps the two trees differing in
 # exactly one thing.
-( cd "$NEW" && npm init -y >/dev/null 2>&1 && npm install --no-audit --no-fund --loglevel=error \
+# --legacy-peer-deps for the same reason as the parity install above: this tree also holds the
+# generator-effect tarball beside drizzle rc.4, whose optional effect peers are disjoint.
+( cd "$NEW" && npm init -y >/dev/null 2>&1 && npm install --no-audit --no-fund --loglevel=error --legacy-peer-deps \
   "$TARS"/*.tgz drizzle-orm@1.0.0-rc.4 zod tsx >/dev/null )
 
 # Written once and analyzed under both majors, so the comparison below is about the analyzer

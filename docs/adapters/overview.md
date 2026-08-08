@@ -9,10 +9,12 @@ Current support:
 - Hono adapter, via `generator-hono`
 - Express adapter, via `generator-express`
 - Fastify adapter, via `generator-fastify`
+- NestJS DTOs, via `generator-nestjs` (DTO and entity classes plus a validation pipe; the
+  controllers stay yours)
 
 Planned/possible adapters (community interest welcome):
 
-- NestJS, Next.js, and more
+- Next.js, and more
 
 How it works:
 

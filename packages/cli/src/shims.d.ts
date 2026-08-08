@@ -32,3 +32,6 @@ declare module '@drzl/generator-express' {
 declare module '@drzl/generator-fastify' {
   export const FastifyGenerator: any;
 }
+declare module '@drzl/generator-nestjs' {
+  export const NestJSGenerator: any;
+}

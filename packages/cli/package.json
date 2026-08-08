@@ -73,6 +73,7 @@
     "@drzl/generator-fastify": "workspace:^",
     "@drzl/generator-hono": "workspace:^",
     "@drzl/generator-json-schema": "workspace:^",
+    "@drzl/generator-nestjs": "workspace:^",
     "@drzl/generator-trpc": "workspace:^"
   }
 }
