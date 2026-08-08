@@ -32,6 +32,7 @@ import {
   lengthCheckLabel,
   lengthMeasure,
   parseCheck,
+  wireLiteralFit,
   type CardinalityCheck,
   type ColumnCheck,
   type ColumnSet,
@@ -244,17 +245,56 @@ export function classifyTableChecks(table: Table): ClassifiedCheck[] {
         ? `"${c.name}" is an array, and the clause describes a scalar`
         : `"${c.name}" is a structured column, and the clause describes a scalar`;
 
+    // The wire policy, applied here exactly as the generators apply it through
+    // `applyWirePolicy`: a clause it leaves unenforced is reported with its reason instead of
+    // being claimed, and a respelled literal is rendered in its respelled form, because the
+    // error map matches an issue's message against these texts exactly and the emitted modules
+    // spell their messages from the respelled clause.
+    const literalFit = (
+      column: string,
+      kind: 'number' | 'string',
+      values: string[],
+      comparison: 'equality' | 'range'
+    ) => {
+      const col = byName.get(column);
+      return col ? wireLiteralFit(col, { kind, values, comparison }) : ({ fit: 'keep' } as const);
+    };
+
     for (const c of parsed.checks) {
+      const fit = literalFit(
+        c.column,
+        c.kind,
+        [c.value],
+        c.operator === '=' || c.operator === '<>' ? 'equality' : 'range'
+      );
+      if (fit.fit === 'unenforced') {
+        parts.push({
+          text: columnCheckText(c),
+          columns: [c.column],
+          place: 'none',
+          reason: fit.reason,
+        });
+        continue;
+      }
+      const shown =
+        fit.fit === 'respell' ? { ...c, kind: 'number' as const, value: fit.values[0]! } : c;
       const col = byName.get(c.column);
-      place(c.column, columnCheckText(c), takesScalarChecks, notScalar, {
-        ...(col && foldsIntoBounds(col, c)
-          ? { bound: { column: c.column, operator: c.operator, value: c.value } }
+      place(c.column, columnCheckText(shown), takesScalarChecks, notScalar, {
+        ...(col && foldsIntoBounds(col, shown)
+          ? { bound: { column: c.column, operator: shown.operator, value: shown.value } }
           : {}),
       });
     }
     for (const s of parsed.sets ?? []) {
-      place(s.column, setText(s), takesScalarChecks, notScalar, {
-        set: { column: s.column, values: s.values, kind: s.kind },
+      const fit = literalFit(s.column, s.kind, s.values, 'equality');
+      if (fit.fit === 'unenforced') {
+        parts.push({ text: setText(s), columns: [s.column], place: 'none', reason: fit.reason });
+        continue;
+      }
+      const shown =
+        fit.fit === 'respell' ? { ...s, kind: 'number' as const, values: fit.values } : s;
+      place(s.column, setText(shown), takesScalarChecks, notScalar, {
+        set: { column: s.column, values: shown.values, kind: shown.kind },
       });
     }
     for (const l of parsed.lengths ?? []) {

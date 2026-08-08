@@ -17,6 +17,9 @@ import type {
   RowCheck,
 } from '@drzl/validation-core';
 import {
+  applyWirePolicy,
+  canonicalMembers,
+  comparisonWire,
   COLUMN_FORMATS,
   insertColumns,
   isIntegerColumn,
@@ -64,6 +67,36 @@ const base64 = (target: JsonSchemaTarget): Schema =>
   target === 'openapi-3.0'
     ? { type: 'string', format: 'byte' }
     : { type: 'string', contentEncoding: 'base64' };
+
+/**
+ * A set of numeric-wire members as the pattern accepting exactly their spellings.
+ *
+ * One alternation branch per canonical member. A member `1.5` admits an optional plus sign,
+ * leading integer zeros and trailing fraction zeros ('1.5', '01.50', '+1.500'); a whole member
+ * admits the same plus an optional all-zero fraction and a bare trailing dot ('1', '1.', '1.0');
+ * zero additionally admits either sign, because the database has no negative zero ('-0.00' came
+ * back '0.00', measured). The sign of a nonzero member is fixed: '-1' has no positive spelling.
+ *
+ * `integerOnly` is the bigint string wire, where the fraction forms are left off: '1.0' is not
+ * valid bigint input to Postgres ("invalid input syntax", measured), so admitting it would
+ * accept a write the database refuses for no returned row it could ever match.
+ *
+ * The values arrive canonicalised by the wire policy; `canonicalMembers` here is idempotent and
+ * also dedupes members that name one value.
+ */
+function canonicalSetPattern(values: string[], integerOnly: boolean): string {
+  const branches = canonicalMembers(values).map((member) => {
+    if (member === '0') return integerOnly ? '[+-]?0+' : '[+-]?(?:0+(?:\\.0*)?|0*\\.0+)';
+    const sign = member.startsWith('-') ? '-' : '\\+?';
+    const body = member.startsWith('-') ? member.slice(1) : member;
+    const [int = '', frac = ''] = body.split('.');
+    if (integerOnly) return `${sign}0*${int}`;
+    if (!frac) return `${sign}0*${int}(?:\\.0*)?`;
+    // A zero integer part may be spelled as no integer part at all: '.5' is '0.5'.
+    return int === '0' ? `${sign}0*\\.${frac}0*` : `${sign}0*${int}\\.${frac}0*`;
+  });
+  return `^(?:${branches.join('|')})$`;
+}
 
 /**
  * The JSON Schema for one column, before nullability and defaults are applied.
@@ -161,6 +194,16 @@ function baseSchema(
   // and `Number(v)` also rounds a 64 bit member the moment it becomes a number.
   const set = sets.find((x) => x.column === c.name);
   if (set) {
+    // On a numeric string wire no enum can state the set: the serialised value is the driver's
+    // string, spelled by declared scale ('1.00' for a stored 1, measured), and the database
+    // admits every spelling of a member. A JSON Schema cannot run the canonical compare the
+    // other generators emit, so it becomes a `pattern`: one branch per member, accepting
+    // exactly the spellings that canonicalise to it. That is this format's honest cost: the
+    // document stays ajv strict valid and exact, and what it gives up is the regex's
+    // readability, not admitted rows.
+    if (comparisonWire(c) === 'numeric-string') {
+      return { type: 'string', pattern: canonicalSetPattern(set.values, c.dbType === 'BIGINT') };
+    }
     return {
       enum: set.values.map((v) =>
         set.kind === 'string' || c.tsType === 'bigint' ? v : Number(v)
@@ -178,6 +221,11 @@ function baseSchema(
   const mine = c.arrayDimensions ? [] : checks.filter((k) => k.column === c.name);
   const eq = mine.find((k) => k.operator === '=');
   if (eq) {
+    // A pinned value on a numeric string wire is a one-member set, and takes the same pattern
+    // the set branch takes, for the same reason: the driver spells it by declared scale.
+    if (comparisonWire(c) === 'numeric-string') {
+      return { type: 'string', pattern: canonicalSetPattern([eq.value], c.dbType === 'BIGINT') };
+    }
     // The wire rule the set above applies: on a bigint column the serialised value is a digit
     // string, so the pinned value is one too, and it stays exact where `Number` would round.
     const only = eq.kind === 'string' || c.tsType === 'bigint' ? eq.value : Number(eq.value);
@@ -534,11 +582,22 @@ function tableSchema(
   };
 }
 
+/**
+ * Every CHECK on a table that the shared parser understands, with the wire policy applied:
+ * quoted literals the database compares numerically come back respelled number-kind, and
+ * clauses no exact compare can state are dropped, left to the base schema and reported by the
+ * constraint ledger. See `wireLiteralFit` in `@drzl/validation-core`.
+ */
 function collect(table: Table) {
   const parsed = (table.checks ?? []).map((k) => parseCheck(k.expression, k.name));
+  const { checks, sets } = applyWirePolicy(
+    table.columns,
+    parsed.flatMap((p) => (p.ok ? p.checks : [])),
+    parsed.flatMap((p) => (p.ok ? (p.sets ?? []) : []))
+  );
   return {
-    checks: parsed.flatMap((p) => (p.ok ? p.checks : [])),
-    sets: parsed.flatMap((p) => (p.ok ? (p.sets ?? []) : [])),
+    checks,
+    sets,
     rows: parsed.flatMap((p) => (p.ok ? (p.rows ?? []) : [])),
     lengths: parsed.flatMap((p) => (p.ok ? (p.lengths ?? []) : [])),
     cardinalities: parsed.flatMap((p) => (p.ok ? (p.cardinalities ?? []) : [])),

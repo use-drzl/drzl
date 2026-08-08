@@ -24,6 +24,12 @@ import {
   resolveNestedDepth,
   COERCIBLE_DATE_STRING,
   COLUMN_FORMATS,
+  NUMERIC_CANON_NAME,
+  NUMERIC_CANON_SOURCE,
+  applyWirePolicy,
+  canonicalMembers,
+  canonicalNumericText,
+  comparisonWire,
   insertColumns,
   isIntegerColumn,
   lengthCheckLabel,
@@ -31,6 +37,7 @@ import {
   measureExpression,
   moduleFileName,
   moduleSpecifier,
+  needsNumericCanon,
   nonFiniteAccepted,
   parseCheck,
   parsesToADate,
@@ -377,6 +384,72 @@ function tbBigintKindTarget(
 }
 
 /**
+ * The equality class on a numeric string wire, or nothing: the set, plus every `=` and `<>`.
+ *
+ * The same shape and the same sharing rule as `tbBigintKindTarget` above it, and the same
+ * vehicle: no literal can state these, because the driver spells one admitted value many ways by
+ * declared scale ('1.00' for a stored 1, measured) and the database admits them all, so the
+ * compare runs over the canonical spelling inside the registered `DrzlRowCheck` kind, which both
+ * checkers honour. `<>` rides here although the number wires leave it unstated: on this wire the
+ * vehicle is a predicate either way and the predicate is exact, where the declarative forms of
+ * the number wires have no spelling for it and this change does not invent one.
+ */
+function tbNumericCanonTarget(
+  c: Column,
+  checks: ColumnCheck[],
+  sets: ColumnSet[]
+): { set?: ColumnSet; checks: ColumnCheck[] } | undefined {
+  if (comparisonWire(c) !== 'numeric-string') return undefined;
+  if (c.enumValues && c.enumValues.length) return undefined;
+  const set = sets.find((x) => x.column === c.name);
+  const mine = checks.filter(
+    (k) => k.column === c.name && (k.operator === '=' || k.operator === '<>')
+  );
+  if (!set && !mine.length) return undefined;
+  return { ...(set ? { set } : {}), checks: mine };
+}
+
+/**
+ * The kind branches for a numeric-string equality class, intersected onto the string base.
+ *
+ * The base keeps the document saying "a string" when serialised, and for a lone equality it
+ * keeps the numeric format pattern too, exactly as the zod generator keeps its `.regex` under
+ * the canonical refine. The static type stays `string`: the accepted spellings of one member are
+ * unbounded ('1', '1.00', '01'), so no literal union can name them without lying.
+ */
+function tbNumericCanonExpr(
+  c: Column,
+  target: { set?: ColumnSet; checks: ColumnCheck[] }
+): string {
+  const branch = (description: string, test: string) =>
+    `Type.Unsafe<string>({
+    [Kind]: 'DrzlRowCheck',
+    description: ${JSON.stringify(description)},
+    assert: (v: any) => typeof v === 'string' && (${test}),
+  })`;
+  const branches: string[] = [];
+  if (target.set) {
+    const test = canonicalMembers(target.set.values)
+      .map((m) => `${NUMERIC_CANON_NAME}(v) === ${JSON.stringify(m)}`)
+      .join(' || ');
+    branches.push(branch(describeSet(target.set), test));
+  }
+  for (const k of target.checks) {
+    const canon = JSON.stringify(canonicalNumericText(k.value));
+    const op = k.operator === '=' ? '===' : '!==';
+    const label = `${k.name ? `${k.name}: ` : ''}${c.name} ${k.operator} ${
+      k.kind === 'string' ? `'${k.value}'` : k.value
+    }`;
+    branches.push(branch(label, `${NUMERIC_CANON_NAME}(v) ${op} ${canon}`));
+  }
+  // The set replaces the base outright, as it does in every generator; a bare equality keeps the
+  // format pattern underneath it.
+  const fmt = !target.set && c.format ? COLUMN_FORMATS[c.format] : undefined;
+  const base = fmt ? `Type.String({ pattern: ${JSON.stringify(fmt)} })` : 'Type.String()';
+  return `Type.Intersect([${[base, ...branches].join(', ')}])`;
+}
+
+/**
  * The kind branch for a bigint-wire set or equality, intersected onto `Type.BigInt()`.
  *
  * The base keeps the document saying "a bigint" when serialised, exactly as the cap branches sit
@@ -402,6 +475,11 @@ function tbBigintKindExpr(c: Column, target: { set: ColumnSet } | { eq: ColumnCh
 }
 
 function tbCheckOptions(c: Column, checks: ColumnCheck[]): Array<[string, string]> {
+  // Not on a numeric string wire: `minimum` on a `Type.String()` validates nothing in either
+  // checker and serialises a keyword that reads as enforced, which is worse than saying nothing.
+  // The range there is unstated, as the constraint ledger's `bound` fold already implies for
+  // string wires.
+  if (comparisonWire(c) === 'numeric-string') return [];
   const out: Array<[string, string]> = [];
   for (const k of checks.filter((x) => x.column === c.name)) {
     if (k.kind === 'number') {
@@ -556,6 +634,10 @@ function tbExprForColumn(
   // `tbBigintKindTarget` for the two measured refusals that force it to the registered kind.
   const bigintKind = tbBigintKindTarget(c, checks, sets);
   if (bigintKind) return tbBigintKindExpr(c, bigintKind);
+  // The same escape hatch for the numeric string wire, where no literal can meet the driver's
+  // scale-spelled strings: see `tbNumericCanonTarget`.
+  const numericCanon = tbNumericCanonTarget(c, checks, sets);
+  if (numericCanon) return tbNumericCanonExpr(c, numericCanon);
   // `CHECK (status IN ('a', 'b'))` is a union of literals. `Type.Literal` is the only form
   // TypeBox enforces: a `const` option parses and then accepts anything.
   const set = sets.find((x) => x.column === c.name);
@@ -755,12 +837,23 @@ function renderObjectShape(
     .join('\n');
 }
 
-/** Every CHECK on a table that the shared parser understands, split by what it constrains. */
+/**
+ * Every CHECK on a table that the shared parser understands, split by what it constrains.
+ *
+ * The wire policy runs here, exactly as in the zod generator: quoted literals the database
+ * compares numerically come back respelled number-kind, and clauses no exact compare can state
+ * are dropped, left to the base schema and reported by the constraint ledger.
+ */
 function parsedChecksFor(table: Table) {
   const parsed = (table.checks ?? []).map((k) => parseCheck(k.expression, k.name));
+  const { checks, sets } = applyWirePolicy(
+    table.columns,
+    parsed.flatMap((p) => (p.ok ? p.checks : [])),
+    parsed.flatMap((p) => (p.ok ? (p.sets ?? []) : []))
+  );
   return {
-    checks: parsed.flatMap((p) => (p.ok ? p.checks : [])),
-    sets: parsed.flatMap((p) => (p.ok ? (p.sets ?? []) : [])),
+    checks,
+    sets,
     rows: parsed.flatMap((p) => (p.ok ? (p.rows ?? []) : [])),
     lengths: parsed.flatMap((p) => (p.ok ? (p.lengths ?? []) : [])),
     cardinalities: parsed.flatMap((p) => (p.ok ? (p.cardinalities ?? []) : [])),
@@ -960,13 +1053,9 @@ function renderTableSchemas(
   const selectCols = selectColumns(table);
 
   // Only checks the shared parser understands with certainty. Ambiguous ones are skipped rather
-  // than guessed at, identically to the other validation generators.
-  const parsedChecks = (table.checks ?? []).map((k) => parseCheck(k.expression, k.name));
-  const checks = parsedChecks.flatMap((p) => (p.ok ? p.checks : []));
-  const sets = parsedChecks.flatMap((p) => (p.ok ? (p.sets ?? []) : []));
-  const rows = parsedChecks.flatMap((p) => (p.ok ? (p.rows ?? []) : []));
-  const cardinalities = parsedChecks.flatMap((p) => (p.ok ? (p.cardinalities ?? []) : []));
-  const lengths = parsedChecks.flatMap((p) => (p.ok ? (p.lengths ?? []) : []));
+  // than guessed at, identically to the other validation generators, and `parsedChecksFor` also
+  // applies the wire policy: see its note.
+  const { checks, sets, rows, cardinalities, lengths } = parsedChecksFor(table);
 
   const tj = typedJson
     ? { table: T, mode: 'select' as const, allColumns: typedJson.allColumns }
@@ -1055,7 +1144,8 @@ function renderTableSchemas(
           tbNeedsCapKind(c) ||
           tbNeedsNonFiniteKind(c) ||
           tbNeedsDateKind(c, m, coerceDates) ||
-          !!tbBigintKindTarget(c, checks, sets)
+          !!tbBigintKindTarget(c, checks, sets) ||
+          !!tbNumericCanonTarget(c, checks, sets)
       )
     ) ||
     nestedByMode.some(([cs, m, tbl]) => {
@@ -1069,11 +1159,22 @@ function renderTableSchemas(
             tbNeedsCapKind(c) ||
             tbNeedsNonFiniteKind(c) ||
             tbNeedsDateKind(c, m, coerceDates) ||
-            !!tbBigintKindTarget(c, own.checks, own.sets)
+            !!tbBigintKindTarget(c, own.checks, own.sets) ||
+            !!tbNumericCanonTarget(c, own.checks, own.sets)
         )
       );
     });
   const rowImport = needsRows ? `, Kind, TypeRegistry` : '';
+
+  // The canonical helper, once per file that compares on a numeric string wire, nested tables
+  // included for the reason both preambles above include them. `needsNumericCanon` is the shared
+  // condition; a drifted local copy would emit a reference to a helper the file never defined.
+  const needsCanon =
+    needsNumericCanon(table.columns, checks, sets) ||
+    nestedByMode.some(([, , tbl]) => {
+      const own = parsedChecksFor(tbl);
+      return needsNumericCanon(tbl.columns, own.checks, own.sets);
+    });
 
   // Uniqueness is a fact about the table, so no per-row schema can see it. This checks the
   // half that needs no database: whether a batch collides with itself.
@@ -1117,7 +1218,7 @@ function renderTableSchemas(
 
   return `import { Type${rowImport} } from '@sinclair/typebox';
 import type { Static${needsBrand ? ', TSchema, TUnsafe' : ''} } from '@sinclair/typebox';
-${standardImport}${schemaImport}${needsJson ? `\n${JSON_PREAMBLE}` : ''}${needsRows ? `\n${ROW_PREAMBLE}` : ''}${needsBrand ? `\n${BRAND_PREAMBLE}` : ''}
+${standardImport}${schemaImport}${needsJson ? `\n${JSON_PREAMBLE}` : ''}${needsRows ? `\n${ROW_PREAMBLE}` : ''}${needsCanon ? `\n${NUMERIC_CANON_SOURCE}` : ''}${needsBrand ? `\n${BRAND_PREAMBLE}` : ''}
 export const ${insertSchema} = ${wrap(tbWrapRows(`Type.Object({\n${bodyInsert}\n})`, rows, insertCols, lengths))};
 
 export const ${updateSchema} = ${wrap(tbWrapRows(`Type.Object({\n${bodyUpdate}\n})`, rows, updateCols, lengths))};

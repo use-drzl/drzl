@@ -21,12 +21,20 @@ import {
   resolveNestedDepth,
   COERCIBLE_DATE_STRING,
   COLUMN_FORMATS,
+  applyWirePolicy,
+  canonicalMembers,
+  canonicalNumericText,
+  comparisonWire,
+  describeSet,
   insertColumns,
   isIntegerColumn,
   lengthCheckLabel,
   lengthMeasure,
   measureExpression,
+  needsNumericCanon,
   nonFiniteAccepted,
+  NUMERIC_CANON_NAME,
+  NUMERIC_CANON_SOURCE,
   parseCheck,
   parsesToADate,
   renderDuplicateFinder,
@@ -244,6 +252,12 @@ function atTypeForColumn(
   // number, since `1.5n` would throw at import and no stored bigint equals 1.5 anyway.
   const set = sets.find((x) => x.column === c.name);
   if (set) {
+    // On a numeric string wire no literal union can state the set: the driver spells one
+    // admitted value many ways by declared scale ('1.00' for a stored 1, measured) and the
+    // database admits them all. The DSL cannot run the canonical compare, so the base stays
+    // `string` and `atNumericCanonNarrows` states the set as a narrow, the same escape hatch
+    // the character caps use.
+    if (comparisonWire(c) === 'numeric-string') return 'string';
     return set.kind === 'string'
       ? set.values.map((v) => `'${v.replace(/'/g, "\\'")}'`).join(' | ')
       : set.values.map((v) => wireNumberLiteral(c, v)).join(' | ');
@@ -260,9 +274,16 @@ function atTypeForColumn(
     // checked against arktype itself, accepting a valid value and rejecting an invalid one,
     // because an expression it cannot parse throws at import and takes the router with it.
     case 'string': {
-      // An equality check pins the value, which ArkType states as a literal type.
+      // An equality check pins the value, which ArkType states as a literal type. Only on a
+      // text wire: on a numeric string wire the driver's spelling varies by scale, so the
+      // literal `'2.50'` rejected the '2.5' a bare numeric returns, and the equality is stated
+      // by `atNumericCanonNarrows` instead.
       const eq = checks.find(
-        (k) => k.column === c.name && k.operator === '=' && k.kind === 'string'
+        (k) =>
+          k.column === c.name &&
+          k.operator === '=' &&
+          k.kind === 'string' &&
+          comparisonWire(c) === 'text'
       );
       if (eq) return `'${eq.value.replace(/'/g, "\\'")}'`;
       if (c.format === 'uuid') return 'string.uuid';
@@ -603,6 +624,7 @@ function renderObjectShape(
       const caps =
         atCapNarrows(c, mode) +
         atBigintNarrow(c, checks) +
+        atNumericCanonNarrows(c, checks, sets) +
         atNonFiniteNarrow(c, checks) +
         // Mutually exclusive with the one above it: that one is reached only where the column
         // admits `NaN` and this one only where it does not.
@@ -729,6 +751,45 @@ function atNarrow(c: Column, predicate: (v: string) => string, message: string):
     body = `${name(i - 1)}.every((${name(i)}) => ${name(i)} == null || ${body})`;
   }
   return `.narrow((v, ctx) => v == null || ${body} || ctx.mustBe(${JSON.stringify(message)}))`;
+}
+
+/**
+ * The equality class on a numeric string wire, as narrows over the canonical spelling.
+ *
+ * The driver spells one admitted value many ways by declared scale ('1', '1.00', measured), and
+ * the database compares them as numbers, so a DSL literal can never meet the wire. The narrow is
+ * the same escape hatch the character caps use, over the `DrzlNumericCanon` helper the preamble
+ * emits; `needsNumericCanon` in validation-core is the shared condition that keeps the two in
+ * step, for the reason the TypeBox generator records on `tbNeedsCapKind`.
+ *
+ * `<>` rides here too, though the number wires leave it unstated: on those the declarative forms
+ * have no spelling for it, while on this wire every form is a narrow anyway and the predicate is
+ * exact. Ranges stay with the base pattern, unstated, as they always were here.
+ */
+function atNumericCanonNarrows(c: Column, checks: ColumnCheck[], sets: ColumnSet[]): string {
+  if (comparisonWire(c) !== 'numeric-string') return '';
+  let out = '';
+  const set = sets.find((x) => x.column === c.name);
+  if (set) {
+    const members = canonicalMembers(set.values);
+    out += atNarrow(
+      c,
+      (v) =>
+        `(${members.map((m) => `${NUMERIC_CANON_NAME}(${v}) === ${JSON.stringify(m)}`).join(' || ')})`,
+      describeSet(set)
+    );
+  }
+  for (const k of checks.filter(
+    (x) => x.column === c.name && (x.operator === '=' || x.operator === '<>')
+  )) {
+    const canon = JSON.stringify(canonicalNumericText(k.value));
+    const op = k.operator === '=' ? '===' : '!==';
+    const label = `${k.name ? `${k.name}: ` : ''}${c.name} ${k.operator} ${
+      k.kind === 'string' ? `'${k.value}'` : k.value
+    }`;
+    out += atNarrow(c, (v) => `${NUMERIC_CANON_NAME}(${v}) ${op} ${canon}`, label);
+  }
+  return out;
 }
 
 /**
@@ -1007,9 +1068,17 @@ function atLengthNarrows(lengths: LengthCheck[], cols: Column[]): string {
 /** Every CHECK on a table that the shared parser understands, split by what it constrains. */
 function parsedChecksFor(table: Table) {
   const parsed = (table.checks ?? []).map((k) => parseCheck(k.expression, k.name));
+  // The wire policy, exactly as in the zod generator: quoted literals the database compares
+  // numerically come back respelled number-kind, and clauses no exact compare can state are
+  // dropped, left to the base type and reported by the constraint ledger.
+  const { checks, sets } = applyWirePolicy(
+    table.columns,
+    parsed.flatMap((p) => (p.ok ? p.checks : [])),
+    parsed.flatMap((p) => (p.ok ? (p.sets ?? []) : []))
+  );
   return {
-    checks: parsed.flatMap((p) => (p.ok ? p.checks : [])),
-    sets: parsed.flatMap((p) => (p.ok ? (p.sets ?? []) : [])),
+    checks,
+    sets,
     rows: parsed.flatMap((p) => (p.ok ? (p.rows ?? []) : [])),
     lengths: parsed.flatMap((p) => (p.ok ? (p.lengths ?? []) : [])),
     cardinalities: parsed.flatMap((p) => (p.ok ? (p.cardinalities ?? []) : [])),
@@ -1136,12 +1205,7 @@ function renderTableSchemas(
   const insertCols = insertColumns(table);
   const updateCols = updateColumns(table);
   const selectCols = selectColumns(table);
-  const parsedChecks = (table.checks ?? []).map((k) => parseCheck(k.expression, k.name));
-  const checks = parsedChecks.flatMap((p) => (p.ok ? p.checks : []));
-  const sets = parsedChecks.flatMap((p) => (p.ok ? (p.sets ?? []) : []));
-  const rows = parsedChecks.flatMap((p) => (p.ok ? (p.rows ?? []) : []));
-  const cardinalities = parsedChecks.flatMap((p) => (p.ok ? (p.cardinalities ?? []) : []));
-  const lengths = parsedChecks.flatMap((p) => (p.ok ? (p.lengths ?? []) : []));
+  const { checks, sets, rows, cardinalities, lengths } = parsedChecksFor(table);
   const forBrands = brands ? { plan: brands, tsName: T } : undefined;
   const bodyInsert = renderObjectShape(
     insertCols,
@@ -1192,8 +1256,26 @@ function renderTableSchemas(
     .join('\n\n');
   const brandCode = brandAliases ? `\n${brandAliases}\n` : '';
 
-  return `import { type } from 'arktype';
+  // The canonical helper, once per file that compares on a numeric string wire, nested tables
+  // included: their fields render into this same module. Conditional because an unused
+  // declaration fails `noUnusedLocals` downstream.
+  const nestedNodeTables = (node: NestedNode): Table[] => [
+    node.table,
+    ...node.arms.flatMap((a) => nestedNodeTables(a.child)),
+  ];
+  const involved = [
+    table,
+    ...Object.values(nested).flatMap((plan) => (plan ? nestedNodeTables(plan) : [])),
+  ];
+  const canonPreamble = involved.some((t) => {
+    const own = parsedChecksFor(t);
+    return needsNumericCanon(t.columns, own.checks, own.sets);
+  })
+    ? `\n${NUMERIC_CANON_SOURCE}`
+    : '';
 
+  return `import { type } from 'arktype';
+${canonPreamble}
 export const ${insertSchema} = type({
 ${bodyInsert}
 })${atRowNarrows(rows, insertCols)}${atLengthNarrows(lengths, insertCols)};

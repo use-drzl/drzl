@@ -15,13 +15,21 @@ import type { NestedNode, NestedMode } from '@drzl/validation-core';
 import type { BrandPlan } from '@drzl/validation-core';
 import type { ConstraintsOption } from '@drzl/validation-core';
 import {
+  applyWirePolicy,
   buildBrandPlan,
+  canonicalMembers,
+  canonicalNumericText,
   columnMetaFacts,
+  comparisonWire,
+  describeSet,
   formatCode,
+  needsNumericCanon,
   parseCheck,
   renderConstraintsModule,
   resolveConstraints,
   CONSTRAINTS_MODULE,
+  NUMERIC_CANON_NAME,
+  NUMERIC_CANON_SOURCE,
   renderDuplicateFinder,
   resolveConfiguredImport,
   buildNestedPlan,
@@ -247,16 +255,31 @@ function checkRefinements(c: Column, checks: ColumnCheck[]): string {
     '<>': '!==',
   };
 
+  const numericWire = comparisonWire(c) === 'numeric-string';
   return mine
     .map((k) => {
-      // The right side is compared with strict equality for `=` and `<>`, so it has to be spelled
-      // in the column's wire type: `v === 1` is false for every `1n` a bigint-mode column returns.
-      // The message keeps the SQL spelling either way.
-      const rhs = k.kind === 'string' ? JSON.stringify(k.value) : wireNumberLiteral(c, k.value);
       const label = k.name ? `${k.name}: ` : '';
       const msg = JSON.stringify(
         `${label}${c.name} ${k.operator} ${k.kind === 'string' ? `'${k.value}'` : k.value}`
       );
+      // On a numeric string wire the driver spells one value many ways ('1', '1.00'), and the
+      // database compares them as numbers, so `v === 1` was false for every returned row and
+      // `v !== 1` enforced nothing. Equality goes through the canonical spelling; a range keeps
+      // its coerced numeric compare, spelled `Number(v)` so the comparison it always performed
+      // is visible and the module typechecks. The wire policy guarantees the canonical text
+      // exists here; see `wireLiteralFit`.
+      if (numericWire) {
+        if (k.operator === '=' || k.operator === '<>') {
+          const canon = JSON.stringify(canonicalNumericText(k.value));
+          const op = k.operator === '=' ? '===' : '!==';
+          return `.refine((v) => ${NUMERIC_CANON_NAME}(v) ${op} ${canon}, { message: ${msg} })`;
+        }
+        return `.refine((v) => Number(v) ${OPS[k.operator]} ${k.value}, { message: ${msg} })`;
+      }
+      // The right side is compared with strict equality for `=` and `<>`, so it has to be spelled
+      // in the column's wire type: `v === 1` is false for every `1n` a bigint-mode column returns.
+      // The message keeps the SQL spelling either way.
+      const rhs = k.kind === 'string' ? JSON.stringify(k.value) : wireNumberLiteral(c, k.value);
       return `.refine((v) => v ${OPS[k.operator]} ${rhs}, { message: ${msg} })`;
     })
     .join('');
@@ -360,6 +383,20 @@ function zodExprForColumn(
   // parsed.
   const set = sets.find((x) => x.column === c.name);
   if (set) {
+    // On a numeric string wire no list of literals can state the set: the driver spells one
+    // admitted value many ways by declared scale (a `numeric(10,2)` returns '1.00' for a stored
+    // 1, measured), and the database admits them all (`1.000000 IN (1, 2)` is true). The compare
+    // runs over the canonical spelling instead, exact at any precision where `Number()` rounds.
+    // The message keeps the SQL spelling, which is what the constraint ledger keys on.
+    if (comparisonWire(c) === 'numeric-string') {
+      const members = canonicalMembers(set.values);
+      const test = members.map((m) => `canon === ${JSON.stringify(m)}`).join(' || ');
+      const msg = JSON.stringify(describeSet(set));
+      return (
+        `z.string().refine((v) => { const canon = ${NUMERIC_CANON_NAME}(v); ` +
+        `return ${test}; }, { message: ${msg} })`
+      );
+    }
     return set.kind === 'string'
       ? `z.enum([${set.values.map((v) => JSON.stringify(v)).join(', ')}] as const)`
       : `z.union([${set.values.map((v) => `z.literal(${wireNumberLiteral(c, v)})`).join(', ')}])`;
@@ -596,12 +633,24 @@ function rowRefinements(rows: RowCheck[], cols: Column[]): string {
   );
 }
 
-/** Every CHECK on a table that the shared parser understands, split by what it constrains. */
+/**
+ * Every CHECK on a table that the shared parser understands, split by what it constrains.
+ *
+ * The wire policy runs here: quoted literals the database compares numerically come back
+ * respelled as their number-kind selves, and clauses no exact compare can state are dropped from
+ * these lists entirely, which is what leaves them to the base schema. The constraint ledger
+ * applies the same policy and reports the dropped ones with their reasons.
+ */
 function parsedChecksFor(table: Table) {
   const parsed = (table.checks ?? []).map((k) => parseCheck(k.expression, k.name));
+  const { checks, sets } = applyWirePolicy(
+    table.columns,
+    parsed.flatMap((p) => (p.ok ? p.checks : [])),
+    parsed.flatMap((p) => (p.ok ? (p.sets ?? []) : []))
+  );
   return {
-    checks: parsed.flatMap((p) => (p.ok ? p.checks : [])),
-    sets: parsed.flatMap((p) => (p.ok ? (p.sets ?? []) : [])),
+    checks,
+    sets,
     rows: parsed.flatMap((p) => (p.ok ? (p.rows ?? []) : [])),
     lengths: parsed.flatMap((p) => (p.ok ? (p.lengths ?? []) : [])),
     cardinalities: parsed.flatMap((p) => (p.ok ? (p.cardinalities ?? []) : [])),
@@ -757,13 +806,9 @@ function renderTableSchemas(
   const updateCols = updateColumns(table);
   const selectCols = selectColumns(table);
   // Only the checks this version can translate with certainty. The parser skips anything
-  // ambiguous, since a schema that enforces a guess rejects rows the database would accept.
-  const parsedChecks = (table.checks ?? []).map((k) => parseCheck(k.expression, k.name));
-  const checks = parsedChecks.flatMap((p) => (p.ok ? p.checks : []));
-  const sets = parsedChecks.flatMap((p) => (p.ok ? (p.sets ?? []) : []));
-  const rows = parsedChecks.flatMap((p) => (p.ok ? (p.rows ?? []) : []));
-  const lengths = parsedChecks.flatMap((p) => (p.ok ? (p.lengths ?? []) : []));
-  const cardinalities = parsedChecks.flatMap((p) => (p.ok ? (p.cardinalities ?? []) : []));
+  // ambiguous, since a schema that enforces a guess rejects rows the database would accept, and
+  // `parsedChecksFor` also applies the wire policy: see its note.
+  const { checks, sets, rows, lengths, cardinalities } = parsedChecksFor(table);
   // Insert and select can disagree: a json column with a default is optional on insert, so its
   // inferred type differs. Each shape therefore references the matching inference.
   const tj = typedJson
@@ -882,8 +927,27 @@ export type ${updateType} = z.input<typeof ${updateSchema}>;
     .join('\n\n');
   const brandCode = brandAliases ? `\n${brandAliases}\n` : '';
 
+  // The canonical helper, once per file that compares on a numeric string wire, nested tables
+  // included: their fields render into this same module. Conditional for the reason every other
+  // conditional preamble is: an unused declaration fails `noUnusedLocals` in the consumer's
+  // build.
+  const nestedNodeTables = (node: NestedNode): Table[] => [
+    node.table,
+    ...node.arms.flatMap((a) => nestedNodeTables(a.child)),
+  ];
+  const involved = [
+    table,
+    ...Object.values(nested).flatMap((plan) => (plan ? nestedNodeTables(plan) : [])),
+  ];
+  const canonPreamble = involved.some((t) => {
+    const own = parsedChecksFor(t);
+    return needsNumericCanon(t.columns, own.checks, own.sets);
+  })
+    ? `\n${NUMERIC_CANON_SOURCE}`
+    : '';
+
   return `import { z } from 'zod';
-${schemaImport}
+${schemaImport}${canonPreamble}
 ${writes}export const ${selectSchema} = z.object({
 ${bodySelect}
 })${rowRefinements(rows, selectCols)}${tableMetaFor('select')};
