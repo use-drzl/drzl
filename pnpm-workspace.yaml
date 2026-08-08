@@ -1,6 +1,11 @@
 packages:
   - packages/*
   - docs
+  # Runnable example apps. Members rather than standalone projects so they depend on the
+  # workspace copy of @drzl/cli: an example pinned to a published version would keep working
+  # while the generator in this checkout was broken, which is the one thing an example is for.
+  # Membership is also what puts them in `pnpm build` and `pnpm -r test` with no CI wiring.
+  - examples/*
 
 # pnpm 11 removed onlyBuiltDependencies / ignoredBuiltDependencies /
 # neverBuiltDependencies / onlyBuiltDependenciesFile / ignoreDepScripts and replaced

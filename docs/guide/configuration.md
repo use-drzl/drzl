@@ -457,13 +457,21 @@ export default defineConfig({
 ```
 
 - `'js'` gives `./users.zod.js`. The default. Correct after a `tsc` build, and understood by
-  Vite, esbuild, Rollup, Bun, Vitest and Next.js, which map it back to the `.ts` source.
-- `'none'` gives `./users.zod`. What DRZL emitted before 2.0. Use it if your pipeline cannot
-  map `.js` back to `.ts`: webpack without `resolve.extensionAlias`, or Jest with `ts-jest`
-  and no `moduleNameMapper`. It does not resolve under `node16`/`nodenext` in an ES module.
+  Vite, esbuild, Rollup, Bun and Vitest, which map it back to the `.ts` source.
+- `'none'` gives `./users.zod`. What DRZL emitted before 2.0. Use it if your bundler cannot
+  map `.js` back to `.ts`: **Next.js**, webpack without `resolve.extensionAlias`, or Jest with
+  `ts-jest` and no `moduleNameMapper`. It does not resolve under `node16`/`nodenext` in an ES
+  module.
 - `'ts'` gives `./users.zod.ts`. Needs `"allowImportingTsExtensions": true`, and
   `"rewriteRelativeImportExtensions": true` if you also emit. It is the only form Node's own
   type stripping accepts, so it is what a project running the generated `.ts` unbuilt wants.
+
+Next.js is called out because it is the one that surprises people. Measured on 16.3.0,
+`next build` fails with `Can't resolve './users.zod.js'` under Turbopack, which is the default
+bundler, and under `--webpack` as well. Webpack can be taught with
+`experimental.extensionAlias`; Turbopack has no equivalent, so nothing in `next.config.ts`
+fixes it and the specifier has to change instead. See the
+[Next.js example](/examples/nextjs-server-actions), which sets `'none'` for exactly this reason.
 
 `importExtension` only touches specifiers DRZL invents. Paths you write yourself are emitted
 verbatim, so under `node16`/`nodenext` in an ES module, spell them the same way: an `orpc`
