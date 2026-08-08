@@ -1,6 +1,6 @@
 {
   "name": "@drzl/generator-express",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "private": false,
   "license": "Apache-2.0",
   "description": "Generate Express 5 routers from a Drizzle schema, one route module per table, validated by DRZL's schemas through an emitted Standard Schema middleware.",

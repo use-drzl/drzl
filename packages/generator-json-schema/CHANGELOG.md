@@ -1,5 +1,334 @@
 # @drzl/generator-json-schema
 
+## 0.8.0
+
+### Minor Changes
+
+- 1218361: Read three more CHECK shapes: a disjunction that pins one column, `IS NOT NULL`, and the null
+  guard in front of a predicate
+
+  `parseCheck` refused every expression holding `OR` and every expression holding `NOT`, which took
+  `col IS NOT NULL` with it. Three of those refusals are now readings, one is unchanged, and one that
+  used to be a generic "not a comparison" now says what it found.
+
+  ```ts
+  // check('status_valid', sql`${t.status} = 'draft' OR ${t.status} = 'live'`)
+  status: z.enum(['draft', 'live'] as const).nullable(),
+
+  // check('email_set', sql`${t.email} IS NOT NULL`)   // on a nullable column
+  email: z.string(),
+
+  // check('age_adult', sql`${t.age} IS NULL OR ${t.age} >= 18`)
+  age: z.number().int().gte(18).lte(2147483647).nullable(),
+
+  // check('tier_ok', sql`${t.tier} IS DISTINCT FROM 'banned'`)
+  tier: z.string().refine((v) => v !== 'banned', { message: "tier_ok: tier <> 'banned'" }).nullable(),
+  ```
+
+  All five validator generators and the JSON Schema generator, plus `drzl doctor` and the constraint
+  ledger.
+
+  **Why a disjunction was refused, and what changed.** A conjunction splits because every part is
+  independently _necessary_. A disjunction is the opposite: `CHECK (a OR b)` is satisfied by a row
+  that breaks `a`, so a schema enforcing `a` refuses rows the database takes. Nothing about that
+  argument has weakened. What is read is the one shape where the _whole_ disjunction is a single
+  statement: every branch pinning the same column to a literal, by `=` or by `IN`. `s = 'a' OR
+s = 'b'` and `s IN ('a','b')` are the same statement in SQL, NULL included, so they emit the same
+  schema. Everything else is refused **whole**, never in part, and named:
+
+  | Refused                     | Reason reported                                 |
+  | --------------------------- | ----------------------------------------------- |
+  | `n < 0 OR n > 100`          | a branch is a range rather than a set of values |
+  | `a = 'x' OR b = 'y'`        | the branches constrain different columns (a, b) |
+  | `s = 'a' OR s = 1`          | the branches mix a string and a number          |
+  | `s = 'a' OR lower(s) = 'b'` | part of an OR was not understood                |
+
+  **`IS NOT NULL` narrows the field rather than adding a predicate.** Every other CHECK is emitted
+  _inside_ the nullable wrapper, precisely so `null` skips it, which is what makes them match SQL.
+  This one is the statement that `null` is not allowed, so it is said by the field not being
+  nullable. Applied once, in the three column selectors every generator already calls, so no
+  generator learns a new kind of check and none of the six can disagree with the others. On insert
+  the field becomes required, because a row omitting a nullable column with no default writes NULL;
+  a column that defaults to a value stays optional. On a column already `.notNull()` it changes
+  nothing and stops being reported as declined.
+
+  **A null guard reduces away.** `col IS NULL OR P` states nothing beyond `P`, because a CHECK
+  already passes on NULL and every operator here yields NULL when its column is NULL. Sound only when
+  `P` names the guarded column and holds no null test of its own, so `a IS NULL OR b > 0` is still
+  refused: with `a` null it accepts every `b`. `IS DISTINCT FROM <literal>` reduces the same way and
+  emits byte for byte what the `<>` it means emits.
+
+  **Arithmetic over two columns stays refused, and now says so.** `x + y < 100` used to report "not a
+  single comparison this version understands". It now names the operator, and `drzl doctor` says what
+  to do instead. The reason is measured rather than argued: Postgres computes `numeric` exactly and
+  JavaScript computes in binary floating point.
+
+  | Column type        | `CHECK (x + y <= 0.3)` with `(0.1, 0.2)` | JavaScript `0.1 + 0.2 <= 0.3` |
+  | ------------------ | ---------------------------------------- | ----------------------------- |
+  | `numeric(10,2)`    | accept                                   | false, so it would reject     |
+  | `double precision` | reject                                   | false, so it would agree      |
+
+  One expression, two column types, two different correct answers, and the expression does not carry
+  the type. A `bigint` pair adds a third, since Postgres raises on overflow where `BigInt` does not.
+  Any single reading is wrong for two of the three in the direction that refuses rows the database
+  accepts, which is the failure this parser exists to avoid.
+
+  **Ground truth.** 64 probes through a real Postgres (PGlite), one table per constraint so a sibling
+  CHECK cannot fail the statement before the value under test is reached, each value put to both the
+  database and the emitted insert schema: **0 rows the schema refuses and Postgres accepts**, 58
+  agree, 6 wide. Every wide row is a constraint DRZL deliberately enforces nothing for, which is the
+  safe direction.
+
+  `IS NULL` on its own is read but enforced nowhere, since narrowing a field to only null would mean
+  replacing the column's type rather than wrapping it; `drzl doctor` lists it with that reason.
+  `NOT`, `NOT IN` and the boolean `IS TRUE` family remain refused.
+
+- f29bff7: Enforce `CHECK (octet_length(col) <= n)`, which is a byte budget rather than a character count
+
+  `parseCheck` refused `octet_length` outright, on the recorded grounds that a byte count "depends on
+  the encoding and cannot be derived from a JavaScript string without choosing one". Both halves of
+  that are answerable: the encoding is UTF-8, and a `bytea` column does not arrive as a string at all.
+  The constraint is now read and routed into the byte-cap machinery MySQL's TEXT family already used.
+
+  ```ts
+  // check('body_bytes', sql`octet_length(${t.body}) <= 5`)      // on a text column
+  body: z.string().refine((v) => new TextEncoder().encode(v).length <= 5, {
+    message: 'body_bytes: octet_length(body) <= 5',
+  }),
+
+  // check('blob_bytes', sql`octet_length(${t.blob}) <= 5`)      // on a bytea column
+  blob: z.instanceof(Uint8Array).refine((v) => v.length <= 5, {
+    message: 'blob_bytes: octet_length(blob) <= 5',
+  }),
+  ```
+
+  **Three counts, and no two of them agree.** Measured on PostgreSQL 17.5 through PGlite, on a `text`
+  holding three emoji and a `bytea` holding six bytes:
+
+  | expression        | `text` | `bytea`        | JavaScript                                  |
+  | ----------------- | ------ | -------------- | ------------------------------------------- |
+  | `octet_length(x)` | 12     | 6              | `new TextEncoder().encode(v).length`        |
+  | `length(x)`       | 3      | 6              | `[...v].length`, or `v.length` on the array |
+  | `char_length(x)`  | 3      | does not exist | `[...v].length`                             |
+
+  `v.length` on a string is none of them: it counts UTF-16 units, which is 6 for those same three
+  emoji. So `length` is a character count on a text column and a byte count on a bytea one, and a
+  parser that read `octet_length` as one more spelling of `length` would put a character cap on a byte
+  budget. Measured on the real constraint: `CHECK (octet_length(t) <= 5)` accepts `'hello'` and one
+  emoji and refuses `'hellos'` and two emoji, and it is the last of those, two characters and eight
+  bytes, that a character cap takes and the column does not.
+
+  The parser now carries a `unit` on `LengthCheck`, and `lengthMeasure(column, check)` turns that plus
+  the column into one of three JavaScript expressions. It lives in `@drzl/validation-core` so the five
+  validation generators, the constraint ledger, `meta` and `drzl doctor` cannot disagree about what is
+  enforced.
+
+  **JSON Schema.** No draft has a byte-length keyword, so the same trade the MySQL byte budget already
+  made applies: the ceiling becomes `maxLength`, which counts characters and therefore refuses nothing
+  the column accepts, and the part it cannot catch is stated in `description`. A `bytea` travels as
+  base64, so its cap is the encoded length, `4 * ceil(n / 3)`, which is the padded length of a full
+  value and an upper bound on the unpadded one, measured over n = 0 to 20. That also gives a MySQL
+  `tinyblob` a bound it never had: 255 bytes is `maxLength: 340`, where the document previously said
+  nothing. A byte _floor_ reaches no keyword in either case.
+
+  **What is still refused, and now says so.** A count on a MySQL `binary(n)`/`varbinary(n)` cannot be
+  answered: the value arrives as a string from a lossy decode, so neither its characters nor their
+  re-encoding is the server's byte count. `drzl doctor` reports that as a new finding kind,
+  `check-uncountable`, rather than dropping it silently, and the ledger marks it unenforced with the
+  reason. The doctor's note that count clauses were "unreachable from a working schema" was true of
+  Postgres and is not true of MySQL, which has `OCTET_LENGTH` and a column whose bytes JavaScript
+  cannot see.
+
+- f29bff7: Write a shared enum once and reference it, instead of inlining it at every use
+
+  A `mood` enum on six columns was six copies of the same list in each of the three schemas, and
+  eighteen in a document. It is now one definition with references pointing at it.
+
+  ```jsonc
+  // openapi.json, always. The definition is a component.
+  {
+    "components": { "schemas": { "mood": { "enum": ["sad", "ok", "happy"] } } },
+    "properties": { "m1": { "$ref": "#/components/schemas/mood" } }
+  }
+
+  // people.schema.ts, on `sharedEnums: true`. A standalone JSON Schema document.
+  {
+    "$defs": { "mood": { "enum": ["sad", "ok", "happy"] } },
+    "properties": { "m1": { "$ref": "#/$defs/mood" }, "m2": { "$ref": "#/$defs/mood" } }
+  }
+  ```
+
+  **`sharedEnums` is off by default, and the reason is a consumer pattern rather than a doubt about
+  the keyword.** A per-table schema is used two ways: whole, and one property at a time. Reaching into
+  `properties[col]` is the JSON Schema equivalent of reading zod's `.shape`, it is how a form builder
+  gets one field's rules, and it is how `scripts/verify-packed.sh` checks these schemas against a real
+  Postgres. A `$ref` cannot survive that: pulled out of the schema that holds its `$defs` it is a
+  dangling reference and ajv refuses to compile it at all, `can't resolve reference #/$defs/mood from
+id #`. Whole, it compiles and validates exactly as before. The OpenAPI document shares regardless,
+  because a document is only ever read whole.
+
+  **Where the definition goes depends on the document, and the two are not interchangeable.** Measured
+  against `@seriousme/openapi-schema-validator`, which carries the real 3.0 and 3.1 meta-schemas:
+
+  | placement                                 | OpenAPI 3.0             | OpenAPI 3.1                |
+  | ----------------------------------------- | ----------------------- | -------------------------- |
+  | `components.schemas` + `#/components/...` | valid                   | valid                      |
+  | `$defs` in a schema + `#/$defs/...`       | INVALID, closed object  | INVALID, `$ref` unresolved |
+  | `anyOf: [{$ref}, {type: 'null'}]`         | INVALID, no `null` type | valid                      |
+
+  3.0's Schema Object is closed, so `$defs` beside `properties` fails the whole document. 3.1 allows
+  the keyword and still fails, because a `$ref` inside a document resolves against the document root
+  where `#/$defs/mood` names nothing. So `$defs` appears only in the standalone per-table modules on
+  the `draft-2020-12` target, and only under `sharedEnums`; the OpenAPI document shares through
+  `components.schemas`.
+
+  **`components.ts` shares nothing, and that is the one place this stops.** It is a fragment the
+  caller spreads into a document, and a `$ref` is a promise about where the thing holding it is
+  mounted: `#/components/schemas/mood` resolves once the fragment sits at exactly that path and
+  nowhere else. Every entry there stays self-contained, so a caller can hand one schema to a validator
+  on its own; ask ajv to compile a cross-referencing entry alone and it answers `can't resolve
+reference #/components/schemas/mood from id #`. `components.ts` is byte-for-byte what it was.
+
+  **Nullable columns.** 2020-12 and 3.1 spell a nullable reference as `anyOf: [{ $ref }, { type:
+'null' }]`, which validates. 3.0 has neither half of that: `type: 'null'` is not one of its six
+  types, and it defines every sibling of `$ref` to be ignored, so `{ $ref, nullable: true }` is a
+  schema that silently refuses null. A nullable enum column in a 3.0 document therefore keeps the
+  inline enum it has always had, and the shared definition still serves every other use.
+
+  **Only shared enums, and only declared ones.** Two or more columns is the threshold. A single use
+  gains nothing from the indirection, and a `CHECK (status IN ('a','b'))` stays inline because it is a
+  constraint on one column rather than a named type: two columns whose `IN` lists happen to agree are
+  two constraints, and giving them a shared name would invent both the concept and the name. The
+  definition's key comes from the analysis's own enum list, since a column carries values and no name.
+  An enum whose name collides with a table's schema name, or which sanitises to nothing, stays inline
+  rather than being disambiguated into a name that moves when a table is added.
+
+  **Size.** A saving on every enum but the very shortest, because
+  `{"$ref":"#/components/schemas/mood"}` is 36 bytes and `{"enum":["sad","ok","happy"]}` is 29.
+  Measured on an OpenAPI 3.1 document, one table, n columns carrying the enum:
+
+  | enum             | 1 col | 2 cols | 3 cols | 6 cols |
+  | ---------------- | ----- | ------ | ------ | ------ |
+  | 3 short values   | 0     | +58    | +70    | +106   |
+  | 5 values         | 0     | -97    | -178   | -421   |
+  | 12 country codes | 0     | -147   | -258   | -591   |
+  | 20 long values   | 0     | -1697  | -2738  | -5861  |
+
+  The threshold stays at two columns rather than becoming "wherever it saves bytes". The point of the
+  definition is that the document names a type, so a client generator emits one enum class where six
+  inline lists are six anonymous unions it cannot tell are the same thing; a rule keyed on encoded
+  length would flip the output when somebody adds a value.
+
+  A schema with nothing shared is byte-for-byte what it was.
+
+### Patch Changes
+
+- 9939e4c: Spell a CHECK's number literals in the column's wire type, so a set on a `bigint({ mode:
+'bigint' })` column stops rejecting every row the driver returns
+
+  `CHECK (big IN (1, 2))` on a bigint-mode column emitted `z.union([z.literal(1), z.literal(2)])`,
+  and the driver returns `1n` there: strict equality between a bigint and a number is false in
+  JavaScript, so the select schema refused every row the database handed back, and the insert schema
+  refused every value the driver wants. The OR fold routes `big = 1 OR big = 2` into the same set,
+  and the single `big = 1` and `big <> 1` predicates compared with `===`/`!==` had the same wire
+  mismatch: the equality never held and the inequality always did, so one rejected everything and
+  the other enforced nothing. `bigint({ mode: 'number' })` was always correct, because the driver
+  really returns a number there; the fix keys on the analyzer's per-mode `tsType`, which is the
+  value's measured wire type, rather than on the SQL type name.
+
+  The spelling per library was measured against the installed versions rather than assumed:
+
+  - **zod, valibot**: `z.literal(1n)` and `v.literal(1n)` accept `1n`, reject `3n` and reject the
+    number `1`, so the set stays the same union with the members suffixed. The `=`/`<>` refinements
+    compare against `1n`.
+  - **ArkType**: the string DSL parses bigint literals. `type('1n | 2n')` enforces the set,
+    `type('9223372036854775807n')` holds the 64 bit value exactly, and `type('(1n | 2n)[]')` keeps
+    the array wrap. The single equality already went through `atBigintNarrow` and was correct.
+  - **TypeBox**: `Type.Literal(1n)` constructs and passes `Value.Check`, and
+    `TypeCompiler.Compile` then throws "Preflight validation check failed to guard for the given
+    schema", so the literal form would take every compiler-path consumer down. The set and the
+    pinned equality go to the registered `DrzlRowCheck` kind intersected with `Type.BigInt()`, the
+    same escape hatch the character caps use, which both checkers honour; the static type still
+    narrows through `Type.Unsafe<1n | 2n>`, and the document still serialises.
+  - **effect**: `Schema.Literal(1n, 2n)` enforces the set; the `<>` filter compares against `1n`.
+  - **JSON Schema**: a bigint column is already a digits string in a JSON document, because
+    `JSON.stringify` throws on a bigint, so the set becomes `{ enum: ['1', '2'] }` and a pinned
+    equality `{ const: '1' }`, in the wire the serialised row can actually hold. This also unrounds
+    the 64 bit case: `Number('9223372036854775807')` becomes 9223372036854775808 the moment it is a
+    number, and the digit string stays exact.
+
+  A non-integer member has no bigint spelling at all: `1.5n` is a syntax error, and an emitted
+  module carrying it would throw at import. Such a member keeps its number spelling, which no stored
+  bigint ever equals, exactly as the database says: no bigint column value is 1.5, so `big IN (1.5,
+2)` narrows to the 2. The shared decision lives in `wireNumberLiteral` in
+  `@drzl/validation-core`, so the six emitters cannot answer it differently.
+
+  The driver-side ground truth is the analyzer's own: `decimal-modes.spec.ts` pins `db.select()`
+  returning a real bigint in bigint mode on all three engines, and the `PgBigInt53`/`PgBigInt64`
+  arms pin the number mode returning a number, which is why those literals do not change.
+
+- cc26f38: Reconcile a CHECK's literal kind with the column's wire by the database's comparison semantics,
+  so a set on a `numeric()` column stops rejecting every row the driver returns
+
+  `CHECK (n IN (1, 2))` on a `numeric()` column (string mode, the default) emitted
+  `z.union([z.literal(1), z.literal(2)])`, and the driver returns _decimal text_ there, spelled by
+  the declared scale: measured through PGlite on both drizzle majors, a stored 1 comes back `'1'`
+  from a bare `numeric`, `'1.00'` from a `numeric(10,2)` and `'1.0000000000'` from a
+  `numeric(20,10)`, and mysql2 returns the same shapes for `decimal`. So the select schema refused
+  every row the database handed back. Exact string literals are no repair: `'1'` fails against the
+  `'1.00'` the scaled column returns, and a bare `numeric` even preserves the insert's own zeros
+  (`1.000000` came back `'1.000000'` and `CHECK (n IN (1, 2))` admitted it, because SQL numeric
+  equality is scale insensitive: `1 = 1.00` is true, measured on PostgreSQL 17.5 and MySQL 8.4.11).
+
+  The same rule gap ran the other way. The database coerces a quoted literal to the column's type
+  before comparing (`bigint CHECK (big IN ('1','2'))` admitted 1 and refused 3;
+  `integer CHECK (age IN ('18'))` admitted 18), while the emitted schemas compared the raw text:
+  `z.enum(["1","2"])` refused every `1n` a bigint-mode column returns, `big = '1'` compared
+  `v === "1"` which no bigint ever satisfies, and `age IN ('18')` refused the number 18.
+
+  The repair is one shared policy in `@drzl/validation-core`, extending `wireNumberLiteral`'s rule
+  to the whole comparison: the literal's kind and the column's wire are reconciled by what the
+  database does, never by the source spelling.
+
+  - **Numeric string wires** (`numeric`/`decimal` string modes, v1 `bigint({ mode: 'string' })`):
+    equality, inequality and sets compare _canonical decimal spellings_ through a `DrzlNumericCanon`
+    helper emitted once per file, dependency free: sign normalised, leading integer zeros and
+    trailing fraction zeros stripped, a bare trailing dot dropped, then compared as strings. Exact
+    at any precision on purpose: `Number()` is not usable here, because a numeric column carries
+    more digits than a double holds and `Number('99999999999999999999')` equals
+    `Number('99999999999999999998')`. zod and valibot refine, ArkType narrows, TypeBox rides the
+    registered `DrzlRowCheck` kind under both checkers, effect filters. JSON Schema cannot run a
+    function, so the set becomes a `pattern`: one alternation branch per member, accepting exactly
+    the spellings that canonicalise to it, ajv strict valid on every target; the cost is the
+    regex's readability, not admitted rows. Ranges there keep their coerced numeric compare,
+    now spelled `Number(v) >= 1` so the comparison is visible and the module typechecks.
+  - **Number and bigint wires**: quoted plain-decimal literals are respelled to their number-kind
+    selves (canonicalised first: `018` and `018n` are syntax errors in an emitted module) and every
+    existing arm applies, `wireNumberLiteral`'s bigint suffix included. `big IN ('1','2')` now
+    emits byte for byte what `big IN (1, 2)` emits.
+  - **What no exact compare can state is left unenforced and reported, never guessed.** Three
+    measured shapes: a number literal against a text column (Postgres refuses the DDL outright;
+    MySQL creates it and admits `'1.00'`, `'1'` and `'2.0'` through double coercion), quoted text
+    that is not plain decimal on a number or bigint wire, and a member outside the canonical domain
+    on a numeric wire (`CHECK (n IN ('1e3', '2'))` is valid DDL whose rows come back `'1000'`).
+    Each falls back to the base schema, which accepts every value the driver returns for admitted
+    rows, and the constraint ledger carries the reason: enforcing a guess would reject rows the
+    database admits, which is the defect class this fixes.
+
+  The ledger and `meta` apply the same policy through `classifyTableChecks`, so a respelled
+  constraint renders the message the emitted module writes and an unenforced clause says why
+  instead of being claimed. TypeBox also stops planting a dead `minimum` keyword on
+  `Type.String()`, which validated nothing and serialised as if enforced.
+
+- Updated dependencies [9939e4c]
+- Updated dependencies [0e295da]
+- Updated dependencies [1218361]
+- Updated dependencies [45bb6f5]
+- Updated dependencies [cc26f38]
+- Updated dependencies [f29bff7]
+  - @drzl/validation-core@3.21.0
+  - @drzl/analyzer@1.20.1
+
 ## 0.7.0
 
 ### Minor Changes

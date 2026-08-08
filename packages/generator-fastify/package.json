@@ -1,6 +1,6 @@
 {
   "name": "@drzl/generator-fastify",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "private": false,
   "license": "Apache-2.0",
   "description": "Generate Fastify 5 plugins from a Drizzle schema, one route module per table, with generated schemas fed straight into Fastify's own AJV validation and fast-json-stringify serialization.",
