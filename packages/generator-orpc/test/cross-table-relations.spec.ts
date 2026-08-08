@@ -32,16 +32,31 @@ const col = (name: string, tsType = 'number') => ({
 const analysis: Analysis = {
   dialect: 'postgres',
   tables: [
-    { name: 'users', tsName: 'users', columns: [col('id')], unique: [], indexes: [] },
+    {
+      name: 'users',
+      tsName: 'users',
+      columns: [col('id')],
+      primaryKey: { columns: ['id'] },
+      unique: [],
+      indexes: [],
+    },
     {
       name: 'posts',
       tsName: 'posts',
       columns: [col('id'), col('authorId')],
+      primaryKey: { columns: ['id'] },
       unique: [],
       indexes: [],
       foreignKeys: [{ columns: ['authorId'], foreignTable: 'users', foreignColumns: ['id'] }],
     },
-    { name: 'tags', tsName: 'tags', columns: [col('id')], unique: [], indexes: [] },
+    {
+      name: 'tags',
+      tsName: 'tags',
+      columns: [col('id')],
+      primaryKey: { columns: ['id'] },
+      unique: [],
+      indexes: [],
+    },
   ] as never,
   enums: [],
   relations: [

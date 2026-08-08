@@ -1,9 +1,79 @@
 import { importSpecifier, type ImportExtension } from '@drzl/validation-core';
 
-// Minimal local Table shape to avoid cross-package DTS complexity
+// Minimal local shapes to avoid cross-package DTS complexity. The runtime object the generator
+// passes is the full analyzer table, so the key facts this template needs are simply read off
+// it; the fields are optional because a hand-built `{ name, tsName }` is still a valid table,
+// one that reads as keyless.
+interface Column {
+  name: string;
+  tsType: string;
+  nullable?: boolean;
+  enumValues?: string[];
+}
 interface Table {
   name: string;
   tsName: string;
+  columns?: Column[];
+  primaryKey?: { columns: string[] };
+}
+
+/**
+ * The columns that address one row, or `null` when nothing does: the same reading of
+ * `primaryKey` as `@drzl/generator-service`, whose emitted classes these handler bodies call.
+ * This template used to hardcode `Service.getById(input.id)` whatever the key was, which was a
+ * number into a varchar key's `id: string`, one argument into a composite key's parameter list,
+ * and a method that does not exist on the service of a keyless table.
+ */
+function keyColumns(table: Table): Column[] | null {
+  const names = table.primaryKey?.columns ?? [];
+  if (!names.length || !table.columns) return null;
+  const cols = names.map((n) => table.columns!.find((c) => c.name === n));
+  if (cols.some((c) => !c)) return null;
+  return cols as Column[];
+}
+
+/**
+ * Whether the router's input schema can type this key column, which is exactly when the emitted
+ * service call typechecks: number, string, boolean, Date and enum literals have a spelling, and
+ * everything else arrives as `z.unknown()`, which the service's typed key parameter does not
+ * accept.
+ */
+function serviceKeyExpressible(c: Column): boolean {
+  if (c.enumValues && c.enumValues.length) return true;
+  return ['number', 'string', 'boolean', 'Date'].includes(c.tsType);
+}
+
+/** The zod spelling of one key column, for the input this template writes before the generator rewrites it. */
+function zodKeyExpr(c: Column): string {
+  const base =
+    c.enumValues && c.enumValues.length
+      ? `z.enum([${c.enumValues.map((v) => JSON.stringify(v)).join(', ')}] as const)`
+      : c.tsType === 'number'
+        ? 'z.number()'
+        : c.tsType === 'string'
+          ? 'z.string()'
+          : c.tsType === 'boolean'
+            ? 'z.boolean()'
+            : c.tsType === 'Date'
+              ? 'z.date()'
+              : 'z.unknown()';
+  return c.nullable ? `${base}.nullable()` : base;
+}
+
+/** Why a procedure is a stub, stated in the emitted file rather than only in the docs. */
+function serviceKeyNote(table: Table): string {
+  const cols = table.primaryKey?.columns ?? [];
+  const untyped = cols.filter((n) => {
+    const c = table.columns?.find((x) => x.name === n);
+    return !c || !serviceKeyExpressible(c);
+  });
+  const what =
+    untyped.length === 1 ? `its column ${untyped[0]}` : `its columns ${untyped.join(', ')}`;
+  return (
+    `    // ${table.name} is keyed on (${cols.join(', ')}) and DRZL cannot type ${what}: the input\n` +
+    `    // schema carries unknown there, which the service's typed key parameter does not accept.\n` +
+    `    // Wire this to your own lookup.\n`
+  );
 }
 
 /**
@@ -174,64 +244,126 @@ export const dbMiddleware = os
       code,
     });
 
+    // The key facts every addressing body below is composed from. `@drzl/generator-service`
+    // types one parameter per key column, in key order, so the call passes `input.<col>` for
+    // each: `getById(input.id)`, `getById(input.isbn)`, `getById(input.orgId, input.userId)`.
+    // A keyless table gets list and create only, because its service has nothing else, and a
+    // key column DRZL cannot type gets a throwing stub rather than a call that does not
+    // compile (the input schema carries unknown there, the service parameter is typed).
+    const key = keyColumns(table);
+    const keyable = !!key && key.every(serviceKeyExpressible);
+    const keyArgs = key ? key.map((c) => `input.${c.name}`).join(', ') : '';
+    const keyFields = key ? key.map((c) => `${c.name}: ${zodKeyExpr(c)}`).join(', ') : '';
+    const keyInput = `z.object({ ${keyFields} })`;
+    const updateInput = `z.object({ ${keyFields}, data: z.any() })`;
+
+    const stub = (proc: string, varName: string, input: string) => {
+      const chain = isInjectionMode
+        ? `os\n  .use(dbMiddleware)\n  .input(${input})`
+        : `os\n  .input(${input})`;
+      return `const ${varName} = ${chain}\n  .handler(async () => {\n${serviceKeyNote(table)}    throw new Error('Not implemented: ${proc} ${table.tsName}.');\n  });`;
+    };
+
     if (isInjectionMode) {
       // Database injection mode - use middleware and context
-      return [
+      const wired = (varName: string, input: string, call: string) =>
+        `const ${varName} = os\n  .use(dbMiddleware)\n  .input(${input})\n  .handler(async ({ context, input }) => {\n    return await ${call};\n  });`;
+      const procs = [
         make(
           'list',
           `list${T}`,
           `const list${T} = os\n  .use(dbMiddleware)\n  .handler(async ({ context }) => {\n    return await ${Service}.getAll(context.db);\n  });`
         ),
-        make(
-          'get',
-          `get${T}`,
-          `const get${T} = os\n  .use(dbMiddleware)\n  .input(z.object({ id: z.number() }))\n  .handler(async ({ context, input }) => {\n    return await ${Service}.getById(context.db, input.id);\n  });`
-        ),
+      ];
+      if (key) {
+        procs.push(
+          make(
+            'get',
+            `get${T}`,
+            keyable
+              ? wired(`get${T}`, keyInput, `${Service}.getById(context.db, ${keyArgs})`)
+              : stub('get', `get${T}`, keyInput)
+          )
+        );
+      }
+      procs.push(
         make(
           'create',
           `create${T}`,
           `const create${T} = os\n  .use(dbMiddleware)\n  .input(z.any())\n  .handler(async ({ context, input }) => {\n    return await ${Service}.create(context.db, input);\n  });`
-        ),
-        make(
-          'update',
-          `update${T}`,
-          `const update${T} = os\n  .use(dbMiddleware)\n  .input(z.object({ id: z.number(), data: z.any() }))\n  .handler(async ({ context, input }) => {\n    return await ${Service}.update(context.db, input.id, input.data);\n  });`
-        ),
-        make(
-          'delete',
-          `delete${T}`,
-          `const delete${T} = os\n  .use(dbMiddleware)\n  .input(z.object({ id: z.number() }))\n  .handler(async ({ context, input }) => {\n    return await ${Service}.delete(context.db, input.id);\n  });`
-        ),
-      ];
+        )
+      );
+      if (key) {
+        procs.push(
+          make(
+            'update',
+            `update${T}`,
+            keyable
+              ? wired(
+                  `update${T}`,
+                  updateInput,
+                  `${Service}.update(context.db, ${keyArgs}, input.data)`
+                )
+              : stub('update', `update${T}`, updateInput)
+          ),
+          make(
+            'delete',
+            `delete${T}`,
+            keyable
+              ? wired(`delete${T}`, keyInput, `${Service}.delete(context.db, ${keyArgs})`)
+              : stub('delete', `delete${T}`, keyInput)
+          )
+        );
+      }
+      return procs;
     } else {
       // Traditional mode - backward compatibility
-      return [
+      const wired = (varName: string, input: string, call: string) =>
+        `const ${varName} = os\n  .input(${input})\n  .handler(async ({ input }) => {\n    return await ${call};\n  });`;
+      const procs = [
         make(
           'list',
           `list${T}`,
           `const list${T} = os.handler(async () => {\n  return await ${Service}.getAll();\n});`
         ),
-        make(
-          'get',
-          `get${T}`,
-          `const get${T} = os\n  .input(z.object({ id: z.number() }))\n  .handler(async ({ input }) => {\n    return await ${Service}.getById(input.id);\n  });`
-        ),
+      ];
+      if (key) {
+        procs.push(
+          make(
+            'get',
+            `get${T}`,
+            keyable
+              ? wired(`get${T}`, keyInput, `${Service}.getById(${keyArgs})`)
+              : stub('get', `get${T}`, keyInput)
+          )
+        );
+      }
+      procs.push(
         make(
           'create',
           `create${T}`,
           `const create${T} = os\n  .input(z.any())\n  .handler(async ({ input }) => {\n    return await ${Service}.create(input);\n  });`
-        ),
-        make(
-          'update',
-          `update${T}`,
-          `const update${T} = os\n  .input(z.object({ id: z.number(), data: z.any() }))\n  .handler(async ({ input }) => {\n    return await ${Service}.update(input.id, input.data);\n  });`
-        ),
-        make(
-          'delete',
-          `delete${T}`,
-          `const delete${T} = os\n  .input(z.object({ id: z.number() }))\n  .handler(async ({ input }) => {\n    return await ${Service}.delete(input.id);\n  });`
-        ),
-      ];
+        )
+      );
+      if (key) {
+        procs.push(
+          make(
+            'update',
+            `update${T}`,
+            keyable
+              ? wired(`update${T}`, updateInput, `${Service}.update(${keyArgs}, input.data)`)
+              : stub('update', `update${T}`, updateInput)
+          ),
+          make(
+            'delete',
+            `delete${T}`,
+            keyable
+              ? wired(`delete${T}`, keyInput, `${Service}.delete(${keyArgs})`)
+              : stub('delete', `delete${T}`, keyInput)
+          )
+        );
+      }
+      return procs;
     }
   },
 };

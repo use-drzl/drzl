@@ -48,6 +48,7 @@ const analysis: Analysis = {
           isGenerated: false,
         },
       ],
+      primaryKey: { columns: ['id'] },
       unique: [],
       indexes: [],
     },

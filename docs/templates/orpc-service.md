@@ -21,6 +21,26 @@ export const dbMiddleware = os
 
 Procedures call services with `context.db`.
 
+## Key-typed handler bodies
+
+Handler bodies are composed from the table's primary key, matching the signatures
+`@drzl/generator-service` emits: one argument per key column, in key order.
+
+```ts
+// integer key
+return await UserService.getById(input.id);
+// natural key
+return await BookService.getById(input.isbn);
+// composite key
+return await MembershipService.getById(input.orgId, input.userId);
+return await MembershipService.update(input.orgId, input.userId, input.data);
+```
+
+A table with no primary key emits `list` and `create` only, because its service has nothing
+else. A key column DRZL cannot type (for example `bigint`) arrives in the input schema as
+`z.unknown()`, which the service's typed key parameter does not accept, so those procedures
+throw with a note naming the column instead of emitting a call that does not compile.
+
 ## Example (Cloudflare D1)
 
 ```ts
