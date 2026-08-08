@@ -5,8 +5,8 @@
   "license": "Apache-2.0",
   "description": "A Drizzle schema, drzl generate, and the emitted zod schemas validating Next.js server action input",
   "scripts": {
-    "generate": "drzl generate -c drzl.config.ts",
-    "check:generated": "drzl generate --check -c drzl.config.ts",
+    "generate": "node ../../packages/cli/dist/cli.js generate -c drzl.config.ts",
+    "check:generated": "node ../../packages/cli/dist/cli.js generate --check -c drzl.config.ts",
     "build": "pnpm check:generated && next build",
     "dev": "next dev",
     "start": "next start",
