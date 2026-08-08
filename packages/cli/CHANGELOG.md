@@ -1,5 +1,525 @@
 # @drzl/cli
 
+## 4.22.0
+
+### Minor Changes
+
+- 1218361: Read three more CHECK shapes: a disjunction that pins one column, `IS NOT NULL`, and the null
+  guard in front of a predicate
+
+  `parseCheck` refused every expression holding `OR` and every expression holding `NOT`, which took
+  `col IS NOT NULL` with it. Three of those refusals are now readings, one is unchanged, and one that
+  used to be a generic "not a comparison" now says what it found.
+
+  ```ts
+  // check('status_valid', sql`${t.status} = 'draft' OR ${t.status} = 'live'`)
+  status: z.enum(['draft', 'live'] as const).nullable(),
+
+  // check('email_set', sql`${t.email} IS NOT NULL`)   // on a nullable column
+  email: z.string(),
+
+  // check('age_adult', sql`${t.age} IS NULL OR ${t.age} >= 18`)
+  age: z.number().int().gte(18).lte(2147483647).nullable(),
+
+  // check('tier_ok', sql`${t.tier} IS DISTINCT FROM 'banned'`)
+  tier: z.string().refine((v) => v !== 'banned', { message: "tier_ok: tier <> 'banned'" }).nullable(),
+  ```
+
+  All five validator generators and the JSON Schema generator, plus `drzl doctor` and the constraint
+  ledger.
+
+  **Why a disjunction was refused, and what changed.** A conjunction splits because every part is
+  independently _necessary_. A disjunction is the opposite: `CHECK (a OR b)` is satisfied by a row
+  that breaks `a`, so a schema enforcing `a` refuses rows the database takes. Nothing about that
+  argument has weakened. What is read is the one shape where the _whole_ disjunction is a single
+  statement: every branch pinning the same column to a literal, by `=` or by `IN`. `s = 'a' OR
+s = 'b'` and `s IN ('a','b')` are the same statement in SQL, NULL included, so they emit the same
+  schema. Everything else is refused **whole**, never in part, and named:
+
+  | Refused                     | Reason reported                                 |
+  | --------------------------- | ----------------------------------------------- |
+  | `n < 0 OR n > 100`          | a branch is a range rather than a set of values |
+  | `a = 'x' OR b = 'y'`        | the branches constrain different columns (a, b) |
+  | `s = 'a' OR s = 1`          | the branches mix a string and a number          |
+  | `s = 'a' OR lower(s) = 'b'` | part of an OR was not understood                |
+
+  **`IS NOT NULL` narrows the field rather than adding a predicate.** Every other CHECK is emitted
+  _inside_ the nullable wrapper, precisely so `null` skips it, which is what makes them match SQL.
+  This one is the statement that `null` is not allowed, so it is said by the field not being
+  nullable. Applied once, in the three column selectors every generator already calls, so no
+  generator learns a new kind of check and none of the six can disagree with the others. On insert
+  the field becomes required, because a row omitting a nullable column with no default writes NULL;
+  a column that defaults to a value stays optional. On a column already `.notNull()` it changes
+  nothing and stops being reported as declined.
+
+  **A null guard reduces away.** `col IS NULL OR P` states nothing beyond `P`, because a CHECK
+  already passes on NULL and every operator here yields NULL when its column is NULL. Sound only when
+  `P` names the guarded column and holds no null test of its own, so `a IS NULL OR b > 0` is still
+  refused: with `a` null it accepts every `b`. `IS DISTINCT FROM <literal>` reduces the same way and
+  emits byte for byte what the `<>` it means emits.
+
+  **Arithmetic over two columns stays refused, and now says so.** `x + y < 100` used to report "not a
+  single comparison this version understands". It now names the operator, and `drzl doctor` says what
+  to do instead. The reason is measured rather than argued: Postgres computes `numeric` exactly and
+  JavaScript computes in binary floating point.
+
+  | Column type        | `CHECK (x + y <= 0.3)` with `(0.1, 0.2)` | JavaScript `0.1 + 0.2 <= 0.3` |
+  | ------------------ | ---------------------------------------- | ----------------------------- |
+  | `numeric(10,2)`    | accept                                   | false, so it would reject     |
+  | `double precision` | reject                                   | false, so it would agree      |
+
+  One expression, two column types, two different correct answers, and the expression does not carry
+  the type. A `bigint` pair adds a third, since Postgres raises on overflow where `BigInt` does not.
+  Any single reading is wrong for two of the three in the direction that refuses rows the database
+  accepts, which is the failure this parser exists to avoid.
+
+  **Ground truth.** 64 probes through a real Postgres (PGlite), one table per constraint so a sibling
+  CHECK cannot fail the statement before the value under test is reached, each value put to both the
+  database and the emitted insert schema: **0 rows the schema refuses and Postgres accepts**, 58
+  agree, 6 wide. Every wide row is a constraint DRZL deliberately enforces nothing for, which is the
+  safe direction.
+
+  `IS NULL` on its own is read but enforced nowhere, since narrowing a field to only null would mean
+  replacing the column's type rather than wrapping it; `drzl doctor` lists it with that reason.
+  `NOT`, `NOT IN` and the boolean `IS TRUE` family remain refused.
+
+- 45bb6f5: Emit the table's constraints as data, and map a validation issue back to the constraint that caused
+  it
+
+  `constraints: true` on the zod or valibot generator writes one more file, `constraints.ts`: every
+  CHECK, unique constraint, primary key and foreign key on each table as plain objects, plus
+  `constraintForIssue`, which turns a failed parse back into the constraint that produced it.
+
+  ```ts
+  { kind: 'zod', path: 'src/validators/zod', constraints: true }
+  ```
+
+  Off by default. With it off the emitted schemas are byte-for-byte what they were: this adds a file
+  and changes nothing in the existing ones.
+
+  **Why a schema is not enough.** A validator states what a value must look like and never says which
+  constraint said so, so `Too small: expected number to be >=18` gives a form a message and no way to
+  attribute it, no way to substitute its own wording for that rule, and no way to tell that failure
+  apart from the column's own type bound. And two of a table's constraints are absent from a
+  generated schema in every form: whether a value is already taken and whether the row it points at
+  exists are facts about the table, not about the row.
+
+  **What it maps, measured.** The same table and the same failing rows, on zod 4.4.3 and valibot
+  1.4.2, both answering with the same constraint:
+
+  | the row breaks          | zod reports                               | valibot reports                          |
+  | ----------------------- | ----------------------------------------- | ---------------------------------------- |
+  | `CHECK (age >= 18)`     | `too_small`, `minimum: 18`                | `min_value`, `requirement: 18`           |
+  | `varchar(10)`           | `custom`, `at most 10 characters`         | `check`, `at most 10 characters`         |
+  | `CHECK (length(...))`   | `custom`, `email_len: length(email) >= 3` | `check`, `email_len: length(email) >= 3` |
+  | `CHECK (status IN ...)` | `invalid_value`                           | `picklist`                               |
+  | `CHECK (starts < ends)` | `path: ['starts']`                        | `path: []`, naming no column             |
+
+  The last row is why the map exists rather than being a one-line path lookup: valibot names no
+  column for a row-level check, so the column comes out of the constraint data instead, and it is the
+  same column zod chose.
+
+  `CHECK (age >= 18)` is the other one. DRZL deliberately folds a numeric CHECK into the column's own
+  range, which is worth keeping because it yields the library's machine-readable bound instead of a
+  sentence DRZL wrote, and it costs the constraint name: the failure is worded entirely by the
+  library. The map answers that by matching the bound, and answers a failure against the column's own
+  `int4` ceiling with nothing rather than blaming the nearest CHECK.
+
+  **Constraints nothing enforces are present and marked.** A CHECK the parser declines appears with
+  `enforced: false` and the parser's own reason, because a form still wants to know the rule exists.
+  It can never produce a validation issue, so it never comes back from `constraintForIssue`.
+
+  **Not `meta` written to a second file.** `meta` describes a _field_, renders a CHECK as prose, has
+  no foreign keys, drops the names of the unique constraints, and is reachable only by holding the
+  schema object. This describes the table's _constraints_, carries their names, states each operand
+  as data, and is a record keyed by table with no validator import. Both are built from one
+  classification internally, so they cannot disagree about which CHECKs are enforced.
+
+  **zod and valibot only, and the boundary is measured.** The data claims the schemas enforce each
+  constraint and states the exact message they use. Measured on ArkType 2.2.3 against the same table,
+  neither claim would hold: it folds `cardinality(tags) > 0` into its own DSL, moves a `length()`
+  check onto the object, puts DRZL's wording in `expected` rather than `message`, and emits nothing
+  at all for `name <> 'x'`.
+
+  `{ errorMap: false }` emits the data without the matcher: for a table with twelve constraints, 1,855
+  bytes minified against 2,831 with it, and 708 against 1,117 gzipped.
+
+- cb379e0: An Express route generator, in Express's own idiom.
+
+  `@drzl/generator-express` emits one `Router()` per table: real HTTP routes carrying a
+  validation middleware, an `index.ts` mounting them all on an `express()` app with the modules
+  re-exported, and `validation.ts`, a dependency-free middleware over Standard Schema v1.
+
+  The middleware is emitted rather than installed, and that is the decision that shapes the
+  package. Express has no first-party validator ecosystem the way Hono does, and the third-party
+  middlewares are AJV-based: they validate JSON Schema through a different pipeline from the zod,
+  valibot and arktype schemas every other DRZL router shares. All three of those libraries
+  implement Standard Schema v1 (measured on zod 4.4.3, valibot 1.4.2 and arktype 2.2.3), so one
+  emitted `validate(slot, schema)` covers every library `validation.library` can name: 400 with
+  `{ error, slot, issues: [{ message, path }] }` on failure, and on success the parsed output
+  replaces `req.params` or `req.body`, which is the only channel Express has, before `next()`.
+
+  Express 5 only, from a measurement rather than a preference. The write stubs throw from async
+  handlers, as the Hono generator's do, and Express 5 routes the rejected promise to its error
+  middleware and answers 500. On express 4.22.2 under Node 22 the same stub is an unhandled
+  promise rejection that kills the process without responding, so the emitted idiom is only honest
+  on 5. `express@latest` has been the 5.x line since 2024.
+
+  The design otherwise follows `@drzl/generator-hono`:
+
+  - The key comes from the table's real `primaryKey`, every column of it, at its real type. A
+    table with no primary key keeps `GET /` and `POST /` and loses the `/:id` routes rather than
+    gaining a fictional numeric `id`. A composite key becomes `/:orgId/:userId`.
+  - A read-only table gets no write routes and no insert or update schema.
+  - Path parameters are coerced strictly, with the exact strict forms the Hono generator measured:
+    the idiomatic coercions are built on `Number()`, where `Number('')` is `0`, and
+    `GET /users/%20` addressing row `0` is the wrong row, not a loose coercion.
+  - The write stubs throw rather than returning their validated input, which is the insert shape
+    where the declared response is the select shape.
+  - Every emitted module imports only what it uses, `json()` rides on each write route so a single
+    router mounted into a consumer's own app still parses its own bodies, and `validation.ts` is
+    emitted only when some route validates something.
+
+  One thing is stated plainly instead of imitated: there is no Express counterpart of Hono's
+  `hc<AppType>()`. Nothing infers a client from an Express app, so what a consumer gets is typed
+  handlers (`Response<T>` on every handler) and the exported `Select<Table>Row` types, not an
+  inferred client.
+
+  On `@drzl/cli`: a new `express` generator kind, wired into both `generate` and `watch` through
+  one shared options builder, and a `generate-express` pipeline name for `watch --pipeline`.
+  `databaseInjection` is refused with a warning on this kind, because it is a contract with
+  `@drzl/generator-service` and these handlers never call one. There is no `validator` option,
+  unlike the hono kind, because there is exactly one middleware and it is emitted.
+  `@drzl/generator-express` is an **optional** dependency of the CLI, like the tRPC, Hono, effect
+  and json-schema generators: a package that has never been published cannot publish through npm's
+  trusted-publisher OIDC flow, so its first version goes out by hand, and naming it as a hard
+  dependency in the same release would break `npm i @drzl/cli` for everyone until it exists.
+
+- 3c2153c: A Fastify plugin generator, with DRZL's JSON Schema fed straight into Fastify's own validation.
+
+  `@drzl/generator-fastify` emits one `FastifyPluginAsync` per table: real HTTP routes whose
+  `schema: { params, body, response }` Fastify compiles itself, AJV for the requests and
+  fast-json-stringify for the responses, plus an `index.ts` barrel plugin registering every table
+  under its prefix with the modules re-exported, consumable as `app.register(routes)` under any
+  prefix of your own.
+
+  Unlike the Hono generator (which imports validator middleware) and the Express generator (which
+  emits one), this generator emits no validator at all, because Fastify's native validation IS
+  JSON Schema. The schemas are produced by `@drzl/generator-json-schema`'s own `tableSchemas()`
+  builder, called at generation time as a real dependency and inlined as literals, so the two JSON
+  Schema producers cannot drift and every semantic the builder carries (CHECK constraint bounds,
+  byte caps, formats, integer detection) arrives for free. The emitted tree's only import is
+  `import type { FastifyPluginAsync } from 'fastify'`, which vanishes at build time. Three keys
+  are adapted from measurements on fastify 5.11.2: `$schema` (2020-12) is refused by Fastify's
+  default draft-07 AJV, `$id` is stripped as module identity the inline copies do not have, and
+  `prefixItems` is refused as an unknown keyword and respelled as homogeneous `items` with the
+  same bounds, which is the identical constraint because the builder only emits identical tuple
+  members.
+
+  Path parameters are where Fastify's defaults had to be constrained, from a measured grid rather
+  than memory: with the default `coerceTypes`, a key typed `{ type: 'integer' }` reads
+  `GET /users/%20` as row 0, `0x10` as 16, `1e5` as 100000, and silently rounds
+  `9007199254740993`. The emitted params schemas use the strict string spelling
+  (`^-?\d+(\.\d+)?$`, digits only for bigint, `format: 'date-time'` for Date keys, the member set
+  for enum keys), whose measured grid matches the Hono and Express generators row for row.
+
+  Request bodies keep Fastify's own semantics, documented and pinned rather than fought:
+  `coerceTypes: 'array'` accepts `{ email: 123 }` as `"123"` and `removeAdditional` strips
+  unnamed keys, where the other two route generators answer 400. Missing required fields, enum
+  outsiders, scalar-shaped violations and malformed JSON are still 400, and unparseable content
+  types are 415. Two builder semantics are inherited and stated plainly: a nullable column
+  without a default is required on insert (null is a value; omitting the key is not sending
+  null), and the update schema excludes the primary key columns.
+
+  The serializer is the Fastify-specific hazard and the reason the response schemas come from the
+  same builder: fast-json-stringify silently omits properties absent from the response schema,
+  throws a 500 for a missing required column or an inconvertible value, truncates floats declared
+  integer, writes `null` as `""` under a string, and serializes a `null` payload as `{}`. The
+  measured grid is recorded in the source and docs, the runtime suite proves a full row
+  round-trips through the emitted route with every column present and correctly typed (via
+  `fastify.inject()`, the full pipeline including serialization), and the byId stub answers a
+  declared 404 instead of returning `null` for exactly the `{}` reason.
+
+  The design otherwise follows the settled route-generator class:
+
+  - The key comes from the table's real `primaryKey`, every column of it, at its real type. A
+    keyless table keeps `GET /` and `POST /` and loses the addressed routes; a composite key
+    becomes `/:orgId/:userId`; a read-only table gets no write routes and no insert or update
+    schema.
+  - The write stubs throw rather than echoing input, and every handler is held to its declared
+    reply by the `Reply` route generics, verified by a compile canary.
+  - Every module imports only what it uses, and the docs state plainly that there is no inferred
+    client for a Fastify app; the TypeBox type-provider road is named as future work, not built
+    as a second variant.
+
+  On `@drzl/cli`: a new `fastify` generator kind, wired into both `generate` and `watch` through
+  one shared options builder with a byte-for-byte branch-parity spec, and a `generate-fastify`
+  pipeline name for `watch --pipeline`. `databaseInjection` is refused with a warning on this
+  kind, and so is `validation`, which no other router refuses but this one cannot read: there is
+  no library to choose and no shared schema module to import. `@drzl/generator-fastify` is an
+  **optional** dependency of the CLI, like the tRPC, Hono, Express, effect and json-schema
+  generators: a package that has never been published cannot publish through npm's
+  trusted-publisher OIDC flow, so its first version goes out by hand, and naming it as a hard
+  dependency in the same release would break `npm i @drzl/cli` for everyone until it exists.
+
+- 1ee27d3: A GraphQL schema generator: SDL typeDefs, resolver stubs that throw, and plain-object scalar
+  configs and enum value maps that any GraphQL server can consume.
+
+  `@drzl/generator-graphql` emits one module per table with the object type, create and update
+  input types and enum types as an SDL string, TypeScript row and input interfaces typed with the
+  database values, and resolver stubs that throw `Not implemented` until replaced, plus a
+  `scalars.ts` carrying `DateTimeScalar`, `BigIntScalar` and `JSONScalar` and an `index.ts`
+  barrel composing everything into one `{ typeDefs, resolvers }` pair with the `Query` and
+  `Mutation` types (a bare type set without a Query type fails `assertValidSchema`, measured, so
+  the barrel owns them). Keyless tables get a list field and `create` only, composite keys become
+  multi-argument byId fields, and read-only tables get no mutations and no input types.
+
+  The plan left the target artifact open, and it was settled from the registry and a measured
+  grid rather than taste. Registry: `graphql@latest` is 17.0.2 while `@apollo/server` 5.5.1 pins
+  `graphql ^16.11.0` and `graphql-yoga` 5.21.2 pins `^15.2.0 || ^16.0.0`, with
+  `@graphql-tools/schema` 10.0.38 spanning 14 through 17; emitted code importing graphql would
+  pick a side of that split and risk graphql-js's "another module or realm" error when two copies
+  meet. So the emission is SDL text plus plain objects with ZERO runtime imports and no peer on
+  graphql at all: the consumer's own graphql builds the schema, whichever major it is. Measured
+  on both majors: graphql 17 renamed the scalar hooks (serialize/parseValue/parseLiteral became
+  coerceOutputValue/coerceInputValue/coerceInputLiteral), and a legacy-named plain config on 17
+  silently skips parseValue for variables and can skip serialize, letting a raw bigint escape
+  into the response; the emitted configs name every hook twice, which measures correct on
+  16.14.2 and 17.0.2 through all three coercion paths.
+
+  Scalar mapping, each row measured: `Int` only where the analyzer's declared bounds prove the
+  column fits 32 bits, because graphql-js refuses 2^31 on serialize, variables and literals
+  alike, so an unbounded integer column (SQLite's 64-bit `integer`, `bigint { mode: 'number' }`)
+  is `Float` rather than a read-path failure. `bigint` is a `BigInt` scalar carrying the route
+  generators' digits-string policy: a JSON number variable is refused because JSON.parse has
+  already rounded it (2^53+1 arrives as 2^53), while an inline integer literal is accepted
+  losslessly because the AST carries raw digits (9007199254740993 survives exactly). Date
+  columns are a strict-ISO `DateTime` scalar handing the resolver a real `Date`; numeric-as-
+  string stays `String` with no invented precision; `uuid` is `ID` (measured: serializes strings
+  unchanged, coerces integer input to digits, refuses 1.5, does not validate the uuid shape);
+  `json`/`jsonb` and untypeable columns are a passthrough `JSON` scalar; arrays are lists with
+  NULLABLE elements, because Postgres arrays admit NULL elements and a null under `[T!]` nulls
+  the whole field with an error (measured).
+
+  The enum landmine is handled in both directions. `in-progress` is an SDL syntax error, `2fa`
+  lexes as a malformed number and `with space` silently parses as two members (all measured), so
+  members that are valid GraphQL names keep their database spelling verbatim and the rest are
+  renamed with a "Database value" description, with a value map emitted for exactly the renamed
+  members. Proven at execution on both majors: a resolver returning `in-progress` serializes to
+  `IN_PROGRESS`, an input of `IN_PROGRESS` (variable or literal) reaches the resolver as
+  `in-progress`, unmapped members keep name-as-value, and outsiders are refused naming the enum.
+  Two values renaming onto one name fall back to String with a note. A column name that is not a
+  GraphQL Name (`cover url`) is exposed renamed with an emitted output field resolver mapping it
+  back to the row property.
+
+  Input nullability leans on the one thing GraphQL does natively that JSON bodies cannot:
+  explicit null and absent are different values in the coerced args, proven through an executed
+  mutation on variables and literals alike. Create inputs mark required-no-default columns
+  `Type!`; update inputs are all-optional with the primary key excluded via the shared
+  `updateColumns`. One divergence is documented rather than papered over: GraphQL cannot spell
+  the DTO generators' required-but-nullable presence rule, and cannot refuse explicit null on a
+  non-nullable update field, so both are stated as inexpressible and left to the database.
+
+  The runtime suite builds the emitted pair with the real `makeExecutableSchema`, passes
+  `assertValidSchema`, and executes: stub throws carrying the field path, unknown fields refused
+  at validation, wrong-typed input refused by GraphQL naming the path, the enum and both custom
+  scalars round-tripped through variables AND inline literals (different code paths, and on 17
+  different hook names), the full introspection query, and a second suite doing the same SDL,
+  execution and scalar attachment on graphql 16 through an install alias.
+
+  On `@drzl/cli`: a new `graphql` generator kind, wired into both `generate` and `watch` through
+  one shared options builder with a byte-for-byte branch-parity spec, and a `generate-graphql`
+  pipeline name for `watch --pipeline`. `databaseInjection` is refused with a warning (the
+  resolvers are stubs), and so are `includeRelations` (relation fields are resolvers the
+  consumer writes) and the whole `validation` block (the schema is GraphQL SDL, its own type
+  language, so unlike the nestjs kind not even `library` is read). `@drzl/generator-graphql` is
+  an **optional** dependency of the CLI, like the tRPC, Hono, Express, Fastify, NestJS, effect
+  and json-schema generators: a package that has never been published cannot publish through
+  npm's trusted-publisher OIDC flow, so its first version goes out by hand, and naming it as a
+  hard dependency in the same release would break `npm i @drzl/cli` for everyone until it exists.
+
+- 86253d9: A Hono route generator, in Hono's own idiom.
+
+  `@drzl/generator-hono` emits one `Hono()` per table: real HTTP routes carrying
+  `sValidator` from `@hono/standard-validator` (or `zValidator` from `@hono/zod-validator`,
+  with `validator: 'zod'`), and an `index.ts` mounting them all and exporting the `AppType`
+  a `hc<AppType>()` client is parameterised by.
+
+  This is not an adapter for the routers DRZL already emits, because Hono needs no help
+  mounting those: `@hono/trpc-server` takes a `@drzl/generator-trpc` router as middleware,
+  and oRPC's `RPCHandler` mounts a `@drzl/generator-orpc` router on any fetch handler. What
+  nothing emitted was Hono's own surface, which is what people choose Hono for.
+
+  It is not a template package either. `ORPCTemplateHooks` hands back oRPC source text, so a
+  Hono template written against it would emit a file that does not compile.
+
+  The design follows `@drzl/generator-trpc` rather than the older oRPC choices:
+
+  - The key comes from the table's real `primaryKey`, every column of it, at its real type. A
+    table with no primary key keeps `GET /` and `POST /` and loses `GET /:id`, `PATCH /:id`
+    and `DELETE /:id`, rather than gaining a fictional numeric `id`. A composite key becomes
+    `/:orgId/:userId`.
+  - A read-only table gets no write routes and no insert or update schema.
+  - The response shape is stated on every route that returns rows. Hono has no `.output()`;
+    what a client infers is the handler's return type, so an unannotated empty stub types the
+    whole client from `never[]`.
+  - The write stubs throw rather than returning their validated input, which is the insert
+    shape where the declared response is the select shape.
+  - Every emitted module imports only what it uses, so a route module that validates nothing
+    does not import a validator package and loads without one installed.
+
+  Path parameters are coerced strictly, which has no counterpart in the tRPC generator: a URL
+  segment is always a string, and the idiomatic coercions are built on `Number()`, where
+  `Number('')` and `Number(' ')` are both `0`. `GET /users/%20` addressing row `0` is the
+  wrong row, not a loose coercion, so the emitted schemas reject it. The strict form is also
+  the only one where zod, valibot and arktype agree.
+
+  On `@drzl/cli`: a new `hono` generator kind, wired into both `generate` and `watch` through
+  one shared options builder, a `generate-hono` pipeline name for `watch --pipeline`, and a
+  `validator` config option. `databaseInjection` is refused with a warning on this kind,
+  because it is a contract with `@drzl/generator-service` and these handlers never call one.
+  `@drzl/generator-hono` is an **optional** dependency of the CLI, like the tRPC, effect and
+  json-schema generators: a package that has never been published cannot publish through
+  npm's trusted-publisher OIDC flow, so its first version goes out by hand, and naming it as a
+  hard dependency in the same release would break `npm i @drzl/cli` for everyone until it
+  exists.
+
+- 4c0128b: A NestJS DTO generator: plain classes carrying a Standard Schema, and a pipe that runs them.
+
+  `@drzl/generator-nestjs` emits one module per table with the insert, update, select and params
+  schemas in the configured library's spelling (zod by default, valibot or arktype via
+  `validation.library`) and four plain classes around them: `Create<T>Dto`, `Update<T>Dto`,
+  `<T>ParamsDto` and `<T>Entity`, each pairing its fields with its schema through
+  `static readonly schema: StandardSchema<Dto>`, so schema-vs-field drift is a compile error
+  inside the generated file. A `validation.ts` module carries `SchemaValidationPipe`, which
+  validates any parameter whose metatype carries such a static and passes everything else
+  through untouched, and an `index.ts` barrel re-exports it all. Deliberately DTOs and not
+  controllers: routes, modules and providers belong to the consumer's app, and the DTO class is
+  the unit Nest itself scaffolds per resource.
+
+  The plan left "class-validator or plain schemas" open, and it was settled from the registry and
+  a measured grid rather than taste. Registry: `@nestjs/common` 11.1.28 lists class-validator and
+  class-transformer as optional peers; class-validator is active at 0.15.1, while
+  class-transformer, the half that would convert wire values, last published 0.5.1 in November
+  2021; `nestjs-zod` 5.5.0 is active, evidence the schema-carrying-class idiom is established in
+  Nest. Measured, four behaviours the decorator path cannot square with DRZL's settled policies:
+  what `@IsInt()` accepts depends on the consumer's ValidationPipe rather than the DTO
+  (`enableImplicitConversion: true` reads `""` and `" "` as 0, `"0x10"` as 16, `"1e5"` as 100000,
+  the exact `Number('')` family the route generators refuse); `@IsOptional()` cannot tell
+  `{ bio: null }` from `{}`, where the enforcing spelling costs three decorators of `@ValidateIf`
+  workaround per nullable column; `@Type(() => BigInt)` silently does nothing and `@IsInt()`
+  rejects a real bigint; and `@Type(() => Date)` accepts `"1"` as the year 2001. There is a
+  compiler reason besides: decorator DTOs fail TS1240 without `experimentalDecorators`, while the
+  emitted plain classes compile under every tsconfig including `verbatimModuleSyntax`, with the
+  decorator flags needed only where they already are, in the consumer's controllers. The docs
+  carry the full grids, including Nest's `ParseIntPipe` (strict on the junk spellings, but it
+  silently rounds `"9007199254740993"`) and the coexistence table for a global class-validator
+  ValidationPipe beside these DTOs (defaults coexist; `whitelist: true` strips every property of
+  a metadata-less class first, measured). The honest paragraph for a consumer who wants the
+  class-validator path anyway is in the docs too.
+
+  The presence rule is inherited from the shared builders rather than re-decided: a nullable
+  column with no default is required on insert, null spelled out, matching the JSON Schema
+  builder the Fastify generator inlines and diverging, documented, from the Hono and Express
+  inline schemas. Update DTOs exclude the primary key columns via the shared `updateColumns`, so
+  an `id` in a PATCH body is an undeclared key and is stripped. All three libraries strip
+  undeclared keys (arktype via an emitted `.onUndeclaredKey('delete')`, measured against its
+  default of preserving them), which is `whitelist: true` semantics carried by the schema instead
+  of by pipe options. Wire shapes with no JSON form are transformed at the boundary: a Date
+  column takes the strict ISO string and hands the controller a real `Date`, and a bigint column
+  crosses as its decimal digits and stays a string on both sides, because `JSON.stringify`
+  throws on a real bigint (pinned as a 500 in the runtime suite).
+
+  The runtime suite compiles a consumer tree (generated DTOs plus controllers written the docs
+  way) with a real `tsc` under the standard Nest flags, boots the compiled JavaScript with
+  `NestFactory.create`, and drives it over HTTP for all three libraries, because a
+  vitest-transpiled controller would have no decorator metadata and the metatype would silently
+  be undefined. Every rejection is paired with an acceptance whose echoed body proves the pipe
+  was in the loop: the stripped extra key, the numeric segment arriving as a real number, the
+  exact digits of `9007199254740993` surviving.
+
+  On `@drzl/cli`: a new `nestjs` generator kind, wired into both `generate` and `watch` through
+  one shared options builder with a byte-for-byte branch-parity spec, and a `generate-nestjs`
+  pipeline name for `watch --pipeline`. `databaseInjection` is refused with a warning (there are
+  no handlers at all), and so are `includeRelations` (relation lookups are routes) and every
+  `validation` key except `library` (the DTO modules are self-contained on purpose).
+  `@drzl/generator-nestjs` is an **optional** dependency of the CLI, like the tRPC, Hono,
+  Express, Fastify, effect and json-schema generators: a package that has never been published
+  cannot publish through npm's trusted-publisher OIDC flow, so its first version goes out by
+  hand, and naming it as a hard dependency in the same release would break `npm i @drzl/cli` for
+  everyone until it exists.
+
+- f29bff7: Enforce `CHECK (octet_length(col) <= n)`, which is a byte budget rather than a character count
+
+  `parseCheck` refused `octet_length` outright, on the recorded grounds that a byte count "depends on
+  the encoding and cannot be derived from a JavaScript string without choosing one". Both halves of
+  that are answerable: the encoding is UTF-8, and a `bytea` column does not arrive as a string at all.
+  The constraint is now read and routed into the byte-cap machinery MySQL's TEXT family already used.
+
+  ```ts
+  // check('body_bytes', sql`octet_length(${t.body}) <= 5`)      // on a text column
+  body: z.string().refine((v) => new TextEncoder().encode(v).length <= 5, {
+    message: 'body_bytes: octet_length(body) <= 5',
+  }),
+
+  // check('blob_bytes', sql`octet_length(${t.blob}) <= 5`)      // on a bytea column
+  blob: z.instanceof(Uint8Array).refine((v) => v.length <= 5, {
+    message: 'blob_bytes: octet_length(blob) <= 5',
+  }),
+  ```
+
+  **Three counts, and no two of them agree.** Measured on PostgreSQL 17.5 through PGlite, on a `text`
+  holding three emoji and a `bytea` holding six bytes:
+
+  | expression        | `text` | `bytea`        | JavaScript                                  |
+  | ----------------- | ------ | -------------- | ------------------------------------------- |
+  | `octet_length(x)` | 12     | 6              | `new TextEncoder().encode(v).length`        |
+  | `length(x)`       | 3      | 6              | `[...v].length`, or `v.length` on the array |
+  | `char_length(x)`  | 3      | does not exist | `[...v].length`                             |
+
+  `v.length` on a string is none of them: it counts UTF-16 units, which is 6 for those same three
+  emoji. So `length` is a character count on a text column and a byte count on a bytea one, and a
+  parser that read `octet_length` as one more spelling of `length` would put a character cap on a byte
+  budget. Measured on the real constraint: `CHECK (octet_length(t) <= 5)` accepts `'hello'` and one
+  emoji and refuses `'hellos'` and two emoji, and it is the last of those, two characters and eight
+  bytes, that a character cap takes and the column does not.
+
+  The parser now carries a `unit` on `LengthCheck`, and `lengthMeasure(column, check)` turns that plus
+  the column into one of three JavaScript expressions. It lives in `@drzl/validation-core` so the five
+  validation generators, the constraint ledger, `meta` and `drzl doctor` cannot disagree about what is
+  enforced.
+
+  **JSON Schema.** No draft has a byte-length keyword, so the same trade the MySQL byte budget already
+  made applies: the ceiling becomes `maxLength`, which counts characters and therefore refuses nothing
+  the column accepts, and the part it cannot catch is stated in `description`. A `bytea` travels as
+  base64, so its cap is the encoded length, `4 * ceil(n / 3)`, which is the padded length of a full
+  value and an upper bound on the unpadded one, measured over n = 0 to 20. That also gives a MySQL
+  `tinyblob` a bound it never had: 255 bytes is `maxLength: 340`, where the document previously said
+  nothing. A byte _floor_ reaches no keyword in either case.
+
+  **What is still refused, and now says so.** A count on a MySQL `binary(n)`/`varbinary(n)` cannot be
+  answered: the value arrives as a string from a lossy decode, so neither its characters nor their
+  re-encoding is the server's byte count. `drzl doctor` reports that as a new finding kind,
+  `check-uncountable`, rather than dropping it silently, and the ledger marks it unenforced with the
+  reason. The doctor's note that count clauses were "unreachable from a working schema" was true of
+  Postgres and is not true of MySQL, which has `OCTET_LENGTH` and a column whose bytes JavaScript
+  cannot see.
+
+### Patch Changes
+
+- Updated dependencies [9939e4c]
+- Updated dependencies [0e295da]
+- Updated dependencies [1218361]
+- Updated dependencies [45bb6f5]
+- Updated dependencies [cc26f38]
+- Updated dependencies [f29bff7]
+  - @drzl/validation-core@3.21.0
+  - @drzl/generator-zod@3.20.0
+  - @drzl/generator-valibot@3.19.0
+  - @drzl/generator-arktype@3.16.0
+  - @drzl/generator-typebox@0.13.0
+  - @drzl/analyzer@1.20.1
+
 ## 4.21.0
 
 ### Minor Changes
