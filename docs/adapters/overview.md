@@ -11,6 +11,8 @@ Current support:
 - Fastify adapter, via `generator-fastify`
 - NestJS DTOs, via `generator-nestjs` (DTO and entity classes plus a validation pipe; the
   controllers stay yours)
+- GraphQL, via `generator-graphql` (SDL typeDefs, resolver stubs, enum value maps and scalar
+  configs consumable by any GraphQL server; the resolvers stay yours)
 
 Planned/possible adapters (community interest welcome):
 

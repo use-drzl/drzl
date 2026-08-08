@@ -63,6 +63,7 @@ export default {
           { text: 'Express', link: '/generators/express' },
           { text: 'Fastify', link: '/generators/fastify' },
           { text: 'NestJS', link: '/generators/nestjs' },
+          { text: 'GraphQL', link: '/generators/graphql' },
           { text: 'Service', link: '/generators/service' },
           { text: 'Zod', link: '/generators/zod' },
           { text: 'Valibot', link: '/generators/valibot' },

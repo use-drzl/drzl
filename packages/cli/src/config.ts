@@ -79,6 +79,7 @@ export const GeneratorSchema = z.object({
     'express',
     'fastify',
     'nestjs',
+    'graphql',
     'service',
     'zod',
     'valibot',
@@ -565,6 +566,22 @@ export function nestjsOutDir(g: { path?: string }, cfg: { outDir: string }): str
   return g.path ?? cfg.outDir;
 }
 
+/**
+ * Where the GraphQL generator writes.
+ *
+ * The same rule as the routers and the NestJS kind, though this one emits SDL modules rather
+ * than routes: it still writes an `index.ts` barrel and a `scalars.ts` of its own, so a config
+ * that runs it beside a router generator has to give at least one of them a `path`.
+ *
+ * Its own function rather than a call to one of the others, for the reason `honoOutDir`
+ * records: these are separate decisions that happen to agree today, and a reader following
+ * `computeGeneratorOutputDirs` should not have to work out which kind's function is
+ * authoritative for which.
+ */
+export function graphqlOutDir(g: { path?: string }, cfg: { outDir: string }): string {
+  return g.path ?? cfg.outDir;
+}
+
 function sharedSchemaNames(opts: { affix?: AffixOptions; schemaSuffix?: string }): string[] {
   const resolved = resolveAffix(opts);
   return NAME_MODES.map((mode) => schemaName(mode, AFFIX_PROBE_TABLE, resolved));
@@ -665,6 +682,41 @@ export function resolveConfig(cfg: DrzlConfig): { config: DrzlConfig; warnings: 
             `validation.affix, which it does not read. Those options spell the names of shared ` +
             `schema modules, and this generator imports none. Only validation.library is read ` +
             `on this kind.`
+        );
+      }
+      continue;
+    }
+
+    /**
+     * The GraphQL generator emits SDL and resolver stubs, so it belongs to neither set below,
+     * and unlike the NestJS kind it reads no `validation` key at all: its schema is GraphQL
+     * SDL, GraphQL's own type language, so there is no library to choose and no shared schema
+     * module to import. Each unread option is refused with a warning rather than parsed and
+     * dropped, which is the shape of dead option this config has already shipped twice.
+     */
+    if (g.kind === 'graphql') {
+      if (g.databaseInjection?.enabled) {
+        warnings.push(
+          `drzl config: the "graphql" generator sets databaseInjection.enabled, which it does ` +
+            `not support. It emits SDL and resolver stubs with no handlers at all, so nothing ` +
+            `reads the injected handle. Reach your database from the resolvers you write in ` +
+            `place of the stubs, or use the "trpc" or "orpc" generator, which do delegate to ` +
+            `@drzl/generator-service.`
+        );
+      }
+      if (g.includeRelations) {
+        warnings.push(
+          `drzl config: the "graphql" generator sets includeRelations, which it does not ` +
+            `read. Relation lookups are routes on the router generators, and relation fields ` +
+            `on a GraphQL type are resolvers you write against your own data layer. Remove ` +
+            `the flag.`
+        );
+      }
+      if (g.validation) {
+        warnings.push(
+          `drzl config: the "graphql" generator sets "validation", which it does not read. ` +
+            `Its schema is GraphQL SDL, GraphQL's own type language, so there is no library ` +
+            `to choose and no shared schema module to import. Remove the block.`
         );
       }
       continue;
@@ -854,6 +906,7 @@ export function computeGeneratorOutputDirs(cfg: DrzlConfig, cwd = process.cwd())
     if (g.kind === 'express') dirs.add(abs(expressOutDir(g, cfg)));
     if (g.kind === 'fastify') dirs.add(abs(fastifyOutDir(g, cfg)));
     if (g.kind === 'nestjs') dirs.add(abs(nestjsOutDir(g, cfg)));
+    if (g.kind === 'graphql') dirs.add(abs(graphqlOutDir(g, cfg)));
     if (g.kind === 'service') dirs.add(abs(g.path ?? 'src/services'));
     if (g.kind === 'zod') dirs.add(abs(g.path ?? 'src/validators/zod'));
     if (g.kind === 'valibot') dirs.add(abs(g.path ?? 'src/validators/valibot'));

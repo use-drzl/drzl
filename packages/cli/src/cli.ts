@@ -13,6 +13,7 @@ import { honoOptions } from './hono-options.js';
 import { expressOptions } from './express-options.js';
 import { fastifyOptions } from './fastify-options.js';
 import { nestjsOptions } from './nestjs-options.js';
+import { graphqlOptions } from './graphql-options.js';
 import { validationOptions } from './validation-options';
 import {
   computeGeneratorOutputDirs,
@@ -363,6 +364,30 @@ program
             reportGeneratorFailure(g.kind, e);
             process.exit(1);
           }
+        } else if (g.kind === 'graphql') {
+          try {
+            // Optional for the same reason tRPC, Hono, Express, Fastify and NestJS are: a
+            // package that has never been published cannot publish through npm's
+            // trusted-publisher OIDC flow, so its first version goes out by hand, and naming it
+            // as a hard dependency of the CLI in the same release breaks `npm i @drzl/cli` for
+            // everyone until it exists.
+            const { GraphQLGenerator } = await loadGenerator(
+              '@drzl/generator-graphql',
+              () => import('@drzl/generator-graphql')
+            );
+            const gen = new GraphQLGenerator(analysis);
+            const { files } = await gen.generate({
+              ...graphqlOptions(g, cfg),
+              onProgress: ({ index }: { index: number }) => progress.update(index),
+            });
+            progress.stop();
+            ora().succeed(chalk.green(`Generated (graphql): ${files.length} files`));
+            files.forEach((f: string) => console.log('  -', chalk.cyan(f)));
+          } catch (e: any) {
+            progress.stop();
+            reportGeneratorFailure(g.kind, e);
+            process.exit(1);
+          }
         } else if (g.kind === 'service') {
           try {
             const { ServiceGenerator } = await loadGenerator(
@@ -626,7 +651,7 @@ program
   .option('-c, --config <path>', 'path to drzl.config')
   .option(
     '--pipeline <name>',
-    'all | analyze | generate-orpc | generate-trpc | generate-hono | generate-express | generate-fastify | generate-nestjs',
+    'all | analyze | generate-orpc | generate-trpc | generate-hono | generate-express | generate-fastify | generate-nestjs | generate-graphql',
     'all'
   )
   .option('--debounce <ms>', 'debounce ms', '200')
@@ -780,6 +805,7 @@ program
           'generate-express': 'express',
           'generate-fastify': 'fastify',
           'generate-nestjs': 'nestjs',
+          'generate-graphql': 'graphql',
         };
 
         for (const g of cfg.generators) {
@@ -907,6 +933,27 @@ program
                 ? console.log(JSON.stringify({ event: 'generate_complete', kind: g.kind, files }))
                 : console.log(
                     chalk.green(`Generated (nestjs): ${files.length} files`),
+                    files.map((f: string) => chalk.cyan(f)).join(', ')
+                  );
+              newFiles.push(...files);
+            } catch (e: any) {
+              reportGeneratorFailure(g.kind, e);
+              return;
+            }
+          } else if (g.kind === 'graphql') {
+            try {
+              const { GraphQLGenerator } = await loadGenerator(
+                '@drzl/generator-graphql',
+                () => import('@drzl/generator-graphql')
+              );
+              const gen = new GraphQLGenerator(analysis);
+              // The same builder `generate` uses, so the two dispatch loops cannot disagree
+              // about what this generator is given.
+              const { files } = await gen.generate(graphqlOptions(g, cfg));
+              opts.json
+                ? console.log(JSON.stringify({ event: 'generate_complete', kind: g.kind, files }))
+                : console.log(
+                    chalk.green(`Generated (graphql): ${files.length} files`),
                     files.map((f: string) => chalk.cyan(f)).join(', ')
                   );
               newFiles.push(...files);

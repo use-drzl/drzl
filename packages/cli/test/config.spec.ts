@@ -5,6 +5,7 @@ import {
   defineConfig,
   expressOutDir,
   fastifyOutDir,
+  graphqlOutDir,
   loadConfig,
   nestjsOutDir,
   resolveConfig,
@@ -593,5 +594,66 @@ describe('@drzl/cli config: the nestjs generator', () => {
       ConfigSchema.parse(base([{ kind: 'nestjs', validation: { library: 'valibot' } }]))
     );
     expect(chosen.warnings).toEqual([]);
+  });
+});
+
+describe('@drzl/cli config: the graphql generator', () => {
+  const base = (generators: any[]) => ({ schema: 'src/db/schema.ts', generators });
+
+  it('is a kind the schema accepts', () => {
+    expect(() => ConfigSchema.parse(base([{ kind: 'graphql' }]))).not.toThrow();
+  });
+
+  it('writes to outDir by default and to path when given one', () => {
+    const cfg = ConfigSchema.parse({ ...base([{ kind: 'graphql' }]), outDir: 'src/api' });
+    expect(graphqlOutDir(cfg.generators[0], cfg)).toBe('src/api');
+    const withPath = ConfigSchema.parse({
+      ...base([{ kind: 'graphql', path: 'src/graphql' }]),
+      outDir: 'src/api',
+    });
+    expect(graphqlOutDir(withPath.generators[0], withPath)).toBe('src/graphql');
+  });
+
+  it('is watched-around, so a rebuild does not retrigger itself', () => {
+    // The watcher ignores every generator's output directory. An SDL directory missing from
+    // that list is an infinite regeneration loop, not a cosmetic omission.
+    const cfg = ConfigSchema.parse({
+      ...base([{ kind: 'graphql', path: 'src/graphql' }]),
+      outDir: 'src/api',
+    });
+    const dirs = computeGeneratorOutputDirs(cfg, '/proj');
+    expect(dirs).toContain(path.join('/proj', 'src/graphql'));
+  });
+
+  it('refuses databaseInjection with a warning, because there are no handlers at all', () => {
+    const { warnings } = resolveConfig(
+      ConfigSchema.parse(base([{ kind: 'graphql', databaseInjection: { enabled: true } }]))
+    );
+    expect(warnings.join('\n')).toMatch(/"graphql" generator sets databaseInjection/);
+    expect(warnings.join('\n')).toMatch(/does not support/);
+  });
+
+  it('refuses includeRelations with a warning, because relation lookups are routes', () => {
+    const { warnings } = resolveConfig(
+      ConfigSchema.parse(base([{ kind: 'graphql', includeRelations: true }]))
+    );
+    expect(warnings.join('\n')).toMatch(/"graphql" generator sets includeRelations/);
+    expect(warnings.join('\n')).toMatch(/does not read/);
+  });
+
+  it('refuses a validation block with a warning, because SDL is its own type language', () => {
+    // Unlike the nestjs kind there is no library key to read either: the emitted schema is
+    // GraphQL SDL, so there is nothing for zod, valibot or arktype to say. An
+    // accepted-and-ignored option is the dead-option shape this config has shipped twice.
+    const { warnings } = resolveConfig(
+      ConfigSchema.parse(base([{ kind: 'graphql', validation: { library: 'valibot' } }]))
+    );
+    expect(warnings.join('\n')).toMatch(/"graphql" generator sets "validation"/);
+    expect(warnings.join('\n')).toMatch(/does not read/);
+  });
+
+  it('does not warn on a plain graphql generator', () => {
+    const { warnings } = resolveConfig(ConfigSchema.parse(base([{ kind: 'graphql' }])));
+    expect(warnings).toEqual([]);
   });
 });

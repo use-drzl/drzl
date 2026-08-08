@@ -71,6 +71,7 @@
     "@drzl/generator-effect": "workspace:^",
     "@drzl/generator-express": "workspace:^",
     "@drzl/generator-fastify": "workspace:^",
+    "@drzl/generator-graphql": "workspace:^",
     "@drzl/generator-hono": "workspace:^",
     "@drzl/generator-json-schema": "workspace:^",
     "@drzl/generator-nestjs": "workspace:^",
