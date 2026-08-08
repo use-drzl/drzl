@@ -78,6 +78,7 @@ export const GeneratorSchema = z.object({
     'hono',
     'express',
     'fastify',
+    'nestjs',
     'service',
     'zod',
     'valibot',
@@ -548,6 +549,22 @@ export function fastifyOutDir(g: { path?: string }, cfg: { outDir: string }): st
   return g.path ?? cfg.outDir;
 }
 
+/**
+ * Where the NestJS generator writes.
+ *
+ * The same rule as the five routers, though this one emits DTO modules rather than routes: it
+ * still writes an `index.ts` barrel and a `validation.ts` of its own, so a config that runs it
+ * beside a router generator has to give at least one of them a `path`.
+ *
+ * Its own function rather than a call to one of the others, for the reason `honoOutDir` records:
+ * these are separate decisions that happen to agree today, and a reader following
+ * `computeGeneratorOutputDirs` should not have to work out which kind's function is
+ * authoritative for which.
+ */
+export function nestjsOutDir(g: { path?: string }, cfg: { outDir: string }): string {
+  return g.path ?? cfg.outDir;
+}
+
 function sharedSchemaNames(opts: { affix?: AffixOptions; schemaSuffix?: string }): string[] {
   const resolved = resolveAffix(opts);
   return NAME_MODES.map((mode) => schemaName(mode, AFFIX_PROBE_TABLE, resolved));
@@ -602,6 +619,52 @@ export function resolveConfig(cfg: DrzlConfig): { config: DrzlConfig; warnings: 
             `route schemas are JSON Schema produced by the same builder as the "json-schema" ` +
             `generator and inlined into the routes, so there is no library to choose and no ` +
             `shared schema module to import. Remove the block.`
+        );
+      }
+      continue;
+    }
+
+    /**
+     * The NestJS generator emits DTO classes, not routes, so it belongs to neither set below.
+     * It does read `validation.library` (which library the emitted schemas are spelled in), but
+     * every other key of that block describes schema *sharing*, and its DTO modules are
+     * self-contained on purpose: the class fields are generated from the same columns as the
+     * schema, so importing a schema another generator wrote would let the two drift. Each unread
+     * option is refused with a warning rather than parsed and dropped, which is the shape of
+     * dead option this config has already shipped twice.
+     */
+    if (g.kind === 'nestjs') {
+      if (g.databaseInjection?.enabled) {
+        warnings.push(
+          `drzl config: the "nestjs" generator sets databaseInjection.enabled, which it does ` +
+            `not support. It emits DTO classes with no handlers at all, so nothing reads the ` +
+            `injected handle. Reach your database from the controllers you write around these ` +
+            `DTOs, or use the "trpc" or "orpc" generator, which do delegate to ` +
+            `@drzl/generator-service.`
+        );
+      }
+      if (g.includeRelations) {
+        warnings.push(
+          `drzl config: the "nestjs" generator sets includeRelations, which it does not read. ` +
+            `Relation lookups are routes, and this generator emits DTO classes for your own ` +
+            `controllers rather than routes. Remove the flag.`
+        );
+      }
+      if (g.validation?.useShared || g.validation?.importPath) {
+        warnings.push(
+          `drzl config: the "nestjs" generator sets validation.useShared or ` +
+            `validation.importPath, which it does not read. Its DTO modules are ` +
+            `self-contained: the class fields and the schema are generated from the same ` +
+            `columns, and wrapping a schema another generator wrote would let the two drift. ` +
+            `Only validation.library is read on this kind.`
+        );
+      }
+      if (g.validation?.schemaSuffix || g.validation?.affix) {
+        warnings.push(
+          `drzl config: the "nestjs" generator sets validation.schemaSuffix or ` +
+            `validation.affix, which it does not read. Those options spell the names of shared ` +
+            `schema modules, and this generator imports none. Only validation.library is read ` +
+            `on this kind.`
         );
       }
       continue;
@@ -790,6 +853,7 @@ export function computeGeneratorOutputDirs(cfg: DrzlConfig, cwd = process.cwd())
     if (g.kind === 'hono') dirs.add(abs(honoOutDir(g, cfg)));
     if (g.kind === 'express') dirs.add(abs(expressOutDir(g, cfg)));
     if (g.kind === 'fastify') dirs.add(abs(fastifyOutDir(g, cfg)));
+    if (g.kind === 'nestjs') dirs.add(abs(nestjsOutDir(g, cfg)));
     if (g.kind === 'service') dirs.add(abs(g.path ?? 'src/services'));
     if (g.kind === 'zod') dirs.add(abs(g.path ?? 'src/validators/zod'));
     if (g.kind === 'valibot') dirs.add(abs(g.path ?? 'src/validators/valibot'));

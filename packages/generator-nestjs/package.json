@@ -1,0 +1,73 @@
+{
+  "name": "@drzl/generator-nestjs",
+  "version": "0.0.0",
+  "private": false,
+  "license": "Apache-2.0",
+  "description": "Generate NestJS DTO and entity classes from a Drizzle schema, plain classes carrying a static Standard Schema v1 validator plus an emitted pipe that runs it, with no decorators in the generated code.",
+  "keywords": [
+    "drizzle",
+    "drizzle-orm",
+    "nestjs",
+    "codegen",
+    "dto",
+    "pipe"
+  ],
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "sideEffects": false,
+  "scripts": {
+    "build": "tsup src/index.ts --dts --format esm,cjs --external prettier --clean",
+    "lint": "eslint . --ext .ts",
+    "test": "vitest run --testTimeout=20000"
+  },
+  "dependencies": {
+    "@drzl/analyzer": "workspace:^",
+    "@drzl/validation-core": "workspace:^"
+  },
+  "devDependencies": {
+    "@nestjs/common": "^11.1.28",
+    "@nestjs/core": "^11.1.28",
+    "@nestjs/platform-express": "^11.1.28",
+    "arktype": "^2.1.29",
+    "reflect-metadata": "^0.2.2",
+    "rxjs": "^7.8.2",
+    "tsup": "^8.5.1",
+    "typescript": "^5.9.3",
+    "valibot": "^1.1.0",
+    "zod": "^4.4.3"
+  },
+  "engines": {
+    "node": ">=18.17.0"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/",
+    "provenance": true
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/use-drzl/drzl",
+    "directory": "packages/generator-nestjs"
+  },
+  "funding": {
+    "type": "github",
+    "url": "https://github.com/sponsors/omar-dulaimi"
+  }
+}

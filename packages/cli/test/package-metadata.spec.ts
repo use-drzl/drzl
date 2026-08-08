@@ -94,6 +94,7 @@ it('found every publishable package', () => {
     'generator-fastify',
     'generator-hono',
     'generator-json-schema',
+    'generator-nestjs',
     'generator-orpc',
     'generator-service',
     'generator-trpc',

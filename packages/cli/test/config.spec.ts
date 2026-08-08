@@ -6,6 +6,7 @@ import {
   expressOutDir,
   fastifyOutDir,
   loadConfig,
+  nestjsOutDir,
   resolveConfig,
   trpcOutDir,
 } from '../src/config';
@@ -521,5 +522,76 @@ describe('@drzl/cli config: the fastify generator', () => {
   it('does not warn on a plain fastify generator', () => {
     const { warnings } = resolveConfig(ConfigSchema.parse(base([{ kind: 'fastify' }])));
     expect(warnings).toEqual([]);
+  });
+});
+
+describe('@drzl/cli config: the nestjs generator', () => {
+  const base = (generators: any[]) => ({ schema: 'src/db/schema.ts', generators });
+
+  it('is a kind the schema accepts', () => {
+    expect(() => ConfigSchema.parse(base([{ kind: 'nestjs' }]))).not.toThrow();
+  });
+
+  it('writes to outDir by default and to path when given one', () => {
+    const cfg = ConfigSchema.parse({ ...base([{ kind: 'nestjs' }]), outDir: 'src/api' });
+    expect(nestjsOutDir(cfg.generators[0], cfg)).toBe('src/api');
+    const withPath = ConfigSchema.parse({
+      ...base([{ kind: 'nestjs', path: 'src/dto' }]),
+      outDir: 'src/api',
+    });
+    expect(nestjsOutDir(withPath.generators[0], withPath)).toBe('src/dto');
+  });
+
+  it('is watched-around, so a rebuild does not retrigger itself', () => {
+    // The watcher ignores every generator's output directory. A DTO directory missing from
+    // that list is an infinite regeneration loop, not a cosmetic omission.
+    const cfg = ConfigSchema.parse({
+      ...base([{ kind: 'nestjs', path: 'src/dto' }]),
+      outDir: 'src/api',
+    });
+    const dirs = computeGeneratorOutputDirs(cfg, '/proj');
+    expect(dirs).toContain(path.join('/proj', 'src/dto'));
+  });
+
+  it('refuses databaseInjection with a warning, because there are no handlers at all', () => {
+    const { warnings } = resolveConfig(
+      ConfigSchema.parse(base([{ kind: 'nestjs', databaseInjection: { enabled: true } }]))
+    );
+    expect(warnings.join('\n')).toMatch(/"nestjs" generator sets databaseInjection/);
+    expect(warnings.join('\n')).toMatch(/does not support/);
+  });
+
+  it('refuses includeRelations with a warning, because relation lookups are routes', () => {
+    const { warnings } = resolveConfig(
+      ConfigSchema.parse(base([{ kind: 'nestjs', includeRelations: true }]))
+    );
+    expect(warnings.join('\n')).toMatch(/"nestjs" generator sets includeRelations/);
+    expect(warnings.join('\n')).toMatch(/does not read/);
+  });
+
+  it('refuses the validation sharing keys with a warning, and reads library alone', () => {
+    // The DTO modules are self-contained: class fields and schema come from the same columns,
+    // so a shared schema module would let the two drift. Only library is read.
+    const { warnings } = resolveConfig(
+      ConfigSchema.parse(
+        base([{ kind: 'nestjs', validation: { useShared: true, importPath: 'v' } }])
+      )
+    );
+    expect(warnings.join('\n')).toMatch(/"nestjs" generator sets validation\.useShared/);
+    const affixed = resolveConfig(
+      ConfigSchema.parse(
+        base([{ kind: 'nestjs', validation: { schemaSuffix: 'Schema' } }])
+      )
+    );
+    expect(affixed.warnings.join('\n')).toMatch(/"nestjs" generator sets validation\.schemaSuffix/);
+  });
+
+  it('does not warn on a plain nestjs generator, nor on a chosen library', () => {
+    const { warnings } = resolveConfig(ConfigSchema.parse(base([{ kind: 'nestjs' }])));
+    expect(warnings).toEqual([]);
+    const chosen = resolveConfig(
+      ConfigSchema.parse(base([{ kind: 'nestjs', validation: { library: 'valibot' } }]))
+    );
+    expect(chosen.warnings).toEqual([]);
   });
 });
