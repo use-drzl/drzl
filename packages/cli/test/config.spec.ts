@@ -3,6 +3,7 @@ import {
   computeGeneratorOutputDirs,
   ConfigSchema,
   defineConfig,
+  expressOutDir,
   loadConfig,
   resolveConfig,
   trpcOutDir,
@@ -409,5 +410,60 @@ describe('@drzl/cli config: the trpc generator', () => {
       ])
     );
     expect(parsed.generators[0].databaseInjection?.databaseTypeImport?.from).toBe('src/db/db');
+  });
+});
+
+describe('@drzl/cli config: the express generator', () => {
+  const base = (generators: any[]) => ({ schema: 'src/db/schema.ts', generators });
+
+  it('is a kind the schema accepts', () => {
+    expect(() => ConfigSchema.parse(base([{ kind: 'express' }]))).not.toThrow();
+  });
+
+  it('writes to outDir by default and to path when given one', () => {
+    const cfg = ConfigSchema.parse({ ...base([{ kind: 'express' }]), outDir: 'src/api' });
+    expect(expressOutDir(cfg.generators[0], cfg)).toBe('src/api');
+    const withPath = ConfigSchema.parse({
+      ...base([{ kind: 'express', path: 'src/routes' }]),
+      outDir: 'src/api',
+    });
+    expect(expressOutDir(withPath.generators[0], withPath)).toBe('src/routes');
+  });
+
+  it('is watched-around, so a rebuild does not retrigger itself', () => {
+    // The watcher ignores every generator's output directory. An Express directory missing from
+    // that list is an infinite regeneration loop, not a cosmetic omission.
+    const cfg = ConfigSchema.parse({
+      ...base([{ kind: 'express', path: 'src/routes' }]),
+      outDir: 'src/api',
+    });
+    const dirs = computeGeneratorOutputDirs(cfg, '/proj');
+    expect(dirs).toContain(path.join('/proj', 'src/routes'));
+  });
+
+  it('inherits the sibling validation generator affix, exactly as the other routers do', () => {
+    const { config } = resolveConfig(
+      ConfigSchema.parse(
+        base([
+          { kind: 'zod', affix: { tableCase: 'pascal' } },
+          {
+            kind: 'express',
+            validation: { useShared: true, library: 'zod', importPath: '../validators/zod' },
+          },
+        ])
+      )
+    );
+    const express = config.generators.find((g) => g.kind === 'express')!;
+    expect(express.validation?.affix?.tableCase).toBe('pascal');
+  });
+
+  it('refuses databaseInjection with a warning, because nothing would read the handle', () => {
+    // Injection is a contract with @drzl/generator-service, and these handlers are stubs that
+    // never call a service. Same refusal as the hono kind.
+    const { warnings } = resolveConfig(
+      ConfigSchema.parse(base([{ kind: 'express', databaseInjection: { enabled: true } }]))
+    );
+    expect(warnings.join('\n')).toMatch(/"express" generator sets databaseInjection/);
+    expect(warnings.join('\n')).toMatch(/does not support/);
   });
 });

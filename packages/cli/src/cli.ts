@@ -10,6 +10,7 @@ import ora from 'ora';
 import { jsonSchemaOptions } from './json-schema-options.js';
 import { trpcOptions } from './trpc-options.js';
 import { honoOptions } from './hono-options.js';
+import { expressOptions } from './express-options.js';
 import { validationOptions } from './validation-options';
 import {
   computeGeneratorOutputDirs,
@@ -291,6 +292,29 @@ program
             reportGeneratorFailure(g.kind, e);
             process.exit(1);
           }
+        } else if (g.kind === 'express') {
+          try {
+            // Optional for the same reason tRPC and Hono are: a package that has never been
+            // published cannot publish through npm's trusted-publisher OIDC flow, so its first
+            // version goes out by hand, and naming it as a hard dependency of the CLI in the same
+            // release breaks `npm i @drzl/cli` for everyone until it exists.
+            const { ExpressGenerator } = await loadGenerator(
+              '@drzl/generator-express',
+              () => import('@drzl/generator-express')
+            );
+            const gen = new ExpressGenerator(analysis);
+            const { files } = await gen.generate({
+              ...expressOptions(g, cfg),
+              onProgress: ({ index }: { index: number }) => progress.update(index),
+            });
+            progress.stop();
+            ora().succeed(chalk.green(`Generated (express): ${files.length} files`));
+            files.forEach((f: string) => console.log('  -', chalk.cyan(f)));
+          } catch (e: any) {
+            progress.stop();
+            reportGeneratorFailure(g.kind, e);
+            process.exit(1);
+          }
         } else if (g.kind === 'service') {
           try {
             const { ServiceGenerator } = await loadGenerator(
@@ -554,7 +578,7 @@ program
   .option('-c, --config <path>', 'path to drzl.config')
   .option(
     '--pipeline <name>',
-    'all | analyze | generate-orpc | generate-trpc | generate-hono',
+    'all | analyze | generate-orpc | generate-trpc | generate-hono | generate-express',
     'all'
   )
   .option('--debounce <ms>', 'debounce ms', '200')
@@ -705,6 +729,7 @@ program
           'generate-orpc': 'orpc',
           'generate-trpc': 'trpc',
           'generate-hono': 'hono',
+          'generate-express': 'express',
         };
 
         for (const g of cfg.generators) {
@@ -769,6 +794,27 @@ program
                 ? console.log(JSON.stringify({ event: 'generate_complete', kind: g.kind, files }))
                 : console.log(
                     chalk.green(`Generated (hono): ${files.length} files`),
+                    files.map((f: string) => chalk.cyan(f)).join(', ')
+                  );
+              newFiles.push(...files);
+            } catch (e: any) {
+              reportGeneratorFailure(g.kind, e);
+              return;
+            }
+          } else if (g.kind === 'express') {
+            try {
+              const { ExpressGenerator } = await loadGenerator(
+                '@drzl/generator-express',
+                () => import('@drzl/generator-express')
+              );
+              const gen = new ExpressGenerator(analysis);
+              // The same builder `generate` uses, so the two dispatch loops cannot disagree
+              // about what this generator is given.
+              const { files } = await gen.generate(expressOptions(g, cfg));
+              opts.json
+                ? console.log(JSON.stringify({ event: 'generate_complete', kind: g.kind, files }))
+                : console.log(
+                    chalk.green(`Generated (express): ${files.length} files`),
                     files.map((f: string) => chalk.cyan(f)).join(', ')
                   );
               newFiles.push(...files);
