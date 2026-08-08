@@ -33,6 +33,11 @@
     "@drzl/validation-core": "workspace:^"
   },
   "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
+    "better-sqlite3": "^12.2.0",
+    "drizzle-orm": "^0.45.2",
+    "drizzle-orm-v1": "npm:drizzle-orm@1.0.0-rc.4",
+    "mysql2": "^3.23.2",
     "tsup": "^8.5.1",
     "typescript": "^5.9.3"
   },

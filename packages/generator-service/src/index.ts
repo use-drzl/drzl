@@ -107,13 +107,110 @@ function renderTypes(table: Table) {
   return `export interface Insert${T} {\n${insertFields}\n}\nexport interface Update${T} {\n${updateFields}\n}\nexport interface Select${T} {\n${selectFields}\n}`;
 }
 
+/**
+ * The drizzle-mode service for a dialect with no RETURNING: MySQL and SingleStore, whose
+ * insert/update/delete builders have no `.returning()` on either drizzle major, so the pg
+ * emission fails tsc against every schema of these dialects.
+ *
+ * What replaces it is measured on MySQL 8.4.11 through mysql2, identically on drizzle-orm
+ * 0.45.2 and 1.0.0-rc.4:
+ *
+ * - `insert(...).$returningId()` runs the same single INSERT and reports the primary key as
+ *   `[{ <pk>: value }]` per row when drizzle can know the value: an AUTO_INCREMENT key
+ *   (derived from the result packet's insertId) or a `$defaultFn` key (generated client
+ *   side). For a caller-supplied key, a SQL-side `.default(...)` key and a composite key it
+ *   reports `[]`, and its declared result type omits those columns, which is why create
+ *   falls back to the key already in the input rather than reading it off the result.
+ * - awaiting `update(...)` or `delete(...)` yields `[ResultSetHeader, ...]` (affectedRows and
+ *   friends), never rows, so update writes and then reads the row back by its key. delete
+ *   never used RETURNING on any dialect and keeps its shape.
+ *
+ * The method signatures are exactly the ones every other dialect gets. The divergence is
+ * behavioral: create and update are two statements here (write, then read back) with no
+ * transaction around them, where RETURNING dialects do one atomic statement.
+ *
+ * A database-generated primary key (`generatedAlwaysAs`) is the one shape this dialect cannot
+ * round-trip: the database computes the key and reports nothing, and the input does not carry
+ * it, so create throws with an explanation instead of emitting a lookup that quietly returns
+ * undefined.
+ */
+function renderNoReturningDrizzleService(args: {
+  table: Table;
+  dialect: Analysis['dialect'];
+  Service: string;
+  pk: string;
+  schemaImportPath: string;
+  dbImportPath?: string;
+  typeImport: string;
+  dbType: string;
+  injection: boolean;
+}) {
+  const { table, dialect, Service, pk, schemaImportPath, dbImportPath, typeImport, dbType } =
+    args;
+  const T = table.tsName;
+  const pkCol = table.columns.find((c: Column) => c.name === pk);
+  const dbParam = args.injection ? `db: ${dbType}, ` : '';
+  const dbParamOnly = args.injection ? `db: ${dbType}` : '';
+  const head = args.injection
+    ? `import { ${T} } from '${schemaImportPath}';\nimport { eq } from 'drizzle-orm';\n${typeImport}\n`
+    : `import { db } from '${dbImportPath}';\nimport { ${T} } from '${schemaImportPath}';\nimport { eq } from 'drizzle-orm';\n`;
+
+  const create = pkCol?.isGenerated
+    ? `  static async create(${dbParam}input: Insert${T}): Promise<Select${T}> {
+    // ${pk} is database-generated and ${dialect} has no RETURNING, so the created row cannot
+    // be read back by its key. Insert directly and select by a column you know.
+    ${args.injection ? 'void db;\n    void input;' : 'void input;'}
+    throw new Error(
+      '${Service}.create is not supported on ${dialect}: primary key ${T}.${pk} is database-generated and cannot be read back without RETURNING'
+    );
+  }`
+    : `  static async create(${dbParam}input: Insert${T}): Promise<Select${T}> {
+    // No RETURNING on ${dialect}. $returningId() reports AUTO_INCREMENT and $defaultFn keys as
+    // [{ ${pk} }]; for a caller-supplied key it reports nothing and the input already carries
+    // the value. Either way the created row is then read back by that key.
+    const ids = (await db.insert(${T}).values(input).$returningId()) as Array<{ ${pk}: Select${T}['${pk}'] }>;
+    const key = ids[0] ? ids[0].${pk} : (input as Select${T}).${pk};
+    const rows = await db.select().from(${T}).where(eq(${T}.${pk}, key)).limit(1);
+    return rows[0];
+  }`;
+
+  return `${head}
+type Select${T} = typeof ${T}.$inferSelect;
+type Insert${T} = typeof ${T}.$inferInsert;
+type Update${T} = Partial<Omit<typeof ${T}.$inferInsert, '${pk}'>>;
+
+export class ${Service} {
+  static async getAll(${dbParamOnly}): Promise<Select${T}[]> {
+    const rows = await db.select().from(${T});
+    return rows;
+  }
+  static async getById(${dbParam}id: number): Promise<Select${T} | null> {
+    const rows = await db.select().from(${T}).where(eq(${T}.${pk}, id)).limit(1);
+    return rows[0] ?? null;
+  }
+${create}
+  static async update(${dbParam}id: number, data: Update${T}): Promise<Select${T}> {
+    // No RETURNING on updates either: write, then read the row back by its key.
+    await db.update(${T}).set(data).where(eq(${T}.${pk}, id));
+    const rows = await db.select().from(${T}).where(eq(${T}.${pk}, id)).limit(1);
+    return rows[0];
+  }
+  static async delete(${dbParam}id: number): Promise<boolean> {
+    await db.delete(${T}).where(eq(${T}.${pk}, id));
+    return true;
+  }
+}
+`;
+}
+
 function renderService(
   table: Table,
   mode: 'stub' | 'drizzle',
   dbImportPath?: string,
   schemaImportPath?: string,
   databaseInjection?: ServiceGenerateOptions['databaseInjection'],
-  importExtension?: ImportExtension
+  importExtension?: ImportExtension,
+  dialect?: Analysis['dialect']
 ) {
   const T = table.tsName;
   const singular = singularize(T);
@@ -125,8 +222,25 @@ function renderService(
     const typeImport = databaseInjection?.databaseTypeImport
       ? `\nimport type { ${databaseInjection.databaseTypeImport.name} } from '${databaseInjection.databaseTypeImport.from}';\n`
       : '';
+    // From the analysis, which records the dialect off drizzle's own entityKind marks; never
+    // from class-name sniffing here. `unknown` keeps the RETURNING emission, matching what
+    // every schema got before the dialect reached this function, and the analyzer has already
+    // warned DRZL_ANL_DIALECT for it.
+    const noReturning = dialect === 'mysql' || dialect === 'singlestore';
 
     if (isInjectionMode) {
+      if (noReturning) {
+        return renderNoReturningDrizzleService({
+          table,
+          dialect,
+          Service,
+          pk,
+          schemaImportPath,
+          typeImport,
+          dbType,
+          injection: true,
+        });
+      }
       // Database injection mode - services accept database as parameter
       return `import { ${T} } from '${schemaImportPath}';
 import { eq } from 'drizzle-orm';
@@ -160,6 +274,19 @@ export class ${Service} {
 }
 `;
     } else if (dbImportPath) {
+      if (noReturning) {
+        return renderNoReturningDrizzleService({
+          table,
+          dialect,
+          Service,
+          pk,
+          schemaImportPath,
+          dbImportPath,
+          typeImport,
+          dbType,
+          injection: false,
+        });
+      }
       // Traditional mode - global database import (backward compatibility)
       return `import { db } from '${dbImportPath}';
 import { ${T} } from '${schemaImportPath}';
@@ -235,7 +362,10 @@ export class ServiceGenerator {
           ? resolveConfiguredImport(opts.schemaImportPath, out, process.cwd(), opts.importExtension)
           : undefined,
         opts.databaseInjection,
-        opts.importExtension
+        opts.importExtension,
+        // The dialect decides whether RETURNING exists. It is a fact about the schema the
+        // analyzer already recorded; MySQL and SingleStore get the $returningId emission.
+        this.analysis.dialect
       );
       const formattedTypes = await formatCode(
         buildHeader(opts.outputHeader) + typesCode,
