@@ -84,9 +84,10 @@ Shared interfaces and helpers used by validation generators.
     name every generator writes it to.
 - Uniqueness
   - `renderDuplicateFinder(table, fnName, rowType)` -> the source of a function returning the rows
-    in a batch that collide with an earlier row on a unique constraint. Plain TypeScript with no
-    reference to any validation library, so all four generators emit the same one. Null and absent
-    columns skip a constraint, matching SQL.
+    in a batch that collide with an earlier row on the primary key or a unique constraint. Plain
+    TypeScript with no reference to any validation library, so every validator generator emits the
+    same one. Null and absent columns skip a constraint, matching SQL, so rows that leave a
+    generated key to the database report nothing on it.
 - Naming (shared by every generator that emits a schema name)
   - `resolveAffix({ affix, schemaSuffix })` -> `ResolvedAffix`
   - `schemaName(mode, tsName, resolved)`, `typeName(mode, tsName, resolved)`

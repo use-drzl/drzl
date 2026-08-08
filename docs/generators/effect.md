@@ -197,3 +197,53 @@ role: Schema.UUID as unknown as Schema.Schema<(typeof users.$inferSelect)['role'
 The cast exists only at compile time, so every runtime check the wrapped schema carried still runs.
 `typedJson` covers only the columns with no runtime type, where the reference _replaces_ the schema;
 `typedColumns` narrows every column and implies `typedJson`.
+
+## `duplicateFinder`
+
+Uniqueness is the one constraint a per-row validator structurally cannot check: whether a value is
+unique is a fact about the table, not about the row. No first-party validator attempts it, and
+neither does a schema here.
+
+What needs no database is whether a **batch collides with itself**, and that is the half you can
+fix before sending anything. It matters for a bulk insert, where a thousand rows fail whole on one
+collision and the error names a constraint rather than a row.
+
+```ts
+{ kind: 'effect', path: 'src/validators/effect', duplicateFinder: true }
+```
+
+emits, for a table with a primary key or unique constraints:
+
+```ts
+export function findDuplicateusers(
+  rows: readonly InsertusersInput[]
+): Array<{ index: number; constraint: string; firstIndex: number }> { ... }
+```
+
+```ts
+findDuplicateusers([
+  { email: 'a@b.co', org: 'x', handle: 'h' },
+  { email: 'a@b.co', org: 'y', handle: 'h' },
+]);
+// [{ index: 1, constraint: 'email', firstIndex: 0 }]
+```
+
+The emitted function is plain TypeScript with no Effect import, identical to what the other four
+validator generators emit. Three details it follows:
+
+- **The primary key counts.** The database enforces it with a unique index and its own error says
+  so: two rows sharing an explicit key fail with `duplicate key value violates unique constraint
+  "users_pkey"` (23505, measured on Postgres 17). Seed fixtures carry explicit keys so that
+  foreign keys can point at known rows, which makes this the collision bulk data actually has.
+  Rows that leave a generated key to the database report nothing on it.
+- **Null is not equal to null.** A constraint is skipped for any row where one of its columns is
+  null or absent, because a unique index accepts any number of NULLs. Reporting those would send
+  you chasing rows the database is perfectly happy with.
+- **Composite keys compare by value.** The key is JSON, so `[1, '2']` never collides with
+  `['1', 2]`, which a separator-joined key would.
+
+A batch that passes can still collide with rows already stored. This checks the half that needs no
+round trip. The [seeding recipe](/examples/seed) composes the finder with the emitted schemas into
+a checked bulk-insert pipeline: validate, dedupe, order by foreign keys, chunk, commit.
+
+Off by default: generated code ships in your bundle.

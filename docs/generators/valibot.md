@@ -230,7 +230,7 @@ collision and the error names a constraint rather than a row.
 { kind: 'valibot', path: 'src/validators/valibot', duplicateFinder: true }
 ```
 
-emits, for a table with unique constraints:
+emits, for a table with a primary key or unique constraints:
 
 ```ts
 export function findDuplicateusers(
@@ -246,8 +246,13 @@ findDuplicateusers([
 // [{ index: 1, constraint: 'email', firstIndex: 0 }]
 ```
 
-Two details it follows:
+Three details it follows:
 
+- **The primary key counts.** The database enforces it with a unique index and its own error says
+  so: two rows sharing an explicit key fail with `duplicate key value violates unique constraint
+  "users_pkey"` (23505, measured on Postgres 17). Seed fixtures carry explicit keys so that
+  foreign keys can point at known rows, which makes this the collision bulk data actually has.
+  Rows that leave a generated key to the database report nothing on it.
 - **Null is not equal to null.** A constraint is skipped for any row where one of its columns is
   null or absent, because a unique index accepts any number of NULLs. Reporting those would send
   you chasing rows the database is perfectly happy with.
@@ -255,7 +260,8 @@ Two details it follows:
   `['1', 2]`, which a separator-joined key would.
 
 A batch that passes can still collide with rows already stored. This checks the half that needs no
-round trip.
+round trip. The [seeding recipe](/examples/seed) composes the finder with the emitted schemas into
+a checked bulk-insert pipeline: validate, dedupe, order by foreign keys, chunk, commit.
 
 Off by default: generated code ships in your bundle.
 

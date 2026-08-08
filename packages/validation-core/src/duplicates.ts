@@ -15,13 +15,31 @@
  */
 import type { Key, Table } from '@drzl/analyzer';
 
-/** The unique constraints worth emitting a finder for. */
+/**
+ * The constraints worth emitting a finder for: the primary key, then the unique constraints.
+ *
+ * The primary key belongs here because the database enforces it with a unique index and says so
+ * in its own error: two rows sharing an explicit key fail with `duplicate key value violates
+ * unique constraint "t_pkey"` (23505, measured on Postgres 17). Seed data is where this bites,
+ * since fixtures carry explicit keys so that foreign keys can point at known rows. Rows that
+ * leave a generated key to the database are unaffected: absence skips the constraint, exactly as
+ * it does for a unique key.
+ *
+ * The analysis does not record a name for the key, so the finder names it the way the default
+ * convention and the constraints module both do: `<table>_pkey`.
+ */
 function usableKeys(table: Table): Key[] {
-  return (table.unique ?? []).filter((k) => k.columns.length > 0);
+  const keys: Key[] = [];
+  const pk = table.primaryKey;
+  if (pk && pk.columns.length > 0) {
+    keys.push({ name: pk.name ?? `${table.name}_pkey`, columns: pk.columns });
+  }
+  keys.push(...(table.unique ?? []).filter((k) => k.columns.length > 0));
+  return keys;
 }
 
 /**
- * `findDuplicate<Table>s` for a table with unique constraints, or nothing.
+ * `findDuplicate<Table>s` for a table with a primary key or unique constraints, or nothing.
  *
  * `rowType` is the name of the insert type, which is what a caller has in hand before an insert.
  * Passed in rather than derived, because each generator names its types differently.
@@ -44,14 +62,15 @@ export function renderDuplicateFinder(
     .join('\n');
 
   return `/**
- * Rows in \`rows\` that collide with an earlier row on a unique constraint.
+ * Rows in \`rows\` that collide with an earlier row on the primary key or a unique constraint.
  *
  * Uniqueness is a fact about the table rather than about a row, so no schema can check it. This
  * checks the half that needs no database: whether the batch collides with itself. A batch that
  * passes here can still collide with rows already stored.
  *
  * A constraint is skipped for any row where one of its columns is null or absent, matching SQL,
- * where NULL is not equal to NULL and a unique index therefore permits repeats.
+ * where NULL is not equal to NULL and a unique index therefore permits repeats. Rows that leave
+ * a generated primary key to the database therefore report nothing on it.
  */
 export function ${fnName}(
   rows: readonly ${rowType}[]

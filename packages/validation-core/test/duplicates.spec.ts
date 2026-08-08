@@ -12,14 +12,20 @@ import os from 'node:os';
 import { renderDuplicateFinder } from '../src/duplicates';
 import type { Table } from '@drzl/analyzer';
 
-const table = (unique: Array<{ name?: string; columns: string[] }>): Table =>
-  ({ name: 't', tsName: 't', columns: [], unique, indexes: [], checks: [] }) as never;
+const table = (
+  unique: Array<{ name?: string; columns: string[] }>,
+  primaryKey?: { name?: string; columns: string[] }
+): Table =>
+  ({ name: 't', tsName: 't', columns: [], unique, primaryKey, indexes: [], checks: [] }) as never;
 
 let seq = 0;
 
 /** Write the emitted function to a module and import it, so the assertions run real code. */
-async function finderFor(unique: Array<{ name?: string; columns: string[] }>) {
-  const src = renderDuplicateFinder(table(unique), 'findDuplicates', 'Row');
+async function finderFor(
+  unique: Array<{ name?: string; columns: string[] }>,
+  primaryKey?: { name?: string; columns: string[] }
+) {
+  const src = renderDuplicateFinder(table(unique, primaryKey), 'findDuplicates', 'Row');
   expect(src, 'nothing emitted').toBeTruthy();
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'drzl-dup-'));
   const file = path.join(dir, `d${seq++}.ts`);
@@ -101,9 +107,57 @@ describe('several constraints at once', () => {
   });
 });
 
-describe('a table with no unique constraint', () => {
+describe('the primary key, which the database enforces with a unique index', () => {
+  // Measured against a real Postgres 17: two rows sharing an explicit key fail the insert with
+  // `duplicate key value violates unique constraint "skus_pkey"` (23505). The database's own
+  // error calls the primary key a unique constraint, so the finder covers it as one.
+  it('is a constraint: a table with only a primary key gets a finder', async () => {
+    const f = await finderFor([], { columns: ['code'] });
+    const out = f([
+      { code: 'A1', label: 'first' },
+      { code: 'A1', label: 'second' },
+    ]);
+    expect(out).toEqual([{ index: 1, constraint: 't_pkey', firstIndex: 0 }]);
+  });
+
+  it('reports an explicit key collision even when every unique column differs', async () => {
+    const f = await finderFor([{ name: 'email_uq', columns: ['email'] }], { columns: ['id'] });
+    const out = f([
+      { id: 7, email: 'a@x.co' },
+      { id: 7, email: 'b@x.co' },
+    ]);
+    expect(out).toEqual([{ index: 1, constraint: 't_pkey', firstIndex: 0 }]);
+  });
+
+  it('stays silent for rows that leave the key to the database', async () => {
+    // A serial or defaulted key is absent from seed rows; absence skips the constraint exactly
+    // as it does for a unique key, so generated-key batches report nothing.
+    const f = await finderFor([], { columns: ['id'] });
+    expect(f([{ x: 1 }, { x: 1 }])).toEqual([]);
+  });
+
+  it('treats a composite key as one constraint', async () => {
+    const f = await finderFor([], { columns: ['a', 'b'] });
+    const out = f([
+      { a: 1, b: 1 },
+      { a: 1, b: 2 },
+      { a: 1, b: 1 },
+    ]);
+    expect(out).toEqual([{ index: 2, constraint: 't_pkey', firstIndex: 0 }]);
+  });
+
+  it('uses the declared name when the analysis carries one', async () => {
+    const f = await finderFor([], { name: 'sku_pk', columns: ['code'] });
+    expect(f([{ code: 'x' }, { code: 'x' }])).toEqual([
+      { index: 1, constraint: 'sku_pk', firstIndex: 0 },
+    ]);
+  });
+});
+
+describe('a table with no unique constraint and no primary key', () => {
   it('gets no function at all', () => {
     expect(renderDuplicateFinder(table([]), 'f', 'Row')).toBeUndefined();
     expect(renderDuplicateFinder(table([{ columns: [] }]), 'f', 'Row')).toBeUndefined();
+    expect(renderDuplicateFinder(table([], { columns: [] }), 'f', 'Row')).toBeUndefined();
   });
 });
