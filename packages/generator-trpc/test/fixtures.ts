@@ -65,6 +65,15 @@ export const auditLog = table('audit_log', {
   columns: [col('at', 'Date'), col('what', 'string')],
 });
 
+/**
+ * A key column the input schemas cannot type: `bigint` has no JSON transport, so `field()`
+ * emits `z.unknown()` for it, and `unknown` is not assignable to the service's `id: bigint`.
+ */
+export const ledgers = table('ledgers', {
+  columns: [col('seq', 'bigint'), col('entry', 'string')],
+  primaryKey: { columns: ['seq'] },
+});
+
 /** A materialized view: readable, and refuses every write. */
 export const activeUsers = table('active_users', {
   tsName: 'activeUsers',

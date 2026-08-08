@@ -1,18 +1,20 @@
 /**
  * `template: 'service'`, which wires the routers to the classes `@drzl/generator-service` writes.
  *
- * That generator types its key parameter as exactly one `number`, in both of its modes:
- * `getById(id: number)`, `update(id, data)`, `delete(id)`. So a call built from a composite key,
- * or from a `varchar` primary key, does not typecheck against it. Emitting that call anyway is
- * how a generator ships output that reads correctly and does not compile, which is the failure
- * this repository keeps finding after release.
+ * That generator types every key parameter from the primary key itself (plan addendum BP): one
+ * parameter per key column, at the column's real type, so `getById(input.isbn)` and
+ * `getById(input.orgId, input.userId)` both typecheck against it. The one key it cannot receive
+ * is a column DRZL could not type: the input schema carries `z.unknown()` there, `unknown` is
+ * not assignable to the service's typed parameter, and emitting the call anyway is how a
+ * generator ships output that reads correctly and does not compile. Those fall back to the
+ * throwing stub, with the reason stated in the file.
  */
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { TRPCGenerator } from '../src';
-import { analysis, books, memberships, posts, users } from './fixtures';
+import { analysis, books, ledgers, memberships, posts, users } from './fixtures';
 
 async function router(t = users, opts: Record<string, unknown> = {}) {
   const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), 'drzl-trpc-svc-'));
@@ -108,24 +110,24 @@ describe('database injection', () => {
   });
 });
 
-describe('a key the service layer cannot express', () => {
-  it('falls back to a throwing stub for a composite key, and says why', async () => {
+describe('keys the service layer now expresses', () => {
+  it('wires a composite key through as one argument per key column, in key order', async () => {
     const source = await router(memberships);
-    // list and create still reach the service: neither needs a key.
     expect(source).toContain('return await MembershipService.getAll();');
     expect(source).toContain('return await MembershipService.create(input);');
-    for (const method of ['getById', 'update(', 'delete(']) {
-      expect(source, method).not.toContain(`MembershipService.${method}`);
-    }
-    expect(source).toContain('has a composite primary key (orgId, userId)');
-    expect(source).toMatch(/throw new Error\('Not implemented: byId memberships\.'\)/);
+    expect(source).toContain('return await MembershipService.getById(input.orgId, input.userId);');
+    expect(source).toContain(
+      'return await MembershipService.update(input.orgId, input.userId, input.data);'
+    );
+    expect(source).toContain('return await MembershipService.delete(input.orgId, input.userId);');
+    expect(source).not.toContain('Not implemented: byId');
   });
 
-  it('does the same for a non-numeric key', async () => {
+  it('wires a non-numeric key through at its real type', async () => {
     const source = await router(books);
-    expect(source).toContain('has a non-numeric primary key (isbn)');
-    expect(source).not.toContain('BookService.getById');
-    expect(source).toContain('return await BookService.getAll();');
+    expect(source).toContain('return await BookService.getById(input.isbn);');
+    expect(source).toContain('return await BookService.update(input.isbn, input.data);');
+    expect(source).not.toContain('Not implemented: byId');
   });
 
   it('keeps the client surface the same shape either way', async () => {
@@ -134,6 +136,30 @@ describe('a key the service layer cannot express', () => {
     const source = await router(books);
     expect(source).toContain('.input(z.object({ isbn: z.string() }))');
     expect(source).toContain('.output(SelectbooksSchema.nullable())');
+  });
+
+  it('passes the injected handle ahead of a composite key', async () => {
+    const source = await router(memberships, {
+      databaseInjection: { enabled: true, databaseType: 'Database' },
+    });
+    expect(source).toContain(
+      'return await MembershipService.getById(ctx.db, input.orgId, input.userId);'
+    );
+  });
+});
+
+describe('a key the service layer cannot receive', () => {
+  it('falls back to a throwing stub when a key column has no typed transport, and says why', async () => {
+    // `bigint` over JSON arrives as z.unknown() in the input schema, and `unknown` is not
+    // assignable to the service's `id: bigint`, so the call would not typecheck.
+    const source = await router(ledgers);
+    expect(source).toContain('return await LedgerService.getAll();');
+    expect(source).toContain('return await LedgerService.create(input);');
+    for (const method of ['getById', 'update(', 'delete(']) {
+      expect(source, method).not.toContain(`LedgerService.${method}`);
+    }
+    expect(source).toContain('DRZL cannot type its column seq');
+    expect(source).toMatch(/throw new Error\('Not implemented: byId ledgers\.'\)/);
   });
 });
 

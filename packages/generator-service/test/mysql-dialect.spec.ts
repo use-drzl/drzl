@@ -21,6 +21,12 @@
  *   - update:  awaiting the builder yields `[ResultSetHeader, undefined]` (affectedRows and
  *     friends), never the row, so the emitted update writes and then reads the row back.
  *   - delete:  unchanged; the service never used RETURNING on delete for any dialect.
+ *
+ * Plan addendum BP extended this file's schema with a varchar key, a keyless table and the
+ * composite disambiguation checks: the read-back paths above must carry the key at its real
+ * type (a supplied string key comes back by that string), a composite key must address by
+ * every column, and a keyless table has nothing to read a created row back by, so its create
+ * throws with an explanation the same way a database-generated key's does.
  */
 import { execFileSync } from 'node:child_process';
 import { existsSync, promises as fs } from 'node:fs';
@@ -82,6 +88,16 @@ export const gen = mysqlTable('svc_gen', {
   a: int('a').notNull(),
   b: int('b').generatedAlwaysAs(sql\`a * 2\`, { mode: 'stored' }).primaryKey(),
 });
+
+export const books = mysqlTable('svc_books', {
+  isbn: varchar('isbn', { length: 20 }).primaryKey(),
+  title: varchar('title', { length: 100 }).notNull(),
+});
+
+export const logs = mysqlTable('svc_logs', {
+  at: int('at').notNull(),
+  what: varchar('what', { length: 50 }).notNull(),
+});
 `;
 
 const PG_SCHEMA = `import { pgTable, serial, text } from 'drizzle-orm/pg-core';
@@ -132,7 +148,7 @@ async function buildTree(name: string, majorPkg: string): Promise<Tree> {
   );
 
   const analysis = await new SchemaAnalyzer(rel(path.join(dir, 'schema.ts'))).analyze({});
-  expect(analysis.tables.length, `no tables analyzed: ${JSON.stringify(analysis.issues)}`).toBe(5);
+  expect(analysis.tables.length, `no tables analyzed: ${JSON.stringify(analysis.issues)}`).toBe(7);
 
   const gen = new ServiceGenerator(analysis);
   await gen.generate({
@@ -274,6 +290,36 @@ describe.each([
     expect(text).toContain('database-generated');
     expect(text).not.toContain('$returningId');
   });
+
+  it('types a varchar key as string on every method, including the read-back fallback', () => {
+    for (const sub of ['services', 'services-injection']) {
+      const text = tree().texts[`${sub}/bookService.ts`];
+      expect(text).toContain('id: string');
+      expect(text).not.toContain('id: number');
+      expect(text).toContain('ids[0] ? ids[0].isbn : (input as Selectbooks).isbn');
+    }
+  });
+
+  it('addresses a composite key by every column and reads create back from the input key', () => {
+    const text = tree().texts['services-injection/pairService.ts'];
+    expect(text).toContain('static async getById(db: MySql2Database, a: number, b: number)');
+    expect(text).toContain('and(eq(pairs.a, a), eq(pairs.b, b))');
+    // $returningId() reports nothing for a composite key (measured above), so create does not
+    // call it: the input already carries every part of the key. The emitted comment may still
+    // name it, so the assertion is on the call.
+    expect(text).not.toContain('.$returningId()');
+    expect(text).toContain('and(eq(pairs.a, key.a), eq(pairs.b, key.b))');
+    expect(text).toContain("Partial<Omit<typeof pairs.$inferInsert, 'a' | 'b'>>");
+  });
+
+  it('drops the addressing methods for a keyless table and throws from its create', () => {
+    const text = tree().texts['services-injection/logService.ts'];
+    expect(text).not.toContain('getById');
+    expect(text).not.toContain('static async update');
+    expect(text).not.toContain('static async delete');
+    expect(text).toContain('has no primary key');
+    expect(text).not.toContain("from 'drizzle-orm'");
+  });
 });
 
 describe('the compiler would have said so', () => {
@@ -338,7 +384,7 @@ describe.skipIf(!MYSQL_URL)('runtime against a real MySQL', () => {
           ['0.45.2', v045],
           ['1.0.0-rc.4', v1],
         ] as const) {
-          for (const t of ['svc_users', 'svc_codes', 'svc_widgets', 'svc_pairs']) {
+          for (const t of ['svc_users', 'svc_codes', 'svc_widgets', 'svc_pairs', 'svc_books', 'svc_logs']) {
             await raw.query(`DROP TABLE IF EXISTS ${t}`);
           }
           await raw.query(
@@ -349,6 +395,10 @@ describe.skipIf(!MYSQL_URL)('runtime against a real MySQL', () => {
           await raw.query(
             'CREATE TABLE svc_pairs (a int NOT NULL, b int NOT NULL, note varchar(20) NULL, PRIMARY KEY (a, b))'
           );
+          await raw.query(
+            'CREATE TABLE svc_books (isbn varchar(20) NOT NULL PRIMARY KEY, title varchar(100) NOT NULL)'
+          );
+          await raw.query('CREATE TABLE svc_logs (at int NOT NULL, what varchar(50) NOT NULL)');
 
           let db: unknown;
           if (label === '0.45.2') {
@@ -367,6 +417,8 @@ describe.skipIf(!MYSQL_URL)('runtime against a real MySQL', () => {
           const { CodeService } = await svc('codeService.ts');
           const { WidgetService } = await svc('widgetService.ts');
           const { PairService } = await svc('pairService.ts');
+          const { BookService } = await svc('bookService.ts');
+          const { LogService } = await svc('logService.ts');
 
           // AUTO_INCREMENT pk: the database supplies the key and create hands the row back.
           const created = await UserService.create(db, { email: 'ada@x.io' });
@@ -402,9 +454,37 @@ describe.skipIf(!MYSQL_URL)('runtime against a real MySQL', () => {
           expect(typeof widget.id, label).toBe('number');
           expect(await WidgetService.getById(db, widget.id), label).toEqual(widget);
 
-          // Composite pk: addressed by its first column, the generator's single-key model.
+          // Composite pk: create reads the row back by every key column from the input, and the
+          // full key is what tells two rows sharing a first column apart. Under the BP defect all
+          // of these addressed by `a` alone, so getById returned an arbitrary sibling and
+          // update hit both rows.
           const pair = await PairService.create(db, { a: 1, b: 2, note: 'n' });
           expect(pair, label).toEqual({ a: 1, b: 2, note: 'n' });
+          const sibling = await PairService.create(db, { a: 1, b: 3, note: 'm' });
+          expect(sibling, label).toEqual({ a: 1, b: 3, note: 'm' });
+          expect(await PairService.getById(db, 1, 3), label).toEqual(sibling);
+          const patched = await PairService.update(db, 1, 3, { note: 'z' });
+          expect(patched, label).toEqual({ a: 1, b: 3, note: 'z' });
+          expect(await PairService.getById(db, 1, 2), label).toEqual({ a: 1, b: 2, note: 'n' });
+          expect(await PairService.delete(db, 1, 2), label).toBe(true);
+          expect(await PairService.getById(db, 1, 2), label).toBeNull();
+          expect(await PairService.getById(db, 1, 3), label).not.toBeNull();
+
+          // A supplied string key: create returns the row by that key, typed as the string it is.
+          const book = await BookService.create(db, { isbn: '978-3', title: 'SICP' });
+          expect(book, label).toEqual({ isbn: '978-3', title: 'SICP' });
+          expect(await BookService.getById(db, '978-3'), label).toEqual(book);
+          const retitled = await BookService.update(db, '978-3', { title: 'SICP 2e' });
+          expect(retitled, label).toEqual({ isbn: '978-3', title: 'SICP 2e' });
+          expect(await BookService.delete(db, '978-3'), label).toBe(true);
+          expect(await BookService.getById(db, '978-3'), label).toBeNull();
+
+          // Keyless: nothing addresses a row and mysql cannot read a created one back, so the
+          // class has no addressing methods and its create says why it cannot resolve.
+          expect(LogService.getById, label).toBeUndefined();
+          await expect(LogService.create(db, { at: 7, what: 'boot' }), label).rejects.toThrow(
+            /no primary key/
+          );
         }
       } finally {
         for (const c of cleanups.reverse()) await c();
