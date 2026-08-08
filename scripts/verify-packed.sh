@@ -691,6 +691,13 @@ export const books = pgTable('books', {
   authorId: integer('author_id').references(() => authors.id),
 });
 SCHEMA
+      # A typed, driverless db object. The docs-probe stage's `{} as any` collapses every builder
+      # call, which is how the BN (.returning() on MySQL) and BP (id: number on a varchar key)
+      # classes stayed invisible; a real PgDatabase type makes tsc see the builders.
+      cat > "src/dia-$dialect/db.ts" <<'DB'
+import type { PgDatabase } from 'drizzle-orm/pg-core';
+export const db = null as unknown as PgDatabase<any, any, any>;
+DB
       ;;
     mysql)
       cat > "src/dia-$dialect/schema.ts" <<'SCHEMA'
@@ -704,6 +711,10 @@ export const books = mysqlTable('books', {
   authorId: int('author_id').references(() => authors.id),
 });
 SCHEMA
+      cat > "src/dia-$dialect/db.ts" <<'DB'
+import type { MySqlDatabase } from 'drizzle-orm/mysql-core';
+export const db = null as unknown as MySqlDatabase<any, any>;
+DB
       ;;
   esac
 
@@ -714,6 +725,7 @@ export default {
   generators: [
     { kind: 'zod', path: './src/dia-$dialect/zod' },
     { kind: 'orpc', includeRelations: true },
+    { kind: 'service', path: './src/dia-$dialect/services', dataAccess: 'drizzle', dbImportPath: 'src/dia-$dialect/db', schemaImportPath: 'src/dia-$dialect/schema' },
   ],
 };
 CONFIG
@@ -738,6 +750,13 @@ CONFIG
       exit 1
     }
   fi
+  # The drizzle-mode service against the typed db, keyed by the varchar it is. The tsc below is
+  # what actually catches the BN and BP classes; this grep names the defect when the emission
+  # regresses to id: number without breaking compilation some other way.
+  grep -q 'id: string' "src/dia-$dialect/services/bookService.ts" || {
+    echo "FAIL [$dialect]: the books service does not type its key as the varchar it is." >&2
+    exit 1
+  }
 
   cat > "tsconfig.$dialect.json" <<EOF
 {
