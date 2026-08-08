@@ -1,0 +1,67 @@
+{
+  "name": "@drzl/generator-fastify",
+  "version": "0.0.0",
+  "private": false,
+  "license": "Apache-2.0",
+  "description": "Generate Fastify 5 plugins from a Drizzle schema, one route module per table, with generated schemas fed straight into Fastify's own AJV validation and fast-json-stringify serialization.",
+  "keywords": [
+    "drizzle",
+    "drizzle-orm",
+    "fastify",
+    "codegen",
+    "rest",
+    "ajv"
+  ],
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "sideEffects": false,
+  "scripts": {
+    "build": "tsup src/index.ts --dts --format esm,cjs --external prettier --clean",
+    "lint": "eslint . --ext .ts",
+    "test": "vitest run --testTimeout=20000"
+  },
+  "dependencies": {
+    "@drzl/analyzer": "workspace:^",
+    "@drzl/generator-json-schema": "workspace:^",
+    "@drzl/validation-core": "workspace:^"
+  },
+  "devDependencies": {
+    "fastify": "^5.11.0",
+    "tsup": "^8.5.1",
+    "typescript": "^5.9.3"
+  },
+  "engines": {
+    "node": ">=18.17.0"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/",
+    "provenance": true
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/use-drzl/drzl",
+    "directory": "packages/generator-fastify"
+  },
+  "funding": {
+    "type": "github",
+    "url": "https://github.com/sponsors/omar-dulaimi"
+  }
+}

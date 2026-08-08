@@ -83,6 +83,7 @@ Runtime
 - `packages/generator-trpc`: tRPC v11 router generator
 - `packages/generator-hono`: Hono route generator
 - `packages/generator-express`: Express 5 router generator
+- `packages/generator-fastify`: Fastify 5 plugin generator
 - `packages/generator-service`: typed service generator
 - `packages/generator-zod`: Zod generator
 - `packages/generator-valibot`: Valibot generator

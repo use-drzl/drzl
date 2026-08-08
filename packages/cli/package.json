@@ -70,6 +70,7 @@
   "optionalDependencies": {
     "@drzl/generator-effect": "workspace:^",
     "@drzl/generator-express": "workspace:^",
+    "@drzl/generator-fastify": "workspace:^",
     "@drzl/generator-hono": "workspace:^",
     "@drzl/generator-json-schema": "workspace:^",
     "@drzl/generator-trpc": "workspace:^"

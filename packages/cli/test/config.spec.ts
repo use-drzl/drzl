@@ -4,6 +4,7 @@ import {
   ConfigSchema,
   defineConfig,
   expressOutDir,
+  fastifyOutDir,
   loadConfig,
   resolveConfig,
   trpcOutDir,
@@ -465,5 +466,60 @@ describe('@drzl/cli config: the express generator', () => {
     );
     expect(warnings.join('\n')).toMatch(/"express" generator sets databaseInjection/);
     expect(warnings.join('\n')).toMatch(/does not support/);
+  });
+});
+
+describe('@drzl/cli config: the fastify generator', () => {
+  const base = (generators: any[]) => ({ schema: 'src/db/schema.ts', generators });
+
+  it('is a kind the schema accepts', () => {
+    expect(() => ConfigSchema.parse(base([{ kind: 'fastify' }]))).not.toThrow();
+  });
+
+  it('writes to outDir by default and to path when given one', () => {
+    const cfg = ConfigSchema.parse({ ...base([{ kind: 'fastify' }]), outDir: 'src/api' });
+    expect(fastifyOutDir(cfg.generators[0], cfg)).toBe('src/api');
+    const withPath = ConfigSchema.parse({
+      ...base([{ kind: 'fastify', path: 'src/routes' }]),
+      outDir: 'src/api',
+    });
+    expect(fastifyOutDir(withPath.generators[0], withPath)).toBe('src/routes');
+  });
+
+  it('is watched-around, so a rebuild does not retrigger itself', () => {
+    // The watcher ignores every generator's output directory. A Fastify directory missing from
+    // that list is an infinite regeneration loop, not a cosmetic omission.
+    const cfg = ConfigSchema.parse({
+      ...base([{ kind: 'fastify', path: 'src/routes' }]),
+      outDir: 'src/api',
+    });
+    const dirs = computeGeneratorOutputDirs(cfg, '/proj');
+    expect(dirs).toContain(path.join('/proj', 'src/routes'));
+  });
+
+  it('refuses databaseInjection with a warning, because nothing would read the handle', () => {
+    const { warnings } = resolveConfig(
+      ConfigSchema.parse(base([{ kind: 'fastify', databaseInjection: { enabled: true } }]))
+    );
+    expect(warnings.join('\n')).toMatch(/"fastify" generator sets databaseInjection/);
+    expect(warnings.join('\n')).toMatch(/does not support/);
+  });
+
+  it('refuses a validation block with a warning, because nothing would read it', () => {
+    // Unlike the other routers there is no library to choose and no shared module to import:
+    // the schemas are JSON Schema from the same builder as the json-schema generator, inlined.
+    // An accepted-and-ignored option is the dead-option shape this config has shipped twice.
+    const { warnings } = resolveConfig(
+      ConfigSchema.parse(
+        base([{ kind: 'fastify', validation: { useShared: true, importPath: 'v' } }])
+      )
+    );
+    expect(warnings.join('\n')).toMatch(/"fastify" generator sets "validation"/);
+    expect(warnings.join('\n')).toMatch(/does not read/);
+  });
+
+  it('does not warn on a plain fastify generator', () => {
+    const { warnings } = resolveConfig(ConfigSchema.parse(base([{ kind: 'fastify' }])));
+    expect(warnings).toEqual([]);
   });
 });
