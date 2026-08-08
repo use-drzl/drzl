@@ -103,6 +103,7 @@ export default {
           { text: 'Validation Mix', link: '/examples/validation-mix' },
           { text: 'Next.js Server Actions', link: '/examples/nextjs-server-actions' },
           { text: 'React Hook Form', link: '/examples/react-hook-form' },
+          { text: 'TanStack Form', link: '/examples/tanstack-form' },
         ],
       },
       {
