@@ -40,6 +40,7 @@ import {
   selectColumns,
   typeName,
   updateColumns,
+  wireNumberLiteral,
 } from '@drzl/validation-core';
 
 type Mode = 'insert' | 'update' | 'select';
@@ -425,7 +426,10 @@ function checkSteps(c: Column, checks: ColumnCheck[]): string[] {
   return checks
     .filter((k) => k.column === c.name && !folded.has(k))
     .map((k) => {
-      const literal = k.kind === 'string' ? JSON.stringify(k.value) : k.value;
+      // The wire-type spelling matters for `<>`, which is compared with strict equality:
+      // `v !== 1` is true of every `1n`, so the constraint silently never fired on a bigint
+      // column. The message keeps the SQL spelling either way.
+      const literal = k.kind === 'string' ? JSON.stringify(k.value) : wireNumberLiteral(c, k.value);
       return filter(
         `v ${OPS[k.operator]} ${literal}`,
         `${k.name ? `${k.name}: ` : ''}${c.name} ${k.operator} ${k.value}`
@@ -519,9 +523,16 @@ function exprForColumn(
   if (shaped) return piped(shaped, lengthSteps(c, lengths));
 
   // `CHECK (status IN ('a', 'b'))` is a union of literals, which effect spells as one call.
+  //
+  // A number-kind member is spelled in the column's wire type: effect compares a literal with
+  // strict equality, so `Schema.Literal(1)` on a `bigint({ mode: 'bigint' })` column refused every
+  // `1n` the driver returns and the select schema rejected every row. `wireNumberLiteral` decides
+  // the spelling, and it also keeps a 64 bit member exact rather than rounding it.
   const set = sets.find((x) => x.column === c.name);
   if (set) {
-    const values = set.values.map((v) => (set.kind === 'string' ? JSON.stringify(v) : v));
+    const values = set.values.map((v) =>
+      set.kind === 'string' ? JSON.stringify(v) : wireNumberLiteral(c, v)
+    );
     return `${NS}.Literal(${values.join(', ')})`;
   }
   // A parsed check compares the column against a scalar literal, which describes an element rather
@@ -532,9 +543,10 @@ function exprForColumn(
   }
 
   // An equality pins the value outright, so it supersedes every other constraint on the column.
+  // Spelled in the wire type for the same reason the set above is.
   const eq = checks.find((k) => k.column === c.name && k.operator === '=');
   if (eq && !c.shape) {
-    return `${NS}.Literal(${eq.kind === 'string' ? JSON.stringify(eq.value) : eq.value})`;
+    return `${NS}.Literal(${eq.kind === 'string' ? JSON.stringify(eq.value) : wireNumberLiteral(c, eq.value)})`;
   }
 
   const rest = [...checkSteps(c, checks), ...lengthSteps(c, lengths)];

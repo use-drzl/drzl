@@ -40,6 +40,7 @@ import {
   resolveAffix,
   schemaName,
   typeName,
+  wireNumberLiteral,
 } from '@drzl/validation-core';
 
 type Mode = 'insert' | 'update' | 'select';
@@ -180,7 +181,9 @@ function vChecks(c: Column, checks: ColumnCheck[]): string[] {
   return checks
     .filter((k) => k.column === c.name && !folded.has(k))
     .map((k) => {
-      const rhs = k.kind === 'string' ? JSON.stringify(k.value) : k.value;
+      // Strict equality for `=` and `<>` demands the wire type: `val === 1` is false for every
+      // `1n` a bigint-mode column returns. The message keeps the SQL spelling either way.
+      const rhs = k.kind === 'string' ? JSON.stringify(k.value) : wireNumberLiteral(c, k.value);
       const shown = k.kind === 'string' ? `'${k.value}'` : k.value;
       const msg = JSON.stringify(`${k.name ? `${k.name}: ` : ''}${c.name} ${k.operator} ${shown}`);
       return `v.check((val) => val ${OPS[k.operator]} ${rhs}, ${msg})`;
@@ -358,11 +361,16 @@ function vExprForColumn(
     return shapeChecks.length ? `v.pipe(${shaped}, ${shapeChecks.join(', ')})` : shaped;
   }
   // `CHECK (status IN ('a', 'b'))` constrains the column to a set, which is what a picklist is.
+  //
+  // A number-kind member is spelled in the column's wire type: `v.literal(1)` on a
+  // `bigint({ mode: 'bigint' })` column refused every `1n` the driver returns, so the select
+  // schema rejected every row. `wireNumberLiteral` decides the spelling, and it also keeps a
+  // 64 bit member exact: written as a number it rounds the moment it is parsed.
   const set = sets.find((x) => x.column === c.name);
   if (set) {
     return set.kind === 'string'
       ? `v.picklist([${set.values.map((v) => JSON.stringify(v)).join(', ')}] as const)`
-      : `v.union([${set.values.map((v) => `v.literal(${v})`).join(', ')}])`;
+      : `v.union([${set.values.map((v) => `v.literal(${wireNumberLiteral(c, v)})`).join(', ')}])`;
   }
   const extra = [...vChecks(c, checks), ...vLengthChecks(c, lengths)];
   /** Fold the constraint actions into whatever base this column maps to. */

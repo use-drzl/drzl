@@ -14,6 +14,7 @@ import type { BrandPlan } from '@drzl/validation-core';
 import {
   buildBrandPlan,
   buildNestedPlan,
+  describeSet,
   formatCode,
   importSpecifier,
   nestedArmNotes,
@@ -40,6 +41,7 @@ import {
   selectColumns,
   typeName,
   updateColumns,
+  wireNumberLiteral,
 } from '@drzl/validation-core';
 
 type Mode = 'insert' | 'update' | 'select';
@@ -343,6 +345,62 @@ function tbEqualityLiteral(c: Column, checks: ColumnCheck[]): string | undefined
   return `Type.Literal(${eq.kind === 'string' ? JSON.stringify(eq.value) : eq.value})`;
 }
 
+/**
+ * The number-kind set or equality on this column that has to leave the literal forms, or nothing.
+ *
+ * On a `bigint({ mode: 'bigint' })` column the driver returns `1n`, and `Type.Literal(1)` refuses
+ * it, so the emitted union rejected every row the database returned. The repair is not
+ * `Type.Literal(1n)` either: measured on TypeBox 0.34.52, that constructs and passes
+ * `Value.Check`, and `TypeCompiler.Compile` then throws "Preflight validation check failed to
+ * guard for the given schema", which takes every compiler-path consumer with it. So the set goes
+ * to the `DrzlRowCheck` registered kind, the same escape hatch the character caps and the row
+ * checks use, which both checkers honour; `test/bigint-in-literals.spec.ts` runs both.
+ *
+ * Shared by the emitter and the preamble condition on purpose: the two being separate copies of
+ * one condition is exactly the drift `tbNeedsCapKind` documents, and what a drifted copy emits is
+ * `[Kind]` into a file that did not import it. The guards mirror `tbExprForColumn`'s branch order
+ * exactly: a shaped column never reaches the set branch, a string-kind set returns its literal
+ * union and hides the equality behind it, and an array or enum column never reaches the equality.
+ */
+function tbBigintKindTarget(
+  c: Column,
+  checks: ColumnCheck[],
+  sets: ColumnSet[]
+): { set: ColumnSet } | { eq: ColumnCheck } | undefined {
+  if (c.tsType !== 'bigint' || c.shape) return undefined;
+  const set = sets.find((x) => x.column === c.name);
+  if (set) return set.kind === 'number' ? { set } : undefined;
+  if (c.arrayDimensions) return undefined;
+  if (c.enumValues && c.enumValues.length) return undefined;
+  const eq = checks.find((k) => k.column === c.name && k.operator === '=');
+  return eq && eq.kind === 'number' ? { eq } : undefined;
+}
+
+/**
+ * The kind branch for a bigint-wire set or equality, intersected onto `Type.BigInt()`.
+ *
+ * The base keeps the document saying "a bigint" when serialised, exactly as the cap branches sit
+ * beside `Type.String()`; the kind branch itself renders as its description alone. The static
+ * type narrows to the members the runtime can actually accept: a non-integer member has no
+ * bigint spelling, `1.5n` being a syntax error, so it stays a number inside the predicate, which
+ * no bigint ever equals, exactly as the database says. A set of only such members accepts no
+ * bigint at all, and `never` is that statement.
+ */
+function tbBigintKindExpr(c: Column, target: { set: ColumnSet } | { eq: ColumnCheck }): string {
+  const values = 'set' in target ? target.set.values : [target.eq.value];
+  const members = values.map((v) => wireNumberLiteral(c, v));
+  const statics = members.filter((m) => m.endsWith('n'));
+  const description =
+    'set' in target
+      ? describeSet(target.set)
+      : `${target.eq.name ? `${target.eq.name}: ` : ''}${c.name} = ${target.eq.value}`;
+  return `Type.Intersect([Type.BigInt(), Type.Unsafe<${statics.length ? statics.join(' | ') : 'never'}>({
+    [Kind]: 'DrzlRowCheck',
+    description: ${JSON.stringify(description)},
+    assert: (v: any) => typeof v === 'bigint' && (${members.map((m) => `v === ${m}`).join(' || ')}),
+  })])`;
+}
+
 function tbCheckOptions(c: Column, checks: ColumnCheck[]): Array<[string, string]> {
   const out: Array<[string, string]> = [];
   for (const k of checks.filter((x) => x.column === c.name)) {
@@ -494,6 +552,10 @@ function tbExprForColumn(
 ): string {
   const shaped = tbShapeExpr(c, mode, typedJsonRef);
   if (shaped) return shaped;
+  // A number-kind set or equality on a bigint wire cannot be a literal at all: see
+  // `tbBigintKindTarget` for the two measured refusals that force it to the registered kind.
+  const bigintKind = tbBigintKindTarget(c, checks, sets);
+  if (bigintKind) return tbBigintKindExpr(c, bigintKind);
   // `CHECK (status IN ('a', 'b'))` is a union of literals. `Type.Literal` is the only form
   // TypeBox enforces: a `const` option parses and then accepts anything.
   const set = sets.find((x) => x.column === c.name);
@@ -989,7 +1051,11 @@ function renderTableSchemas(
       ] as Array<[Column[], Mode]>
     ).some(([cs, m]) =>
       cs.some(
-        (c) => tbNeedsCapKind(c) || tbNeedsNonFiniteKind(c) || tbNeedsDateKind(c, m, coerceDates)
+        (c) =>
+          tbNeedsCapKind(c) ||
+          tbNeedsNonFiniteKind(c) ||
+          tbNeedsDateKind(c, m, coerceDates) ||
+          !!tbBigintKindTarget(c, checks, sets)
       )
     ) ||
     nestedByMode.some(([cs, m, tbl]) => {
@@ -999,7 +1065,11 @@ function renderTableSchemas(
         own.rows.some((r) => present.has(r.left) && present.has(r.right)) ||
         tbHasLengthBranch(own.lengths, [cs]) ||
         cs.some(
-          (c) => tbNeedsCapKind(c) || tbNeedsNonFiniteKind(c) || tbNeedsDateKind(c, m, coerceDates)
+          (c) =>
+            tbNeedsCapKind(c) ||
+            tbNeedsNonFiniteKind(c) ||
+            tbNeedsDateKind(c, m, coerceDates) ||
+            !!tbBigintKindTarget(c, own.checks, own.sets)
         )
       );
     });

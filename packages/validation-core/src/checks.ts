@@ -803,6 +803,27 @@ export function parseCheck(expression: string | undefined, name?: string): Parse
 }
 
 /**
+ * A number-kind literal, spelled for the wire type of the column it constrains.
+ *
+ * `CHECK (big IN (1, 2))` on a `bigint({ mode: 'bigint' })` column pins a set of *bigints*: the
+ * driver returns `1n` there, and `1n === 1` is false in JavaScript, so a number literal in the
+ * emitted schema rejects every row the database returns. The literal has to be spelled `1n` on
+ * that wire, and stay `1` where a number really arrives, which is what `bigint({ mode: 'number' })`
+ * does. The wire type is `tsType`, which the analyzer sets per mode from what the driver hands
+ * back (see the `PgBigInt53`/`PgBigInt64` arms and `test/decimal-modes.spec.ts` in the analyzer),
+ * so the decision keys on the value's real type rather than on the SQL type name.
+ *
+ * The integer test is load bearing rather than defensive: `1.5n` is a syntax error, so an emitted
+ * module carrying it throws at import. A non-integer literal also has nothing to gain from the
+ * suffix, because no stored bigint ever equals 1.5; it keeps its number spelling, which no bigint
+ * satisfies either, so the schema and the database agree about every value on the wire while the
+ * module keeps parsing.
+ */
+export function wireNumberLiteral(column: { tsType?: string }, value: string): string {
+  return column.tsType === 'bigint' && /^-?\d+$/.test(value) ? `${value}n` : value;
+}
+
+/**
  * A human-readable rendering of a set constraint, for an error message.
  *
  * Values are re-quoted the way SQL wrote them, so the message reads like the constraint in the
