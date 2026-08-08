@@ -141,17 +141,17 @@ itself treats the result as a scalar, so DRZL does too.
 Some Postgres columns do not arrive as scalars at all, and a schema that says otherwise rejects
 every row the database returns:
 
-| Column                      | Runtime value              | Emitted                                 |
-| --------------------------- | -------------------------- | --------------------------------------- |
-| `point()`                   | `[number, number]`         | `z.tuple([z.number(), z.number()])`     |
+| Column                      | Runtime value              | Emitted                                      |
+| --------------------------- | -------------------------- | -------------------------------------------- |
+| `point()`                   | `[number, number]`         | `z.tuple([z.number(), z.number()])`          |
 | `point({ mode: 'xy' })`     | `{ x, y }`                 | `z.object({ x: z.number(), y: z.number() })` |
-| `line()`                    | `[number, number, number]` | `z.tuple([...])`                        |
-| `line({ mode: 'abc' })`     | `{ a, b, c }`              | `z.object({ a, b, c })`                 |
-| `geometry()`                | `[number, number]`         | `z.tuple([z.number(), z.number()])`     |
-| `vector({ dimensions: 3 })` | `number[]`                 | `z.array(z.number()).length(3)`         |
-| `bit({ dimensions: 3 })`    | `'010'`                    | `z.string().regex(/^[01]*$/).length(3)` |
-| `bytea()`                   | `Buffer`                   | `z.instanceof(Uint8Array)`              |
-| `json()`, `jsonb()`         | any JSON value             | `z.json()`                              |
+| `line()`                    | `[number, number, number]` | `z.tuple([...])`                             |
+| `line({ mode: 'abc' })`     | `{ a, b, c }`              | `z.object({ a, b, c })`                      |
+| `geometry()`                | `[number, number]`         | `z.tuple([z.number(), z.number()])`          |
+| `vector({ dimensions: 3 })` | `number[]`                 | `z.array(z.number()).length(3)`              |
+| `bit({ dimensions: 3 })`    | `'010'`                    | `z.string().regex(/^[01]*$/).length(3)`      |
+| `bytea()`                   | `Buffer`                   | `z.instanceof(Uint8Array)`                   |
+| `json()`, `jsonb()`         | any JSON value             | `z.json()`                                   |
 
 `bytea` is typed as `Uint8Array` rather than `Buffer`, which is deliberately wider than
 `drizzle-orm/zod`. A Buffer is a Uint8Array, so nothing official accepts is turned away; the wider
@@ -178,17 +178,17 @@ the comparison is against a scalar literal and describes neither.
 
 The same rules apply, with each dialect's own widths:
 
-| Column                                  | Emitted                                                    |
-| --------------------------------------- | ---------------------------------------------------------- |
-| MySQL `tinyint()`                       | `z.number().int().gte(-128).lte(127)`                      |
-| MySQL `mediumint()`                     | `z.number().int().gte(-8388608).lte(8388607)`              |
-| MySQL `year()`                          | `z.number().int().gte(1901).lte(2155)`                     |
-| MySQL `serial()`                        | `z.number().int().gte(0)`, since it is unsigned            |
-| MySQL `text()`                          | a string capped at 65535 **bytes**, the width the type implies |
+| Column                                  | Emitted                                                          |
+| --------------------------------------- | ---------------------------------------------------------------- |
+| MySQL `tinyint()`                       | `z.number().int().gte(-128).lte(127)`                            |
+| MySQL `mediumint()`                     | `z.number().int().gte(-8388608).lte(8388607)`                    |
+| MySQL `year()`                          | `z.number().int().gte(1901).lte(2155)`                           |
+| MySQL `serial()`                        | `z.number().int().gte(0)`, since it is unsigned                  |
+| MySQL `text()`                          | a string capped at 65535 **bytes**, the width the type implies   |
 | MySQL `binary(4)`                       | a string, capped at 4 characters on select and 4 bytes on insert |
-| SQLite `blob({ mode: 'json' })`         | `z.json()`                                                 |
-| SQLite `blob({ mode: 'bigint' })`       | `z.bigint()` with the 64 bit range                         |
-| SQLite `integer({ mode: 'timestamp' })` | a date                                                     |
+| SQLite `blob({ mode: 'json' })`         | `z.json()`                                                       |
+| SQLite `blob({ mode: 'bigint' })`       | `z.bigint()` with the 64 bit range                               |
+| SQLite `integer({ mode: 'timestamp' })` | a date                                                           |
 
 MySQL's text and blob caps are byte counts. Postgres `text` has no cap and does not get one.
 
@@ -239,8 +239,7 @@ millisecond past it, so a NOT NULL column would accept both.
 ## CHECK constraints
 
 A `check()` in your schema becomes a refinement. **No official Drizzle validator module does
-this**, in any library: a table declaring `check('age_adult', sql\`${t.age} >= 18\`)` produces a
-`drizzle-orm/zod` schema that accepts `{ age: 5 }`.
+this**, in any library: a table declaring `check('age_adult', sql\`${t.age} >= 18\`)`produces a`drizzle-orm/zod`schema that accepts`{ age: 5 }`.
 
 ```ts
 // check('age_adult', sql`${t.age} >= 18`)
@@ -289,6 +288,61 @@ The split walks the expression rather than splitting on the text, so the `AND` i
 and the one inside `'A AND B'` are both left alone. If any single part is not understood, the
 whole constraint is skipped: enforcing half of a constraint is enforcing a different one.
 
+### A disjunction of equalities becomes the same enum
+
+```ts
+// check('status_valid', sql`${t.status} = 'draft' OR ${t.status} = 'live'`)
+status: z.enum(["draft", "live"] as const).nullable(),
+```
+
+`s = 'a' OR s = 'b'` and `s IN ('a','b')` are the same statement in SQL, NULL included, so they
+emit the same schema. That is the only disjunction that is read.
+
+A conjunction splits because every part is independently _necessary_: enforcing one enforces
+something the database enforces too. A disjunction is the opposite. `CHECK (a OR b)` is satisfied
+by a row that breaks `a`, so a schema enforcing `a` refuses rows the database takes. There is no
+partial reading of an `OR`, so one is understood whole or refused whole, and a refusal is listed
+by `drzl doctor` and marked `enforced: false` in the [constraint ledger](/generators/constraints).
+
+Refused, with the reason naming the shape: branches over ranges (`n < 0 OR n > 100`), branches
+naming different columns (`a = 'x' OR b = 'y'`, which is a rule about the row), branches mixing a
+string and a number, and any branch the parser cannot read on its own.
+
+### `IS NOT NULL` narrows the field
+
+```ts
+// check('email_set', sql`${t.email} IS NOT NULL`)   // on a nullable column
+email: z.string(),
+```
+
+The one constraint that cannot be a refinement. A refinement sits inside `.nullable()` precisely
+so `null` skips it, which is what makes every other CHECK match SQL; this one is the statement
+that `null` is not allowed, so it is said by the field not being nullable. On insert the field
+becomes **required**, because a row omitting a nullable column with no default writes `NULL`; a
+column that defaults to a value stays optional.
+
+On a column already declared `.notNull()` it changes nothing and is reported as enforced rather
+than as declined.
+
+`IS NULL` is read but enforced nowhere: narrowing a field to _only_ null would mean replacing the
+column's type rather than wrapping it. It is listed by `drzl doctor`.
+
+### A null guard in front of a predicate reduces to the predicate
+
+```ts
+// check('age_adult', sql`${t.age} IS NULL OR ${t.age} >= 18`)
+age: z.number().int().gte(18).lte(2147483647).nullable(),
+```
+
+Byte for byte what `CHECK (age >= 18)` emits, because the two constrain exactly the same rows: a
+CHECK already passes when it evaluates to NULL, and every operator here yields NULL when its
+column is NULL. The guard is dropped only when the predicate _names_ the guarded column and holds
+no null test of its own, which is what makes the reduction sound; `a IS NULL OR b > 0` is refused,
+since with `a` null it accepts every `b`.
+
+`s IS DISTINCT FROM 'x'` reads the same way. `NULL IS DISTINCT FROM 'x'` is TRUE and `NULL <> 'x'`
+is NULL, and a CHECK passes on both, so it emits exactly what `s <> 'x'` emits.
+
 ### `length()` becomes a character count
 
 ```ts
@@ -322,17 +376,32 @@ against a scalar literal says nothing usable about an array, whereas this one is
 
 **Only unambiguous constraints are translated.** These are skipped rather than guessed at:
 
-| Skipped                            | Why                                                      |
-| ---------------------------------- | -------------------------------------------------------- |
-| `age >= 18 OR age <= 65`           | A disjunction cannot be split the way a conjunction can  |
-| `NOT (age >= 18)`                  | Same: negation changes the scope of everything inside it |
-| `age >= 18 AND lower(n) = 'x'`     | One part is not understood, so neither is enforced       |
-| `email ~ '^[a-z]+$'`               | Postgres `~` is POSIX ERE, not JavaScript's regex dialect |
-| `octet_length(s) <= 5`             | Bytes, and the column's encoding is not in the schema    |
+| Skipped                        | Why                                                                     |
+| ------------------------------ | ----------------------------------------------------------------------- |
+| `age >= 18 OR age <= 65`       | A disjunction over ranges is not a set of values, so it states no union |
+| `a = 'x' OR b = 'y'`           | Its branches name different columns, so it is a rule about the row      |
+| `NOT (age >= 18)`              | Negation changes the scope of everything inside it                      |
+| `x + y < 100`                  | Arithmetic, which the schema cannot compute the way the database does   |
+| `age >= 18 AND lower(n) = 'x'` | One part is not understood, so neither is enforced                      |
+| `email ~ '^[a-z]+$'`           | Postgres `~` is POSIX ERE, not JavaScript's regex dialect               |
+| `octet_length(s) <= 5`         | Bytes, and the column's encoding is not in the schema                   |
+| `flag IS TRUE`                 | A boolean literal, which the parser does not read yet                   |
+
+**Arithmetic between columns is refused deliberately**, and it is the refusal most worth arguing
+for. Postgres computes `numeric` exactly and JavaScript computes in binary floating point:
+`CHECK (x + y <= 0.3)` on two `numeric(10,2)` columns **accepts** `(0.1, 0.2)`, and the same
+expression in JavaScript is `0.30000000000000004` and rejects it. Both measured against Postgres.
+On two `double precision` columns the database computes the same IEEE-754 sum JavaScript does and
+**rejects** the same pair, and a `bigint` pair adds a third answer, since Postgres raises on
+overflow where JavaScript's `BigInt` does not. So the correct translation of one expression
+depends on a column type the expression does not carry, and any single reading would be wrong for
+two of the three in the direction that refuses rows the database accepts. `drzl doctor` names the
+operator and suggests moving the result into a generated column and constraining that.
 
 Applied, and worth naming because they read like exceptions: `start_date < end_date` goes on the
 object as a row-level check, `length()` and `char_length()` count code points, `cardinality()`
-bounds an array, `BETWEEN` folds into the range, and `IN` becomes an enum. A conjunction is
+bounds an array, `BETWEEN` folds into the range, `IN` and a disjunction of equalities both become
+an enum, `IS NOT NULL` narrows the field, and `IS NULL OR p` is exactly `p`. A conjunction is
 applied when **every** part is understood.
 
 A schema that quietly enforces a _guess_ at your constraint is worse than one enforcing nothing,

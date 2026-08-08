@@ -64,6 +64,8 @@ export const accounts = pgTable(
     check('balance_pos', sql\`\${t.balance} > 0\`),
     check('ghost_col', sql\`nonexistent_column >= 3\`),
     check('row_ghost', sql\`\${t.age} < missing_col\`),
+    check('age_budget', sql\`\${t.age} + \${t.score} < 100\`),
+    check('credit_null', sql\`\${t.credit} IS NULL\`),
   ]
 );
 
@@ -105,6 +107,37 @@ export const users = pgTable('users', { id: serial('id').primaryKey(), name: tex
 export const mv = pgMaterializedView('mv').as((qb) => qb.select({ n: users.name }).from(users));
 `;
 
+/**
+ * The four CHECK shapes this version started reading, none of which should be reported.
+ *
+ * A doctor that keeps listing a constraint after the generators began enforcing it is a doctor
+ * whose list nobody reads. `tags` is an array on purpose: a null test describes it exactly, and
+ * the scalar guard must not claim otherwise.
+ */
+const READS_SCHEMA = `
+import { sql } from 'drizzle-orm';
+import { check, integer, pgTable, serial, text } from 'drizzle-orm/pg-core';
+
+export const rows = pgTable(
+  'rows',
+  {
+    id: serial('id').primaryKey(),
+    status: text('status'),
+    email: text('email'),
+    tier: text('tier'),
+    age: integer('age'),
+    tags: text('tags').array(),
+  },
+  (t) => [
+    check('status_or', sql\`\${t.status} = 'draft' OR \${t.status} = 'live'\`),
+    check('email_set', sql\`\${t.email} IS NOT NULL\`),
+    check('age_guard', sql\`\${t.age} IS NULL OR \${t.age} >= 18\`),
+    check('tier_not', sql\`\${t.tier} IS DISTINCT FROM 'banned'\`),
+    check('tags_set', sql\`\${t.tags} IS NOT NULL\`),
+  ]
+);
+`;
+
 /** The six Gel temporal columns the analyzer deliberately leaves `unknown`. */
 const GEL_SCHEMA = `
 import { gelTable, boolean, localDate, localTime, dateDuration, relDuration, duration, timestamp } from 'drizzle-orm/gel-core';
@@ -133,12 +166,14 @@ let problem: Analysis;
 let clean: Analysis;
 let gel: Analysis;
 let keys: Analysis;
+let reads: Analysis;
 
 beforeAll(async () => {
   problem = await analyzed('problem', PROBLEM_SCHEMA);
   clean = await analyzed('clean', CLEAN_SCHEMA);
   gel = await analyzed('gel', GEL_SCHEMA);
   keys = await analyzed('keys', KEYS_SCHEMA);
+  reads = await analyzed('reads', READS_SCHEMA);
 }, 60_000);
 
 const kinds = (a: Analysis, kind: string) =>
@@ -185,17 +220,47 @@ describe('CHECK constraints DRZL will not enforce', () => {
   it('reports every check the shared parser declines, with its reason', () => {
     const declined = kinds(problem, 'check-declined');
     expect(declined.map((f) => f.constraint).sort()).toEqual([
+      'age_budget',
       'age_not',
       'age_or',
       'blob_bytes',
+      'credit_null',
       'email_re',
       'empty_one',
       'mixed_and',
     ]);
     const byName = new Map(declined.map((f) => [f.constraint, f]));
-    expect(byName.get('age_or')!.message).toContain('contains OR');
+    expect(byName.get('age_or')!.message).toContain('range');
     expect(byName.get('age_not')!.message).toContain('contains NOT');
     expect(byName.get('mixed_and')!.message).toContain('part of an AND');
+  });
+
+  it('advises on the two refusals that have a fix, rather than restating the rule', () => {
+    // A reader who has just been told a constraint is not enforced has earned an answer. Both of
+    // these have one, and the generic sentence is true of every refusal and so says nothing.
+    const byName = new Map(kinds(problem, 'check-declined').map((f) => [f.constraint, f]));
+    expect(byName.get('age_budget')!.message).toContain('combined with "+"');
+    expect(byName.get('age_budget')!.hint).toMatch(/generated column/);
+    expect(byName.get('age_budget')!.hint, 'says why, not just that').toMatch(/floating point/);
+    expect(byName.get('age_or')!.hint).toMatch(/IN list|enum/);
+    expect(byName.get('email_re')!.hint, 'no advice invented for the rest').toMatch(
+      /still enforces this one/
+    );
+  });
+
+  it('leaves the disjunctions and null tests it now reads out of the report', () => {
+    const named = buildDoctorReport(reads, 'x.ts')
+      .findings.map((f) => f.constraint)
+      .filter(Boolean);
+    for (const c of ['status_or', 'email_set', 'age_guard', 'tier_not']) {
+      expect(named, c).not.toContain(c);
+    }
+  });
+
+  it('does not call a null test on an array column a scalar comparison', () => {
+    // `tags IS NOT NULL` is true of an array exactly as it is of a scalar. Reporting it as a
+    // scalar comparison against an array would be a warning about a constraint that is enforced.
+    expect(kinds(reads, 'check-not-scalar')).toHaveLength(0);
   });
 
   it('quotes the expression, since the constraint name alone does not say what was written', () => {
@@ -281,7 +346,7 @@ describe('the report as a whole', () => {
   it('counts what it looked at, so a clean run is distinguishable from a run that did nothing', () => {
     const r = buildDoctorReport(problem, 'schema.ts');
     expect(r.counts.tables).toBe(2);
-    expect(r.counts.checks).toBe(14);
+    expect(r.counts.checks).toBe(16);
     expect(r.counts.columns).toBe(13);
     expect(r.counts.findings).toBe(r.findings.length);
     expect(r.dialect).toBe('postgres');

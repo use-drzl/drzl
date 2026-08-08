@@ -188,6 +188,108 @@ describe('a CHECK the database enforces and no schema does', () => {
   });
 });
 
+describe('the forms this version started reading', () => {
+  const nullableCol = (name: string, over: Partial<Column> = {}) =>
+    col(name, { nullable: true, ...over });
+
+  it('folds a disjunction of equalities into the same set an IN list produces', () => {
+    const t = table('t', [col('s')], {
+      checks: [
+        { name: 'or_form', expression: "s = 'a' OR s = 'b'" },
+        { name: 'in_form', expression: "s IN ('a', 'b')" },
+      ],
+    });
+    const m = byId(t);
+    expect(m.get('or_form')!.values).toEqual(m.get('in_form')!.values);
+    expect(m.get('or_form')!.enforced).toBe(true);
+    // Stated as an enum, so the library words the failure and no message carries the name.
+    expect(m.get('or_form')!.messages).toBeUndefined();
+  });
+
+  it('reports a disjunction it cannot read as unenforced, naming the shape it found', () => {
+    const t = table('t', [col('n', { tsType: 'number', dbType: 'INTEGER' })], {
+      checks: [{ name: 'split_range', expression: 'n < 0 OR n > 100' }],
+    });
+    const c = byId(t).get('split_range')!;
+    expect(c.enforced).toBe(false);
+    expect(c.unenforced![0]!.reason).toMatch(/range/);
+  });
+
+  it('says a NOT NULL check is enforced, and attaches no message to it', () => {
+    // The field refuses null by not being nullable, which is a shape rather than a predicate, so
+    // there is no string for an error map to key on. Claiming one would make the map answer with
+    // a constraint for an issue no schema ever writes.
+    const t = table('t', [nullableCol('email')], {
+      checks: [{ name: 'email_set', expression: 'email IS NOT NULL' }],
+    });
+    const c = byId(t).get('email_set')!;
+    expect(c).toMatchObject({ kind: 'check', columns: ['email'], enforced: true });
+    expect(c.messages).toBeUndefined();
+    expect(c.unenforced).toBeUndefined();
+  });
+
+  it('says the same for a column already declared NOT NULL, which enforces it anyway', () => {
+    const t = table('t', [col('email')], {
+      checks: [{ name: 'email_set', expression: 'email IS NOT NULL' }],
+    });
+    expect(byId(t).get('email_set')!.enforced).toBe(true);
+  });
+
+  it('reports IS NULL as unenforced, since nothing narrows a column to NULL alone', () => {
+    const t = table('t', [nullableCol('email')], {
+      checks: [{ name: 'email_unset', expression: 'email IS NULL' }],
+    });
+    const c = byId(t).get('email_unset')!;
+    expect(c.enforced).toBe(false);
+    expect(c.unenforced![0]!.reason).toMatch(/NULL/);
+  });
+
+  it('reports a null check on a column the table does not have', () => {
+    const t = table('t', [col('email')], {
+      checks: [{ name: 'stray', expression: 'nowhere IS NOT NULL' }],
+    });
+    expect(byId(t).get('stray')!.unenforced![0]!.reason).toMatch(/not a column of/);
+  });
+
+  it('reads IS DISTINCT FROM as the <> it constrains the same rows as', () => {
+    const t = table('t', [col('s')], {
+      checks: [{ name: 'not_x', expression: "s IS DISTINCT FROM 'x'" }],
+    });
+    expect(byId(t).get('not_x')!.messages).toEqual(["not_x: s <> 'x'"]);
+  });
+
+  it('reports arithmetic between columns by name rather than as a generic refusal', () => {
+    const t = table(
+      't',
+      [
+        col('x', { tsType: 'number', dbType: 'INTEGER' }),
+        col('y', { tsType: 'number', dbType: 'INTEGER' }),
+      ],
+      { checks: [{ name: 'budget', expression: 'x + y < 100' }] }
+    );
+    const c = byId(t).get('budget')!;
+    expect(c.enforced).toBe(false);
+    expect(c.unenforced![0]!.reason).toMatch(/combined with "\+"/);
+  });
+
+  it('keeps meta and the ledger agreeing about the new forms too', () => {
+    const t = table('t', [col('s'), col('a'), col('b')], {
+      checks: [
+        { name: 'or_form', expression: "s = 'a' OR s = 'b'" },
+        { name: 'bad_or', expression: "s = 'a' OR a = 'b'" },
+        { name: 'arith', expression: 'a + b < 100' },
+      ],
+    });
+    return import('../src/meta').then(({ tableMetaFacts }) => {
+      const facts = tableMetaFacts(t, { mode: 'select' });
+      const declined = tableConstraints(t)
+        .constraints.filter((c) => c.kind === 'check' && !c.enforced)
+        .flatMap((c) => c.unenforced!.map((u) => u.part));
+      expect(new Set(declined)).toEqual(new Set(facts.unenforcedChecks));
+    });
+  });
+});
+
 describe('the declared width, which is a constraint that does produce an issue', () => {
   it('is an entry of its own, carrying the message the schema attaches', () => {
     const c = byId(events()).get('events_name_maxlength')!;

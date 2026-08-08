@@ -39,7 +39,14 @@ import chalk from 'chalk';
 export type DoctorFindingKind =
   /** A column whose validator will accept any value. */
   | 'unknown-column'
-  /** A CHECK the shared parser refused to translate. */
+  /**
+   * A CHECK nothing DRZL emits enforces.
+   *
+   * Usually one the shared parser refused outright. Also a clause it *reads* and no generator can
+   * state: `col IS NULL` narrows a column to null alone, which would mean replacing the column's
+   * type rather than wrapping it. Reported the same way, because the two are the same fact to the
+   * reader: the constraint is in the schema and the generated schemas do not check it.
+   */
   | 'check-declined'
   /** A CHECK naming a column the table does not have. */
   | 'check-unknown-column'
@@ -105,6 +112,10 @@ export function namedColumns(parsed: Extract<ReturnType<typeof parseCheck>, { ok
   for (const s of parsed.sets ?? []) out.push({ column: s.column, scalar: true });
   for (const l of parsed.lengths ?? []) out.push({ column: l.column, scalar: false });
   for (const c of parsed.cardinalities ?? []) out.push({ column: c.column, scalar: false });
+  // A null test is the one clause that describes every column shape alike: an array, a json
+  // payload and a scalar are each either there or not. So it names its column without claiming
+  // the column is scalar, which would report `CHECK (tags IS NOT NULL)` as a mismatch it is not.
+  for (const n of parsed.nulls ?? []) out.push({ column: n.column, scalar: false });
   for (const r of parsed.rows ?? []) {
     out.push({ column: r.left, scalar: false });
     out.push({ column: r.right, scalar: false });
@@ -142,6 +153,40 @@ function describeShape(c: Column): string {
   }
 }
 
+/**
+ * The generic advice for a declined CHECK, or something the reader can act on.
+ *
+ * The generic sentence is true of every refusal and therefore says nothing about any of them. Two
+ * of the refusals have a fix, and a reader who has just been told their constraint is not enforced
+ * has earned being told what to do instead of being told the rule again.
+ *
+ * Matched on the parser's own reason rather than on a code, because the reason is what the parser
+ * already returns and a second vocabulary beside it is a second thing to keep in step. The default
+ * is the generic sentence, so a reason added later is worded generically rather than wrongly.
+ */
+function declineHint(reason: string): string {
+  if (/combined with/.test(reason))
+    return (
+      'Postgres computes numeric arithmetic exactly and JavaScript computes it in binary ' +
+      'floating point, so `x + y <= 0.3` accepts (0.1, 0.2) in the database and rejects it in ' +
+      'JavaScript. The right translation depends on whether the columns are numeric, double ' +
+      'precision or bigint, and the expression does not say. Put the result in a generated ' +
+      'column and constrain that, or leave this one to the database.'
+    );
+  if (/\bOR\b/.test(reason))
+    return (
+      'A disjunction is read only where the whole of it pins one column to a set of values, ' +
+      "such as `status = 'a' OR status = 'b'`, which becomes the same enum an IN list does. " +
+      'Anything else is refused whole rather than in part: a row satisfying the other branch is ' +
+      'one the database accepts, and enforcing one branch would turn it away.'
+    );
+  return (
+    'Only constraints whose meaning is unambiguous are translated, because a validator ' +
+    'enforcing a guess rejects rows the database accepts. Your database still enforces ' +
+    'this one; nothing DRZL emits does.'
+  );
+}
+
 function checkFindings(table: Table): DoctorFinding[] {
   const out: DoctorFinding[] = [];
   const byName = new Map(table.columns.map((c) => [c.name, c]));
@@ -160,12 +205,30 @@ function checkFindings(table: Table): DoctorFinding[] {
         table: table.tsName,
         constraint: k.name,
         message: `CHECK ${label} on "${table.tsName}" is not translated: ${parsed.reason}. Expression: ${expr}`,
-        hint:
-          'Only constraints whose meaning is unambiguous are translated, because a validator ' +
-          'enforcing a guess rejects rows the database accepts. Your database still enforces ' +
-          'this one; nothing DRZL emits does.',
+        hint: declineHint(parsed.reason),
       });
       continue;
+    }
+
+    // A clause that parsed and that nothing enforces. `col IS NULL` is the only one: narrowing a
+    // field to null *alone* would mean replacing the column's type rather than wrapping it, and no
+    // generator has a hook for that. Reported here rather than left silent, because the parser
+    // learning to read an expression must not be the same event as the doctor forgetting it: the
+    // constraint went from "declined, here is why" to absent from the report entirely.
+    for (const n of parsed.nulls ?? []) {
+      if (n.notNull) continue;
+      out.push({
+        kind: 'check-declined',
+        level: 'warn',
+        table: table.tsName,
+        constraint: k.name,
+        message:
+          `CHECK ${label} on "${table.tsName}" holds "${n.column} IS NULL", which narrows the ` +
+          `column to NULL alone and no generated schema states. Expression: ${expr}`,
+        hint:
+          'A column that may only ever be NULL is usually a constraint written the wrong way ' +
+          'round. Drop the column, or state the rule as a CHECK on the column that decides it.',
+      });
     }
 
     // Reported once per column rather than once per clause, so `a >= 1 AND a <= 9` on a missing
