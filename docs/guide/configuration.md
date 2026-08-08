@@ -65,9 +65,9 @@ databaseInjection: {
 
 ## Router generators share `outDir`
 
-`orpc`, `trpc`, `hono`, `express`, `fastify` and `nestjs` all write to the top-level `outDir`
-by default, and every one of them writes an `index.ts` there, so a config that runs more than
-one needs a `path` on all but one of them:
+`orpc`, `trpc`, `hono`, `express`, `fastify`, `nestjs` and `graphql` all write to the
+top-level `outDir` by default, and every one of them writes an `index.ts` there, so a config
+that runs more than one needs a `path` on all but one of them:
 
 ```ts
 generators: [
@@ -77,6 +77,7 @@ generators: [
   { kind: 'express', path: 'src/routes' },   // -> its own directory
   { kind: 'fastify', path: 'src/fastify' },  // -> its own directory
   { kind: 'nestjs', path: 'src/dto' },       // -> its own directory
+  { kind: 'graphql', path: 'src/graphql' },  // -> its own directory
 ],
 ```
 

@@ -85,6 +85,7 @@ Runtime
 - `packages/generator-express`: Express 5 router generator
 - `packages/generator-fastify`: Fastify 5 plugin generator
 - `packages/generator-nestjs`: NestJS DTO and entity class generator
+- `packages/generator-graphql`: GraphQL SDL and resolver-stub generator
 - `packages/generator-service`: typed service generator
 - `packages/generator-zod`: Zod generator
 - `packages/generator-valibot`: Valibot generator

@@ -35,3 +35,6 @@ declare module '@drzl/generator-fastify' {
 declare module '@drzl/generator-nestjs' {
   export const NestJSGenerator: any;
 }
+declare module '@drzl/generator-graphql' {
+  export const GraphQLGenerator: any;
+}

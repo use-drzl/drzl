@@ -92,6 +92,7 @@ it('found every publishable package', () => {
     'generator-effect',
     'generator-express',
     'generator-fastify',
+    'generator-graphql',
     'generator-hono',
     'generator-json-schema',
     'generator-nestjs',
