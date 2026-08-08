@@ -26,6 +26,7 @@ const generator = {
   typedJson: true,
   typedColumns: true,
   duplicateFinder: true,
+  constraints: { errorMap: false },
   nestedSchemas: true,
   nestedDepth: 2,
   branded: { foreignKeys: false },
@@ -67,6 +68,19 @@ describe('the shared options', () => {
         foreignKeys: false,
       });
     }
+  });
+
+  it('withholds the constraint ledger from the generators whose enforcement was not measured', () => {
+    // The ledger states which constraints the emitted schemas enforce and the exact message each
+    // uses. Measured on ArkType 2.2.3, neither claim holds there: it folds a cardinality check
+    // into its own DSL, puts DRZL's wording in `expected` rather than `message`, and emits nothing
+    // at all for a string `<>`. A flag is the honest record of where it was measured.
+    expect(validationOptions(generator, config, 'out', { schemaTypes: true })).not.toHaveProperty(
+      'constraints'
+    );
+    expect(
+      validationOptions(generator, config, 'out', { schemaTypes: true, constraints: true })
+    ).toMatchObject({ constraints: { errorMap: false } });
   });
 
   it('withholds metadata from the four generators that have no measured place to put it', () => {

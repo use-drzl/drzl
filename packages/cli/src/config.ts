@@ -119,6 +119,29 @@ export const GeneratorSchema = z.object({
    */
   duplicateFinder: z.boolean().optional(),
   /**
+   * zod and valibot. Also emit `constraints.ts`: every CHECK, unique constraint, primary and
+   * foreign key on each table as plain data, plus `constraintForIssue`, which maps a validation
+   * issue back to the constraint that caused it.
+   *
+   * For building forms. A schema states what a value must look like and never says which
+   * constraint said so, so a failed parse hands a form a message and no way to attribute it; and
+   * uniqueness and foreign keys, the two constraints no per-row schema can check, are absent from
+   * the emitted schemas in every form.
+   *
+   * Not `meta` written to a second file. `meta` describes a *field* and travels with the schema
+   * into `z.toJSONSchema`; this describes the table's *constraints*, carries their names, states
+   * each operand as data rather than inside a sentence, and is read without holding a schema.
+   *
+   * `true` is the shorthand for `{ enabled: true }`. `{ errorMap: false }` emits the data alone,
+   * without the matcher.
+   */
+  constraints: z
+    .union([
+      z.boolean(),
+      z.object({ enabled: z.boolean().optional(), errorMap: z.boolean().optional() }).strict(),
+    ])
+    .optional(),
+  /**
    * zod only. Attach the facts the analyzer knows and a zod schema cannot state, as `.meta()` on
    * every field and every table schema: the declared SQL type, the primary key, the unique
    * constraints, whether the database generates or defaults the value, and the CHECK constraints,

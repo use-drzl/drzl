@@ -62,6 +62,20 @@ Shared interfaces and helpers used by validation generators.
   - `CODEPOINT_LENGTH` -> `[...v].length`, since `varchar(n)` counts characters and JavaScript's
     `.length` counts UTF-16 units. All four generators use it.
   - `isIntegerColumn(c)`
+- Constraints as data (shared by the generators that emit a ledger)
+  - `tableConstraints(table)` -> every CHECK, unique constraint, primary key and foreign key on a
+    table, each with a stable `id`, the columns it names, the rule as a sentence, whether a
+    generated schema enforces it, and, where it does, the exact message it attaches. A folded
+    numeric CHECK carries its `bounds` and a folded `IN` list its `values`, because those are what
+    is left to match on once the library writes the failure message itself.
+  - `classifyTableChecks(table)` -> the one reading of `parseCheck` plus the column-shape guards,
+    shared with `meta`, so "the database also checks this and no schema does" is one answer rather
+    than two.
+  - `renderConstraintsModule(tables, opts)` -> the source of `constraints.ts`: the data above plus,
+    unless `errorMap` is false, `constraintForIssue(table, issue)`. Plain objects with no import of
+    any kind, and the matcher reads zod's path items and valibot's alike.
+  - `resolveConstraints(option)` expands the `true` shorthand; `CONSTRAINTS_MODULE` is the file
+    name every generator writes it to.
 - Uniqueness
   - `renderDuplicateFinder(table, fnName, rowType)` -> the source of a function returning the rows
     in a batch that collide with an earlier row on a unique constraint. Plain TypeScript with no

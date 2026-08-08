@@ -30,6 +30,7 @@ export type ValidationGeneratorConfig = {
   typedJson?: unknown;
   typedColumns?: unknown;
   duplicateFinder?: unknown;
+  constraints?: unknown;
   nestedSchemas?: unknown;
   nestedDepth?: unknown;
   branded?: unknown;
@@ -65,6 +66,20 @@ export interface GeneratorCapabilities {
    * building four on the strength of one measurement is how three of them come to be subtly wrong.
    */
   meta?: boolean;
+  /**
+   * Whether the generator emits the constraint ledger beside its schemas.
+   *
+   * zod and valibot so far, and the boundary is measured rather than conservative. The ledger
+   * carries the exact message the emitted schema attaches for each constraint, which is what the
+   * error map keys on, and those two enforce the same set of constraints in the same words.
+   *
+   * ArkType is the case that says why this is a flag. Measured on 2.2.3 against the same table:
+   * it folds `cardinality(tags) > 0` into its own DSL, moves a `length()` check onto the object
+   * so the issue names no column, reports DRZL's wording in `expected` rather than in `message`,
+   * and emits nothing at all for `name <> 'x'`. A ledger claiming that constraint is enforced
+   * would be wrong there, and it would be wrong silently.
+   */
+  constraints?: boolean;
 }
 
 export function validationOptions(
@@ -103,5 +118,6 @@ export function validationOptions(
       : {}),
     ...(caps.standardSchema ? { standardSchema: g.standardSchema } : {}),
     ...(caps.meta ? { meta: g.meta } : {}),
+    ...(caps.constraints ? { constraints: g.constraints } : {}),
   };
 }

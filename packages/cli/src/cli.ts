@@ -308,7 +308,11 @@ program
             // `meta` is zod-only; see `GeneratorCapabilities.meta` for why it is not passed to the
             // other four rather than being passed and ignored.
             const files = await gen.generate(
-              validationOptions(g, cfg, target, { schemaTypes: true, meta: true }) as never
+              validationOptions(g, cfg, target, {
+                schemaTypes: true,
+                meta: true,
+                constraints: true,
+              }) as never
             );
             progress.stop();
             ora().succeed(chalk.green(`Generated (zod): ${files.length} files`));
@@ -327,7 +331,7 @@ program
             const gen = new ValibotGenerator(analysis);
             const target = g.path ?? 'src/validators/valibot';
             const files = await gen.generate(
-              validationOptions(g, cfg, target, { schemaTypes: true }) as never
+              validationOptions(g, cfg, target, { schemaTypes: true, constraints: true }) as never
             );
             progress.stop();
             ora().succeed(chalk.green(`Generated (valibot): ${files.length} files`));
@@ -767,7 +771,11 @@ program
               // were all dropped, so the first save after starting `drzl watch` silently replaced
               // correct output with output generated from defaults.
               const files = await gen.generate(
-                validationOptions(g, cfg, target, { schemaTypes: true, meta: true }) as never
+                validationOptions(g, cfg, target, {
+                  schemaTypes: true,
+                  meta: true,
+                  constraints: true,
+                }) as never
               );
               opts.json
                 ? console.log(JSON.stringify({ event: 'generate_complete', kind: g.kind, files }))
@@ -794,7 +802,10 @@ program
               // were all dropped, so the first save after starting `drzl watch` silently replaced
               // correct output with output generated from defaults.
               const files = await gen.generate(
-                validationOptions(g, cfg, target, { schemaTypes: true }) as never
+                validationOptions(g, cfg, target, {
+                  schemaTypes: true,
+                  constraints: true,
+                }) as never
               );
               opts.json
                 ? console.log(JSON.stringify({ event: 'generate_complete', kind: g.kind, files }))

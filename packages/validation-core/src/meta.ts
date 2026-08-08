@@ -29,14 +29,7 @@
  * options object is dropped before the column is built. See the zod generator's documentation.
  */
 import type { Column, Table } from '@drzl/analyzer';
-import {
-  parseCheck,
-  type CardinalityCheck,
-  type ColumnCheck,
-  type ColumnSet,
-  type LengthCheck,
-  type RowCheck,
-} from './checks.js';
+import { classifyTableChecks } from './constraints.js';
 
 /** What a column adds beside its schema. Every key is optional; an empty object is a real answer. */
 export interface ColumnMetaFacts {
@@ -131,85 +124,34 @@ export interface TableMetaOptions extends MetaFactOptions {
   dialect?: string;
 }
 
-/** `name: expr`, matching how every emitted failure message labels the constraint it came from. */
-function labelled(name: string | undefined, text: string): string {
-  return name ? `${name}: ${text}` : text;
-}
-
-/** A literal as it reads inside the expression it came from, quoted exactly when it was quoted. */
-function literalText(value: string, kind: 'number' | 'string'): string {
-  return kind === 'string' ? `'${value}'` : value;
-}
-
-function columnCheckText(k: ColumnCheck): string {
-  return labelled(k.name, `${k.column} ${k.operator} ${literalText(k.value, k.kind)}`);
-}
-function setText(k: ColumnSet): string {
-  return labelled(
-    k.name,
-    `${k.column} IN (${k.values.map((v) => literalText(v, k.kind)).join(', ')})`
-  );
-}
-function lengthText(k: LengthCheck): string {
-  return labelled(k.name, `length(${k.column}) ${k.operator} ${k.value}`);
-}
-function cardinalityText(k: CardinalityCheck): string {
-  return labelled(k.name, `cardinality(${k.column}) ${k.operator} ${k.value}`);
-}
-function rowText(k: RowCheck): string {
-  return labelled(k.name, `${k.left} ${k.operator} ${k.right}`);
-}
-
 /**
- * Whether a field-level constraint reaches this column at all.
+ * Every CHECK on the table, split by where it lands.
  *
- * The same three guards every validation generator applies. A comparison against a scalar says
- * nothing usable about an array or a tuple, and a character count says nothing about either; a
- * cardinality is the mirror image and only means something on an array. A constraint that fails
- * its guard is enforced nowhere, so it is reported on the table as unenforced rather than
- * silently attributed to a field that does not check it.
+ * A reading of `classifyTableChecks`, which is shared with the constraint ledger rather than
+ * repeated here. The two used to be one copy each of the same guards, and the failure that
+ * matters is not that they would drift on a spelling: it is that "the database also checks this
+ * and no schema does" would become two answers, and a caller reading one of them would have no
+ * way to know which.
  */
-function takesScalarChecks(c: Column): boolean {
-  return !c.arrayDimensions && !c.shape;
-}
-
-/** Every CHECK on the table, split by where it lands. */
 function classifyChecks(table: Table) {
   const perColumn = new Map<string, string[]>();
   const rows: string[] = [];
   const unenforced: string[] = [];
-  const byName = new Map(table.columns.map((c) => [c.name, c]));
 
-  const add = (column: string, text: string, guard: (c: Column) => boolean) => {
-    const c = byName.get(column);
-    // A constraint naming a column that is not on this table cannot be attributed to anything,
-    // and one whose column refuses the constraint is not checked by any field. Both are the
-    // caller's problem rather than a fact to hide.
-    if (!c || !guard(c)) {
-      unenforced.push(text);
-      return;
-    }
-    const list = perColumn.get(column) ?? [];
-    list.push(text);
-    perColumn.set(column, list);
-  };
-
-  for (const k of table.checks ?? []) {
-    const parsed = parseCheck(k.expression, k.name);
-    if (!parsed.ok) {
-      unenforced.push(labelled(k.name, (k.expression ?? '').trim()));
-      continue;
-    }
-    for (const c of parsed.checks) add(c.column, columnCheckText(c), takesScalarChecks);
-    for (const s of parsed.sets ?? []) add(s.column, setText(s), takesScalarChecks);
-    for (const l of parsed.lengths ?? []) add(l.column, lengthText(l), takesScalarChecks);
-    for (const a of parsed.cardinalities ?? [])
-      add(a.column, cardinalityText(a), (c) => !!c.arrayDimensions);
-    for (const r of parsed.rows ?? []) {
-      // A row check needs both columns present in the mode being rendered. That is decided by the
-      // generator, which knows the mode; here it is a fact about the table.
-      if (byName.has(r.left) && byName.has(r.right)) rows.push(rowText(r));
-      else unenforced.push(rowText(r));
+  for (const check of classifyTableChecks(table)) {
+    for (const part of check.parts) {
+      if (part.place === 'none') {
+        unenforced.push(part.text);
+        continue;
+      }
+      if (part.place === 'row') {
+        rows.push(part.text);
+        continue;
+      }
+      const column = part.columns[0]!;
+      const list = perColumn.get(column) ?? [];
+      list.push(part.text);
+      perColumn.set(column, list);
     }
   }
   return { perColumn, rows, unenforced };

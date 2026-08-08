@@ -69,6 +69,7 @@ export default {
           { text: 'OpenAPI Document', link: '/generators/openapi' },
           { text: 'Nested Relations', link: '/generators/nested-relations' },
           { text: 'Branded Keys', link: '/generators/branded-keys' },
+          { text: 'Constraint Data', link: '/generators/constraints' },
           { text: 'Adapters (Overview)', link: '/adapters/overview' },
           { text: 'Router Adapters', link: '/adapters/router' },
         ],
