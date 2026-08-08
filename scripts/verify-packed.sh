@@ -7801,17 +7801,6 @@ const DEFECTS: Record<string, Entry> = {
   // zod's `.int()` refuses a number outside the safe-integer range on its own, so zod reaches
   // official's answer for 9007199254740993 without the bound DRZL failed to emit. The other three
   // have no such rule and take it.
-  'mysql/m_serial': {
-    libs: LIB_NAMES,
-    modes: MODE_NAMES,
-    divergence: {
-      '*/zod': `L: -1 | T: `,
-      '*/valibot,arktype,typebox': `L: -1, 9007199254740993, 3.4028235e38 | T: `,
-    },
-    drzl: 'an unbounded integer, so it takes -1 for an auto-increment column',
-    official: 'an integer within 0..9007199254740991',
-    filed: 'new',
-  },
   'mysql/m_year': {
     libs: LIB_NAMES,
     modes: MODE_NAMES,

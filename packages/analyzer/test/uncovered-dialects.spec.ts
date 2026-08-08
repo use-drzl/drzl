@@ -192,18 +192,17 @@ describe('SingleStore, against a real singlestoreTable', () => {
     expect(warned).toEqual([]);
   });
 
-  it('DEFECT: leaves tinyint and mediumint unbounded, where MySQL bounds them', async () => {
-    // `INT_RANGES` carries `MySqlTinyInt` and `MySqlMediumInt` but has no SingleStore entry for
-    // either, so the identical column is bounded on one dialect and open on the other. Measured
-    // side by side in this same suite run: a MySQL `tinyint` comes back min '-128' max '127',
-    // and this one comes back with no bounds at all.
-    //
-    // Correct values are the same as MySQL's, since SingleStore's integer widths match.
+  it('bounds tinyint and mediumint by their width, exactly as MySQL is bounded', async () => {
+    // This was a pinned DEFECT: `INT_RANGES` carried `MySqlTinyInt` and `MySqlMediumInt` but had
+    // no SingleStore entry for either, so the identical column was bounded on one dialect and
+    // open on the other, and this test asserted the open bounds so the fix would report itself.
+    // It did: the unsigned-range fix swept the whole integer family and added the two entries,
+    // with the widths MySQL's identical columns already carried and v1 already stated as
+    // `number int8` and `number int24` for these same builders. unsigned-int-ranges.spec.ts
+    // holds the unsigned halves of the same classes.
     const { byName } = await columnsOf('real-singlestore', SINGLESTORE_SOURCE);
-    expect(byName.get('ti')?.min).toBeUndefined();
-    expect(byName.get('ti')?.max).toBeUndefined();
-    expect(byName.get('mi')?.min).toBeUndefined();
-    expect(byName.get('mi')?.max).toBeUndefined();
+    expect(byName.get('ti')).toMatchObject({ integer: true, min: '-128', max: '127' });
+    expect(byName.get('mi')).toMatchObject({ integer: true, min: '-8388608', max: '8388607' });
   });
 
   it('DEFECT: puts no cap on the text family, where MySQL caps it in bytes', async () => {

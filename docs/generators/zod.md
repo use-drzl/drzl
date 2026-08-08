@@ -182,8 +182,10 @@ The same rules apply, with each dialect's own widths:
 | --------------------------------------- | ---------------------------------------------------------------- |
 | MySQL `tinyint()`                       | `z.number().int().gte(-128).lte(127)`                            |
 | MySQL `mediumint()`                     | `z.number().int().gte(-8388608).lte(8388607)`                    |
+| MySQL `int({ unsigned: true })`         | `z.number().int().gte(0).lte(4294967295)`, and every other width takes its own unsigned range the same way |
+| MySQL `bigint({ mode: 'bigint', unsigned: true })` | `z.bigint().gte(0n).lte(18446744073709551615n)`, the column's own ceiling, exactly |
 | MySQL `year()`                          | `z.number().int().gte(1901).lte(2155)`                           |
-| MySQL `serial()`                        | `z.number().int().gte(0)`, since it is unsigned                  |
+| MySQL `serial()`                        | `z.number().int().gte(0).lte(9007199254740991)`: `bigint unsigned` read as a number, so the safe-integer ceiling |
 | MySQL `text()`                          | a string capped at 65535 **bytes**, the width the type implies   |
 | MySQL `binary(4)`                       | a string, capped at 4 characters on select and 4 bytes on insert |
 | SQLite `blob({ mode: 'json' })`         | `z.json()`                                                       |

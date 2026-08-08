@@ -36,6 +36,7 @@
     "@seriousme/openapi-schema-validator": "^2.9.1",
     "ajv": "^8.17.1",
     "ajv-formats": "^3.0.1",
+    "drizzle-orm-v1": "npm:drizzle-orm@1.0.0-rc.4",
     "tsup": "^8.5.1",
     "typescript": "^5.9.3"
   },

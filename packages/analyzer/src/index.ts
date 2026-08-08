@@ -718,11 +718,15 @@ export function describeV1Column(column: any): Partial<Column> | null {
     case 'int8':
     case 'uint8':
     case 'int16':
+    case 'uint16':
     case 'int24':
+    case 'uint24':
     case 'int32':
+    case 'uint32':
     case 'int53':
     case 'uint53':
-    case 'int64': {
+    case 'int64':
+    case 'uint64': {
       // `numeric({ mode: 'bigint' })` is not an int64 column and v1 says it is: all four
       // dialects' bigint-mode classes carry `dataType: 'bigint int64'`, so a `numeric(20,0)` took
       // the range below and was labelled BIGINT with it. It is a NUMERIC column whose width is its
@@ -761,7 +765,11 @@ export function describeV1Column(column: any): Partial<Column> | null {
       // only on `mode === "number"`, so 0.4x has no string mode and a type-invalid
       // `mode: 'string'` silently builds the `PgBigInt64` bigint mode, which really does return
       // a bigint and keeps its class-map answer.
-      if (semantic === 'int64' && js === 'string') {
+      // `uint64` beside it because the flag moves the semantic too: `bigint({ mode: 'string',
+      // unsigned: true })` states `string uint64` on rc.4, measured off the real column, and
+      // keying the guard on `int64` alone sent the unsigned spelling into the integer arm below,
+      // which typed it `number` with the uint64 range: a wire the driver never uses in this mode.
+      if ((semantic === 'int64' || semantic === 'uint64') && js === 'string') {
         out.tsType = 'string';
         out.dbType = 'BIGINT';
         break;
@@ -781,33 +789,60 @@ export function describeV1Column(column: any): Partial<Column> | null {
       //
       // Unsigned, which is the whole difference from `int8` beside it: SQL Server's `tinyint`
       // holds 0 to 255 where MySQL's holds -128 to 127, and drizzle names the two accordingly.
-      // The only builder on any of the six v1 cores stating `uint8` is mssql's `tinyint`, swept
-      // over every builder each core exports.
+      // With every builder at its default config, the only one on any of the six v1 cores stating
+      // `uint8` is mssql's `tinyint`; `{ unsigned: true }` on a MySQL or SingleStore `tinyint`
+      // states it too, measured off real rc.4 columns.
+      //
+      // The other uint widths are `{ unsigned: true }` on MySQL and SingleStore, which moves the
+      // semantic half exactly as it moves the SQL type: `int32` becomes `uint32` the way `int`
+      // becomes `int unsigned`. Unhandled, they fell to the bare-number arm below, which treats a
+      // MySQL number with no declared precision as the implicit decimal(10,0): NUMERIC,
+      // `integer: false`, and a +/-9999999999 bound that takes -1, 1.5 and 4294967296 on a column
+      // that stores none of them. `uint64` fell further, all the way back to the class-name
+      // table's signed int64 range, so the select schema refused 18446744073709551615n on a row
+      // the driver returns.
+      //
+      // The unsigned ceilings are the type's, verified against a live MySQL 8.4.11: a `tinyint
+      // unsigned` stores 255 and refuses -1 and 256, an `int unsigned` stores 4294967295, and a
+      // `bigint unsigned` stores 18446744073709551615 and hands it back, as 18446744073709551615n
+      // in bigint mode. The two bigint modes keep different ceilings for the same reason the
+      // signed pair does: `uint53` arrives through `Number`, so the truthful ceiling is the
+      // safe-integer bound rather than the column's 2^64-1, which no double holds and bounding at
+      // would promise a precision that cannot survive the round trip. `uint64` is a bigint and
+      // the column's own edge is representable, so it is stated.
       const range = {
         int8: ['-128', '127'],
         uint8: ['0', '255'],
         int16: ['-32768', '32767'],
+        uint16: ['0', '65535'],
         int24: ['-8388608', '8388607'],
+        uint24: ['0', '16777215'],
         int32: ['-2147483648', '2147483647'],
+        uint32: ['0', '4294967295'],
         int53: ['-9007199254740991', '9007199254740991'],
         // MySQL `serial` is `bigint unsigned auto_increment`, so it starts at 0 rather than
-        // spanning the signed range.
+        // spanning the signed range. An explicit `bigint({ mode: 'number', unsigned: true })`
+        // states the same semantic and takes the same answer.
         uint53: ['0', '9007199254740991'],
         int64: ['-9223372036854775808', '9223372036854775807'],
+        uint64: ['0', '18446744073709551615'],
       }[semantic]!;
       [out.min, out.max] = range;
       out.integer = true;
       out.tsType = js === 'bigint' ? 'bigint' : 'number';
       out.dbType =
-        semantic === 'int8' || semantic === 'uint8'
-          ? 'TINYINT'
-          : semantic === 'int16'
-            ? 'SMALLINT'
-            : semantic === 'int24'
-              ? 'MEDIUMINT'
-              : semantic === 'int32'
-                ? 'INTEGER'
-                : 'BIGINT';
+        (
+          {
+            int8: 'TINYINT',
+            uint8: 'TINYINT',
+            int16: 'SMALLINT',
+            uint16: 'SMALLINT',
+            int24: 'MEDIUMINT',
+            uint24: 'MEDIUMINT',
+            int32: 'INTEGER',
+            uint32: 'INTEGER',
+          } as Record<string, string>
+        )[semantic] ?? 'BIGINT';
       break;
     }
     case 'year':
@@ -1701,6 +1736,12 @@ export class SchemaAnalyzer {
   private static readonly INT_RANGES: Record<string, [string, string]> = {
     // 8 bit
     MySqlTinyInt: ['-128', '127'],
+    // Absent until the unsigned fix swept the family: v1 states `number int8` for the same
+    // column, so the majors disagreed about every SingleStore tinyint. That is the shape the
+    // cross-major diff in `scripts/verify-packed.sh` exists to catch, and its fixture carries no
+    // SingleStore table, so unsigned-int-ranges.spec.ts holds these two classes across both
+    // majors instead. The width is the type's, the one `MySqlTinyInt` beside it already carries.
+    SingleStoreTinyInt: ['-128', '127'],
     SQLiteInteger: ['-9223372036854775808', '9223372036854775807'],
     // 16 bit
     PgSmallInt: ['-32768', '32767'],
@@ -1713,6 +1754,8 @@ export class SchemaAnalyzer {
     SingleStoreSmallInt: ['-32768', '32767'],
     // 24 bit
     MySqlMediumInt: ['-8388608', '8388607'],
+    // As SingleStoreTinyInt above: v1 states `number int24` and this table said nothing.
+    SingleStoreMediumInt: ['-8388608', '8388607'],
     // 32 bit
     PgInteger: ['-2147483648', '2147483647'],
     PgSerial: ['-2147483648', '2147483647'],
@@ -1728,6 +1771,61 @@ export class SchemaAnalyzer {
     PgBigSerial64: ['-9223372036854775808', '9223372036854775807'],
     MySqlBigInt64: ['-9223372036854775808', '9223372036854775807'],
     SingleStoreBigInt64: ['-9223372036854775808', '9223372036854775807'],
+    // MySQL and SingleStore `serial`, which is `bigint unsigned auto_increment`: unsigned by the
+    // builder's own definition, with no `config.unsigned` stating it, so the flag-keyed table
+    // below cannot answer and the range lives here. The mode is number, so the safe-integer
+    // ceiling rather than the column's, exactly as the 53 bit block above. The Postgres serials
+    // stay signed on purpose: a Postgres serial is a plain integer defaulting from a sequence,
+    // and the negative backfill note above applies to them and not to these. Before this entry
+    // the class was in no table at all, so an auto-increment column accepted -1 and the majors
+    // disagreed: v1 states `number uint53` for the same column and was already bounded.
+    MySqlSerial: ['0', '9007199254740991'],
+    SingleStoreSerial: ['0', '9007199254740991'],
+  };
+
+  /**
+   * The same widths with `{ unsigned: true }` set, which is the half the table above cannot see.
+   *
+   * On 0.4x the flag moves no class name: `int('x', { unsigned: true })` still builds a
+   * `MySqlInt`, and only `config.unsigned` and the ` unsigned` suffix on `getSQLType()` record
+   * the difference, measured off real 0.45.2 columns. So the table above answered every unsigned
+   * width with its signed range, and the emitted select schema refused every stored value in the
+   * upper half of the column: an `int unsigned` holding 4294967295 failed validation on a row the
+   * database returned, and the same one width up meant `bigint unsigned` refused
+   * 18446744073709551615n.
+   *
+   * The ceilings are the type's, verified against a live MySQL 8.4.11: 255, 65535, 16777215 and
+   * 4294967295 store and return, -1 and each ceiling plus one are refused with
+   * ER_WARN_DATA_OUT_OF_RANGE. The bigint pair keeps the two modes apart for the reason the
+   * signed pair above does: number mode tops out at the safe-integer bound the wire imposes,
+   * bigint mode at the column's own 2^64-1, which a bigint can spell. SingleStore is MySQL wire
+   * compatible, ships the same builders with the same `config.unsigned`, and v1 states the same
+   * `uintN` semantics for it, measured off real rc.4 columns; the entries keep the majors in
+   * agreement, which is what the cross-major diff in `scripts/verify-packed.sh` holds together.
+   *
+   * Keyed by class exactly like `INT_RANGES`, and consulted only when `config.unsigned` is
+   * `true`, so no Postgres or SQLite column can ever reach it: neither dialect has an unsigned
+   * spelling, neither builder accepts the flag, and no class of theirs is named here.
+   */
+  private static readonly UNSIGNED_INT_RANGES: Record<string, [string, string]> = {
+    // 8 bit
+    MySqlTinyInt: ['0', '255'],
+    SingleStoreTinyInt: ['0', '255'],
+    // 16 bit
+    MySqlSmallInt: ['0', '65535'],
+    SingleStoreSmallInt: ['0', '65535'],
+    // 24 bit
+    MySqlMediumInt: ['0', '16777215'],
+    SingleStoreMediumInt: ['0', '16777215'],
+    // 32 bit
+    MySqlInt: ['0', '4294967295'],
+    SingleStoreInt: ['0', '4294967295'],
+    // 53 bit, the JS safe-integer ceiling rather than the column's
+    MySqlBigInt53: ['0', '9007199254740991'],
+    SingleStoreBigInt53: ['0', '9007199254740991'],
+    // 64 bit, representable because the value is a bigint
+    MySqlBigInt64: ['0', '18446744073709551615'],
+    SingleStoreBigInt64: ['0', '18446744073709551615'],
   };
 
   /**
@@ -1858,7 +1956,15 @@ export class SchemaAnalyzer {
       out.maxLength = length;
     }
 
-    const range = SchemaAnalyzer.INT_RANGES[ctor];
+    // The unsigned table is asked first, because on 0.4x the flag moves no class name: a
+    // `MySqlInt` is the column either way and `config.unsigned` is the only thing that says
+    // which range it holds, measured off real 0.45.2 columns. v1 columns carry the same config,
+    // so this fires for them too, and it states the same range the `uintN` arm of
+    // `describeV1Column` computes from the semantic; unsigned-int-ranges.spec.ts runs both
+    // majors through the real analyzer to hold the two paths together.
+    const unsignedRange =
+      column?.config?.unsigned === true ? SchemaAnalyzer.UNSIGNED_INT_RANGES[ctor] : undefined;
+    const range = unsignedRange ?? SchemaAnalyzer.INT_RANGES[ctor];
     if (range) {
       [out.min, out.max] = range;
       out.integer = true;
@@ -2198,8 +2304,14 @@ export class SchemaAnalyzer {
           if (/Numeric|Float|Double|Real/i.test(ctor))
             return { tsType: 'number', dbType: 'NUMERIC' };
 
+          // `serial` is `bigint unsigned auto_increment`, so its label is BIGINT: the answer the
+          // v1 path already gives the same column from its `number uint53`, where the INTEGER arm
+          // below was the two majors disagreeing about a label. The range and the integer flag
+          // come from `INT_RANGES`, which names this class now.
+          if (/Serial/i.test(ctor)) return { tsType: 'number', dbType: 'BIGINT' };
+
           // Integer family
-          if (/Int|Serial|TinyInt|SmallInt|MediumInt/i.test(ctor))
+          if (/Int|TinyInt|SmallInt|MediumInt/i.test(ctor))
             return { tsType: 'number', dbType: 'INTEGER' };
 
           // Boolean
@@ -2244,8 +2356,12 @@ export class SchemaAnalyzer {
           if (/Numeric|Float|Double|Real/i.test(ctor))
             return { tsType: 'number', dbType: 'NUMERIC' };
 
+          // As the MySQL serial arm above: BIGINT is what its `bigint unsigned auto_increment`
+          // is, and what the v1 path answers for the same column.
+          if (/Serial/i.test(ctor)) return { tsType: 'number', dbType: 'BIGINT' };
+
           // Integer family
-          if (/Int|Serial|TinyInt|SmallInt|MediumInt/i.test(ctor))
+          if (/Int|TinyInt|SmallInt|MediumInt/i.test(ctor))
             return { tsType: 'number', dbType: 'INTEGER' };
 
           // Boolean
