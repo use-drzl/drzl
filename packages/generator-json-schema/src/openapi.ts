@@ -17,6 +17,7 @@
  * compiler anywhere says so.
  */
 import type { Column, Table } from '@drzl/analyzer';
+import { qualifiedForeignTable, qualifiedTableName } from '@drzl/analyzer';
 import { tableSchemas, type JsonSchemaTarget, type Schema } from './schemas.js';
 
 /** What the document says about itself. DRZL knows the schema and nothing else, so this is input. */
@@ -101,19 +102,35 @@ const modesFor = (table: Table, key: Column[] | null): Mode[] => [
  * DRZL user addresses a table by: `include` and `exclude` in the config are matched against it, and
  * that was itself a deliberate decision recorded in the config schema. Percent-encoded, since a
  * table name is not constrained to characters that are safe in a path.
+ *
+ * A table that names a SQL schema takes a segment for it first, so `reporting.users` is
+ * `/reporting/users`. Two schemas can hold one table name and a path names one resource, so
+ * something had to give; the schema is what the database itself uses to tell them apart, and it
+ * reads as the resource hierarchy it is. A table in the default schema keeps the bare `/users` it
+ * has always had, which is not a compromise: Drizzle refuses `pgSchema('public')` outright, so
+ * there is no second spelling for such a table to disagree with.
+ *
+ * Each half is encoded on its own, so the separator survives a schema name that needs escaping.
  */
-const resourceSegment = (table: Table) => encodeURIComponent(table.name);
+const resourceSegment = (table: Table) =>
+  table.schema
+    ? `${encodeURIComponent(table.schema)}/${encodeURIComponent(table.name)}`
+    : encodeURIComponent(table.name);
 
 /** Every foreign key the table declares, including the ones only mirrored onto a column. */
-function foreignKeysOf(
-  table: Table
-): Array<{ columns: string[]; foreignTable: string; foreignColumns: string[] }> {
+function foreignKeysOf(table: Table): Array<{
+  columns: string[];
+  foreignTable: string;
+  foreignSchema?: string;
+  foreignColumns: string[];
+}> {
   if (table.foreignKeys?.length) return table.foreignKeys;
   return table.columns
     .filter((c) => c.references)
     .map((c) => ({
       columns: [c.name],
       foreignTable: c.references!.table,
+      ...(c.references!.schema ? { foreignSchema: c.references!.schema } : {}),
       foreignColumns: [c.references!.column],
     }));
 }
@@ -166,12 +183,15 @@ function build(
     if (clash !== undefined) {
       throw new Error(
         `@drzl/generator-json-schema: the operationId "${id}" would be emitted for both ` +
-          `"${clash}" and "${table.name}". An operationId is the method name a client generator ` +
+          `"${clash}" and "${qualifiedTableName(table)}". An operationId is the method name a ` +
+          `client generator ` +
           `derives, and the specification requires it to be unique across the document.`
       );
     }
-    operationIds.set(id, table.name);
-    return { operationId: id, tags: [table.name], ...rest };
+    operationIds.set(id, qualifiedTableName(table));
+    // Tagged by the qualified name, because a tag groups the operations of one resource and two
+    // tables sharing a bare name would otherwise be presented as a single one.
+    return { operationId: id, tags: [qualifiedTableName(table)], ...rest };
   };
 
   const built = tables.map((table) => ({
@@ -196,7 +216,10 @@ function build(
     if (table.readOnly) {
       notes.push('It refuses every write, so only reads are described.');
     }
-    tags.push({ name: table.name, description: [`Table "${table.name}".`, ...notes].join(' ') });
+    tags.push({
+      name: qualifiedTableName(table),
+      description: [`Table "${qualifiedTableName(table)}".`, ...notes].join(' '),
+    });
 
     const T = pascal(table.tsName);
     const select = ref(componentName(table, 'select'));
@@ -217,7 +240,7 @@ function build(
     });
 
     const collection = `/${segment}`;
-    claim(collection, table.tsName, table.name);
+    claim(collection, table.tsName, qualifiedTableName(table));
     const item: Record<string, unknown> = {
       get: operation(`list${T}`, table, {
         summary: `List every ${table.name} row.`,
@@ -248,7 +271,7 @@ function build(
     if (!key) continue;
 
     const itemPath = `${collection}/${key.map((c) => `{${c.name}}`).join('/')}`;
-    claim(itemPath, table.tsName, table.name);
+    claim(itemPath, table.tsName, qualifiedTableName(table));
     const parameters = key.map((c) => ({
       name: c.name,
       in: 'path',
@@ -320,7 +343,9 @@ function build(
       // schemas drop a child with more than one key back to its parent.
       const matching = foreignKeysOf(child.table).filter(
         (fk) =>
-          fk.foreignTable === table.name &&
+          // Qualified on both sides. On the bare name a key pointing at `reporting.users` also
+          // answered for `public.users`, so the child was hung under a parent in another schema.
+          qualifiedForeignTable(fk) === qualifiedTableName(table) &&
           fk.foreignColumns.length === key.length &&
           fk.foreignColumns.every((c, i) => c === key[i].name)
       );
@@ -329,7 +354,7 @@ function build(
       claim(
         subPath,
         `${table.tsName} -> ${child.table.tsName}`,
-        `${table.name} -> ${child.table.name}`
+        `${qualifiedTableName(table)} -> ${qualifiedTableName(child.table)}`
       );
       paths[subPath] = {
         parameters,

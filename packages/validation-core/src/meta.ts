@@ -81,6 +81,16 @@ export interface ColumnMetaFacts {
 export interface TableMetaFacts {
   /** The SQL table name, which is not the Drizzle export name the schema is named after. */
   table: string;
+  /**
+   * The SQL schema the table lives in, present only when it names one.
+   *
+   * Beside `table` rather than folded into it. `table` is the bare name in every emitted file
+   * that exists, and two tables in two schemas publish the same one, so without this a consumer
+   * reading the metadata of `reporting.users` cannot tell it from `public.users`. Absent for a
+   * table in the default schema, which is what `pgTable` declares and the only thing it can
+   * declare: Drizzle refuses `pgSchema('public')`.
+   */
+  schema?: string;
   /** Which database this was analysed from. The same declaration means different things across them. */
   dialect?: string;
   /** Which of the three schemas this is. The export name says it; the schema object does not. */
@@ -257,6 +267,7 @@ export function tableMetaFacts(table: Table, opts: TableMetaOptions): TableMetaF
   const unique = (table.unique ?? []).map((k) => k.columns).filter((c) => c.length > 0);
   const facts: TableMetaFacts = {
     table: table.name,
+    ...(table.schema ? { schema: table.schema } : {}),
     ...(opts.dialect ? { dialect: opts.dialect } : {}),
     mode: opts.mode,
     ...(pk.length ? { primaryKey: pk } : {}),

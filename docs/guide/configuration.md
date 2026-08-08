@@ -34,7 +34,7 @@ export default defineConfig({
 });
 ```
 
-Two things are deliberately *not* written twice here.
+Two things are deliberately _not_ written twice here.
 
 `servicesDir` is derived from the `service` generator's `path`, so naming it on the router as well
 is how the two drift apart.
@@ -92,6 +92,61 @@ Matching is on the **database table name**, anchored, with `*` as the only metac
 Anchored matters: `exclude: ['user']` does not also drop `users`. `exclude` is applied after
 `include`, so it wins when both name the same table.
 
+### Tables in a Postgres schema
+
+Postgres puts every table in a schema, and `pgSchema('reporting').table('users', ...)` gives you a
+second table called `users`. A pattern therefore matches on two names, and you pick which one you
+mean:
+
+```ts
+import { pgTable, pgSchema, integer, text } from 'drizzle-orm/pg-core';
+
+export const reporting = pgSchema('reporting');
+
+export const users = pgTable('users', {
+  id: integer('id').primaryKey(),
+  email: text('email').notNull(),
+});
+
+export const reportingUsers = reporting.table('users', {
+  id: integer('id').primaryKey(),
+  label: text('label').notNull(),
+});
+```
+
+```ts
+export default defineConfig({
+  schema: 'src/db/schema.ts',
+  // Every schema's `users`, which is what a bare name has always meant.
+  exclude: ['users'],
+  // Just the one in `reporting`.
+  // exclude: ['reporting.users'],
+  // The whole `reporting` schema.
+  // exclude: ['reporting.*'],
+  // Just the default schema's, which is what `pgTable` declares.
+  // exclude: ['public.users'],
+  generators: [{ kind: 'orpc' }],
+});
+```
+
+- **A bare pattern matches in every schema.** `exclude: ['users']` written before `reporting`
+  existed means "the users tables", and quietly narrowing it to one of them would start generating
+  an endpoint the config had already turned off. When a bare pattern really does reach two schemas,
+  DRZL says so on stderr and names the qualified spellings, because that is nearly always a pattern
+  written before the second schema existed.
+- **`public.` is how you name the default schema.** Drizzle refuses `pgSchema('public')` outright,
+  with "Postgres is using public schema by default", so a table declared with plain `pgTable` is the
+  only spelling of a table in `public` and `public.users` is how a config addresses it.
+- **`*` works on either side of the dot**, so `reporting.*` is a whole schema and `*.users` is every
+  `users` there is.
+
+Everything else follows the schema too. Emitted file names and exported schema names come from the
+Drizzle **export** name, which is unique per module, so `users` and `reportingUsers` never collided
+and still do not. The OpenAPI document gives a qualified table its own path, `/reporting/users`,
+while a table in the default schema keeps the bare `/users` it has always had. Relations, including
+the foreign keys behind nested schemas, follow the key into its own schema rather than into a
+same-named table in another one.
+
 ### Auth tables in particular
 
 If you use an auth library that writes into the same schema file, exclude its credential tables.
@@ -106,12 +161,12 @@ exclude: ['session', 'account', 'verification'],
 DRZL deliberately does not detect auth libraries and skip their tables for you. Better Auth's
 model names are all overridable through `options.user.modelName`, so a built-in list would miss
 renamed tables, and worse, would silently skip an ordinary table called `user`, which in most
-applications is the primary entity you *do* want generated.
+applications is the primary entity you _do_ want generated.
 
 ## Choosing which columns to generate for
 
 `include` and `exclude` are all or nothing per table, and the column you do not want in a generated
-schema is usually sitting in a table you *do* want: a `passwordHash` on `users`, an internal note
+schema is usually sitting in a table you _do_ want: a `passwordHash` on `users`, an internal note
 beside the public fields, a `tenantId` your server sets from the session. `columns` narrows a table
 without dropping it:
 
@@ -126,8 +181,24 @@ columns: {
 ```
 
 The key is a **table** pattern in the same language `include`/`exclude` uses: the database table
-name, anchored, with `*` as the only metacharacter. Column patterns are that language again, so
-`omit: ['*At']` drops `createdAt` and `updatedAt` and `omit: ['bio']` does not also drop `bios`.
+name, anchored, with `*` as the only metacharacter, and the schema-qualified name too. Column
+patterns are that language again, so `omit: ['*At']` drops `createdAt` and `updatedAt` and
+`omit: ['bio']` does not also drop `bios`.
+
+```ts
+columns: {
+  // Only the users table in the default schema.
+  'public.users': { omit: ['passwordHash'] },
+  // Every table in the reporting schema.
+  'reporting.*': { omit: ['internal_note'] },
+},
+```
+
+A bare key reaches every schema, exactly as `include` and `exclude` do, and DRZL warns when one
+really does. That warning is worth reading here in particular: a column pattern only has to match
+in **one** of the tables its entry matched, so `columns: { users: { pick: ['id', 'email'] } }`
+against two same-named tables narrows both and the one without an `email` silently loses every
+column but `id`, with no typo to report.
 
 Every matching entry applies, in the order it is written. Within one entry `pick` runs first and
 `omit` then removes, so `omit` wins where both name the same column. That is the same precedence
@@ -161,17 +232,17 @@ effect disappears in half the generated tree is worse than one that is not offer
 
 ### What it does not do
 
-The schema stops *describing* the column. Whether a value carrying it survives a `parse` is then the
+The schema stops _describing_ the column. Whether a value carrying it survives a `parse` is then the
 validator's own policy about undeclared keys, and they do not agree. Measured:
 
-| Generator | A row carrying the omitted column |
-| --- | --- |
-| zod 4.4.3 | key stripped from the parsed result |
-| valibot 1.4.2 | key stripped |
+| Generator       | A row carrying the omitted column                                            |
+| --------------- | ---------------------------------------------------------------------------- |
+| zod 4.4.3       | key stripped from the parsed result                                          |
+| valibot 1.4.2   | key stripped                                                                 |
 | TypeBox 0.34.52 | `Value.Parse` and `Value.Clean` strip it; `Value.Check` alone returns `true` |
-| Effect 3.22.1 | key stripped by `decodeUnknownSync` |
-| arktype 2.2.3 | key left in place |
-| json-schema | `additionalProperties: false`, so a validator rejects the payload |
+| Effect 3.22.1   | key stripped by `decodeUnknownSync`                                          |
+| arktype 2.2.3   | key left in place                                                            |
+| json-schema     | `additionalProperties: false`, so a validator rejects the payload            |
 
 If you are relying on a parse to strip a secret rather than on never selecting it, check which of
 those you are using.
@@ -194,8 +265,8 @@ payload that is not a complete row, so whatever calls db.insert has to supply "t
 itself.
 ```
 
-That is a real hazard and also the normal multi-tenant shape: an insert schema describes a *request
-body*, not a row, and the server fills in the rest. Refusing it would remove one of the two things
+That is a real hazard and also the normal multi-tenant shape: an insert schema describes a _request
+body_, not a row, and the server fills in the rest. Refusing it would remove one of the two things
 this option is for. A CHECK constraint naming a column you omitted also warns, because nothing DRZL
 emits can enforce it any more, though your database still does.
 
@@ -260,15 +331,9 @@ it out keeps the names above unchanged.
 That config emits:
 
 ```ts
-export const InsertUserProfilesSchema = z.object({
-  /* ... */
-});
-export const UpdateUserProfilesSchema = z.object({
-  /* ... */
-});
-export const SelectUserProfilesSchema = z.object({
-  /* ... */
-});
+export const InsertUserProfilesSchema = z.object({/* ... */});
+export const UpdateUserProfilesSchema = z.object({/* ... */});
+export const SelectUserProfilesSchema = z.object({/* ... */});
 
 export type CreateUserProfilesInput = z.input<typeof InsertUserProfilesSchema>;
 export type EditUserProfilesInput = z.input<typeof UpdateUserProfilesSchema>;
