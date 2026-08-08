@@ -1,5 +1,159 @@
 # @drzl/generator-zod
 
+## 3.19.0
+
+### Minor Changes
+
+- 4efd19b: Emitted validators can now give every key a nominal type, so a `users.id` cannot be passed where a
+  `posts.id` is wanted.
+
+  `{ kind: 'zod', path: 'src/validators/zod', branded: true }`, on all five validation generators.
+
+  ```ts
+  export const SelectpostsSchema = z.object({
+    id: z.number().int().brand<'posts.id'>(),
+    authorId: z.number().int().brand<'users.id'>(),
+  });
+
+  export type PostsId = z.output<typeof SelectpostsSchema>['id'];
+  ```
+
+  ```ts
+  loadUser(post.authorId); // fine
+  loadUser(post.id); // Type 'number & $brand<"posts.id">' is not assignable to
+  //                    parameter of type 'number & $brand<"users.id">'
+  ```
+
+  **Nothing happens at runtime.** Measured on zod 4.4.3, `.brand()` returns the same schema object it
+  was called on, by identity, and `parse(1)` is `1`; valibot 1.4.2, arktype 2.2.3 and effect 3.x all
+  hand the value back unchanged, and TypeBox's marker is a cast that leaves the schema object
+  byte-identical. So this cannot change what a schema accepts, and the whole feature is what `tsc`
+  prints. It is proved that way: the test suite compiles generated modules and asserts that
+  `@ts-expect-error` on each rejection is used, that the same file without the directives produces
+  exactly those errors, and that the identical calls against unbranded output produce none.
+
+  **Foreign keys carry the brand of the column they reference**, resolved transitively, and that beats
+  the column being part of its own table's key. `posts.authorId` is a `users.id`; a join table keyed
+  on `(orgId, userId)` is `orgs.id` and `users.id`, not two brands nothing else produces. Without this
+  the feature would only stop you swapping two tables' own ids, while every id actually flowing
+  between your tables stayed a plain number.
+
+  **The brand token is `<export name>.<column>`, verbatim.** Nothing is transformed, so the token is
+  unique by construction and two tables cannot collide after a transformation. The exported alias has
+  to be an identifier and is `PascalCase(table) + PascalCase(column)`; `user_accounts` and
+  `userAccounts` do collide there, and when they do neither alias is emitted and the run says so. The
+  schemas are unaffected, because they carry the token and never the alias.
+
+  **The brand goes inside the `nullable` and `optional` wrappers**, and that is the one decision that
+  could be wrong while still compiling. A brand is an intersection and `null & { ... }` is `never`, so
+  `z.number().nullable().brand<'users.id'>()` infers `number & $brand<"users.id">` with the null arm
+  silently gone while `.parse(null)` still returns null. The same trap is in valibot, effect and
+  TypeBox. All five emit `(number & brand) | null`.
+
+  **`typedColumns` is not emitted for a branded column.** Both narrow the same column's static type and
+  whichever runs second wins, and applying the brand to the reference hits the null problem above. The
+  brand wins outright rather than the two being emitted to fight; nothing is lost for an ordinary key,
+  whose branded type is Drizzle's inferred type plus a marker. A key declared with `.$type<T>()` is the
+  one case that costs something, and it is documented.
+
+  **TypeBox has no brand at all** and still expresses one. There is no `Type.Brand` and nothing
+  brand-shaped on `Type`, measured on 0.34.52 by enumerating its keys. What it has is `TUnsafe<T>`, its
+  own primitive for "this schema, that static type", which the generator already uses for
+  `typedColumns`. A branded file declares one helper whose value is the schema itself, so `Value.Check`,
+  `TypeCompiler` and the JSON Schema `JSON.stringify` produces are all unchanged. The marker is a
+  string-keyed property rather than a `unique symbol` on purpose: a `unique symbol` is unique per
+  declaration, so two generated files would produce two unrelated brands and a foreign key would not be
+  assignable to the key it points at.
+
+  **Which types change differs by library, and branding only makes it visible.** zod, valibot and effect
+  name their insert type from the schema's _input_ type, which a brand does not touch, so writes stay
+  plain and only rows read back carry brands. ArkType and TypeBox name theirs from the output type, so
+  an insert payload there wants a branded id.
+
+  Off by default: it changes the inferred type of every consumer of the select schemas, which is the
+  point, but it is a change to existing call sites rather than an addition. A full generated project,
+  validators for all five libraries plus a service and both routers, typechecks with it on under
+  `nodenext` with `noUnusedLocals`: the generated service types its key as `id: number` from Drizzle,
+  and a branded id is still a number, so every call into it still compiles. Emitted source grows about
+  10%, all of it text, none of it reaching runtime.
+
+- 7a46b64: Emitted zod schemas can now carry the facts they cannot state about themselves.
+
+  `{ kind: 'zod', path: 'src/validators/zod', meta: true }` attaches zod's own `.meta()` to every
+  field and every table schema: the declared SQL type, the primary key, the unique constraints, the
+  dialect, whether the database generates or defaults the value, the declared width, and the CHECK
+  constraints, including the ones DRZL does not enforce.
+
+  ```ts
+  bio: z.string().nullable().meta({ sqlType: 'text' }),
+  ```
+
+  ```ts
+  SelectusersSchema.shape.bio.meta(); // { sqlType: 'text' }
+  SelectusersSchema.meta().primaryKey; // ['id']
+  ```
+
+  `z.toJSONSchema` copies the keys through, so the same option is what gets a declared width into an
+  OpenAPI document: DRZL enforces `varchar(254)` as a `.refine()`, and `toJSONSchema` drops every
+  refinement **in silence**, so without this the document says the column is an unbounded string and
+  nothing in it says otherwise. `maxLength` is the JSON Schema keyword, so a validator acts on it.
+
+  Off by default. On a ten-column table it costs about 48 bytes per field and 156 per schema, and
+  roughly doubles the emitted module; generated code ships in your bundle.
+
+  **Where it attaches is the whole design problem, and it is measured rather than reasoned about.**
+  `.meta()` returns a clone carrying the entry, so an operation that clones keeps it and one that
+  wraps does not. On zod 4.4.3, `.refine()`, `.min()`, `.describe()` and `.brand()` all preserve it,
+  while `.nullable()`, `.optional()`, `.default()`, `z.array()` and `.pipe()` each build a new schema
+  whose own `.meta()` answers `undefined`, reachable only at `.def.innerType`. DRZL wraps every
+  nullable column, every array, every optional-on-insert column and every field of an update schema,
+  so attaching to the base type would lose the metadata for most of the output. It is therefore
+  attached last, after every wrapper, which is also the position `z.toJSONSchema` reads as the
+  property's own keywords rather than as one arm of its `anyOf`.
+
+  Every key had to say something the schema does not already say. `nullable` is deliberately absent
+  for that reason: `.nullable()` is in the chain and `anyOf: [..., { "type": "null" }]` is in the
+  JSON Schema, so it would be a second copy of an answer the consumer already has. `hasDefault` is
+  present because a defaulted column and a nullable one are both `.optional()` on insert and the
+  wrapper cannot tell them apart. `unenforcedChecks` is present because nothing else in the emitted
+  module mentions a CHECK that DRZL declined; `drzl doctor` was the only place it appeared.
+
+  `{ meta: { description: true } }` additionally writes a `description`, which `toJSONSchema` maps to
+  the JSON Schema keyword of that name and which is the only key here any OpenAPI viewer renders
+  without being taught. It is separate because it is prose repeating the machine-readable keys beside
+  it, and prose is the most expensive thing in the output.
+
+  **There are no column comments to carry, and this was measured before the feature was scoped.**
+  `drizzle-orm` exposes none at all on either major: no comment-ish own key or prototype method on a
+  built column, and `pg.text('a', { comment: 'hello' })` is refused by TypeScript as an excess
+  property and, when passed through a variable, dropped at runtime with the string unreachable from
+  the built column by any path. Every key above is therefore a fact the analyzer derived, never text
+  the user wrote. The zod generator's documentation states this outright, because expecting it to
+  work is reasonable.
+
+  zod only, deliberately. The other four validation generators are not passed the option rather than
+  being passed it and ignoring it: each has a metadata facility of its own, and where the metadata
+  has to attach is exactly what had to be measured here. TypeBox is the obvious next one, because a
+  TypeBox schema is a JSON Schema and there is no placement question at all. The `json-schema`
+  generator does not read this either: it builds from the same analysis rather than from a zod schema,
+  so there is nothing to read.
+
+  `@drzl/analyzer` gains `Column.sqlType`, the column's type as the database declares it, from
+  Drizzle's own `getSQLType()`: `varchar(255)`, `numeric(10, 2)`, `timestamp with time zone`,
+  `text[]`, or an enum's type name. `dbType` could not answer this and was never meant to; it is a
+  label with exactly one consumer, `isIntegerColumn`, and it calls `varchar`, `char` and `text` all
+  `TEXT`. The two Drizzle majors disagree about an array and are reconciled: 0.4x wraps the column in
+  a `PgArray` whose own answer is already `text[]`, while v1 leaves the class alone and raises
+  `dimensions`, so the suffix is added from `arrayDimensions` when the type does not carry one. The
+  field is absent, never guessed, where a builder cannot answer.
+
+### Patch Changes
+
+- Updated dependencies [4efd19b]
+- Updated dependencies [7a46b64]
+  - @drzl/validation-core@3.19.0
+  - @drzl/analyzer@1.19.0
+
 ## 3.18.0
 
 ### Minor Changes
