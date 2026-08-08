@@ -24,6 +24,11 @@ jobs:
       # how it came to be failing unnoticed.
       - run: pnpm typecheck
       - run: pnpm -r test
+      # The analyzer fuzz baseline (test/fuzz/expected.json) was wired into neither CI nor
+      # verify-packed, so it rotted silently: two entries kept "reproducing" months after their
+      # columns were fixed, and nobody saw the gate's own delete-these message. Cheap to run,
+      # and a baseline that fails the build cannot rot.
+      - run: pnpm -C packages/analyzer fuzz:gate
       - run: pnpm lint
 
   # Everything above imports from source. This job is the only one that exercises what a
