@@ -18,7 +18,13 @@
  */
 import type { Column, Table } from '@drzl/analyzer';
 import { qualifiedForeignTable, qualifiedTableName } from '@drzl/analyzer';
-import { tableSchemas, type JsonSchemaTarget, type Schema } from './schemas.js';
+import {
+  componentSchemaName,
+  documentSchemas,
+  type EnumSharingOptions,
+  type JsonSchemaTarget,
+  type Schema,
+} from './schemas.js';
 
 /** What the document says about itself. DRZL knows the schema and nothing else, so this is input. */
 export interface OpenApiInfo {
@@ -32,7 +38,7 @@ export interface OpenApiServer {
   description?: string;
 }
 
-export interface OpenApiDocumentOptions {
+export interface OpenApiDocumentOptions extends EnumSharingOptions {
   target?: JsonSchemaTarget;
   applyDefaults?: boolean;
   /** Emit `/users/{id}/posts` for a child that names its parent by foreign key. */
@@ -55,8 +61,7 @@ type Mode = 'insert' | 'update' | 'select';
 const ERROR_SCHEMA = 'Error';
 
 /** The map key under `components.schemas`, which is also what a `$ref` to it spells. */
-const componentName = (table: Table, mode: Mode) =>
-  `${table.tsName}${mode[0].toUpperCase()}${mode.slice(1)}`;
+const componentName = componentSchemaName;
 
 const ref = (name: string) => ({ $ref: `#/components/schemas/${name}` });
 
@@ -194,20 +199,38 @@ function build(
     return { operationId: id, tags: [qualifiedTableName(table)], ...rest };
   };
 
+  // Which modes each table contributes, decided before anything is built so a shared enum
+  // definition is published only where the document really points at one.
+  const keys = new Map(tables.map((t) => [t, keyColumns(t)]));
+  const carried = new Map(tables.map((t) => [t, modesFor(t, keys.get(t)!)]));
+  // Every name a table's schema will claim, plus the one this document keeps for itself, so an
+  // enum sharing a name with either stays inline instead of overwriting it.
+  const reserved = new Set([
+    ERROR_SCHEMA,
+    ...tables.flatMap((t) => carried.get(t)!.map((m) => componentName(t, m))),
+  ]);
+  const shared = documentSchemas(tables, {
+    target: schemaTarget,
+    applyDefaults: !!opts.applyDefaults,
+    reserved,
+    modes: (t) => carried.get(t)!,
+    ...(opts.enums ? { enums: opts.enums } : {}),
+  });
+
   const built = tables.map((table) => ({
     table,
-    key: keyColumns(table),
+    key: keys.get(table)!,
     segment: resourceSegment(table),
-    schemas: tableSchemas(table, { target: schemaTarget, applyDefaults: opts.applyDefaults }),
+    schemas: shared.built.get(table)!,
   }));
 
   for (const { table, key, segment, schemas: built3 } of built) {
-    for (const mode of modesFor(table, key)) {
+    for (const mode of carried.get(table)!) {
       // `$schema` and `$id` both have to go. Nested under `components.schemas` a schema inherits
       // the document's dialect, and a 2020-12 `$id` may not contain a fragment, so the obvious
       // `#/components/schemas/<name>` makes a validator refuse the schema outright. The map key is
       // the identity and the `$ref` is written by whatever points at the schema.
-      const { $schema: _dialect, $id: _id, ...rest } = built3[mode];
+      const { $schema: _dialect, $id: _id, ...rest } = built3[mode]!;
       schemas[componentName(table, mode)] = rest;
     }
 
@@ -279,7 +302,7 @@ function build(
       description: `${c.name}, from the primary key of ${table.name}.`,
       // The column's own schema rather than a string, so an integer key is declared as one and a
       // uuid key carries its format. This is the whole point of reading the real key.
-      schema: (built3.select.properties as Record<string, Schema>)[c.name] ?? {},
+      schema: (built3.select!.properties as Record<string, Schema>)[c.name] ?? {},
     }));
     const missing = {
       description: `No ${table.name} row has that ${key.map((c) => c.name).join(' and ')}.`,
@@ -373,7 +396,9 @@ function build(
     }
   }
 
-  return { paths, schemas, tags };
+  // The shared enum definitions, after the table schemas so a stray collision would be visible
+  // rather than silent. `reserved` above is what makes that impossible in the first place.
+  return { paths, schemas: { ...schemas, ...shared.definitions() }, tags };
 }
 
 /**

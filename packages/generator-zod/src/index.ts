@@ -31,6 +31,9 @@ import {
   importSpecifier,
   insertColumns,
   isIntegerColumn,
+  lengthCheckLabel,
+  lengthMeasure,
+  measureExpression,
   moduleFileName,
   moduleSpecifier,
   nestedArmNotes,
@@ -166,13 +169,15 @@ function foldedIntoBounds(c: Column, checks: ColumnCheck[]): Set<ColumnCheck> {
  * points at the thing in the schema that caused it.
  */
 /**
- * `.refine()` calls for the `length(col)` constraints naming this column.
+ * `.refine()` calls for the `length(col)` and `octet_length(col)` constraints naming this column.
  *
- * Counted in code points, because Postgres counts characters. The same reason `varchar(n)` is not
- * `.max(n)`: `.length` is UTF-16 units and would refuse text the database accepts.
+ * A character count is counted in code points, because Postgres counts characters. The same reason
+ * `varchar(n)` is not `.max(n)`: `.length` is UTF-16 units and would refuse text the database
+ * accepts. A byte count is the UTF-8 encoding of a string and the plain `.length` of a `bytea`'s
+ * Uint8Array, which are two different expressions for the same SQL function. `lengthMeasure`
+ * decides which, once per column, and the constraint ledger asks it the same question.
  */
 function lengthRefinements(c: Column, lengths: LengthCheck[]): string {
-  if (c.arrayDimensions || c.shape) return [].join('');
   const OPS: Record<LengthCheck['operator'], string> = {
     '>=': '>=',
     '>': '>',
@@ -184,10 +189,11 @@ function lengthRefinements(c: Column, lengths: LengthCheck[]): string {
   return lengths
     .filter((k) => k.column === c.name)
     .map((k) => {
-      const msg = JSON.stringify(
-        `${k.name ? `${k.name}: ` : ''}length(${c.name}) ${k.operator} ${k.value}`
-      );
-      return `.refine((v) => [...v].length ${OPS[k.operator]} ${k.value}, { message: ${msg} })`;
+      const measure = lengthMeasure(c, k);
+      if (!measure) return '';
+      const msg = JSON.stringify(lengthCheckLabel(k));
+      const count = measureExpression(measure, 'v');
+      return `.refine((v) => ${count} ${OPS[k.operator]} ${k.value}, { message: ${msg} })`;
     })
     .join('');
 }

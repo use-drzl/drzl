@@ -100,7 +100,7 @@ Nothing to report.
 | Primary keys the generators cannot use  | `getById`, `update` and `delete` are keyed on one column                           |
 | Other findings                          | Everything else the analyzer said while reading the schema                         |
 
-Three CHECK cases are distinguished, because they have different fixes:
+Four CHECK cases are distinguished, because they have different fixes:
 
 - **Not translated.** The shared parser refused the expression and says why: `contains OR`,
   `right side is not a literal`, and so on. See the skip list in
@@ -110,6 +110,10 @@ Three CHECK cases are distinguished, because they have different fixes:
 - **Compares an array or structured column against a scalar literal.** `tags = '{}'` on a `text[]`
   says nothing usable about the array, so it is skipped rather than guessed at. On an array column
   only `cardinality(col)` is read.
+- **Counts a column whose count JavaScript cannot take the way the database did.**
+  `octet_length(bin) <= 8` on a MySQL `varbinary(8)`: the value arrives as a string produced by a
+  lossy decode, so neither its characters nor their UTF-8 re-encoding is the number the server took.
+  The same expression on a `text` or a `bytea` column **is** enforced, and is not listed.
 
 A constraint DRZL **does** translate is not listed. `age >= 18` folds into `.gte(18)` and
 `start_date < end_date` becomes an object-level refinement, and listing those would bury the ones
@@ -168,7 +172,7 @@ npx @drzl/cli doctor --json \
 ```
 
 Values are `unknown-column`, `check-declined`, `check-unknown-column`, `check-not-scalar`,
-`no-primary-key`, `partial-primary-key` and `analyzer`.
+`check-uncountable`, `no-primary-key`, `partial-primary-key` and `analyzer`.
 
 ## Runnable config
 

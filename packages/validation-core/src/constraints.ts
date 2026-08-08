@@ -29,11 +29,12 @@
  */
 import type { Column, ForeignKey, Key, Table } from '@drzl/analyzer';
 import {
+  lengthCheckLabel,
+  lengthMeasure,
   parseCheck,
   type CardinalityCheck,
   type ColumnCheck,
   type ColumnSet,
-  type LengthCheck,
   type NullCheck,
   type RowCheck,
 } from './checks.js';
@@ -57,9 +58,8 @@ function setText(k: ColumnSet): string {
     `${k.column} IN (${k.values.map((v) => literalText(v, k.kind)).join(', ')})`
   );
 }
-function lengthText(k: LengthCheck): string {
-  return labelled(k.name, `length(${k.column}) ${k.operator} ${k.value}`);
-}
+/** Re-exported spelling, so nothing here can render a count differently from a generator. */
+const lengthText = lengthCheckLabel;
 function cardinalityText(k: CardinalityCheck): string {
   return labelled(k.name, `cardinality(${k.column}) ${k.operator} ${k.value}`);
 }
@@ -68,6 +68,32 @@ function rowText(k: RowCheck): string {
 }
 function nullText(k: NullCheck): string {
   return labelled(k.name, `${k.column} IS ${k.notNull ? 'NOT NULL' : 'NULL'}`);
+}
+
+/**
+ * What a shaped column is, for a sentence about a count it cannot answer.
+ *
+ * The same vocabulary `drzl doctor` uses, so a reader meeting a constraint in both places meets one
+ * noun for it. Every `ColumnShape` kind has an arm, so a shape added later reads as "a structured"
+ * rather than as a wrong noun.
+ */
+function shapeArticle(c: Column): string {
+  switch (c.shape?.kind) {
+    case 'json':
+      return 'a JSON';
+    case 'buffer':
+      return 'a binary';
+    case 'numberVector':
+      return 'a vector';
+    case 'bitstring':
+      return 'a bit-string';
+    case 'byteString':
+      return 'a byte-string';
+    case 'custom':
+      return 'a customType';
+    default:
+      return 'a structured';
+  }
 }
 
 /**
@@ -232,7 +258,20 @@ export function classifyTableChecks(table: Table): ClassifiedCheck[] {
       });
     }
     for (const l of parsed.lengths ?? []) {
-      place(l.column, lengthText(l), takesScalarChecks, notScalar);
+      // Not the scalar guard the comparisons use. A count is answerable on a `bytea`, which is a
+      // shaped column, and unanswerable on a `varbinary(n)`, which is not; `lengthMeasure` is the
+      // one place that distinction is made and every generator asks it the same question.
+      place(
+        l.column,
+        lengthText(l),
+        (c) => lengthMeasure(c, l) !== undefined,
+        (c) =>
+          c.arrayDimensions
+            ? `"${c.name}" is an array, so it has no ${l.unit === 'bytes' ? 'bytes' : 'characters'} to count`
+            : c.shape
+              ? `"${c.name}" is ${shapeArticle(c)} column, whose ${l.unit === 'bytes' ? 'byte' : 'character'} count in JavaScript is not the one the database took`
+              : `"${c.name}" is not a string, so it has no ${l.unit === 'bytes' ? 'bytes' : 'characters'} to count`
+      );
     }
     for (const a of parsed.cardinalities ?? []) {
       place(

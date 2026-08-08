@@ -24,15 +24,18 @@ const CLI = path.resolve(import.meta.dirname, '..', 'dist', 'cli.js');
 const ROOT = path.join(import.meta.dirname, '.tmp-openapi-parity');
 
 const SCHEMA = `
-import { pgTable, integer, serial, text, uniqueIndex } from 'drizzle-orm/pg-core';
+import { pgEnum, pgTable, integer, serial, text, uniqueIndex } from 'drizzle-orm/pg-core';
+export const mood = pgEnum('mood', ['sad', 'ok', 'happy']);
 export const users = pgTable('users', {
   id: serial('id').primaryKey(),
   email: text('email').notNull(),
+  mood: mood('mood').notNull(),
 }, (t) => ({ byEmail: uniqueIndex('users_email_key').on(t.email) }));
 export const posts = pgTable('posts', {
   id: serial('id').primaryKey(),
   authorId: integer('author_id').notNull().references(() => users.id),
   title: text('title').notNull(),
+  mood: mood('mood').notNull(),
 });
 `;
 
@@ -47,6 +50,7 @@ const CONFIG = `export default {
       path: './out/json-schema',
       target: 'openapi-3.0',
       includeRelations: true,
+      sharedEnums: true,
       document: {
         format: 'both',
         info: { title: 'Shop', version: '4.2.0', description: 'the shop api' },
@@ -124,6 +128,27 @@ describe('generate', () => {
     const codes = Object.keys(doc.paths['/users'].post.responses);
     expect(codes, 'validationStatus').toContain('422');
     expect(codes, 'validationStatus').not.toContain('400');
+  });
+
+  it('shares the enum the analysis named, across both tables', () => {
+    // The document shares whatever `sharedEnums` says, since a document is only ever read whole.
+    // `mood` is on one column of each table, so nothing inside one schema could see it twice.
+    const doc = JSON.parse(fromGenerate['openapi.json']);
+    expect(doc.components.schemas.mood).toEqual({ enum: ['sad', 'ok', 'happy'] });
+    expect(doc.components.schemas.usersSelect.properties.mood).toEqual({
+      $ref: '#/components/schemas/mood',
+    });
+    expect(doc.components.schemas.postsSelect.properties.mood).toEqual({
+      $ref: '#/components/schemas/mood',
+    });
+  });
+
+  it('emits no $defs into a 3.0 module, whatever sharedEnums says', () => {
+    // `sharedEnums: true` is set above. `$defs` is a 2020-12 keyword and 3.0's Schema Object is
+    // closed, so the per-table modules on this target keep their inline lists.
+    expect(fromGenerate['users.schema.ts']).not.toContain('$defs');
+    expect(fromGenerate['users.schema.ts']).not.toContain('$ref');
+    expect(fromGenerate['users.schema.ts'], 'the list is still there, inline').toContain('sad');
   });
 });
 

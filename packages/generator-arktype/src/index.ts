@@ -23,6 +23,9 @@ import {
   COLUMN_FORMATS,
   insertColumns,
   isIntegerColumn,
+  lengthCheckLabel,
+  lengthMeasure,
+  measureExpression,
   nonFiniteAccepted,
   parseCheck,
   parsesToADate,
@@ -959,8 +962,16 @@ function atCapNarrows(c: Column, mode: Mode): string {
   return out.join('');
 }
 
+/**
+ * `length(col)` and `octet_length(col)` as narrows on the object.
+ *
+ * On the object rather than on the field, which is where ArkType has to put them. The measurement
+ * still depends on the column, so the column is looked up here and `lengthMeasure` answers it: a
+ * clause naming a column this schema does not carry, or one whose shape answers no count, is
+ * dropped rather than measured the wrong way.
+ */
 function atLengthNarrows(lengths: LengthCheck[], cols: Column[]): string {
-  const present = new Set(cols.map((c) => c.name));
+  const byName = new Map(cols.map((c) => [c.name, c]));
   const OPS: Record<LengthCheck['operator'], string> = {
     '>=': '>=',
     '>': '>',
@@ -970,13 +981,16 @@ function atLengthNarrows(lengths: LengthCheck[], cols: Column[]): string {
     '<>': '!==',
   };
   return lengths
-    .filter((k) => present.has(k.column))
-    .map((k) => {
+    .flatMap((k) => {
+      const col = byName.get(k.column);
+      const measure = col && lengthMeasure(col, k);
+      if (!measure) return [];
       const v = `o[${JSON.stringify(k.column)}]`;
-      const msg = JSON.stringify(
-        `${k.name ? `${k.name}: ` : ''}length(${k.column}) ${k.operator} ${k.value}`
-      );
-      return `.narrow((o, ctx) => ${v} == null || [...${v}].length ${OPS[k.operator]} ${k.value} || ctx.mustBe(${msg}))`;
+      const msg = JSON.stringify(lengthCheckLabel(k));
+      const count = measureExpression(measure, v);
+      return [
+        `.narrow((o, ctx) => ${v} == null || ${count} ${OPS[k.operator]} ${k.value} || ctx.mustBe(${msg}))`,
+      ];
     })
     .join('');
 }

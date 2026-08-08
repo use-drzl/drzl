@@ -352,12 +352,41 @@ name: z.string()
   .refine((v) => [...v].length <= 8, { message: 'name_len: length(name) <= 8' }),
 ```
 
-The one function call the parser reads, because the mapping is exact. `char_length` is the same
-function and is read too. Counted in code points, so it agrees with the database on emoji.
+`char_length` is the same function and is read too. Counted in code points, so it agrees with the
+database on emoji.
 
-`octet_length` is **not** read: it counts bytes, which depends on the encoding and cannot be
-derived from a JavaScript string without choosing one. Neither is `lower`, which would need a
-locale to be faithful.
+`lower` is **not** read, since it would need a locale to be faithful.
+
+### `octet_length()` becomes a byte count
+
+```ts
+// check('body_bytes', sql`octet_length(${t.body}) <= 5`)      // on a text column
+body: z.string().refine((v) => new TextEncoder().encode(v).length <= 5, {
+  message: 'body_bytes: octet_length(body) <= 5',
+}),
+
+// check('blob_bytes', sql`octet_length(${t.blob}) <= 5`)      // on a bytea column
+blob: z.instanceof(Uint8Array).refine((v) => v.length <= 5, {
+  message: 'blob_bytes: octet_length(blob) <= 5',
+}),
+```
+
+A different measurement of the same value, and it needs a different expression on each column type.
+Measured on PostgreSQL 17.5, on a `text` holding three emoji and a `bytea` holding six bytes:
+
+| expression        | `text` | `bytea`        | JavaScript                                  |
+| ----------------- | ------ | -------------- | ------------------------------------------- |
+| `octet_length(x)` | 12     | 6              | `new TextEncoder().encode(v).length`        |
+| `length(x)`       | 3      | 6              | `[...v].length`, or `v.length` on the array |
+| `char_length(x)`  | 3      | does not exist | `[...v].length`                             |
+
+So `length()` is the character count on a text column and the byte count on a `bytea` one, and both
+are read accordingly. `v.length` on a _string_ is none of the three: it counts UTF-16 units, which is
+6 for those same three emoji.
+
+A count is refused on a MySQL `binary(n)`/`varbinary(n)`. The value arrives as a string produced by a
+lossy decode, so neither its characters nor their re-encoding is the number the server took, and
+`drzl doctor` reports it rather than dropping it.
 
 ### `cardinality()` becomes an element count
 
@@ -384,7 +413,7 @@ against a scalar literal says nothing usable about an array, whereas this one is
 | `x + y < 100`                  | Arithmetic, which the schema cannot compute the way the database does   |
 | `age >= 18 AND lower(n) = 'x'` | One part is not understood, so neither is enforced                      |
 | `email ~ '^[a-z]+$'`           | Postgres `~` is POSIX ERE, not JavaScript's regex dialect               |
-| `octet_length(s) <= 5`         | Bytes, and the column's encoding is not in the schema                   |
+| `octet_length(bin) <= 5`       | On a `varbinary(n)`, whose bytes JavaScript cannot see                  |
 | `flag IS TRUE`                 | A boolean literal, which the parser does not read yet                   |
 
 **Arithmetic between columns is refused deliberately**, and it is the refusal most worth arguing
@@ -399,10 +428,10 @@ two of the three in the direction that refuses rows the database accepts. `drzl 
 operator and suggests moving the result into a generated column and constraining that.
 
 Applied, and worth naming because they read like exceptions: `start_date < end_date` goes on the
-object as a row-level check, `length()` and `char_length()` count code points, `cardinality()`
-bounds an array, `BETWEEN` folds into the range, `IN` and a disjunction of equalities both become
-an enum, `IS NOT NULL` narrows the field, and `IS NULL OR p` is exactly `p`. A conjunction is
-applied when **every** part is understood.
+object as a row-level check, `length()` and `char_length()` count code points, `octet_length()`
+counts bytes, `cardinality()` bounds an array, `BETWEEN` folds into the range, `IN` and a
+disjunction of equalities both become an enum, `IS NOT NULL` narrows the field, and `IS NULL OR p`
+is exactly `p`. A conjunction is applied when **every** part is understood.
 
 A schema that quietly enforces a _guess_ at your constraint is worse than one enforcing nothing,
 because it rejects rows the database would have accepted.
