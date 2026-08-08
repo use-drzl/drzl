@@ -48,6 +48,41 @@ describe('numbers', () => {
     });
   });
 
+  it('types bigint mode string by the string the driver returns', () => {
+    // `bigint({ mode: 'string' })` stamps `string int64` with codec `bigint:string` on pg and
+    // mysql, measured off real 1.0.0-rc.4 columns (`PgBigIntString`, `MySqlBigIntString`). The
+    // driver really returns a string there: the `bigint:string` codec casts the column to text on
+    // the wire and registers no normalize, so the text passes through untouched, and a live read
+    // through PGlite on the same rc hands back `'123'` and `'9223372036854775807'` as JS strings.
+    // The int64 arm keyed only on `js === 'bigint'`, so this shape came back `tsType: 'number'`
+    // and every generated select schema rejected every row the column returns.
+    expect(describeV1Column(col('string int64', 'bigint:string'))).toMatchObject({
+      tsType: 'string',
+      dbType: 'BIGINT',
+    });
+    // SingleStore states the same dataType and no codec at all, measured on a real
+    // `singlestoreTable`; the semantic half alone must be enough, as it is for its float.
+    expect(describeV1Column({ dataType: 'string int64', dimensions: 0 })).toMatchObject({
+      tsType: 'string',
+      dbType: 'BIGINT',
+    });
+    // No numeric facts on the string shape, deliberately, mirroring `string numeric` above:
+    // `isIntegerColumn` reads "min and max both present" as an integer column, and the string
+    // arms of the generators state no numeric facts to begin with. The digits-and-range
+    // tightening is a recorded follow-up, not this shape.
+    const d = describeV1Column(col('string int64', 'bigint:string'));
+    expect(d?.min).toBeUndefined();
+    expect(d?.max).toBeUndefined();
+    expect(d?.integer).toBeUndefined();
+    // The element description survives an array dimension, as every other element type does.
+    expect(describeV1Column(col('string int64', 'bigint:string', { dimensions: 1 }))).toMatchObject(
+      {
+        tsType: 'string',
+        arrayDimensions: 1,
+      }
+    );
+  });
+
   it('takes the 4 byte float bound from the codec, because the two databases differ', () => {
     // Postgres refuses a `real` past 3.4028235677973366e38 and MySQL refuses a `FLOAT` past
     // 3.4028234663852886e38, both bisected against a real server, so one bound for `number float`

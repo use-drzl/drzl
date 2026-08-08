@@ -55,8 +55,6 @@
     "drizzle-orm/mysql-core mysqlEnum(\"c\", {\"withTimezone\":true,\"mode\":\"string\"})",
     "drizzle-orm/mysql-core mysqlEnum(\"c\", {\"withTimezone\":true,\"precision\":3})",
     "drizzle-orm/mysql-core mysqlEnum(\"c\", {\"withTimezone\":true})",
-    "drizzle-orm/pg-core pgEnum(\"c\")",
-    "drizzle-orm/sqlite-core blob(\"c\")",
-    "drizzle-orm/sqlite-core int(\"c\", {\"mode\":\"timestamp_ms\"})"
+    "drizzle-orm/pg-core pgEnum(\"c\")"
   ]
 }
