@@ -50,5 +50,6 @@ generators: [
 ## Notes
 
 - In drizzle mode, uses `$inferSelect` / `$inferInsert` for end‑to‑end types.
-- `Update<T>` is derived from `Insert<T>` with PKs omitted and fields partial.
+- `Update<T>` is derived from `Insert<T>` with every primary‑key column omitted and fields partial.
+- Key parameters are typed from the primary key itself: `getById(id: string)` for a varchar key, `getById(orgId: number, userId: string)` for a composite one (one parameter per key column, in key order). A table with no primary key emits `getAll` and `create` only.
 - `databaseInjection` makes services accept `db: Database` (or your chosen type) instead of importing a global singleton, which is ideal for serverless runtimes.

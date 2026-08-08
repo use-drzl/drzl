@@ -48,6 +48,32 @@ export class UserService {
 
 This aligns with Cloudflare Workers/Astro patterns where a db is created per request/context.
 
+## Methods and key typing
+
+Every key parameter is typed from the table's primary key, read column by column at each
+column's real TypeScript type. `id: number` is what an integer key produces, not a fixed
+spelling: a `varchar` key makes the same parameter a `string`, and `eq(table.key, id)` then
+compiles against the real column. A composite key becomes one parameter per key column, in key
+order, named after the columns (the function-signature analogue of a router's
+`/:orgId/:userId`), and every method addresses the row with `and(eq(...), eq(...))` over the
+whole key. A table with no primary key cannot address a row at all, so it loses the methods
+that would have needed one, exactly as the route generators drop those routes.
+
+| Primary key                    | Emitted methods beside `getAll(...)` and `create(input)`                                            |
+| ------------------------------ | --------------------------------------------------------------------------------------------------- |
+| `integer` / `serial`           | `getById(id: number)`, `update(id: number, data)`, `delete(id: number)`                              |
+| `varchar` / `text` / `uuid`    | `getById(id: string)`, `update(id: string, data)`, `delete(id: string)`                              |
+| `bigint({ mode: 'bigint' })`   | `getById(id: bigint)`, `update(id: bigint, data)`, `delete(id: bigint)`                              |
+| enum                           | `getById(id: 'draft' \| 'live')`, and the same union on `update`/`delete`                            |
+| `timestamp({ mode: 'date' })`  | `getById(id: Date)`, `update(id: Date, data)`, `delete(id: Date)`                                    |
+| composite `(orgId, userId)`    | `getById(orgId: number, userId: string)`, `update(orgId, userId, data)`, `delete(orgId, userId)`     |
+| column DRZL cannot type        | drizzle mode types it `Select<T>['col']` (exact by construction); the stub spells `unknown`          |
+| none                           | nothing else: `getById`/`update`/`delete` are not emitted, and no `eq` import is left behind         |
+
+`Update<T>` omits every primary-key column, so a patch cannot move a row to another key: for a
+composite key that is `Omit<..., 'orgId' | 'userId'>`, not just the first column. In
+`databaseInjection` mode the `db` parameter stays first, ahead of the key columns.
+
 ## Examples
 
 ### Drizzle mode
@@ -91,8 +117,13 @@ drizzle-orm 0.45.x and 1.0.0 rc:
   `$defaultFn` primary key as `[{ id }]`; a caller-supplied key it reports nothing for, and the
   input already carries the value. Either way the created row is then read back by that key and
   returned, so `create` still resolves to the full row.
+- A composite key never goes through `$returningId()` (it reports nothing for one): `create`
+  inserts, then reads the row back by every key column the input carries.
 - `update` writes, then reads the row back by its key and returns it.
 - `delete` is unchanged; it never used `RETURNING` on any dialect.
+- A table with no primary key has nothing to read a created row back by, so its `create`
+  throws with an explanation, the same way a `generatedAlwaysAs(...)` key's does. On dialects
+  with `RETURNING`, keyless `create` works and returns the row.
 
 Two divergences from the `RETURNING` dialects are worth knowing:
 
@@ -105,8 +136,10 @@ Two divergences from the `RETURNING` dialects are worth knowing:
 
 One corner degrades quietly: a primary key whose default is computed in SQL, such as
 ``.default(sql`(uuid())`)``, is reported by neither `$returningId()` nor the input, so `create`
-inserts the row and resolves to `undefined`. Use `$defaultFn` when a generated key must come
-back from `create`.
+inserts the row and resolves to `undefined`. A defaulted member of a composite key that the
+caller omitted degrades the same way, because a composite key is read back from the input
+alone. Use `$defaultFn` when a generated single-column key must come back from `create`; for a
+composite key, supply every key column in the input.
 
 ## Generated Output License
 

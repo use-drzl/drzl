@@ -83,6 +83,70 @@ function fieldType(c: Column): string {
   return c.nullable ? `${tsTypeOf(c)} | null` : tsTypeOf(c);
 }
 
+/**
+ * The columns that address one row, or `null` when nothing does.
+ *
+ * The same reading of `primaryKey` as every route generator (hono, express, fastify, nestjs and
+ * the tRPC procedures): every column of the key, at its real type, and a table without one loses
+ * the methods that would have needed it rather than gaining a fictional `id`. This module used to
+ * fall back to a literal `'id'` and type every key parameter as `number`, which made
+ * `eq(books.isbn, id)` TS2769 for a varchar key on every dialect including Postgres, addressed a
+ * composite key by its first column alone, so update and delete hit every row sharing that
+ * value, and emitted addressing methods for keyless tables against a column that may not exist.
+ */
+function keyColumns(table: Table): Column[] | null {
+  const names = table.primaryKey?.columns ?? [];
+  if (!names.length) return null;
+  const cols = names.map((n) => table.columns.find((c) => c.name === n));
+  if (cols.some((c) => !c)) return null;
+  return cols as Column[];
+}
+
+/**
+ * The type a key parameter is declared at: the key column's own type through `tsTypeOf`, so an
+ * integer key keeps its historical `id: number` byte for byte and an enum key becomes the same
+ * literal union the row types carry. A column the analyzer could not type falls back, in drizzle
+ * mode, to `Select<T>['col']`: exact by construction, because `Select<T>` is
+ * `typeof table.$inferSelect`, so the parameter has whatever type drizzle infers for the column
+ * and `eq` accepts it where a literal `unknown` would not. The stub has no select type standing
+ * on a real table, and its interface field is `unknown` there anyway, so `unknown` stays.
+ */
+function keyParamType(c: Column, T: string, mode: 'drizzle' | 'stub'): string {
+  const t = tsTypeOf(c);
+  return t === 'unknown' && mode === 'drizzle' ? `Select${T}['${c.name}']` : t;
+}
+
+/**
+ * A composite key becomes one parameter per key column, in key order, named after the columns:
+ * the function-signature analogue of the route generators' `/:orgId/:userId`, and the spelling a
+ * caller holding `input.orgId, input.userId` composes without an object type nothing exports.
+ * The column names are already required to be identifiers by everything this module emits
+ * (`eq(table.column, ...)` member access, unquoted interface fields), so they can serve as
+ * parameter names.
+ * A single-column key keeps the parameter name `id` whatever the column is called: the name was
+ * never the defect, and integer-key emissions must not move a byte.
+ */
+function keyParams(key: Column[], T: string, mode: 'drizzle' | 'stub'): string {
+  if (key.length === 1) return `id: ${keyParamType(key[0], T, mode)}`;
+  return key.map((c) => `${c.name}: ${keyParamType(c, T, mode)}`).join(', ');
+}
+
+/** The WHERE that addresses exactly one row: every key column, `and`ed where there are several. */
+function keyWhere(key: Column[], T: string): string {
+  if (key.length === 1) return `eq(${T}.${key[0].name}, id)`;
+  return `and(${key.map((c) => `eq(${T}.${c.name}, ${c.name})`).join(', ')})`;
+}
+
+/** Every key column, quoted, for the update patch's Omit: a patch must not move a row's key. */
+function keyOmit(key: Column[]): string {
+  return key.map((c) => `'${c.name}'`).join(' | ');
+}
+
+/** The drizzle-orm import for the finished body: absent when no method addresses a row. */
+function ormImport(key: Column[] | null): string {
+  return key ? `import { ${key.length > 1 ? 'and, eq' : 'eq'} } from 'drizzle-orm';\n` : '';
+}
+
 function renderTypes(table: Table) {
   const cols = table.columns;
   const pk = table.primaryKey?.columns ?? [];
@@ -132,39 +196,80 @@ function renderTypes(table: Table) {
  * A database-generated primary key (`generatedAlwaysAs`) is the one shape this dialect cannot
  * round-trip: the database computes the key and reports nothing, and the input does not carry
  * it, so create throws with an explanation instead of emitting a lookup that quietly returns
- * undefined.
+ * undefined. A generated member of a composite key is the same wound, and a keyless table is
+ * its degenerate case: nothing addresses the created row at all, so its create throws too,
+ * while getAll survives and the addressing methods are not emitted (see `keyColumns`).
+ *
+ * A composite key never goes through `$returningId()`: it reports `[]` for one and its declared
+ * result type omits those columns, so create inserts and reads the row back by every key column
+ * the input carries. A `$defaultFn` or SQL-side default member the caller omitted is the same
+ * quiet corner the single-key SQL-default has: the input does not carry the value, so create
+ * resolves to undefined.
  */
 function renderNoReturningDrizzleService(args: {
   table: Table;
   dialect: Analysis['dialect'];
   Service: string;
-  pk: string;
+  key: Column[] | null;
   schemaImportPath: string;
   dbImportPath?: string;
   typeImport: string;
   dbType: string;
   injection: boolean;
 }) {
-  const { table, dialect, Service, pk, schemaImportPath, dbImportPath, typeImport, dbType } =
+  const { table, dialect, Service, key, schemaImportPath, dbImportPath, typeImport, dbType } =
     args;
   const T = table.tsName;
-  const pkCol = table.columns.find((c: Column) => c.name === pk);
   const dbParam = args.injection ? `db: ${dbType}, ` : '';
   const dbParamOnly = args.injection ? `db: ${dbType}` : '';
   const head = args.injection
-    ? `import { ${T} } from '${schemaImportPath}';\nimport { eq } from 'drizzle-orm';\n${typeImport}\n`
-    : `import { db } from '${dbImportPath}';\nimport { ${T} } from '${schemaImportPath}';\nimport { eq } from 'drizzle-orm';\n`;
+    ? `import { ${T} } from '${schemaImportPath}';\n${ormImport(key)}${typeImport}\n`
+    : `import { db } from '${dbImportPath}';\nimport { ${T} } from '${schemaImportPath}';\n${ormImport(key)}`;
+  const voids = args.injection ? 'void db;\n    void input;' : 'void input;';
+  const params = key ? keyParams(key, T, 'drizzle') : '';
+  const where = key ? keyWhere(key, T) : '';
+  const pk = key && key.length === 1 ? key[0].name : '';
+  const genCol = key?.find((c: Column) => c.isGenerated);
 
-  const create = pkCol?.isGenerated
+  const create = !key
     ? `  static async create(${dbParam}input: Insert${T}): Promise<Select${T}> {
+    // ${T} has no primary key and ${dialect} has no RETURNING, so the created row cannot be
+    // read back. Insert directly and select by a column you know.
+    ${voids}
+    throw new Error(
+      '${Service}.create is not supported on ${dialect}: ${T} has no primary key, so the created row cannot be read back without RETURNING'
+    );
+  }`
+    : genCol && key.length === 1
+      ? `  static async create(${dbParam}input: Insert${T}): Promise<Select${T}> {
     // ${pk} is database-generated and ${dialect} has no RETURNING, so the created row cannot
     // be read back by its key. Insert directly and select by a column you know.
-    ${args.injection ? 'void db;\n    void input;' : 'void input;'}
+    ${voids}
     throw new Error(
       '${Service}.create is not supported on ${dialect}: primary key ${T}.${pk} is database-generated and cannot be read back without RETURNING'
     );
   }`
-    : `  static async create(${dbParam}input: Insert${T}): Promise<Select${T}> {
+      : genCol
+        ? `  static async create(${dbParam}input: Insert${T}): Promise<Select${T}> {
+    // ${genCol.name} is database-generated and ${dialect} has no RETURNING, so the created row
+    // cannot be read back by its key. Insert directly and select by a column you know.
+    ${voids}
+    throw new Error(
+      '${Service}.create is not supported on ${dialect}: primary key column ${T}.${genCol.name} is database-generated and cannot be read back without RETURNING'
+    );
+  }`
+        : key.length > 1
+          ? `  static async create(${dbParam}input: Insert${T}): Promise<Select${T}> {
+    // No RETURNING on ${dialect}, and $returningId() reports nothing for a composite key: the
+    // input already carries every part of it. Insert, then read the row back by that key.
+    await db.insert(${T}).values(input);
+    const key = input as Select${T};
+    const rows = await db.select().from(${T}).where(and(${key
+      .map((c: Column) => `eq(${T}.${c.name}, key.${c.name})`)
+      .join(', ')})).limit(1);
+    return rows[0];
+  }`
+          : `  static async create(${dbParam}input: Insert${T}): Promise<Select${T}> {
     // No RETURNING on ${dialect}. $returningId() reports AUTO_INCREMENT and $defaultFn keys as
     // [{ ${pk} }]; for a caller-supplied key it reports nothing and the input already carries
     // the value. Either way the created row is then read back by that key.
@@ -174,31 +279,109 @@ function renderNoReturningDrizzleService(args: {
     return rows[0];
   }`;
 
-  return `${head}
-type Select${T} = typeof ${T}.$inferSelect;
-type Insert${T} = typeof ${T}.$inferInsert;
-type Update${T} = Partial<Omit<typeof ${T}.$inferInsert, '${pk}'>>;
-
-export class ${Service} {
-  static async getAll(${dbParamOnly}): Promise<Select${T}[]> {
+  const methods = [
+    `  static async getAll(${dbParamOnly}): Promise<Select${T}[]> {
     const rows = await db.select().from(${T});
     return rows;
-  }
-  static async getById(${dbParam}id: number): Promise<Select${T} | null> {
-    const rows = await db.select().from(${T}).where(eq(${T}.${pk}, id)).limit(1);
+  }`,
+    key
+      ? `  static async getById(${dbParam}${params}): Promise<Select${T} | null> {
+    const rows = await db.select().from(${T}).where(${where}).limit(1);
     return rows[0] ?? null;
-  }
-${create}
-  static async update(${dbParam}id: number, data: Update${T}): Promise<Select${T}> {
+  }`
+      : '',
+    create,
+    key
+      ? `  static async update(${dbParam}${params}, data: Update${T}): Promise<Select${T}> {
     // No RETURNING on updates either: write, then read the row back by its key.
-    await db.update(${T}).set(data).where(eq(${T}.${pk}, id));
-    const rows = await db.select().from(${T}).where(eq(${T}.${pk}, id)).limit(1);
+    await db.update(${T}).set(data).where(${where});
+    const rows = await db.select().from(${T}).where(${where}).limit(1);
     return rows[0];
-  }
-  static async delete(${dbParam}id: number): Promise<boolean> {
-    await db.delete(${T}).where(eq(${T}.${pk}, id));
+  }`
+      : '',
+    key
+      ? `  static async delete(${dbParam}${params}): Promise<boolean> {
+    await db.delete(${T}).where(${where});
     return true;
+  }`
+      : '',
+  ].filter(Boolean);
+
+  return `${head}
+type Select${T} = typeof ${T}.$inferSelect;
+type Insert${T} = typeof ${T}.$inferInsert;${
+    key ? `\ntype Update${T} = Partial<Omit<typeof ${T}.$inferInsert, ${keyOmit(key)}>>;` : ''
   }
+
+export class ${Service} {
+${methods.join('\n')}
+}
+`;
+}
+
+/**
+ * The drizzle-mode service for a dialect with RETURNING: Postgres, SQLite, Gel, and any
+ * analysis whose dialect is unknown, where RETURNING matches what every schema got before the
+ * dialect reached this module. Create and update are one atomic statement each. The keyed
+ * methods and the update patch type exist only while `keyColumns` found a key to address by.
+ */
+function renderReturningDrizzleService(args: {
+  table: Table;
+  Service: string;
+  key: Column[] | null;
+  schemaImportPath: string;
+  dbImportPath?: string;
+  typeImport: string;
+  dbType: string;
+  injection: boolean;
+}) {
+  const { table, Service, key, schemaImportPath, dbImportPath, typeImport, dbType } = args;
+  const T = table.tsName;
+  const dbParam = args.injection ? `db: ${dbType}, ` : '';
+  const dbParamOnly = args.injection ? `db: ${dbType}` : '';
+  const head = args.injection
+    ? `import { ${T} } from '${schemaImportPath}';\n${ormImport(key)}${typeImport}\n`
+    : `import { db } from '${dbImportPath}';\nimport { ${T} } from '${schemaImportPath}';\n${ormImport(key)}`;
+  const params = key ? keyParams(key, T, 'drizzle') : '';
+  const where = key ? keyWhere(key, T) : '';
+
+  const methods = [
+    `  static async getAll(${dbParamOnly}): Promise<Select${T}[]> {
+    const rows = await db.select().from(${T});
+    return rows;
+  }`,
+    key
+      ? `  static async getById(${dbParam}${params}): Promise<Select${T} | null> {
+    const rows = await db.select().from(${T}).where(${where}).limit(1);
+    return rows[0] ?? null;
+  }`
+      : '',
+    `  static async create(${dbParam}input: Insert${T}): Promise<Select${T}> {
+    const rows = await db.insert(${T}).values(input).returning();
+    return rows[0];
+  }`,
+    key
+      ? `  static async update(${dbParam}${params}, data: Update${T}): Promise<Select${T}> {
+    const rows = await db.update(${T}).set(data).where(${where}).returning();
+    return rows[0];
+  }`
+      : '',
+    key
+      ? `  static async delete(${dbParam}${params}): Promise<boolean> {
+    await db.delete(${T}).where(${where});
+    return true;
+  }`
+      : '',
+  ].filter(Boolean);
+
+  return `${head}
+type Select${T} = typeof ${T}.$inferSelect;
+type Insert${T} = typeof ${T}.$inferInsert;${
+    key ? `\ntype Update${T} = Partial<Omit<typeof ${T}.$inferInsert, ${keyOmit(key)}>>;` : ''
+  }
+
+export class ${Service} {
+${methods.join('\n')}
 }
 `;
 }
@@ -215,7 +398,7 @@ function renderService(
   const T = table.tsName;
   const singular = singularize(T);
   const Service = `${cap(singular)}Service`;
-  const pk = (table.primaryKey?.columns ?? ['id'])[0];
+  const key = keyColumns(table);
   if (mode === 'drizzle' && schemaImportPath) {
     const isInjectionMode = databaseInjection?.enabled === true;
     const dbType = databaseInjection?.databaseType ?? 'unknown';
@@ -229,106 +412,69 @@ function renderService(
     const noReturning = dialect === 'mysql' || dialect === 'singlestore';
 
     if (isInjectionMode) {
-      if (noReturning) {
-        return renderNoReturningDrizzleService({
-          table,
-          dialect,
-          Service,
-          pk,
-          schemaImportPath,
-          typeImport,
-          dbType,
-          injection: true,
-        });
-      }
-      // Database injection mode - services accept database as parameter
-      return `import { ${T} } from '${schemaImportPath}';
-import { eq } from 'drizzle-orm';
-${typeImport}
-
-type Select${T} = typeof ${T}.$inferSelect;
-type Insert${T} = typeof ${T}.$inferInsert;
-type Update${T} = Partial<Omit<typeof ${T}.$inferInsert, '${pk}'>>;
-
-export class ${Service} {
-  static async getAll(db: ${dbType}): Promise<Select${T}[]> {
-    const rows = await db.select().from(${T});
-    return rows;
-  }
-  static async getById(db: ${dbType}, id: number): Promise<Select${T} | null> {
-    const rows = await db.select().from(${T}).where(eq(${T}.${pk}, id)).limit(1);
-    return rows[0] ?? null;
-  }
-  static async create(db: ${dbType}, input: Insert${T}): Promise<Select${T}> {
-    const rows = await db.insert(${T}).values(input).returning();
-    return rows[0];
-  }
-  static async update(db: ${dbType}, id: number, data: Update${T}): Promise<Select${T}> {
-    const rows = await db.update(${T}).set(data).where(eq(${T}.${pk}, id)).returning();
-    return rows[0];
-  }
-  static async delete(db: ${dbType}, id: number): Promise<boolean> {
-    await db.delete(${T}).where(eq(${T}.${pk}, id));
-    return true;
-  }
-}
-`;
+      return noReturning
+        ? renderNoReturningDrizzleService({
+            table,
+            dialect,
+            Service,
+            key,
+            schemaImportPath,
+            typeImport,
+            dbType,
+            injection: true,
+          })
+        : renderReturningDrizzleService({
+            table,
+            Service,
+            key,
+            schemaImportPath,
+            typeImport,
+            dbType,
+            injection: true,
+          });
     } else if (dbImportPath) {
-      if (noReturning) {
-        return renderNoReturningDrizzleService({
-          table,
-          dialect,
-          Service,
-          pk,
-          schemaImportPath,
-          dbImportPath,
-          typeImport,
-          dbType,
-          injection: false,
-        });
-      }
-      // Traditional mode - global database import (backward compatibility)
-      return `import { db } from '${dbImportPath}';
-import { ${T} } from '${schemaImportPath}';
-import { eq } from 'drizzle-orm';
-
-type Select${T} = typeof ${T}.$inferSelect;
-type Insert${T} = typeof ${T}.$inferInsert;
-type Update${T} = Partial<Omit<typeof ${T}.$inferInsert, '${pk}'>>;
-
-export class ${Service} {
-  static async getAll(): Promise<Select${T}[]> {
-    const rows = await db.select().from(${T});
-    return rows;
-  }
-  static async getById(id: number): Promise<Select${T} | null> {
-    const rows = await db.select().from(${T}).where(eq(${T}.${pk}, id)).limit(1);
-    return rows[0] ?? null;
-  }
-  static async create(input: Insert${T}): Promise<Select${T}> {
-    const rows = await db.insert(${T}).values(input).returning();
-    return rows[0];
-  }
-  static async update(id: number, data: Update${T}): Promise<Select${T}> {
-    const rows = await db.update(${T}).set(data).where(eq(${T}.${pk}, id)).returning();
-    return rows[0];
-  }
-  static async delete(id: number): Promise<boolean> {
-    await db.delete(${T}).where(eq(${T}.${pk}, id));
-    return true;
-  }
-}
-`;
+      return noReturning
+        ? renderNoReturningDrizzleService({
+            table,
+            dialect,
+            Service,
+            key,
+            schemaImportPath,
+            dbImportPath,
+            typeImport,
+            dbType,
+            injection: false,
+          })
+        : renderReturningDrizzleService({
+            table,
+            Service,
+            key,
+            schemaImportPath,
+            dbImportPath,
+            typeImport,
+            dbType,
+            injection: false,
+          });
     }
   }
-  return `import type { Insert${T}, Update${T}, Select${T} } from '${importSpecifier(`./types/${T}.ts`, importExtension)}';
+  // Stub mode. The same key policy as the drizzle emissions: typed key parameters, and a
+  // keyless table loses the methods that would have needed one, together with the type imports
+  // only those methods used, so `noUnusedLocals` consumers stay clean.
+  const stubParams = key ? keyParams(key, T, 'stub') : '';
+  const typeNames = key ? `Insert${T}, Update${T}, Select${T}` : `Insert${T}, Select${T}`;
+  const stubMethods = [
+    `  static async getAll(): Promise<Select${T}[]> { return [] as any }`,
+    key ? `  static async getById(${stubParams}): Promise<Select${T} | null> { return null }` : '',
+    `  static async create(input: Insert${T}): Promise<Select${T}> { return input as any }`,
+    key
+      ? `  static async update(${stubParams}, data: Update${T}): Promise<Select${T}> { return data as any }`
+      : '',
+    key ? `  static async delete(${stubParams}): Promise<boolean> { return true }` : '',
+  ].filter(Boolean);
+  return `import type { ${typeNames} } from '${importSpecifier(`./types/${T}.ts`, importExtension)}';
 
 export class ${Service} {
-  static async getAll(): Promise<Select${T}[]> { return [] as any }
-  static async getById(id: number): Promise<Select${T} | null> { return null }
-  static async create(input: Insert${T}): Promise<Select${T}> { return input as any }
-  static async update(id: number, data: Update${T}): Promise<Select${T}> { return data as any }
-  static async delete(id: number): Promise<boolean> { return true }
+${stubMethods.join('\n')}
 }
 `;
 }

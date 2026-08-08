@@ -490,12 +490,16 @@ function renderRouter(table: Table, opts: GenerateOptions, ctx: RenderContext): 
   const key = keyColumns(table);
 
   const Service = `${cap(singularize(table.tsName))}Service`;
-  // `@drzl/generator-service` types its key parameter as exactly one `number`
-  // (`getById(id: number)`, `update(id, data)`), so a call built from any other key does not
-  // typecheck against it. Rather than emit that call, or drop the procedures and give every table
-  // a differently shaped client, those fall back to the throwing stub the standard template uses.
-  const serviceKeyable = !!key && key.length === 1 && key[0].tsType === 'number';
-  const keyArg = key && key.length === 1 ? `input.${key[0].name}` : '';
+  // `@drzl/generator-service` types its key parameters from the primary key itself: one
+  // parameter per key column, in key order, at the column's real type. A call composed from the
+  // input object therefore typechecks whenever every key column has a type the input schema can
+  // spell (`field()` above: number, string, boolean, Date, or an enum's literals). A column the
+  // analyzer could not type arrives in the input as `unknown`, which the service's typed
+  // parameter does not accept, so rather than emit a call that does not compile, or drop the
+  // procedures and give every table a differently shaped client, those fall back to the
+  // throwing stub the standard template uses.
+  const serviceKeyable = !!key && key.every(serviceKeyExpressible);
+  const keyArg = key ? key.map((c) => `input.${c.name}`).join(', ') : '';
   const dbArg = injection ? 'ctx.db, ' : '';
   const wiredParams = injection ? '{ ctx, input }' : '{ input }';
 
@@ -824,16 +828,30 @@ export type AppRouter = typeof appRouter;
 ${reExports}`;
 }
 
+/**
+ * Whether the generated input schema can type this key column, which is exactly when the
+ * emitted service call typechecks: `field()` spells number, string, boolean, Date and enum
+ * literals, and everything else becomes `z.unknown()`, which the service's typed key parameter
+ * does not accept.
+ */
+function serviceKeyExpressible(c: Column): boolean {
+  if (c.enumValues && c.enumValues.length) return true;
+  return ['number', 'string', 'boolean', 'Date'].includes(c.tsType);
+}
+
 /** Why a service-backed procedure is a stub, stated in the file rather than only in the docs. */
 function serviceKeyNote(table: Table): string {
   const cols = table.primaryKey?.columns ?? [];
-  const shape =
-    cols.length > 1
-      ? `has a composite primary key (${cols.join(', ')})`
-      : `has a non-numeric primary key (${cols[0]})`;
+  const untyped = cols.filter((n) => {
+    const c = table.columns.find((x) => x.name === n);
+    return !c || !serviceKeyExpressible(c);
+  });
+  const what =
+    untyped.length === 1 ? `its column ${untyped[0]}` : `its columns ${untyped.join(', ')}`;
   return (
-    `// ${table.name} ${shape}, and @drzl/generator-service types its key parameter as one ` +
-    `number.\n// Wire this to your own lookup.`
+    `// ${table.name} is keyed on (${cols.join(', ')}) and DRZL cannot type ${what}: the input\n` +
+    `// schema carries unknown there, which the service's typed key parameter does not accept.\n` +
+    `// Wire this to your own lookup.`
   );
 }
 
