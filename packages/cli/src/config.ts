@@ -75,6 +75,7 @@ export const GeneratorSchema = z.object({
   kind: z.enum([
     'orpc',
     'trpc',
+    'hono',
     'service',
     'zod',
     'valibot',
@@ -83,6 +84,15 @@ export const GeneratorSchema = z.object({
     'effect',
     'json-schema',
   ]),
+  /**
+   * Which of Hono's two official validator middlewares the emitted routes carry, and therefore
+   * which package they import. `hono` only.
+   *
+   * `standard` is `sValidator` from `@hono/standard-validator`, which takes any Standard Schema
+   * and so works with every library `validation.library` can name. `zod` is `zValidator` from
+   * `@hono/zod-validator`, which is zod-specific.
+   */
+  validator: z.enum(['standard', 'zod']).optional(),
   /**
    * Overrides the top-level `importExtension` for this generator alone, for a project whose
    * generated directories are compiled by different tsconfigs.
@@ -462,7 +472,19 @@ export function defineConfig<T extends DrzlConfigInput>(cfg: T): T {
 type GeneratorConfig = DrzlConfig['generators'][number];
 
 /** The generators that emit an RPC router, and so share `outDir` and `validation`. */
-const ROUTER_KINDS = new Set(['orpc', 'trpc']);
+/** The generators that import the validation generators' exports by name. */
+const ROUTER_KINDS = new Set(['orpc', 'trpc', 'hono']);
+
+/**
+ * The routers that can reach a database through the request context.
+ *
+ * `hono` is deliberately absent. `databaseInjection` is a contract between a router and
+ * `@drzl/generator-service`, and the Hono generator emits no service delegation at all: its
+ * handlers are stubs a consumer fills in, and it has no template that would call one. Letting the
+ * option through would push `databaseInjection` onto the service generator on behalf of a router
+ * that never uses it, which is the shape of dead option this config has already shipped twice.
+ */
+const INJECTION_KINDS = new Set(['orpc', 'trpc']);
 
 /**
  * Where the tRPC generator writes.
@@ -476,6 +498,20 @@ const ROUTER_KINDS = new Set(['orpc', 'trpc']);
  * this, and the watcher ignoring the wrong directory is an infinite regeneration loop.
  */
 export function trpcOutDir(g: { path?: string }, cfg: { outDir: string }): string {
+  return g.path ?? cfg.outDir;
+}
+
+/**
+ * Where the Hono generator writes.
+ *
+ * The same rule as the other two routers, and for the same reason: it writes an `index.ts` of its
+ * own, so a config running two router generators has to give at least one of them a `path`.
+ *
+ * Its own function rather than a call to `trpcOutDir`, because these are three separate decisions
+ * that happen to agree today, and a reader following `computeGeneratorOutputDirs` should not have
+ * to work out whether a function named for tRPC is authoritative for Hono.
+ */
+export function honoOutDir(g: { path?: string }, cfg: { outDir: string }): string {
   return g.path ?? cfg.outDir;
 }
 
@@ -526,7 +562,14 @@ export function resolveConfig(cfg: DrzlConfig): { config: DrzlConfig; warnings: 
      * stub bodies take no database whatever they are told. That combination cannot be repaired
      * from here without changing what an existing config emits, so it is reported instead.
      */
-    if (g.databaseInjection?.enabled) {
+    if (g.databaseInjection?.enabled && !INJECTION_KINDS.has(g.kind)) {
+      warnings.push(
+        `drzl config: the "${g.kind}" generator sets databaseInjection.enabled, which it does ` +
+          `not support. Its handlers are stubs and never call a service, so nothing reads the ` +
+          `injected handle. Reach your database from inside the handler bodies you fill in, or ` +
+          `use the "trpc" or "orpc" generator, which do delegate to @drzl/generator-service.`
+      );
+    } else if (g.databaseInjection?.enabled) {
       for (const s of generators.filter((x) => x.kind === 'service')) {
         if (!s.databaseInjection) {
           s.databaseInjection = g.databaseInjection;
@@ -682,6 +725,7 @@ export function computeGeneratorOutputDirs(cfg: DrzlConfig, cwd = process.cwd())
   dirs.add(abs(cfg.outDir)); // orpc
   for (const g of cfg.generators) {
     if (g.kind === 'trpc') dirs.add(abs(trpcOutDir(g, cfg)));
+    if (g.kind === 'hono') dirs.add(abs(honoOutDir(g, cfg)));
     if (g.kind === 'service') dirs.add(abs(g.path ?? 'src/services'));
     if (g.kind === 'zod') dirs.add(abs(g.path ?? 'src/validators/zod'));
     if (g.kind === 'valibot') dirs.add(abs(g.path ?? 'src/validators/valibot'));

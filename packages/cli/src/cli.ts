@@ -9,6 +9,7 @@ import * as path from 'node:path';
 import ora from 'ora';
 import { jsonSchemaOptions } from './json-schema-options.js';
 import { trpcOptions } from './trpc-options.js';
+import { honoOptions } from './hono-options.js';
 import { validationOptions } from './validation-options';
 import {
   computeGeneratorOutputDirs,
@@ -261,6 +262,29 @@ program
             });
             progress.stop();
             ora().succeed(chalk.green(`Generated (trpc): ${files.length} files`));
+            files.forEach((f: string) => console.log('  -', chalk.cyan(f)));
+          } catch (e: any) {
+            progress.stop();
+            reportGeneratorFailure(g.kind, e);
+            process.exit(1);
+          }
+        } else if (g.kind === 'hono') {
+          try {
+            // Optional for the same reason tRPC is: a package that has never been published
+            // cannot publish through npm's trusted-publisher OIDC flow, so its first version goes
+            // out by hand, and naming it as a hard dependency of the CLI in the same release
+            // breaks `npm i @drzl/cli` for everyone until it exists.
+            const { HonoGenerator } = await loadGenerator(
+              '@drzl/generator-hono',
+              () => import('@drzl/generator-hono')
+            );
+            const gen = new HonoGenerator(analysis);
+            const { files } = await gen.generate({
+              ...honoOptions(g, cfg),
+              onProgress: ({ index }: { index: number }) => progress.update(index),
+            });
+            progress.stop();
+            ora().succeed(chalk.green(`Generated (hono): ${files.length} files`));
             files.forEach((f: string) => console.log('  -', chalk.cyan(f)));
           } catch (e: any) {
             progress.stop();
@@ -528,7 +552,11 @@ program
   .command('watch')
   .description('Watch schema and regenerate on changes')
   .option('-c, --config <path>', 'path to drzl.config')
-  .option('--pipeline <name>', 'all | analyze | generate-orpc | generate-trpc', 'all')
+  .option(
+    '--pipeline <name>',
+    'all | analyze | generate-orpc | generate-trpc | generate-hono',
+    'all'
+  )
   .option('--debounce <ms>', 'debounce ms', '200')
   .option('--json', 'emit JSON logs', false)
   .option('--poll', 'force polling (helps WSL/Docker/remote FS)', false)
@@ -676,6 +704,7 @@ program
         const PIPELINE_KINDS: Record<string, string> = {
           'generate-orpc': 'orpc',
           'generate-trpc': 'trpc',
+          'generate-hono': 'hono',
         };
 
         for (const g of cfg.generators) {
@@ -719,6 +748,27 @@ program
                 ? console.log(JSON.stringify({ event: 'generate_complete', kind: g.kind, files }))
                 : console.log(
                     chalk.green(`Generated (trpc): ${files.length} files`),
+                    files.map((f: string) => chalk.cyan(f)).join(', ')
+                  );
+              newFiles.push(...files);
+            } catch (e: any) {
+              reportGeneratorFailure(g.kind, e);
+              return;
+            }
+          } else if (g.kind === 'hono') {
+            try {
+              const { HonoGenerator } = await loadGenerator(
+                '@drzl/generator-hono',
+                () => import('@drzl/generator-hono')
+              );
+              const gen = new HonoGenerator(analysis);
+              // The same builder `generate` uses, so the two dispatch loops cannot disagree
+              // about what this generator is given.
+              const { files } = await gen.generate(honoOptions(g, cfg));
+              opts.json
+                ? console.log(JSON.stringify({ event: 'generate_complete', kind: g.kind, files }))
+                : console.log(
+                    chalk.green(`Generated (hono): ${files.length} files`),
                     files.map((f: string) => chalk.cyan(f)).join(', ')
                   );
               newFiles.push(...files);

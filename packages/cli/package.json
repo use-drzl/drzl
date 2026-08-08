@@ -69,6 +69,7 @@
   },
   "optionalDependencies": {
     "@drzl/generator-effect": "workspace:^",
+    "@drzl/generator-hono": "workspace:^",
     "@drzl/generator-json-schema": "workspace:^",
     "@drzl/generator-trpc": "workspace:^"
   }

@@ -237,7 +237,7 @@ bunx @drzl/cli watch -c drzl.config.ts --pipeline all --debounce 200 [--json]
 Options:
 
 - `-c, --config <path>`
-- `--pipeline <name>`: `all | analyze | generate-orpc` (default `all`)
+- `--pipeline <name>`: `all | analyze | generate-orpc | generate-trpc | generate-hono` (default `all`)
 - `--debounce <ms>`: debounce milliseconds (default `200`)
 - `--json`: emit structured JSON logs
 
@@ -273,6 +273,7 @@ See also:
 - Generators:
   - [/generators/orpc](/generators/orpc)
   - [/generators/trpc](/generators/trpc)
+  - [/generators/hono](/generators/hono)
   - [/generators/service](/generators/service)
   - [/generators/zod](/generators/zod)
   - [/generators/valibot](/generators/valibot)

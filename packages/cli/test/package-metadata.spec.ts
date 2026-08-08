@@ -90,6 +90,7 @@ it('found every publishable package', () => {
     'cli',
     'generator-arktype',
     'generator-effect',
+    'generator-hono',
     'generator-json-schema',
     'generator-orpc',
     'generator-service',
