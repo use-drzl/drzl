@@ -111,6 +111,36 @@ os.output(z.boolean()).handler(...)
 
 Valibot uses `v.array(...)` and `v.nullable(...)`; ArkType uses `SelectSchema.array()` and `SelectSchema.or('null')`.
 
+## Key typing
+
+The inputs of `get`, `update` and `delete` are built from the table's primary key, every column
+of it, at its real type, in the configured validation library's spelling:
+
+```ts
+// integer key                       natural key
+os.input(z.object({ id: z.number() }))          os.input(z.object({ isbn: z.string() }))
+// composite key: every column, in key order
+os.input(z.object({ orgId: z.number(), userId: z.string() }))
+// update: the same key beside the patch
+os.input(z.object({ isbn: z.string(), data: UpdatebooksSchema }))
+```
+
+Valibot spells the same shapes with `v.object(...)`, ArkType with `type({ isbn: 'string' })`, and
+an enum key becomes its literals. This applies to every template, built in or custom: the
+generator rewrites the template's `get`/`update`/`delete` inputs, so a template cannot reintroduce
+a hardcoded key.
+
+A table with **no primary key** cannot address one row, so it emits `list` and `create` only, and
+no relation lookups that would take its key as input. `create` stays: inserting a row does not
+require being able to address it afterwards. This matches `@drzl/generator-service`, which drops
+`getById`/`update`/`delete` for the same tables, so nothing generated calls a method nothing
+generated.
+
+A key column DRZL cannot type (for example `bigint`, which has no JSON transport) becomes the
+library's `unknown` in the input. The [service template](/templates/orpc-service) refuses to pass
+that to the service's typed key parameter: those procedures throw with a note stating the reason,
+instead of shipping a call that does not compile.
+
 ## Example
 
 ```ts

@@ -47,6 +47,7 @@ const analysisWith = (enumValues: string[], columnName = 'role'): Analysis =>
             enumValues,
           },
         ],
+        primaryKey: { columns: ['id'] },
         unique: [],
         indexes: [],
       } as any,

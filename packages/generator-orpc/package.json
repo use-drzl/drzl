@@ -35,8 +35,12 @@
     "@drzl/validation-core": "workspace:^"
   },
   "devDependencies": {
+    "@drzl/generator-service": "workspace:^",
+    "@orpc/server": "^1.14.0",
+    "drizzle-orm": "^0.45.2",
     "tsup": "^8.5.1",
-    "typescript": "^5.9.3"
+    "typescript": "^5.9.3",
+    "zod": "^4.4.3"
   },
   "engines": {
     "node": ">=18.17.0"

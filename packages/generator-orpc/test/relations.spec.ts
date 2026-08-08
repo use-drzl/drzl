@@ -30,6 +30,7 @@ function analysisWithForeignKeys(): Analysis {
         name: 'users',
         tsName: 'users',
         columns: [col('id', 'number', { isGenerated: true, hasDefault: true }), col('email', 'string')],
+        primaryKey: { columns: ['id'] },
         unique: [],
         indexes: [],
         foreignKeys: [],
@@ -48,6 +49,7 @@ function analysisWithForeignKeys(): Analysis {
             references: { table: 'users', column: 'id' },
           }),
         ],
+        primaryKey: { columns: ['id'] },
         unique: [],
         indexes: [],
         foreignKeys: [

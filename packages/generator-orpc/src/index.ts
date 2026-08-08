@@ -87,6 +87,46 @@ function scalarExpr(tsType: string, lib: Lib): string {
   return d.fieldIsString ? `'${bare}'` : bare;
 }
 
+/**
+ * The columns that address one row, or `null` when nothing does.
+ *
+ * The same reading of `primaryKey` as `@drzl/generator-service` and the tRPC procedures: every
+ * column of the key, at its real type. This generator used to hardcode `{ id: z.number() }` as
+ * the input of every get, update and delete whatever the key was, which named a column that may
+ * not exist and typed it as a number when it may be a varchar; a table without a key emitted the
+ * three procedures anyway, addressing nothing. Now a composite key keeps all of its columns and
+ * a keyless table loses the procedures that would have needed one.
+ */
+function keyColumns(table: Table): Column[] | null {
+  const names = table.primaryKey?.columns ?? [];
+  if (!names.length) return null;
+  const cols = names.map((n) => table.columns.find((c) => c.name === n));
+  if (cols.some((c) => !c)) return null;
+  return cols as Column[];
+}
+
+const isIdent = (s: string) => /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(s);
+
+/**
+ * One `name: <expr>` entry of an addressing input, at the key column's select type.
+ *
+ * The key is quoted only where it has to be, unlike `renderSchema`'s unconditional quoting,
+ * because the previous hardcoded input spelled a bare `id` and integer-key emissions must not
+ * move a byte. ArkType field values are strings; they are single-quoted here rather than through
+ * `JSON.stringify` for the same reason (`type({ id: 'number' })` is the historical byte), and a
+ * value that itself carries a quote, an enum's literals, falls back to JSON encoding, which
+ * ArkType reads identically.
+ */
+function keyField(column: Column, lib: Lib): string {
+  const expr = mapExpr(column, lib, 'select');
+  const value = !LIBS[lib].fieldIsString
+    ? expr
+    : expr.includes("'")
+      ? JSON.stringify(expr)
+      : `'${expr}'`;
+  return `${isIdent(column.name) ? column.name : JSON.stringify(column.name)}: ${value}`;
+}
+
 export interface ORPCTemplateHooks {
   filePath(table: Table, ctx: { outDir: string; naming?: NamingOptions }): string;
   routerName(table: Table, ctx: { naming?: NamingOptions }): string;
@@ -447,9 +487,14 @@ export class ORPCGenerator {
     lib: Lib,
     affix: ReturnType<typeof resolveAffix>,
     taken: Set<string>,
-    imports: Map<string, string>
+    imports: Map<string, string>,
+    keyInputExpr: string | undefined
   ): ProcedureSpec[] {
     if (lib === 'arktype') return [];
+    // The input is this table's own key: `users.listPosts` takes the user's key and answers with
+    // the posts related to that row. A table with no primary key has no row to hang a relation
+    // list off, so it gets none of these rather than an input naming a fictional `id`.
+    if (!keyInputExpr) return [];
 
     const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
     const T = cap(table.tsName);
@@ -479,8 +524,6 @@ export class ORPCGenerator {
       const lazyRef =
         lib === 'zod' ? `z.lazy(() => ${targetSchema})` : `v.lazy(() => ${targetSchema})`;
       const output = lib === 'zod' ? `z.array(${lazyRef})` : `v.array(${lazyRef})`;
-      const idExpr =
-        lib === 'zod' ? 'z.object({ id: z.number() })' : 'v.object({ id: v.number() })';
 
       const via = rel.kind === 'manyToMany' ? ` through ${rel.via}` : '';
       specs.push({
@@ -488,7 +531,7 @@ export class ORPCGenerator {
         varName: `${name}${T}`,
         code:
           `const ${name}${T} = os\n` +
-          `  .input(${idExpr})\n` +
+          `  .input(${keyInputExpr})\n` +
           `  .output(${output})\n` +
           `  .handler(async ({ input: _input }) => {\n` +
           `    // Rows of ${target.name} related to this ${table.name}${via}.\n` +
@@ -632,8 +675,30 @@ export const exampleRouter = {
     const selectSchemaName = `Select${table.tsName}Schema`;
     const sharedSchemasInline = `export const ${createSchemaName} = ${renderSchema(table, lib, 'insert')}\nexport const ${updateSchemaName} = ${renderSchema(table, lib, 'update')}\nexport const ${selectSchemaName} = ${renderSchema(table, lib, 'select')}`;
 
-    // Template procedures (fallback default uses inline zod; we replace to use shared)
-    const templateProcs = template.procedures(table, { databaseInjection: databaseInjection });
+    // The addressing input, built from the real key columns at their select types, in the
+    // configured library's spelling: `{ id: z.number() }` for the integer key this generator
+    // always spelled, but equally `{ isbn: z.string() }`, a composite key's two columns, or an
+    // enum key's literals. The update input is the same key beside the patch. A key column the
+    // analyzer could not type arrives as the library's `unknown`, which is a hole the service
+    // template refuses to reach through (it stubs those procedures and says why).
+    const key = keyColumns(table);
+    const keyInputExpr = key
+      ? LIBS[lib].objectInline(key.map((c) => keyField(c, lib)).join(', '))
+      : undefined;
+    const updateInputExpr = key
+      ? LIBS[lib].objectInline(
+          [...key.map((c) => keyField(c, lib)), `data: ${updateSchemaName}`].join(', ')
+        )
+      : undefined;
+
+    // Template procedures (fallback default uses inline zod; we replace to use shared).
+    // A table with no primary key cannot address one row, so the procedures that would have
+    // needed a key are dropped whatever the template emitted, exactly as the service generator
+    // drops the methods those bodies would call. `create` stays: inserting a row does not
+    // require being able to address it afterwards.
+    const templateProcs = template
+      .procedures(table, { databaseInjection: databaseInjection })
+      .filter((p) => key !== null || !['get', 'update', 'delete'].includes(p.name));
     // Select schemas of other tables that cross-table lookups refer to, keyed by tsName, so the
     // import can be emitted once alongside the rest.
     const crossTableImports = new Map<string, string>();
@@ -649,7 +714,8 @@ export const exampleRouter = {
             lib,
             resolveAffix({ affix: validation?.affix, schemaSuffix: validation?.schemaSuffix }),
             taken,
-            crossTableImports
+            crossTableImports,
+            keyInputExpr
           );
           return [...templateProcs, ...own, ...cross];
         })()
@@ -674,26 +740,14 @@ export const exampleRouter = {
       }
       return code;
     };
-    const idExpr =
-      lib === 'zod'
-        ? 'z.object({ id: z.number() })'
-        : lib === 'valibot'
-          ? 'v.object({ id: v.number() })'
-          : `type({ id: 'number' })`;
-    const updateInputExpr =
-      lib === 'zod'
-        ? `z.object({ id: z.number(), data: ${updateSchemaName} })`
-        : lib === 'valibot'
-          ? `v.object({ id: v.number(), data: ${updateSchemaName} })`
-          : `type({ id: 'number', data: ${updateSchemaName} })`;
     const procCodes = hooksProcs.map((p) => {
       let code = p.code;
       if (p.name === 'create') {
         code = replaceInputArg(code, createSchemaName);
-      } else if (p.name === 'update') {
+      } else if (p.name === 'update' && updateInputExpr) {
         code = replaceInputArg(code, updateInputExpr);
-      } else if (p.name === 'get' || p.name === 'delete') {
-        code = replaceInputArg(code, idExpr);
+      } else if ((p.name === 'get' || p.name === 'delete') && keyInputExpr) {
+        code = replaceInputArg(code, keyInputExpr);
       }
       // Attach output schemas when possible (zod/valibot). Skip for arktype for now.
       const replaceCallArg = (src: string, method: '.output' | '.input', newArg: string) => {
@@ -804,9 +858,20 @@ export const exampleRouter = {
     const sharedImportSpecifier = useShared
       ? resolveConfiguredImport(validation!.importPath!, outDir, process.cwd(), importExtension)
       : '';
-    const importSchemas = useShared
-      ? `\nimport { ${sharedName('insert')} as ${createSchemaName}, ${sharedName('update')} as ${updateSchemaName}, ${sharedName('select')} as ${selectSchemaName} } from '${sharedImportSpecifier}';`
-      : '';
+    // Only the schemas the finished procedures actually mention. A keyless table has no update
+    // procedure left to use its update schema, and an import that nothing reads fails consumers
+    // running `noUnusedLocals`. For a keyed table all three survive, byte for byte as before.
+    const sharedWanted = (
+      [
+        ['insert', createSchemaName],
+        ['update', updateSchemaName],
+        ['select', selectSchemaName],
+      ] as Array<['insert' | 'update' | 'select', string]>
+    ).filter(([, local]) => procedures.includes(local));
+    const importSchemas =
+      useShared && sharedWanted.length
+        ? `\nimport { ${sharedWanted.map(([mode, local]) => `${sharedName(mode)} as ${local}`).join(', ')} } from '${sharedImportSpecifier}';`
+        : '';
     // Where the other tables' select schemas come from. With shared validation they all live in
     // one barrel, so a single import covers them. Otherwise each router declares and exports its
     // own, and they are pulled from the sibling router files; those imports are circular by
@@ -825,7 +890,6 @@ export const exampleRouter = {
     const prelude = template.prelude ? template.prelude([table], ctx) : '';
     const header = template.header ? template.header(table) : `// Router for table: ${table.name}`;
     // Apply case to exported property names
-    const isIdent = (s: string) => /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(s);
     const exportLines = hooksProcs
       .map((p) => ({ key: toCase(p.name, naming?.procedureCase), varName: p.varName }))
       .map(({ key, varName }) =>

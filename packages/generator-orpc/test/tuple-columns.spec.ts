@@ -82,6 +82,7 @@ const analysis: Analysis = {
           shape: { kind: 'numberObject', fields: ['a', 'b', 'c'] },
         },
       ],
+      primaryKey: { columns: ['id'] },
       unique: [],
       indexes: [],
     } as never,
