@@ -60,6 +60,7 @@ export default {
           { text: 'oRPC', link: '/generators/orpc' },
           { text: 'tRPC', link: '/generators/trpc' },
           { text: 'Hono', link: '/generators/hono' },
+          { text: 'Express', link: '/generators/express' },
           { text: 'Service', link: '/generators/service' },
           { text: 'Zod', link: '/generators/zod' },
           { text: 'Valibot', link: '/generators/valibot' },

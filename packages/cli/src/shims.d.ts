@@ -26,3 +26,6 @@ declare module '@drzl/generator-trpc' {
 declare module '@drzl/generator-hono' {
   export const HonoGenerator: any;
 }
+declare module '@drzl/generator-express' {
+  export const ExpressGenerator: any;
+}

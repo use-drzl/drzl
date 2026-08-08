@@ -76,6 +76,7 @@ export const GeneratorSchema = z.object({
     'orpc',
     'trpc',
     'hono',
+    'express',
     'service',
     'zod',
     'valibot',
@@ -473,16 +474,17 @@ type GeneratorConfig = DrzlConfig['generators'][number];
 
 /** The generators that emit an RPC router, and so share `outDir` and `validation`. */
 /** The generators that import the validation generators' exports by name. */
-const ROUTER_KINDS = new Set(['orpc', 'trpc', 'hono']);
+const ROUTER_KINDS = new Set(['orpc', 'trpc', 'hono', 'express']);
 
 /**
  * The routers that can reach a database through the request context.
  *
- * `hono` is deliberately absent. `databaseInjection` is a contract between a router and
- * `@drzl/generator-service`, and the Hono generator emits no service delegation at all: its
- * handlers are stubs a consumer fills in, and it has no template that would call one. Letting the
- * option through would push `databaseInjection` onto the service generator on behalf of a router
- * that never uses it, which is the shape of dead option this config has already shipped twice.
+ * `hono` and `express` are deliberately absent. `databaseInjection` is a contract between a
+ * router and `@drzl/generator-service`, and neither generator emits service delegation at all:
+ * their handlers are stubs a consumer fills in, and neither has a template that would call one.
+ * Letting the option through would push `databaseInjection` onto the service generator on behalf
+ * of a router that never uses it, which is the shape of dead option this config has already
+ * shipped twice.
  */
 const INJECTION_KINDS = new Set(['orpc', 'trpc']);
 
@@ -512,6 +514,21 @@ export function trpcOutDir(g: { path?: string }, cfg: { outDir: string }): strin
  * to work out whether a function named for tRPC is authoritative for Hono.
  */
 export function honoOutDir(g: { path?: string }, cfg: { outDir: string }): string {
+  return g.path ?? cfg.outDir;
+}
+
+/**
+ * Where the Express generator writes.
+ *
+ * The same rule as the other three routers, and for the same reason: it writes an `index.ts` of
+ * its own, so a config running two router generators has to give at least one of them a `path`.
+ *
+ * Its own function rather than a call to one of the others, for the reason `honoOutDir` records:
+ * these are separate decisions that happen to agree today, and a reader following
+ * `computeGeneratorOutputDirs` should not have to work out which router's function is
+ * authoritative for which kind.
+ */
+export function expressOutDir(g: { path?: string }, cfg: { outDir: string }): string {
   return g.path ?? cfg.outDir;
 }
 
@@ -726,6 +743,7 @@ export function computeGeneratorOutputDirs(cfg: DrzlConfig, cwd = process.cwd())
   for (const g of cfg.generators) {
     if (g.kind === 'trpc') dirs.add(abs(trpcOutDir(g, cfg)));
     if (g.kind === 'hono') dirs.add(abs(honoOutDir(g, cfg)));
+    if (g.kind === 'express') dirs.add(abs(expressOutDir(g, cfg)));
     if (g.kind === 'service') dirs.add(abs(g.path ?? 'src/services'));
     if (g.kind === 'zod') dirs.add(abs(g.path ?? 'src/validators/zod'));
     if (g.kind === 'valibot') dirs.add(abs(g.path ?? 'src/validators/valibot'));
