@@ -5,6 +5,7 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import type { Analysis, Column } from '@drzl/analyzer';
 import type { BrandingOption } from './branding.js';
+import { parseCheck } from './checks.js';
 import type { ImportExtension } from './files.js';
 import type { AffixOptions } from './naming.js';
 
@@ -22,6 +23,13 @@ export interface Table {
   tsName: string;
   columns: Column[];
   primaryKey?: { columns: string[] };
+  /**
+   * The declared CHECK constraints, because one of them decides whether a column is nullable.
+   *
+   * Structurally the analyzer's `Check[]`, and here rather than only there because the three
+   * column selectors below have to read it and this is the shape they are declared against.
+   */
+  checks?: { name?: string; expression?: string }[];
 }
 
 export type ValidationLibrary = 'zod' | 'valibot' | 'arktype' | 'typebox' | 'effect';
@@ -377,8 +385,50 @@ export function nonFiniteAccepted(c: Column): { nan: boolean; infinity: boolean 
   return { nan: c.allowsNaN === true, infinity: c.allowsInfinity === true };
 }
 
+/**
+ * The columns a `CHECK (col IS NOT NULL)` on this table forbids NULL in.
+ *
+ * The whole constraint has to parse, not just the clause: `email IS NOT NULL OR my_fn(email) > 1`
+ * holds those four words and forbids nothing, because either branch may be the one that holds.
+ * `parseCheck` refuses that expression outright, so nothing here has to know about it.
+ */
+function notNullByCheck(table: Table): Set<string> {
+  const out = new Set<string>();
+  for (const k of table.checks ?? []) {
+    const parsed = parseCheck(k.expression, k.name);
+    if (!parsed.ok) continue;
+    for (const n of parsed.nulls ?? []) if (n.notNull) out.add(n.column);
+  }
+  return out;
+}
+
+/**
+ * The column list with any `IS NOT NULL` CHECK applied to it.
+ *
+ * `IS NOT NULL` is the one constraint in this parser that cannot be a predicate on the field. A
+ * check is emitted *inside* the nullable wrapper, precisely because SQL never applies a comparison
+ * to NULL and a CHECK passes on it; this constraint is the statement that NULL is not allowed, so
+ * the only place it can be said is the wrapper. Saying it here rather than in each generator is
+ * what makes it one answer: all five read their columns through these three functions, and none of
+ * them has to learn a new kind of check to honour it.
+ *
+ * Applied in every mode. On select the database guarantees the column is there; on insert a row
+ * omitting a nullable column with no default writes NULL, which the constraint forbids, so the
+ * field becomes required; on update `SET col = NULL` is refused for the same reason.
+ *
+ * Returns the same array when nothing narrows, so the ordinary table pays one `Set` and no copy.
+ */
+function withCheckNullability(table: Table, cols: Column[]): Column[] {
+  const notNull = notNullByCheck(table);
+  if (!notNull.size) return cols;
+  return cols.map((c) => (c.nullable && notNull.has(c.name) ? { ...c, nullable: false } : c));
+}
+
 export function insertColumns(table: Table): Column[] {
-  return table.columns.filter((c) => !isGeneratedColumn(c));
+  return withCheckNullability(
+    table,
+    table.columns.filter((c) => !isGeneratedColumn(c))
+  );
 }
 
 /**
@@ -396,11 +446,14 @@ export function insertColumns(table: Table): Column[] {
  */
 export function updateColumns(table: Table): Column[] {
   const pkCols = table.primaryKey?.columns ?? [];
-  return table.columns.filter((c) => !isGeneratedColumn(c) && !pkCols.includes(c.name));
+  return withCheckNullability(
+    table,
+    table.columns.filter((c) => !isGeneratedColumn(c) && !pkCols.includes(c.name))
+  );
 }
 
 export function selectColumns(table: Table): Column[] {
-  return table.columns;
+  return withCheckNullability(table, table.columns);
 }
 
 /**

@@ -34,6 +34,7 @@ import {
   type ColumnCheck,
   type ColumnSet,
   type LengthCheck,
+  type NullCheck,
   type RowCheck,
 } from './checks.js';
 
@@ -64,6 +65,9 @@ function cardinalityText(k: CardinalityCheck): string {
 }
 function rowText(k: RowCheck): string {
   return labelled(k.name, `${k.left} ${k.operator} ${k.right}`);
+}
+function nullText(k: NullCheck): string {
+  return labelled(k.name, `${k.column} IS ${k.notNull ? 'NOT NULL' : 'NULL'}`);
 }
 
 /**
@@ -135,6 +139,16 @@ export interface CheckPart {
   bound?: { column: string; operator: ColumnCheck['operator']; value: string };
   /** Present when the clause was folded into a set of literals instead of a predicate. */
   set?: { column: string; values: string[]; kind: 'number' | 'string' };
+  /**
+   * Present when the clause is enforced by the field's shape rather than by a predicate.
+   *
+   * The third fold, after a bound and a set, and the one that leaves *nothing* to match on:
+   * `CHECK (col IS NOT NULL)` is enforced by the field not being nullable, and the failure it
+   * produces is the library's own "expected string, received null". Marked so `tableConstraints`
+   * does not offer the clause text as a message, which would have the error map keying on a
+   * string no emitted module writes.
+   */
+  shape?: 'notNull';
 }
 
 /** One declared CHECK, with each of its clauses placed. */
@@ -226,6 +240,37 @@ export function classifyTableChecks(table: Table): ClassifiedCheck[] {
         cardinalityText(a),
         (c) => !!c.arrayDimensions,
         (c) => `"${c.name}" is not an array, so it has no elements to count`
+      );
+    }
+    for (const n of parsed.nulls ?? []) {
+      const text = nullText(n);
+      if (!byName.has(n.column)) {
+        parts.push({
+          text,
+          columns: [n.column],
+          place: 'none',
+          reason: `"${n.column}" is not a column of that table`,
+        });
+        continue;
+      }
+      // `IS NOT NULL` reaches every column shape: an array, a json payload and a scalar are all
+      // either there or not, so there is no shape guard to apply. It is enforced whichever way the
+      // column arrived at not being nullable, by its own declaration or by this constraint, which
+      // is why nothing here reads `c.nullable`: `selectColumns` has already applied it and the two
+      // answers must not be able to differ.
+      //
+      // `IS NULL` is the other direction and nothing states it. Narrowing a field to *only* null
+      // would mean replacing the column's type rather than wrapping it, and no generator has a
+      // hook for that; reported rather than guessed at.
+      parts.push(
+        n.notNull
+          ? { text, columns: [n.column], place: 'column', shape: 'notNull' }
+          : {
+              text,
+              columns: [n.column],
+              place: 'none',
+              reason: 'the column may hold only NULL, which these schemas do not narrow it to',
+            }
       );
     }
     for (const r of parsed.rows ?? []) {
@@ -396,7 +441,7 @@ export function tableConstraints(table: Table): TableConstraints {
     const columns: string[] = [];
     for (const p of k.parts) for (const c of p.columns) if (!columns.includes(c)) columns.push(c);
     const messages = k.parts
-      .filter((p) => p.place !== 'none' && !p.bound && !p.set)
+      .filter((p) => p.place !== 'none' && !p.bound && !p.set && !p.shape)
       .map((p) => p.text);
     const bounds = k.parts.filter((p) => p.bound).map((p) => p.bound!);
     const set = k.parts.find((p) => p.set)?.set;

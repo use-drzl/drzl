@@ -219,6 +219,23 @@ otherwise. It can never produce a validation issue, so it never comes back from
 `drzl doctor` reports the same set as a checklist for a human. This is the machine-readable half of
 that report, sitting next to the schemas rather than in terminal output.
 
+A CHECK that **is** enforced but leaves nothing on the issue to match on carries neither `messages`
+nor `bounds` nor `values`. `CHECK (email IS NOT NULL)` is the case: it is enforced by the field not
+being nullable, so the failure is the library's own "expected string, received null" and no string
+DRZL wrote appears in it. The entry says `enforced: true` and offers no message, rather than
+offering one no emitted module ever writes:
+
+```ts
+{
+  id: 'email_set',
+  name: 'email_set',
+  kind: 'check',
+  columns: ['email'],
+  rule: 'CHECK (email IS NOT NULL)',
+  enforced: true,
+}
+```
+
 ## How this differs from `meta`
 
 Both exist, and they answer different questions.
