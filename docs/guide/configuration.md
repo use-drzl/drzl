@@ -63,6 +63,71 @@ databaseInjection: {
 },
 ```
 
+## Reading the schema path from drizzle-kit
+
+A drizzle-kit project already names its schema once, in `drizzle.config.ts`. Naming it a second
+time in `drzl.config.ts` is the same fact in two files, and the copies drift. So `schema` is
+optional: when it is omitted, DRZL reads the schema path out of your drizzle-kit config instead.
+
+```ts
+// drizzle.config.ts, exactly as drizzle-kit already has it
+import { defineConfig } from 'drizzle-kit';
+
+export default defineConfig({
+  dialect: 'postgresql',
+  schema: './src/db/schema/*.ts',
+  out: './drizzle',
+});
+```
+
+```ts
+// drzl.config.ts: no schema key at all
+export default {
+  outDir: 'src/api',
+  generators: [{ kind: 'zod', path: 'src/validators/zod' }],
+};
+```
+
+`drzl generate` announces the file it read (`Schema from drizzle.config.ts (3 files)`), so the
+fallback is never silent. The lookup tries `drizzle.config.ts`, then `drizzle.config.js`, then
+`drizzle.config.json`, which are the same candidates in the same order drizzle-kit's own CLI
+uses. Kit's whole `schema` surface is honoured: a single path, an array, glob patterns, and a
+directory (expanded one level, exactly as kit expands it). A multi-file schema needs no barrel;
+the analyzer reads every file as one schema.
+
+The `drizzleKit` key pins the behavior down when the default is not what you want:
+
+- `drizzleKit: './config/drizzle.config.mjs'` reads that file, wherever it is, like kit's own
+  `--config` flag. This is also how a `.mjs`/`.cjs` config is reached, since kit itself does not
+  look for those names.
+- `drizzleKit: true` insists on the fallback: a missing drizzle-kit config becomes an error
+  instead of a quieter one about `schema`.
+- `drizzleKit: false` disables it: omitting `schema` is then an error even beside a
+  `drizzle.config.ts`.
+
+Precedence is one rule: **`schema` wins**. If both `schema` and a truthy `drizzleKit` are set,
+the drizzle-kit config is not read and DRZL warns, because two sources for one fact is how the
+copies drift. If neither yields a schema, the error names both files and both fixes.
+
+Only two things are read from the drizzle-kit config: `schema`, and `dialect`, which is
+cross-checked against what the analyzer measures. When they contradict (the config says
+`mysql`, the columns are Postgres), generation follows the schema and a warning names the
+config, since a stale dialect line usually means the config points somewhere it should not.
+Credentials, migrations settings and everything else in that file are for drizzle-kit alone
+and are ignored.
+
+`drzl watch` treats the drizzle-kit config as part of the config surface: the directories its
+`schema` entries name are watched (including glob bases, so a newly created file that matches
+the pattern triggers a rebuild), and editing `drizzle.config.ts` itself re-resolves the schema
+on the next rebuild.
+
+One option depends on how many files the kit config resolves to. `typedJson` and
+`typedColumns` work by importing the schema module back and referencing
+`typeof table.$inferSelect`, which needs a single module: when the kit `schema` resolves to
+exactly one file they work unchanged, and when it resolves to several there is no one module
+to import, so columns keep their wide types and the generator says so. Point `schema` (or the
+kit config) at a barrel if you want typed columns over a multi-file schema.
+
 ## Router generators share `outDir`
 
 `orpc`, `trpc`, `hono`, `express`, `fastify`, `nestjs` and `graphql` all write to the

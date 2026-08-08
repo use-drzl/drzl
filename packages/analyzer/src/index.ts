@@ -1444,7 +1444,14 @@ function unknownColumnHint(reason: 'custom' | UnnameableReason | undefined): str
 }
 
 export class SchemaAnalyzer {
-  constructor(private readonly schemaPath: string) {}
+  /**
+   * One path or several. The plural exists for drizzle-kit interop: kit's `schema` key names
+   * files in the plural (arrays, globs), and the commonest multi-file layout is a directory of
+   * one file per table with no barrel, so there is no single module to point at. Entries are
+   * concrete files, never globs; expansion is the caller's job, so this class's contract stays
+   * "load exactly these modules and read their exports as one schema".
+   */
+  constructor(private readonly schemaPath: string | readonly string[]) {}
 
   private getSymbol(table: any, key: string) {
     // One resolver rather than two identical ones, so a fallback added to either is reached by
@@ -2658,43 +2665,123 @@ export class SchemaAnalyzer {
     const fs = await import('node:fs/promises');
     const path = await import('node:path');
     const issues: Issue[] = [];
-    const full = path.resolve(process.cwd(), this.schemaPath);
-    try {
-      await fs.access(full);
-    } catch (_e) {
-      issues.push({
-        code: 'DRZL_ANL_NOFILE',
-        level: 'error',
-        message: `Schema file not found: ${this.schemaPath}`,
-      });
+    const listed = Array.isArray(this.schemaPath);
+    const inputs: readonly string[] = listed
+      ? (this.schemaPath as readonly string[])
+      : [this.schemaPath as string];
+    const fulls = inputs.map((p) => path.resolve(process.cwd(), p));
+
+    // All files are checked before any is loaded, so a list with two typos reports both at
+    // once rather than one per run.
+    let missing = false;
+    for (let i = 0; i < fulls.length; i++) {
+      try {
+        await fs.access(fulls[i]);
+      } catch (_e) {
+        missing = true;
+        issues.push({
+          code: 'DRZL_ANL_NOFILE',
+          level: 'error',
+          message: `Schema file not found: ${inputs[i]}`,
+        });
+      }
+    }
+    if (missing) {
       return { dialect: 'unknown', tables: [], enums: [], relations: [], issues };
     }
 
-    // Load the schema module using jiti to support TS/ESM/CJS
-    let mod: any;
-    try {
-      const { default: jiti } = await import('jiti');
-      // `moduleCache: false` is what makes re-analysis see the file as it is now.
-      //
-      // jiti delegates to `require`, whose cache is global to the process, so a second load of
-      // the same path returned the first parse. Constructing a new jiti instance per call does
-      // not help; the cache is not the instance's. In a one-shot `generate` nothing noticed,
-      // but `drzl watch` analyzes repeatedly in one long-lived process: it regenerated on every
-      // save and always described the schema as it was at startup, so a table added after the
-      // watcher began never appeared however many times the file was written.
-      const jit = (jiti as any)(import.meta.url, { moduleCache: false });
-      mod = jit(full);
-    } catch (e) {
-      issues.push({
-        code: 'DRZL_ANL_IMPORT',
-        level: 'error',
-        message: `Failed to import schema: ${String(e)}`,
-      });
-      return { dialect: 'unknown', tables: [], enums: [], relations: [], issues };
-    }
+    // Load each schema module using jiti to support TS/ESM/CJS
+    const { default: jiti } = await import('jiti');
+    // `moduleCache: false` is what makes re-analysis see the file as it is now.
+    //
+    // jiti delegates to `require`, whose cache is global to the process, so a second load of
+    // the same path returned the first parse. Constructing a new jiti instance per call does
+    // not help; the cache is not the instance's. In a one-shot `generate` nothing noticed,
+    // but `drzl watch` analyzes repeatedly in one long-lived process: it regenerated on every
+    // save and always described the schema as it was at startup, so a table added after the
+    // watcher began never appeared however many times the file was written.
+    const jit = (jiti as any)(import.meta.url, { moduleCache: false });
 
-    const exportsObj: Record<string, any> =
-      mod?.default && typeof mod.default === 'object' ? mod.default : mod;
+    // Exports of every file, merged first-wins into one namespace, the way a reader of a
+    // multi-file schema thinks of it. First-wins is deterministic because the caller's list
+    // order is; the CLI sorts what a glob expanded.
+    //
+    // "The same export twice" cannot be decided by object identity here. `moduleCache: false`
+    // re-evaluates a module on every require, so when reexport.ts does
+    // `export { users } from './users'` while users.ts is also in the list, the two `users`
+    // are structurally identical and never `Object.is`-equal; measured by the reexport
+    // fixture in multi-file.spec.ts, which warned spuriously under an identity comparison.
+    // So duplicates are judged by what Drizzle itself says the export is: two tables are the
+    // same when their database name, SQL schema and column keys agree, two enums when their
+    // values do. Only a genuine disagreement warns, because dropping a table in silence is
+    // how a generated API quietly loses endpoints; helpers and other non-schema values are
+    // merged first-wins without comment.
+    const exportsObj: Record<string, any> = {};
+    const exportOrigin = new Map<string, string>();
+    const duplicateDisagreement = (a: any, b: any): string | null => {
+      if (Object.is(a, b)) return null;
+      const aCols = this.getSymbol(a, 'drizzle:Columns');
+      const bCols = this.getSymbol(b, 'drizzle:Columns');
+      if (aCols && bCols) {
+        const aName = this.getSymbol(a, 'drizzle:Name');
+        const bName = this.getSymbol(b, 'drizzle:Name');
+        const aSchema = this.getSymbol(a, 'drizzle:Schema');
+        const bSchema = this.getSymbol(b, 'drizzle:Schema');
+        if (aName !== bName || aSchema !== bSchema) {
+          return `two different tables ("${String(aName)}" and "${String(bName)}")`;
+        }
+        if (Object.keys(aCols).join(',') !== Object.keys(bCols).join(',')) {
+          return `two declarations of table "${String(aName)}" with different columns`;
+        }
+        return null;
+      }
+      if (!!aCols !== !!bCols) return 'a table and a non-table';
+      const aEnum = (a as any)?.enumValues;
+      const bEnum = (b as any)?.enumValues;
+      if (Array.isArray(aEnum) && Array.isArray(bEnum)) {
+        return JSON.stringify(aEnum) === JSON.stringify(bEnum)
+          ? null
+          : 'two enums with different values';
+      }
+      return null;
+    };
+    for (let i = 0; i < fulls.length; i++) {
+      let mod: any;
+      try {
+        mod = jit(fulls[i]);
+      } catch (e) {
+        issues.push({
+          code: 'DRZL_ANL_IMPORT',
+          level: 'error',
+          // The single-path message keeps its historical bytes; a list names the file, since
+          // "the schema" no longer identifies one.
+          message: listed
+            ? `Failed to import schema ${inputs[i]}: ${String(e)}`
+            : `Failed to import schema: ${String(e)}`,
+        });
+        return { dialect: 'unknown', tables: [], enums: [], relations: [], issues };
+      }
+      const one: Record<string, any> =
+        mod?.default && typeof mod.default === 'object' ? mod.default : mod;
+      for (const [name, val] of Object.entries(one)) {
+        if (!(name in exportsObj)) {
+          exportsObj[name] = val;
+          exportOrigin.set(name, inputs[i]);
+          continue;
+        }
+        const disagreement = duplicateDisagreement(exportsObj[name], val);
+        if (!disagreement) continue;
+        issues.push({
+          code: 'DRZL_ANL_DUP_EXPORT',
+          level: 'warn',
+          message:
+            `Export "${name}" is ${disagreement}: defined by both ` +
+            `${exportOrigin.get(name)} and ${inputs[i]}; keeping the one in ` +
+            `${exportOrigin.get(name)}.`,
+          path: name,
+        });
+      }
+    }
     const tables: Table[] = [];
     const relations: Relation[] = [];
     const enums: Enum[] = [];

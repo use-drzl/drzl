@@ -2,6 +2,11 @@
 
 Watch schema (and template paths) and regenerate on changes.
 
+A schema resolved from your drizzle-kit config is watched the same way a `schema` path is: the
+directories its entries name (glob bases included, so a new file matching the pattern counts)
+and `drizzle.config.*` itself, whose edits re-resolve the schema on the next rebuild. See
+[Reading the schema path from drizzle-kit](/guide/configuration#reading-the-schema-path-from-drizzle-kit).
+
 Usage:
 
 ::: code-group

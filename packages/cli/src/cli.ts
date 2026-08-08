@@ -24,6 +24,11 @@ import {
   tableFilterWarnings,
 } from './config.js';
 import { filterColumns } from './column-filter.js';
+import {
+  dialectMismatchWarning,
+  resolveSchemaSource,
+  type ResolvedSchemaSource,
+} from './drizzle-kit.js';
 import { buildDoctorReport, renderDoctorReport } from './doctor.js';
 import { diffSnapshots, restoreSnapshot, snapshotAll } from './drift.js';
 import { GeneratorNotInstalledError, loadGenerator } from './generator-loader.js';
@@ -113,11 +118,14 @@ program
   .action(async (schema: string | undefined, opts: any) => {
     try {
       // A schema path argument, like `analyze`, or the one already named in the config, since a
-      // user who has a config should not have to retype the path they put in it.
-      let target = schema;
+      // user who has a config should not have to retype the path they put in it. Resolution
+      // goes through the same `resolveSchemaSource` as `generate`, so a config whose schema
+      // comes from drizzle-kit's config gets a doctor report too; its failure messages name
+      // both files, which is strictly more useful than the generic line below.
+      let target: string | string[] | undefined = schema;
       if (!target) {
         const cfg = await loadConfig(opts.config);
-        target = cfg?.schema;
+        if (cfg) target = (await resolveSchemaSource(cfg)).schema;
       }
       if (!target) {
         const msg = 'No schema given. Pass a path, or run from a directory with a drzl.config.';
@@ -135,7 +143,10 @@ program
         includeRelations: true,
         validateConstraints: true,
       });
-      const report = buildDoctorReport(analysis, target);
+      const report = buildDoctorReport(
+        analysis,
+        Array.isArray(target) ? target.join(', ') : target
+      );
 
       if (opts.json) console.log(JSON.stringify(report, null, 2));
       else console.log(renderDoctorReport(report));
@@ -175,7 +186,7 @@ program
   )
   .action(async (opts: any) => {
     try {
-      const cfg = await loadConfig(opts.config);
+      let cfg = await loadConfig(opts.config);
       if (!cfg) {
         console.error(
           chalk.red('No config found (DRZL_CFG_001). Create drzl.config.ts or pass --config.')
@@ -183,7 +194,28 @@ program
         process.exit(2);
         return;
       }
-      const analyzer = new SchemaAnalyzer(cfg.schema);
+      // Where the schema comes from: `schema` in the drzl config, or, when that is omitted,
+      // the drizzle-kit config, so a kit user never states the path twice. Resolved before the
+      // spinner starts, because it throws the "neither file names a schema" error.
+      const source = await resolveSchemaSource(cfg);
+      for (const w of source.warnings) console.warn(chalk.yellow(w));
+      // `typedJson`/`typedColumns` need one module to import tables from (`schemaPath` in
+      // validation-options.ts). A drizzle-kit source resolved to exactly one file is that
+      // module, so the option keeps working; several files have no single module, and the
+      // generators already say so at their own call sites when they want types with no path.
+      if (!cfg.schema && Array.isArray(source.schema) && source.schema.length === 1) {
+        cfg = { ...cfg, schema: source.schema[0] };
+      }
+      if (source.source === 'drizzle-kit') {
+        const n = (source.schema as string[]).length;
+        console.log(
+          chalk.gray(
+            `Schema from ${path.relative(process.cwd(), source.drizzleKitConfigPath!)} ` +
+              `(${n} file${n === 1 ? '' : 's'})`
+          )
+        );
+      }
+      const analyzer = new SchemaAnalyzer(source.schema);
       const spinner = ora('Analyzing...').start();
       const t0 = Date.now();
       const analysis = await analyzer.analyze({
@@ -195,6 +227,16 @@ program
       // cannot honour and a thrown error under a live ora spinner prints into a line the spinner
       // then overwrites.
       spinner.succeed(`Analysis complete in ${Date.now() - t0}ms`);
+      // The cross-check the interop makes possible: the drizzle-kit config states a dialect,
+      // the analyzer measures one, and a contradiction usually means the schema paths or the
+      // dialect line are stale. A warning rather than an error, because generation follows the
+      // schema either way. After the spinner for the same overwrite reason as above.
+      const dialectWarning = dialectMismatchWarning({
+        configPath: source.drizzleKitConfigPath ?? '',
+        declared: source.drizzleKitDialect,
+        analyzed: analysis.dialect,
+      });
+      if (dialectWarning) console.warn(chalk.yellow(dialectWarning));
       // Both filters are applied before any generator sees the analysis, so every one of them
       // honours them without needing to know the options exist.
       //
@@ -671,8 +713,25 @@ program
       return !!rel && !rel.startsWith('..') && !path.isAbsolute(rel);
     };
 
+    // Resolved before the watcher exists, because the directories to watch depend on it: a
+    // schema read from drizzle-kit's config lives wherever that config says, and a watcher
+    // that does not cover those directories never fires. A resolution failure here is a
+    // startup failure, exactly like a missing config; inside `run` the same failure is caught
+    // and reported, so a broken edit mid-watch can be fixed by the next save.
+    let source: ResolvedSchemaSource;
+    try {
+      source = await resolveSchemaSource(cfg);
+    } catch (e: any) {
+      console.error(chalk.red(String(e?.message ?? e)));
+      process.exit(2);
+      return;
+    }
+    for (const w of source.warnings) console.warn(chalk.yellow(w));
+
     const ignoredOutDirs = new Set<string>(computeGeneratorOutputDirs(cfg).map(abs));
-    const currentTargets = new Set<string>(computeWatchTargets(cfg).map(abs));
+    const currentTargets = new Set<string>(
+      computeWatchTargets(cfg, process.cwd(), source).map(abs)
+    );
 
     const syncWatcherTargets = (watcher: import('chokidar').FSWatcher, next: Set<string>) => {
       const add: string[] = [];
@@ -742,8 +801,23 @@ program
         if (!reloaded) throw new Error('Config disappeared during watch.');
         cfg = reloaded;
 
+        // Re-resolved on every rebuild, for the same reason the config is: an edit to
+        // drizzle.config.ts mid-watch changes which files are the schema, and a new file that
+        // matches its glob has to join the set. The watch targets are recomputed from the
+        // fresh resolution, so a schema directory added to the kit config starts being
+        // watched on the rebuild that first read it.
+        source = await resolveSchemaSource(cfg);
+        // The same single-file fill `generate` makes, for the same consumer (`schemaPath` in
+        // validation-options.ts), so the two dispatch loops hand the generators the same
+        // options and the branch-parity contract holds for interop configs too.
+        if (!cfg.schema && Array.isArray(source.schema) && source.schema.length === 1) {
+          cfg = { ...cfg, schema: source.schema[0] };
+        }
+
         rebuildIgnoreDirsFrom(cfg);
-        const nextTargets = new Set<string>(computeWatchTargets(cfg).map(abs));
+        const nextTargets = new Set<string>(
+          computeWatchTargets(cfg, process.cwd(), source).map(abs)
+        );
         syncWatcherTargets(watcher, nextTargets);
 
         if (!opts.json) console.clear();
@@ -758,12 +832,23 @@ program
           );
         }
 
-        const analyzer = new SchemaAnalyzer(cfg.schema);
+        // After the console.clear() above, or the warning would be wiped before anyone saw it.
+        if (!opts.json) for (const w of source.warnings) console.warn(chalk.yellow(w));
+
+        const analyzer = new SchemaAnalyzer(source.schema);
         const analysis = await analyzer.analyze({
           includeRelations: cfg.analyzer.includeRelations,
           validateConstraints: cfg.analyzer.validateConstraints,
           includeHeuristicRelations: cfg.analyzer.includeHeuristicRelations,
         });
+        // The same cross-check `generate` makes, in the same wording, so the two commands
+        // cannot disagree about what a contradictory dialect line means.
+        const dialectWarning = dialectMismatchWarning({
+          configPath: source.drizzleKitConfigPath ?? '',
+          declared: source.drizzleKitDialect,
+          analyzed: analysis.dialect,
+        });
+        if (dialectWarning && !opts.json) console.warn(chalk.yellow(dialectWarning));
         // Same order and the same reasons as `generate`. A config edited mid-watch that names a
         // column that does not exist throws here, and `run`'s own catch reports it and keeps
         // watching, so the next save can fix it.
