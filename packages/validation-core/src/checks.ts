@@ -833,3 +833,283 @@ export function describeSet(set: ColumnSet): string {
   const shown = set.values.map((v) => (set.kind === 'string' ? `'${v}'` : v)).join(', ');
   return `${set.name ? `${set.name}: ` : ''}${set.column} IN (${shown})`;
 }
+
+/**
+ * How the database compares a CHECK literal against this column, and so how an emitted schema
+ * must state the comparison. `wireNumberLiteral` above decides a literal's *spelling*; this
+ * decides which comparison that spelling takes part in, which is the other half of the same
+ * rule: the literal's kind and the column's wire are reconciled by the database's semantics,
+ * never by whether the schema happened to quote the literal.
+ *
+ *   `number`          the driver hands back a JS number; literals compare with `===`/ranges.
+ *   `bigint`          a JS bigint; same, spelled with the `n` suffix.
+ *   `numeric-string`  the driver hands back *decimal text* and the database compares it as a
+ *                     number: `numeric`/`decimal` in string mode on every dialect, and v1's
+ *                     `bigint({ mode: 'string' })`. Measured on PostgreSQL 17.5 and MySQL
+ *                     8.4.11: `1 = 1.00` is true and a `numeric(10,2)` returns '1.00' for a
+ *                     stored 1, so neither a number literal nor the literal's own text can be
+ *                     compared to what arrives; only a canonical decimal spelling can.
+ *   `text`            ordinary strings, compared as strings.
+ *   `opaque`          everything else: dates, booleans, arrays, shaped columns. No literal
+ *                     policy applies and the existing arms keep their behaviour.
+ *
+ * Keyed on `tsType` plus `dbType` rather than on the SQL type name, for the reason
+ * `wireNumberLiteral` records: `tsType` is the analyzer's measured wire, and `dbType` is the
+ * coarse kind label both majors agree on (`NUMERIC` for every decimal family, `BIGINT` for the
+ * one string-mode integer wire).
+ */
+export type ComparisonWire = 'number' | 'bigint' | 'numeric-string' | 'text' | 'opaque';
+
+export function comparisonWire(c: {
+  tsType?: string;
+  dbType?: string;
+  shape?: { kind: string };
+  arrayDimensions?: number;
+}): ComparisonWire {
+  if (c.shape || c.arrayDimensions) return 'opaque';
+  if (c.tsType === 'number') return 'number';
+  if (c.tsType === 'bigint') return 'bigint';
+  if (c.tsType !== 'string') return 'opaque';
+  return c.dbType === 'NUMERIC' || c.dbType === 'BIGINT' ? 'numeric-string' : 'text';
+}
+
+/**
+ * The canonical spelling of plain decimal text, or nothing for anything else.
+ *
+ * The one name under which '1', '1.00', '01', '+1', '1.' and ' 1 ' are the same value, which is
+ * exactly the equality the database applies on a numeric wire: measured through PGlite, a bare
+ * `numeric` returns '1.000000' for an inserted 1.000000 and admits it into `CHECK (n IN (1, 2))`,
+ * and a `numeric(10,2)` returns '1.00' for a stored 1. Sign is normalised (`numeric` has no
+ * negative zero: '-0.00' comes back '0.00'), leading integer zeros and trailing fraction zeros
+ * are stripped, and a bare trailing dot is dropped.
+ *
+ * String arithmetic deliberately: `Number()` is not usable here. A numeric column carries more
+ * digits than a double holds, and Number('99999999999999999999') and
+ * Number('99999999999999999998') are the same double, so rounding through one would merge
+ * members the database keeps distinct.
+ *
+ * Everything outside plain decimal answers nothing, exponent forms included. Postgres does
+ * accept `'1e3'` as numeric *input*, and `CHECK (n IN ('1e3', 2))` is valid DDL that admits
+ * 1000, but its output spelling is always plain ('1000' came back, measured), and a member this
+ * function cannot name makes the whole constraint unenforceable rather than approximated: see
+ * `wireLiteralFit`.
+ */
+export function canonicalNumericText(text: string): string | undefined {
+  const m = /^([+-]?)(\d*)(?:\.(\d*))?$/.exec(text.trim());
+  if (!m || (!m[2] && !m[3])) return undefined;
+  const int = (m[2] ?? '').replace(/^0+/, '');
+  const frac = (m[3] ?? '').replace(/0+$/, '');
+  if (!int && !frac) return '0';
+  return (m[1] === '-' ? '-' : '') + (int || '0') + (frac ? '.' + frac : '');
+}
+
+/** The canonical forms of a member list, deduplicated, members outside the domain dropped. */
+export function canonicalMembers(values: string[]): string[] {
+  const out: string[] = [];
+  for (const v of values) {
+    const c = canonicalNumericText(v);
+    if (c !== undefined && !out.includes(c)) out.push(c);
+  }
+  return out;
+}
+
+/** Name of the canonical helper emitted into a module that compares on a numeric string wire. */
+export const NUMERIC_CANON_NAME = 'DrzlNumericCanon';
+
+/**
+ * The helper itself, emitted once per file that needs it, in every generator from this one
+ * string so six copies cannot drift. `test/numeric-wire-literals.spec.ts` evaluates it beside
+ * `canonicalNumericText` over the probe corpus to hold the two to one answer.
+ */
+export const NUMERIC_CANON_SOURCE = `/**
+ * The canonical spelling of the plain decimal text a numeric wire carries, or null for anything
+ * else. The driver spells one value many ways by declared scale ('1', '1.00', '1.0000000000',
+ * measured) and the database compares them as numbers, so equality is decided on this form:
+ * sign normalised, leading integer zeros and trailing fraction zeros stripped, a bare trailing
+ * dot dropped. String arithmetic on purpose: Number() is not usable here, because a numeric
+ * column carries more digits than a double holds and rounding would merge values the database
+ * keeps distinct.
+ */
+const ${NUMERIC_CANON_NAME} = (s: string): string | null => {
+  const m = /^([+-]?)(\\d*)(?:\\.(\\d*))?$/.exec(s.trim());
+  if (!m || (!m[2] && !m[3])) return null;
+  const int = (m[2] ?? '').replace(/^0+/, '');
+  const frac = (m[3] ?? '').replace(/0+$/, '');
+  if (!int && !frac) return '0';
+  return (m[1] === '-' ? '-' : '') + (int || '0') + (frac ? '.' + frac : '');
+};
+`;
+
+/** What `wireLiteralFit` is asked about: one literal list, one comparison class. */
+export interface WireLiteralQuestion {
+  kind: 'number' | 'string';
+  values: string[];
+  /** `=`, `<>` and `IN` are `equality`; the four ordering operators are `range`. */
+  comparison: 'equality' | 'range';
+}
+
+/**
+ * Whether these literals can be enforced against this column, and in what form.
+ *
+ *   `keep`        the spelling already follows the wire: nothing changes.
+ *   `respell`     quoted plain decimal on a number or bigint wire. The database coerces the
+ *                 text and compares numerically (`bigint CHECK (big IN ('1','2'))` admitted 1
+ *                 and refused 3, measured), so the literal becomes its canonical number-kind
+ *                 self and every existing number arm applies. Canonical rather than verbatim,
+ *                 because `018` and `018n` are syntax errors in an emitted module.
+ *   `canonical`   any equality on a numeric string wire: the emitted schema compares canonical
+ *                 decimal spellings through `NUMERIC_CANON_NAME`. A range there is `respell`:
+ *                 it is emitted as a coerced numeric compare instead, since ordering needs no
+ *                 exact spelling, only a monotonic one.
+ *   `unenforced`  no exact statement exists. Three shapes land here, each measured: a number
+ *                 literal against a text column (Postgres refuses the DDL outright, MySQL
+ *                 compares through double coercion that admits '1.00' and '2.0'), quoted text
+ *                 that is not plain decimal on a number or bigint wire, and a member outside
+ *                 the canonical domain on a numeric string wire (`'1e3'` is valid DDL whose
+ *                 rows come back '1000'). Enforcing a guess would reject rows the database
+ *                 admits, which is the defect class this policy exists to remove, so these are
+ *                 left to the base schema and reported.
+ */
+export type WireLiteralFit =
+  | { fit: 'keep' }
+  | { fit: 'respell'; values: string[] }
+  | { fit: 'canonical'; canon: string[] }
+  | { fit: 'unenforced'; reason: string };
+
+export function wireLiteralFit(
+  c: {
+    name?: string;
+    tsType?: string;
+    dbType?: string;
+    shape?: { kind: string };
+    arrayDimensions?: number;
+  },
+  q: WireLiteralQuestion
+): WireLiteralFit {
+  const wire = comparisonWire(c);
+  if (wire === 'opaque') return { fit: 'keep' };
+  if (wire === 'text') {
+    if (q.kind === 'string') return { fit: 'keep' };
+    return {
+      fit: 'unenforced',
+      reason:
+        `"${c.name ?? '?'}" is a text column, and the database compares a number literal ` +
+        `against it by coercion rules that differ per dialect, which no exact predicate restates`,
+    };
+  }
+  const canon = q.values.map((v) => canonicalNumericText(v));
+  const bad = q.values[canon.findIndex((x) => x === undefined)];
+  if (wire === 'numeric-string') {
+    if (bad !== undefined)
+      return {
+        fit: 'unenforced',
+        reason:
+          `'${bad}' is not plain decimal text, and the driver spells one numeric value many ` +
+          `ways, so no exact comparison can be stated`,
+      };
+    if (q.comparison === 'range') return { fit: 'respell', values: canon as string[] };
+    return { fit: 'canonical', canon: canonicalMembers(q.values) };
+  }
+  // A number or bigint wire.
+  if (q.kind === 'number') return { fit: 'keep' };
+  if (bad !== undefined)
+    return {
+      fit: 'unenforced',
+      reason:
+        `'${bad}' is quoted text on a ${wire} wire, and it is not plain decimal, so the ` +
+        `numeric comparison the database performs cannot be restated exactly`,
+    };
+  return { fit: 'respell', values: canonicalMembers(q.values) };
+}
+
+/** A clause the wire policy left unenforced, with the reason the ledger reports. */
+export interface UnenforcedLiteral {
+  column: string;
+  reason: string;
+  check?: ColumnCheck;
+  set?: ColumnSet;
+}
+
+/**
+ * The wire policy over a whole table's parsed checks, for the generators.
+ *
+ * Respelled literals come back as the number-kind twins every existing arm already handles,
+ * unenforceable clauses are dropped from the lists and returned beside them, and the
+ * numeric-string clauses pass through untouched for the canonical vehicles to state. The
+ * constraint ledger applies `wireLiteralFit` itself so its texts and reasons cannot drift from
+ * what is emitted here.
+ */
+export function applyWirePolicy(
+  columns: Array<{
+    name: string;
+    tsType?: string;
+    dbType?: string;
+    shape?: { kind: string };
+    arrayDimensions?: number;
+  }>,
+  checks: ColumnCheck[],
+  sets: ColumnSet[]
+): { checks: ColumnCheck[]; sets: ColumnSet[]; unenforced: UnenforcedLiteral[] } {
+  const byName = new Map(columns.map((c) => [c.name, c]));
+  const outChecks: ColumnCheck[] = [];
+  const outSets: ColumnSet[] = [];
+  const unenforced: UnenforcedLiteral[] = [];
+
+  for (const k of checks) {
+    const c = byName.get(k.column);
+    if (!c) {
+      outChecks.push(k);
+      continue;
+    }
+    const fit = wireLiteralFit(c, {
+      kind: k.kind,
+      values: [k.value],
+      comparison: k.operator === '=' || k.operator === '<>' ? 'equality' : 'range',
+    });
+    if (fit.fit === 'unenforced') unenforced.push({ column: k.column, reason: fit.reason, check: k });
+    else if (fit.fit === 'respell') outChecks.push({ ...k, kind: 'number', value: fit.values[0]! });
+    else outChecks.push(k);
+  }
+
+  for (const s of sets) {
+    const c = byName.get(s.column);
+    if (!c) {
+      outSets.push(s);
+      continue;
+    }
+    const fit = wireLiteralFit(c, { kind: s.kind, values: s.values, comparison: 'equality' });
+    if (fit.fit === 'unenforced') unenforced.push({ column: s.column, reason: fit.reason, set: s });
+    else if (fit.fit === 'respell') outSets.push({ ...s, kind: 'number', values: fit.values });
+    else outSets.push(s);
+  }
+
+  return { checks: outChecks, sets: outSets, unenforced };
+}
+
+/**
+ * Whether any column of this table needs `NUMERIC_CANON_SOURCE` emitted beside it.
+ *
+ * One condition shared by every generator's preamble and its field emitter, for the reason the
+ * TypeBox generator records on `tbNeedsCapKind`: two copies of one condition drift, and what a
+ * drifted copy emits is a reference to a helper the file never defined.
+ */
+export function needsNumericCanon(
+  columns: Array<{
+    name: string;
+    tsType?: string;
+    dbType?: string;
+    shape?: { kind: string };
+    arrayDimensions?: number;
+  }>,
+  checks: ColumnCheck[],
+  sets: ColumnSet[]
+): boolean {
+  return columns.some(
+    (c) =>
+      comparisonWire(c) === 'numeric-string' &&
+      (sets.some((s) => s.column === c.name) ||
+        checks.some(
+          (k) => k.column === c.name && (k.operator === '=' || k.operator === '<>')
+        ))
+  );
+}

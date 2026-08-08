@@ -20,9 +20,17 @@ import {
   nestedSchemaName,
   nestedTypeName,
   resolveNestedDepth,
+  applyWirePolicy,
+  canonicalMembers,
+  canonicalNumericText,
+  comparisonWire,
+  describeSet,
+  needsNumericCanon,
   CODEPOINT_LENGTH,
   COERCIBLE_DATE_STRING,
   COLUMN_FORMATS,
+  NUMERIC_CANON_NAME,
+  NUMERIC_CANON_SOURCE,
   insertColumns,
   isIntegerColumn,
   lengthCheckLabel,
@@ -423,17 +431,29 @@ function checkSteps(c: Column, checks: ColumnCheck[]): string[] {
   // literal and the schema rejected every row.
   if (c.arrayDimensions || c.shape) return [];
   const folded = foldedIntoBounds(c, checks);
+  const numericWire = comparisonWire(c) === 'numeric-string';
   return checks
     .filter((k) => k.column === c.name && !folded.has(k))
     .map((k) => {
+      const label = `${k.name ? `${k.name}: ` : ''}${c.name} ${k.operator} ${k.value}`;
+      // On a numeric string wire the driver spells one value many ways ('1', '1.00') and the
+      // database compares them as numbers, so `v === 1` was false for every returned row and
+      // `v !== 1` enforced nothing. Equality goes through the canonical spelling; a range keeps
+      // its coerced numeric compare, spelled `Number(v)` so the comparison it always performed
+      // is visible and the module typechecks. See the zod generator and `wireLiteralFit`.
+      if (numericWire) {
+        if (k.operator === '=' || k.operator === '<>') {
+          const canon = JSON.stringify(canonicalNumericText(k.value));
+          const op = k.operator === '=' ? '===' : '!==';
+          return filter(`${NUMERIC_CANON_NAME}(v) ${op} ${canon}`, label);
+        }
+        return filter(`Number(v) ${OPS[k.operator]} ${k.value}`, label);
+      }
       // The wire-type spelling matters for `<>`, which is compared with strict equality:
       // `v !== 1` is true of every `1n`, so the constraint silently never fired on a bigint
       // column. The message keeps the SQL spelling either way.
       const literal = k.kind === 'string' ? JSON.stringify(k.value) : wireNumberLiteral(c, k.value);
-      return filter(
-        `v ${OPS[k.operator]} ${literal}`,
-        `${k.name ? `${k.name}: ` : ''}${c.name} ${k.operator} ${k.value}`
-      );
+      return filter(`v ${OPS[k.operator]} ${literal}`, label);
     });
 }
 
@@ -530,6 +550,17 @@ function exprForColumn(
   // the spelling, and it also keeps a 64 bit member exact rather than rounding it.
   const set = sets.find((x) => x.column === c.name);
   if (set) {
+    // On a numeric string wire no list of literals can state the set: the driver spells one
+    // admitted value many ways by declared scale ('1.00' for a stored 1, measured) and the
+    // database admits them all. The compare runs over the canonical spelling instead, exact at
+    // any precision where `Number()` rounds. See the zod generator and `wireLiteralFit`.
+    if (comparisonWire(c) === 'numeric-string') {
+      const members = canonicalMembers(set.values);
+      const test = members.map((m) => `canon === ${JSON.stringify(m)}`).join(' || ');
+      return piped(`${NS}.String`, [
+        filter(`((canon) => ${test})(${NUMERIC_CANON_NAME}(v))`, describeSet(set)),
+      ]);
+    }
     const values = set.values.map((v) =>
       set.kind === 'string' ? JSON.stringify(v) : wireNumberLiteral(c, v)
     );
@@ -543,9 +574,11 @@ function exprForColumn(
   }
 
   // An equality pins the value outright, so it supersedes every other constraint on the column.
-  // Spelled in the wire type for the same reason the set above is.
+  // Spelled in the wire type for the same reason the set above is. Not on a numeric string wire,
+  // where no literal can meet the driver's spellings: the equality stays in `checkSteps` as the
+  // canonical compare there.
   const eq = checks.find((k) => k.column === c.name && k.operator === '=');
-  if (eq && !c.shape) {
+  if (eq && !c.shape && comparisonWire(c) !== 'numeric-string') {
     return `${NS}.Literal(${eq.kind === 'string' ? JSON.stringify(eq.value) : wireNumberLiteral(c, eq.value)})`;
   }
 
@@ -743,12 +776,23 @@ function indentBlock(code: string, by = '  '): string {
     .join('\n');
 }
 
-/** Every CHECK on a table that the shared parser understands, split by what it constrains. */
+/**
+ * Every CHECK on a table that the shared parser understands, split by what it constrains.
+ *
+ * The wire policy runs here, exactly as in the zod generator: quoted literals the database
+ * compares numerically come back respelled number-kind, and clauses no exact compare can state
+ * are dropped, left to the base schema and reported by the constraint ledger.
+ */
 function parsedChecksFor(table: Table) {
   const parsed = (table.checks ?? []).map((k) => parseCheck(k.expression, k.name));
+  const { checks, sets } = applyWirePolicy(
+    table.columns,
+    parsed.flatMap((p) => (p.ok ? p.checks : [])),
+    parsed.flatMap((p) => (p.ok ? (p.sets ?? []) : []))
+  );
   return {
-    checks: parsed.flatMap((p) => (p.ok ? p.checks : [])),
-    sets: parsed.flatMap((p) => (p.ok ? (p.sets ?? []) : [])),
+    checks,
+    sets,
     rows: parsed.flatMap((p) => (p.ok ? (p.rows ?? []) : [])),
     lengths: parsed.flatMap((p) => (p.ok ? (p.lengths ?? []) : [])),
     cardinalities: parsed.flatMap((p) => (p.ok ? (p.cardinalities ?? []) : [])),
@@ -988,8 +1032,25 @@ function renderTableSchemas(
     .join('\n\n');
   const brandCode = brandAliases ? `\n${brandAliases}\n` : '';
 
+  // The canonical helper, once per file that compares on a numeric string wire, nested tables
+  // included for the reason the json preamble includes them. Conditional because an unused
+  // declaration fails `noUnusedLocals` downstream.
+  const involved = [
+    table,
+    ...(['insert', 'select'] as const).flatMap((m) => {
+      const plan = nested[m];
+      return plan ? nestedNodes(plan).map((n) => n.table) : [];
+    }),
+  ];
+  const canonPreamble = involved.some((t) => {
+    const own = parsedChecksFor(t);
+    return needsNumericCanon(t.columns, own.checks, own.sets);
+  })
+    ? `\n${NUMERIC_CANON_SOURCE}`
+    : '';
+
   return `import * as ${NS} from 'effect/Schema';
-${schemaImport}${needsJson ? `\n${JSON_PREAMBLE}` : ''}
+${schemaImport}${needsJson ? `\n${JSON_PREAMBLE}` : ''}${canonPreamble}
 ${blocks.join('\n\n')}
 ${brandCode}${nestedCode}${duplicates}`;
 }

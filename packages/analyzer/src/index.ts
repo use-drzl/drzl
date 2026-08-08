@@ -65,9 +65,11 @@ export interface Column {
   /**
    * A coarse label for the column's kind, not its type.
    *
-   * `varchar`, `char` and `text` are all `TEXT` here, deliberately: exactly one consumer reads
-   * this, `isIntegerColumn`, and it only asks whether a number is whole. Use `sqlType` for the
-   * question this name suggests it answers.
+   * `varchar`, `char` and `text` are all `TEXT` here, deliberately: two consumers read this and
+   * both ask coarse questions. `isIntegerColumn` asks whether a number is whole, and
+   * `comparisonWire` in `@drzl/validation-core` asks whether a string wire carries decimal text
+   * the database compares numerically, which is `NUMERIC` (every decimal family) and `BIGINT`
+   * (the v1 string mode). Use `sqlType` for the question this name suggests it answers.
    */
   dbType: string;
   /**
