@@ -7,12 +7,14 @@ import type {
 } from '@drzl/validation-core';
 import type { CardinalityCheck, ColumnCheck, ColumnSet, LengthCheck } from '@drzl/validation-core';
 import type { NestedMode, NestedNode } from '@drzl/validation-core';
-import type { BrandPlan } from '@drzl/validation-core';
+import type { BrandPlan, ConstraintsOption } from '@drzl/validation-core';
 import {
   buildBrandPlan,
   buildNestedPlan,
   COERCIBLE_DATE_STRING,
   COLUMN_FORMATS,
+  CONSTRAINTS_MODULE,
+  importSpecifier,
   insertColumns,
   isIntegerColumn,
   nestedArmNotes,
@@ -22,8 +24,10 @@ import {
   nonFiniteAccepted,
   parseCheck,
   parsesToADate,
+  renderConstraintsModule,
   renderDuplicateFinder,
   resolveConfiguredImport,
+  resolveConstraints,
   resolveNestedDepth,
   updateColumns,
   selectColumns,
@@ -829,6 +833,22 @@ export interface ValibotGenerateOptions extends ValidationGenerateOptions {
    * generated code ships in the consumer's bundle.
    */
   duplicateFinder?: boolean;
+  /**
+   * Also emit `constraints.ts`: every CHECK, unique constraint, primary and foreign key on each
+   * table, as plain data, plus `constraintForIssue` to map a validation issue back to the
+   * constraint that caused it.
+   *
+   * For a consumer building forms. A schema states what a value must look like and never says
+   * which constraint said so, so a failed parse gives a form a message and no way to attribute it;
+   * and the two constraints a per-row schema cannot check at all, uniqueness and a foreign key,
+   * are absent from the emitted module in every form.
+   *
+   * The emitted module is library-neutral data, and its matcher reads valibot's path items and
+   * zod's alike. Off by default, like every option that adds bytes to the consumer's bundle.
+   * `true` is the shorthand for `{ enabled: true }`; `{ errorMap: false }` emits the data without
+   * the matcher.
+   */
+  constraints?: ConstraintsOption;
 }
 
 export class ValibotGenerator implements ValidationRenderer<ValibotGenerateOptions> {
@@ -892,6 +912,22 @@ export class ValibotGenerator implements ValidationRenderer<ValibotGenerateOptio
       await fs.writeFile(filePath, formatted, 'utf8');
       files.push(filePath);
     }
+    // Before the barrel, which re-exports it. A file of plain data with no import of its own.
+    const constraints = resolveConstraints(opts.constraints);
+    if (constraints) {
+      const constraintsPath = path.join(out, CONSTRAINTS_MODULE);
+      await fs.writeFile(
+        constraintsPath,
+        await formatCode(
+          buildHeader(opts.outputHeader) +
+            renderConstraintsModule(this.analysis.tables, constraints),
+          constraintsPath,
+          opts.format
+        ),
+        'utf8'
+      );
+      files.push(constraintsPath);
+    }
     const indexPath = path.join(out, 'index.ts');
     const indexCode = this.defaultIndex(this.analysis, opts);
     const indexFormatted = await formatCode(
@@ -922,7 +958,12 @@ export class ValibotGenerator implements ValidationRenderer<ValibotGenerateOptio
     const exports = analysis.tables
       .map((t) => `export * from '${moduleSpecifier(t.tsName, fileSuffix, opts.importExtension)}';`)
       .join('\n');
-    return exports + '\n';
+    // The ledger is named rather than suffixed, so its specifier is built from the module name
+    // rather than from `fileSuffix`, and it is only exported when it was written.
+    const ledger = resolveConstraints(opts.constraints)
+      ? `export * from '${importSpecifier(`./${CONSTRAINTS_MODULE}`, opts.importExtension)}';\n`
+      : '';
+    return exports + '\n' + ledger;
   }
 }
 

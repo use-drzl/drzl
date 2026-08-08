@@ -259,6 +259,17 @@ round trip.
 
 Off by default: generated code ships in your bundle.
 
+## `constraints`: the table's constraints as data
+
+`constraints: true` also emits `constraints.ts`: every CHECK, unique constraint, primary key and
+foreign key on each table as plain data, plus `constraintForIssue`, which turns a failed parse back
+into the constraint that caused it.
+
+Valibot is the generator that decided the shape of that map. It reports a row-level check with an
+**empty path**, naming no column at all, so the column has to come out of the constraint data
+rather than out of the issue. See
+[Constraint Data and Form Error Maps](/generators/constraints).
+
 ## Nested relation schemas
 
 `nestedSchemas: true` also emits `NestedInsert<Table>` and `NestedSelect<Table>`, the table plus one

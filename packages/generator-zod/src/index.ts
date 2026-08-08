@@ -13,17 +13,22 @@ import type {
 } from '@drzl/validation-core';
 import type { NestedNode, NestedMode } from '@drzl/validation-core';
 import type { BrandPlan } from '@drzl/validation-core';
+import type { ConstraintsOption } from '@drzl/validation-core';
 import {
   buildBrandPlan,
   columnMetaFacts,
   formatCode,
   parseCheck,
+  renderConstraintsModule,
+  resolveConstraints,
+  CONSTRAINTS_MODULE,
   renderDuplicateFinder,
   resolveConfiguredImport,
   buildNestedPlan,
   tableMetaFacts,
   COERCIBLE_DATE_STRING,
   COLUMN_FORMATS,
+  importSpecifier,
   insertColumns,
   isIntegerColumn,
   moduleFileName,
@@ -904,6 +909,25 @@ export interface ZodGenerateOptions extends ValidationGenerateOptions {
    * zod's own clone-versus-wrap behaviour rather than reasoned about. See the docs page.
    */
   meta?: boolean | { enabled?: boolean; description?: boolean };
+  /**
+   * Also emit `constraints.ts`: every CHECK, unique constraint, primary and foreign key on each
+   * table, as plain data, plus `constraintForIssue` to map a validation issue back to the
+   * constraint that caused it.
+   *
+   * For a consumer building forms. A schema states what a value must look like and never says
+   * which constraint said so, so a failed parse gives a form a message and no way to attribute it;
+   * and the two constraints a per-row schema cannot check at all, uniqueness and a foreign key,
+   * are absent from the emitted module in every form. This is the table's constraints addressed by
+   * name, with the operand of each as data rather than inside a sentence.
+   *
+   * Not `meta` written to a second file. `meta` describes a *field* and travels with the schema
+   * into `z.toJSONSchema`; this describes the *table's constraints*, carries their names, and is
+   * read without holding a schema at all. See `@drzl/validation-core`'s constraints module.
+   *
+   * Off by default, like every option that adds bytes to the consumer's bundle. `true` is the
+   * shorthand for `{ enabled: true }`; `{ errorMap: false }` emits the data without the matcher.
+   */
+  constraints?: ConstraintsOption;
 }
 
 /**
@@ -996,6 +1020,23 @@ export class ZodGenerator implements ValidationRenderer<ZodGenerateOptions> {
       await fs.writeFile(filePath, formatted, 'utf8');
       files.push(filePath);
     }
+    // Before the barrel, which re-exports it. A file of plain data with no import of its own, so
+    // it is written the same way whatever the schemas above ended up looking like.
+    const constraints = resolveConstraints(opts.constraints);
+    if (constraints) {
+      const constraintsPath = path.join(out, CONSTRAINTS_MODULE);
+      const constraintsCode = renderConstraintsModule(this.analysis.tables, constraints);
+      await fs.writeFile(
+        constraintsPath,
+        await formatCode(
+          buildHeader(opts.outputHeader) + constraintsCode,
+          constraintsPath,
+          opts.format
+        ),
+        'utf8'
+      );
+      files.push(constraintsPath);
+    }
     // Index barrel
     const indexPath = path.join(out, 'index.ts');
     const indexCode =
@@ -1031,7 +1072,12 @@ export class ZodGenerator implements ValidationRenderer<ZodGenerateOptions> {
     const exports = analysis.tables
       .map((t) => `export * from '${moduleSpecifier(t.tsName, fileSuffix, opts.importExtension)}';`)
       .join('\n');
-    return exports + '\n';
+    // The ledger is named rather than suffixed, so its specifier is built from the module name
+    // rather than from `fileSuffix`, and it is only exported when it was written.
+    const ledger = resolveConstraints(opts.constraints)
+      ? `export * from '${importSpecifier(`./${CONSTRAINTS_MODULE}`, opts.importExtension)}';\n`
+      : '';
+    return exports + '\n' + ledger;
   }
 }
 

@@ -40,6 +40,10 @@ generators: [{ kind: 'zod', path: 'src/validators/zod' }];
 - `Insert<Table>Schema`, `Update<Table>Schema`, `Select<Table>Schema`
 - Optional `index` barrel
 - Shared vs inlined schemas supported
+- `constraints.ts` under `constraints: true`: every CHECK, unique constraint, primary key
+  and foreign key on each table as plain data, plus `constraintForIssue`, which maps a
+  validation issue back to the constraint that caused it. Off by default. See the
+  [Constraint Data](https://use-drzl.github.io/drzl/generators/constraints) page.
 
 ## Custom names
 

@@ -802,6 +802,19 @@ The `json-schema` generator does not read this either. It builds its documents f
 analysis rather than from a zod schema, so there is nothing to read; it already states what JSON
 Schema cannot express as a `description` of its own.
 
+## `constraints`: the table's constraints as data
+
+`constraints: true` also emits `constraints.ts`: every CHECK, unique constraint, primary key and
+foreign key on each table as plain data, plus `constraintForIssue`, which turns a failed parse back
+into the constraint that caused it.
+
+Not `meta` written to a second file. `meta` describes a **field** and travels with the schema into
+`z.toJSONSchema`; this describes the table's **constraints**, carries their names, states each
+operand as data rather than inside a sentence, and is read without holding a schema at all. It also
+carries the two constraints no per-row schema can hold in any form, uniqueness and foreign keys.
+
+See [Constraint Data and Form Error Maps](/generators/constraints).
+
 ## Nested relation schemas
 
 `nestedSchemas: true` also emits `NestedInsert<Table>` and `NestedSelect<Table>`, the table plus one

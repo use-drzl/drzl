@@ -10,6 +10,7 @@ import type { AffixOptions } from './naming.js';
 
 export * from './branding.js';
 export * from './checks.js';
+export * from './constraints.js';
 export * from './files.js';
 export * from './meta.js';
 export * from './naming.js';

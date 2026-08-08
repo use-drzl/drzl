@@ -58,6 +58,25 @@ describe('@drzl/cli config meta', () => {
   });
 });
 
+describe('@drzl/cli config constraints', () => {
+  const base = (generators: any[]) => ({ schema: 'src/db/schema.ts', generators });
+
+  it('keeps the boolean shorthand and the object form through parse', () => {
+    const shorthand: any = ConfigSchema.parse(base([{ kind: 'zod', constraints: true }]));
+    expect(shorthand.generators[0].constraints).toBe(true);
+    const full: any = ConfigSchema.parse(
+      base([{ kind: 'valibot', constraints: { errorMap: false } }])
+    );
+    expect(full.generators[0].constraints).toEqual({ errorMap: false });
+  });
+
+  it('refuses a key it does not know, rather than dropping it in silence', () => {
+    expect(() =>
+      ConfigSchema.parse(base([{ kind: 'zod', constraints: { errorMaps: false } }]))
+    ).toThrow();
+  });
+});
+
 describe('@drzl/cli config affix', () => {
   const base = (generators: any[]) => ({ schema: 'src/db/schema.ts', generators });
 
