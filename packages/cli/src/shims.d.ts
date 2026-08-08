@@ -29,3 +29,6 @@ declare module '@drzl/generator-hono' {
 declare module '@drzl/generator-express' {
   export const ExpressGenerator: any;
 }
+declare module '@drzl/generator-fastify' {
+  export const FastifyGenerator: any;
+}

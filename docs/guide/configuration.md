@@ -65,9 +65,9 @@ databaseInjection: {
 
 ## Router generators share `outDir`
 
-`orpc`, `trpc`, `hono` and `express` all write to the top-level `outDir` by default, and every
-one of them writes an `index.ts` there, so a config that runs more than one needs a `path` on all
-but one of them:
+`orpc`, `trpc`, `hono`, `express` and `fastify` all write to the top-level `outDir` by default,
+and every one of them writes an `index.ts` there, so a config that runs more than one needs a
+`path` on all but one of them:
 
 ```ts
 generators: [
@@ -75,6 +75,7 @@ generators: [
   { kind: 'trpc', path: 'src/trpc' },        // -> its own directory
   { kind: 'hono', path: 'src/hono' },        // -> its own directory
   { kind: 'express', path: 'src/routes' },   // -> its own directory
+  { kind: 'fastify', path: 'src/fastify' },  // -> its own directory
 ],
 ```
 

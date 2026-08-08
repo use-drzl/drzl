@@ -91,6 +91,7 @@ it('found every publishable package', () => {
     'generator-arktype',
     'generator-effect',
     'generator-express',
+    'generator-fastify',
     'generator-hono',
     'generator-json-schema',
     'generator-orpc',

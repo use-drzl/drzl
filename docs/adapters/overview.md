@@ -7,10 +7,12 @@ Current support:
 - oRPC adapter, via `generator-orpc` and the two template packages
 - tRPC adapter, via `generator-trpc`
 - Hono adapter, via `generator-hono`
+- Express adapter, via `generator-express`
+- Fastify adapter, via `generator-fastify`
 
 Planned/possible adapters (community interest welcome):
 
-- Express, NestJS, Next.js, and more
+- NestJS, Next.js, and more
 
 How it works:
 

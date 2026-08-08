@@ -77,6 +77,7 @@ export const GeneratorSchema = z.object({
     'trpc',
     'hono',
     'express',
+    'fastify',
     'service',
     'zod',
     'valibot',
@@ -532,6 +533,21 @@ export function expressOutDir(g: { path?: string }, cfg: { outDir: string }): st
   return g.path ?? cfg.outDir;
 }
 
+/**
+ * Where the Fastify generator writes.
+ *
+ * The same rule as the other four routers, and for the same reason: it writes an `index.ts` of
+ * its own, so a config running two router generators has to give at least one of them a `path`.
+ *
+ * Its own function rather than a call to one of the others, for the reason `honoOutDir` records:
+ * these are separate decisions that happen to agree today, and a reader following
+ * `computeGeneratorOutputDirs` should not have to work out which router's function is
+ * authoritative for which kind.
+ */
+export function fastifyOutDir(g: { path?: string }, cfg: { outDir: string }): string {
+  return g.path ?? cfg.outDir;
+}
+
 function sharedSchemaNames(opts: { affix?: AffixOptions; schemaSuffix?: string }): string[] {
   const resolved = resolveAffix(opts);
   return NAME_MODES.map((mode) => schemaName(mode, AFFIX_PROBE_TABLE, resolved));
@@ -562,6 +578,35 @@ export function resolveConfig(cfg: DrzlConfig): { config: DrzlConfig; warnings: 
   }));
 
   for (const g of generators) {
+    /**
+     * The Fastify generator is a router that belongs to neither set below. Its schemas are JSON
+     * Schema built by the same code as the `json-schema` generator and inlined at generation
+     * time, so there is no validation library to choose and no shared schema module to import,
+     * and its handlers are stubs that never call a service. Both options would otherwise parse
+     * and then do nothing, which is the shape of dead option this config has already shipped
+     * twice, so each is refused with a warning here instead.
+     */
+    if (g.kind === 'fastify') {
+      if (g.databaseInjection?.enabled) {
+        warnings.push(
+          `drzl config: the "fastify" generator sets databaseInjection.enabled, which it does ` +
+            `not support. Its handlers are stubs and never call a service, so nothing reads ` +
+            `the injected handle. Reach your database from inside the handler bodies you fill ` +
+            `in, or use the "trpc" or "orpc" generator, which do delegate to ` +
+            `@drzl/generator-service.`
+        );
+      }
+      if (g.validation) {
+        warnings.push(
+          `drzl config: the "fastify" generator sets "validation", which it does not read. Its ` +
+            `route schemas are JSON Schema produced by the same builder as the "json-schema" ` +
+            `generator and inlined into the routes, so there is no library to choose and no ` +
+            `shared schema module to import. Remove the block.`
+        );
+      }
+      continue;
+    }
+
     // Both router generators import the validation generators' exports by name, so both have to
     // spell them the way the sibling generator wrote them.
     if (!ROUTER_KINDS.has(g.kind)) continue;
@@ -744,6 +789,7 @@ export function computeGeneratorOutputDirs(cfg: DrzlConfig, cwd = process.cwd())
     if (g.kind === 'trpc') dirs.add(abs(trpcOutDir(g, cfg)));
     if (g.kind === 'hono') dirs.add(abs(honoOutDir(g, cfg)));
     if (g.kind === 'express') dirs.add(abs(expressOutDir(g, cfg)));
+    if (g.kind === 'fastify') dirs.add(abs(fastifyOutDir(g, cfg)));
     if (g.kind === 'service') dirs.add(abs(g.path ?? 'src/services'));
     if (g.kind === 'zod') dirs.add(abs(g.path ?? 'src/validators/zod'));
     if (g.kind === 'valibot') dirs.add(abs(g.path ?? 'src/validators/valibot'));
