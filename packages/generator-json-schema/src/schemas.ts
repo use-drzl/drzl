@@ -253,7 +253,16 @@ function baseSchema(
     case 'bigint':
       // `JSON.stringify` throws on a bigint, so in a JSON document this column is a string. The
       // pattern is what makes that string still mean an integer.
-      return { type: 'string', pattern: '^-?\\d+$' };
+      //
+      // The sign follows the column's floor: a `bigint unsigned` (min '0' from the analyzer)
+      // never holds a negative, and the sign is the one half of its range a pattern can state
+      // exactly, so '-1' stops validating there. Magnitude stays unstated in both spellings:
+      // neither 2^63-1 nor 2^64-1 survives a JSON number, which is why the column is a string in
+      // the first place.
+      return {
+        type: 'string',
+        pattern: typeof c.min === 'string' && !c.min.startsWith('-') ? '^\\d+$' : '^-?\\d+$',
+      };
     case 'boolean':
       return { type: 'boolean' };
     case 'Date':
