@@ -739,6 +739,31 @@ export function describeV1Column(column: any): Partial<Column> | null {
         if (range) [out.min, out.max] = range;
         break;
       }
+      // `bigint({ mode: 'string' })` stamps `string int64`: codec `bigint:string` on pg and
+      // mysql, no codec at all on singlestore and mssql, measured off real 1.0.0-rc.4 columns
+      // (`PgBigIntString`, `MySqlBigIntString`, `SingleStoreBigIntString`, `MsSqlBigInt`). The
+      // driver really returns a string: the `bigint:string` codec casts the column to text on the
+      // wire and registers no normalize, where the `bigint` codec normalizes with `BigInt` and
+      // `bigint:number` with `Number`, and a live read through PGlite on the same rc hands back
+      // `'123'` and `'9223372036854775807'` as JS strings. Keying tsType on `js === 'bigint'`
+      // alone sent this shape to `number`, so every generated select schema rejected every row
+      // the column returns. The js half is the reliable key: two of the four dialects state no
+      // codec for it.
+      //
+      // No numeric facts on the string shape, mirroring the `numeric` arm below:
+      // `isIntegerColumn` in validation-core reads "min and max both present" as an integer
+      // column, and the generators' string arms state no numeric facts to begin with. Bounding
+      // the string by pattern and range is a recorded follow-up, not this shape.
+      //
+      // v1-only: drizzle-orm 0.45.2 spells `PgBigIntConfig<'number' | 'bigint'>` and branches
+      // only on `mode === "number"`, so 0.4x has no string mode and a type-invalid
+      // `mode: 'string'` silently builds the `PgBigInt64` bigint mode, which really does return
+      // a bigint and keeps its class-map answer.
+      if (semantic === 'int64' && js === 'string') {
+        out.tsType = 'string';
+        out.dbType = 'BIGINT';
+        break;
+      }
       // Every width Drizzle names. Missing `int8` and `int24` did not leave MySQL's `tinyint` and
       // `mediumint` alone: they fell through to the bare-number arm below, whose safe-integer
       // bounds then *overrode* the correct ones the class-name table had supplied, so a tinyint
