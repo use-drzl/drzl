@@ -154,8 +154,19 @@ function baseSchema(
   }
 
   // `CHECK (status IN ('a', 'b'))` is exactly what `enum` means.
+  //
+  // A number-kind member follows the column's wire: a bigint column is a *string* in a JSON
+  // document, per the digits-string policy on the `bigint` arm below, so its members stay the
+  // digit strings a serialised row can actually hold. `{ enum: [1, 2] }` there refused every row,
+  // and `Number(v)` also rounds a 64 bit member the moment it becomes a number.
   const set = sets.find((x) => x.column === c.name);
-  if (set) return { enum: set.values.map((v) => (set.kind === 'string' ? v : Number(v))) };
+  if (set) {
+    return {
+      enum: set.values.map((v) =>
+        set.kind === 'string' || c.tsType === 'bigint' ? v : Number(v)
+      ),
+    };
+  }
 
   if (c.enumValues && c.enumValues.length) {
     // A declared enum this document publishes once, or the list itself. See `enums.ts` for which
@@ -167,7 +178,9 @@ function baseSchema(
   const mine = c.arrayDimensions ? [] : checks.filter((k) => k.column === c.name);
   const eq = mine.find((k) => k.operator === '=');
   if (eq) {
-    const only = eq.kind === 'string' ? eq.value : Number(eq.value);
+    // The wire rule the set above applies: on a bigint column the serialised value is a digit
+    // string, so the pinned value is one too, and it stays exact where `Number` would round.
+    const only = eq.kind === 'string' || c.tsType === 'bigint' ? eq.value : Number(eq.value);
     // OpenAPI 3.0 has no `const`, and its Schema Object is closed, so emitting one there does not
     // merely lose the constraint: the document fails validation. A one-value `enum` is the same
     // statement in a keyword that dialect has, and a validator accepts exactly the same value.

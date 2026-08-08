@@ -47,6 +47,7 @@ import {
   selectColumns,
   typeName,
   updateColumns,
+  wireNumberLiteral,
 } from '@drzl/validation-core';
 
 type Mode = 'insert' | 'update' | 'select';
@@ -248,7 +249,10 @@ function checkRefinements(c: Column, checks: ColumnCheck[]): string {
 
   return mine
     .map((k) => {
-      const rhs = k.kind === 'string' ? JSON.stringify(k.value) : k.value;
+      // The right side is compared with strict equality for `=` and `<>`, so it has to be spelled
+      // in the column's wire type: `v === 1` is false for every `1n` a bigint-mode column returns.
+      // The message keeps the SQL spelling either way.
+      const rhs = k.kind === 'string' ? JSON.stringify(k.value) : wireNumberLiteral(c, k.value);
       const label = k.name ? `${k.name}: ` : '';
       const msg = JSON.stringify(
         `${label}${c.name} ${k.operator} ${k.kind === 'string' ? `'${k.value}'` : k.value}`
@@ -348,11 +352,17 @@ function zodExprForColumn(
   // `CHECK (status IN ('a', 'b'))` constrains the column to a set, which is what an enum is. It
   // takes the same shape here as a declared enum rather than becoming a predicate, so the static
   // type narrows too. No official validator module enforces it at all.
+  //
+  // A number-kind member is spelled in the column's wire type: `z.literal(1)` on a
+  // `bigint({ mode: 'bigint' })` column refused every `1n` the driver returns, so the select
+  // schema rejected every row. `wireNumberLiteral` is where that spelling is decided, and it also
+  // keeps a 64 bit member exact: written as a number, 9223372036854775807 rounds the moment it is
+  // parsed.
   const set = sets.find((x) => x.column === c.name);
   if (set) {
     return set.kind === 'string'
       ? `z.enum([${set.values.map((v) => JSON.stringify(v)).join(', ')}] as const)`
-      : `z.union([${set.values.map((v) => `z.literal(${v})`).join(', ')}])`;
+      : `z.union([${set.values.map((v) => `z.literal(${wireNumberLiteral(c, v)})`).join(', ')}])`;
   }
   if (c.enumValues && c.enumValues.length) {
     const vals = c.enumValues.map((v) => `'${v.replace(/'/g, "\\'")}'`).join(', ');

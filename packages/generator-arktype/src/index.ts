@@ -38,6 +38,7 @@ import {
   resolveAffix,
   schemaName,
   typeName,
+  wireNumberLiteral,
 } from '@drzl/validation-core';
 
 type Mode = 'insert' | 'update' | 'select';
@@ -233,11 +234,19 @@ function atTypeForColumn(
   const shaped = atShapeType(c);
   if (shaped) return shaped;
   // `CHECK (status IN ('a', 'b'))` is a literal union, which is exactly how ArkType states a set.
+  //
+  // A number-kind member is spelled in the column's wire type: `'1 | 2'` on a
+  // `bigint({ mode: 'bigint' })` column refused every `1n` the driver returns, so the select
+  // schema rejected every row. The DSL does parse bigint literals, measured on the installed
+  // arktype: `type('1n | 2n')` takes `1n` and refuses `3n` and the number `1`, and
+  // `type('9223372036854775807n')` holds the 64 bit value exactly where the number spelling
+  // rounds. `wireNumberLiteral` decides the spelling, and it leaves a non-integer member as a
+  // number, since `1.5n` would throw at import and no stored bigint equals 1.5 anyway.
   const set = sets.find((x) => x.column === c.name);
   if (set) {
     return set.kind === 'string'
       ? set.values.map((v) => `'${v.replace(/'/g, "\\'")}'`).join(' | ')
-      : set.values.join(' | ');
+      : set.values.map((v) => wireNumberLiteral(c, v)).join(' | ');
   }
   // A parsed check compares the column to a scalar literal, which describes the array rather
   // than an element. Folded in anyway, `CHECK (tags = 'x')` became `('x')[]`, demanding that
