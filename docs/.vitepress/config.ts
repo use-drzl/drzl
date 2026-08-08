@@ -97,6 +97,7 @@ export default {
         items: [
           { text: 'Relations', link: '/examples/relations' },
           { text: 'Validation Mix', link: '/examples/validation-mix' },
+          { text: 'Next.js Server Actions', link: '/examples/nextjs-server-actions' },
         ],
       },
       {

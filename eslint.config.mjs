@@ -12,6 +12,10 @@ export default [
       'packages/**/test/fixtures/**',
       'docs/.vitepress/**',
       'real-world-example/**',
+      // Next's build output, which is generated JavaScript and generated route types. It is
+      // gitignored, so this only matters to a lint run in a tree that has been built, which is
+      // every CI run: `pnpm build` comes before `pnpm lint`.
+      '**/.next/**',
       '**/.tmp-e2e/**',
       '**/.e2e-tmp/**',
       '**/.cmd-tmp/**',

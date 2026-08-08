@@ -4,3 +4,5 @@ packages/**/dist/
 packages/**/test/tmp/
 docs/.vitepress/cache/
 docs/.vitepress/dist/
+examples/*/.next/
+examples/*/next-env.d.ts

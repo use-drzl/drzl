@@ -101,6 +101,16 @@ See each package’s README for details.
 - Test: `pnpm -r test`
 - Lint: `pnpm lint`
 
+## Examples
+
+Runnable applications live in `examples/`. They are workspace members that depend on the
+workspace copy of `@drzl/cli`, so `pnpm build` and `pnpm -r test` cover them and a regression in a
+generator breaks them.
+
+- [`examples/nextjs-server-actions`](examples/nextjs-server-actions): a Drizzle schema,
+  `drzl generate`, and the emitted zod schemas validating what a form posts to a Next.js server
+  action, with field errors attributed to the constraint that caused them.
+
 ## Docs
 
 VitePress site lives in `docs/` (kept out of releases). Local dev:

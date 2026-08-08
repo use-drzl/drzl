@@ -6,7 +6,8 @@
 - Packages: `analyzer`, `cli`, `generator-*`, `template-*`, `validation-core` (each has `src/`, `test/`, `dist/`).
 - Docs: VitePress site in `docs/` (not published with packages).
 - Assets & scripts: `assets/`, `scripts/` (branding utilities).
-- Examples: `real-world-example/` for end-to-end usage.
+- Examples: `examples/*` are runnable apps and workspace members, so `pnpm build` and
+  `pnpm -r test` cover them. `real-world-example/` is a local scratch tree and is gitignored.
 
 ## Build, Test, and Dev
 

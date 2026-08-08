@@ -1,0 +1,33 @@
+{
+  "name": "@drzl/example-nextjs-server-actions",
+  "version": "0.0.0",
+  "private": true,
+  "license": "Apache-2.0",
+  "description": "A Drizzle schema, drzl generate, and the emitted zod schemas validating Next.js server action input",
+  "scripts": {
+    "generate": "drzl generate -c drzl.config.ts",
+    "check:generated": "drzl generate --check -c drzl.config.ts",
+    "build": "pnpm check:generated && next build",
+    "dev": "next dev",
+    "start": "next start",
+    "test": "vitest run --testTimeout=20000"
+  },
+  "dependencies": {
+    "drizzle-orm": "^0.45.2",
+    "next": "^16.3.0",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@drzl/cli": "workspace:*",
+    "@types/node": "^26.1.2",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.4",
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.10"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

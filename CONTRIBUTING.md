@@ -33,6 +33,11 @@ Thanks for your interest in contributing! This guide explains how to set up your
 - `template-*`: oRPC templates
 - `validation-core`: shared validation codegen helpers
 
+Plus `examples/*`: runnable applications that consume the workspace copy of `@drzl/cli`, so a
+regression in a generator breaks them. They are workspace members, which is what puts them in
+`pnpm build` and `pnpm -r test` without a CI job of their own. Their generated output is committed
+and guarded by `drzl generate --check` inside their own `build` script.
+
 ## Development Workflow
 
 1. Create a feature branch from `master`:
