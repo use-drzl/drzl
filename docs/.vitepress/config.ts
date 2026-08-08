@@ -105,6 +105,7 @@ export default {
           { text: 'Next.js Server Actions', link: '/examples/nextjs-server-actions' },
           { text: 'React Hook Form', link: '/examples/react-hook-form' },
           { text: 'TanStack Form', link: '/examples/tanstack-form' },
+          { text: 'Seeding and Bulk Inserts', link: '/examples/seed' },
         ],
       },
       {
