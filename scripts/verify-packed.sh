@@ -441,15 +441,16 @@ node -e "
 "
 # npm rather than pnpm on purpose: a consumer is unlikely to share this repo's package manager,
 # and npm's flat layout is the harsher test of whether `dependencies` are actually declared.
-# valibot, arktype and @orpc/server are peers of the generators, so the generated tree cannot
-# typecheck without them present, exactly as in a consumer's project.
+# valibot, arktype, @orpc/server and hono (with @hono/standard-validator) are peers of the
+# generators, so the generated tree cannot typecheck without them present, exactly as in a
+# consumer's project.
 #
 # prettier is here because it is now an *optional* peer of @drzl/validation-core rather than
 # something bundled into it, and npm does not install optional peers. Naming it is what a
 # consumer who wants formatted output does, and it makes this run cover the peer resolving from
 # a real install. The stage further down removes it again to cover the other case.
 npm install --no-audit --no-fund --loglevel=error \
-  "$TARS"/*.tgz drizzle-orm zod valibot arktype effect @orpc/server @trpc/server typescript tsx prettier >/dev/null
+  "$TARS"/*.tgz drizzle-orm zod valibot arktype effect @orpc/server @trpc/server hono @hono/standard-validator typescript tsx prettier >/dev/null
 
 if [ ! -e node_modules/.bin/drzl ]; then
   echo "FAIL: the drzl bin did not resolve after a real install." >&2

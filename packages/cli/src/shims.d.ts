@@ -23,3 +23,6 @@ declare module '@drzl/generator-effect' {
 declare module '@drzl/generator-trpc' {
   export const TRPCGenerator: any;
 }
+declare module '@drzl/generator-hono' {
+  export const HonoGenerator: any;
+}
