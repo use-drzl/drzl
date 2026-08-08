@@ -102,6 +102,7 @@ export default {
           { text: 'Relations', link: '/examples/relations' },
           { text: 'Validation Mix', link: '/examples/validation-mix' },
           { text: 'Next.js Server Actions', link: '/examples/nextjs-server-actions' },
+          { text: 'React Hook Form', link: '/examples/react-hook-form' },
         ],
       },
       {
