@@ -29,6 +29,11 @@ Behavior:
 - Analyzes your schema then runs each generator in `generators[]`
 - Prints a file summary per generator kind
 
+When the config has no `schema` key, the path is read from your drizzle-kit config
+(`drizzle.config.ts`, then `.js`, then `.json`), and the run says so:
+`Schema from drizzle.config.ts (3 files)`. See
+[Reading the schema path from drizzle-kit](/guide/configuration#reading-the-schema-path-from-drizzle-kit).
+
 ## `--check`: fail CI when generated output is stale
 
 ```bash

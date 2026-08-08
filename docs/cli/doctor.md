@@ -25,7 +25,8 @@ bunx @drzl/cli doctor [schema] [--json] [--strict] [-c drzl.config.ts]
 :::
 
 With no `schema` argument it reads the `schema` path out of your `drzl.config.*`, so a project that
-already has one needs only `drzl doctor`.
+already has one needs only `drzl doctor`. A config without a `schema` key resolves through your
+drizzle-kit config, exactly as `generate` does.
 
 ## Why this is not `analyze`
 

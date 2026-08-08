@@ -375,7 +375,35 @@ export const AnalyzerSchema = z.object({
 
 export const ConfigSchema = z
   .object({
-    schema: z.string(),
+    /**
+     * Path to the Drizzle schema module. Optional since drizzle-kit interop: a project that
+     * already names its schema in `drizzle.config.ts` should not have to say it twice, so an
+     * omitted `schema` falls back to reading the drizzle-kit config (see `drizzleKit`). The
+     * "neither file names a schema" error is raised at resolution time, where it can name both
+     * files, rather than here, where "Required" could name only this one.
+     */
+    schema: z.string().optional(),
+    /**
+     * Read the schema path from drizzle-kit's own config instead of `schema`.
+     *
+     * `true` reads `drizzle.config.ts`, then `.js`, then `.json`, the same candidates in the
+     * same order drizzle-kit's CLI uses (measured on drizzle-kit 0.31.10). A string reads that
+     * file, wherever it is, like kit's own `--config` flag. `false` disables the fallback, so
+     * an omitted `schema` is an error even beside a drizzle.config. Unset behaves like `true`
+     * whenever `schema` is omitted, and does nothing when `schema` is set: `schema` always
+     * wins, with a warning when both are stated.
+     *
+     * Only kit's `schema` (string or array, entries may be globs) and `dialect` (cross-checked
+     * against what the analyzer detects) are read. Everything else in that file describes
+     * migrations and database credentials, which DRZL has no use for.
+     */
+    drizzleKit: z
+      .union([z.boolean(), z.string()], {
+        error:
+          'Expected true (read drizzle.config.ts/.js/.json, the same candidates drizzle-kit ' +
+          'uses), false (never read one), or a path to the drizzle-kit config file.',
+      })
+      .optional(),
     outDir: z.string().default('src/api'),
     /**
      * Which tables to generate for, matched against the database table name.
@@ -841,6 +869,44 @@ function finalize(raw: unknown): DrzlConfig {
   return config;
 }
 
+/**
+ * Load a config module fresh from disk: JSON parsed directly, everything else through jiti
+ * with cache-busting, exactly as `loadConfig` always has.
+ *
+ * Extracted so the drizzle-kit interop reads `drizzle.config.ts` through the same loader that
+ * reads `drzl.config.ts`, rather than through a second dependency or a second set of jiti
+ * options that could drift from this one.
+ */
+export async function importFreshConfigModule(p: string): Promise<unknown> {
+  const fsp = await import('node:fs/promises');
+  const ext = path.extname(p).toLowerCase();
+
+  // JSON: read directly
+  if (ext === '.json') {
+    return JSON.parse(await fsp.readFile(p, 'utf8'));
+  }
+
+  // Everything else (TS/JS/MJS/CJS) -> Jiti with cache-busting
+  const { createJiti } = await import('jiti');
+  const stat = await fsp.stat(p);
+
+  // Passing __filename is safe in CJS; fallback to cwd if not defined.
+  const base =
+    typeof __filename !== 'undefined' ? __filename : path.join(process.cwd(), 'index.js');
+
+  const jiti = createJiti(base, {
+    moduleCache: false, // re-evaluate each time
+    fsCache: true, // keep transform cache
+    cacheVersion: String(stat.mtimeMs), // bump on edit
+    interopDefault: true,
+    tryNative: false, // <-- prevent native import of .ts
+    // debug: true,
+  }) as any;
+
+  const mod = await jiti.import(p);
+  return mod?.default ?? mod;
+}
+
 export async function loadConfig(customPath?: string): Promise<DrzlConfig | null> {
   const fsp = await import('node:fs/promises');
 
@@ -861,35 +927,7 @@ export async function loadConfig(customPath?: string): Promise<DrzlConfig | null
     } catch {
       continue;
     }
-
-    const ext = path.extname(p).toLowerCase();
-
-    // JSON: read directly
-    if (ext === '.json') {
-      const raw = JSON.parse(await fsp.readFile(p, 'utf8'));
-      return finalize(raw);
-    }
-
-    // Everything else (TS/JS/MJS/CJS) -> Jiti with cache-busting
-    const { createJiti } = await import('jiti');
-    const stat = await fsp.stat(p);
-
-    // Passing __filename is safe in CJS; fallback to cwd if not defined.
-    const base =
-      typeof __filename !== 'undefined' ? __filename : path.join(process.cwd(), 'index.js');
-
-    const jiti = createJiti(base, {
-      moduleCache: false, // re-evaluate each time
-      fsCache: true, // keep transform cache
-      cacheVersion: String(stat.mtimeMs), // bump on edit
-      interopDefault: true,
-      tryNative: false, // <-- prevent native import of .ts
-      // debug: true,
-    }) as any;
-
-    const mod = await jiti.import(p);
-    const raw = mod?.default ?? mod;
-    return finalize(raw);
+    return finalize(await importFreshConfigModule(p));
   }
 
   return null;
@@ -991,21 +1029,34 @@ export function tableFilterWarnings(
   ];
 }
 
-export function computeWatchTargets(cfg: DrzlConfig, cwd = process.cwd()): string[] {
+export function computeWatchTargets(
+  cfg: DrzlConfig,
+  cwd = process.cwd(),
+  source?: import('./drizzle-kit.js').ResolvedSchemaSource
+): string[] {
   const abs = (p: string) => path.resolve(cwd, p);
-  const schemaAbs = abs(cfg.schema);
-  // The schema's directory, not a glob under it. Chokidar removed glob support in v4 and treats
+  // Directories and files only, never globs. Chokidar removed glob support in v4 and treats
   // `<dir>/**/*.{ts,tsx,js}` as a literal path, so it watched a directory named `**` that does
   // not exist: no event ever fired and `drzl watch` did its initial build and then sat inert.
   // A directory is watched recursively by chokidar itself, and the extension filtering that the
   // glob was doing now happens on the event instead.
   const targets = new Set<string>([
-    path.dirname(schemaAbs),
     abs('drzl.config.ts'),
     abs('drzl.config.js'),
     abs('drzl.config.mjs'),
     abs('drzl.config.cjs'),
   ]);
+  if (source) {
+    // The resolved source's directories cover both shapes: the drzl `schema` file's directory,
+    // or every directory the drizzle-kit config's entries live in (glob bases included, so a
+    // file created later that matches the glob still raises an event). The drizzle-kit config
+    // file itself is watched too: editing it changes which files are the schema, and a watcher
+    // not watching it would keep generating from the old set forever.
+    for (const d of source.watchDirs) targets.add(abs(d));
+    if (source.drizzleKitConfigPath) targets.add(abs(source.drizzleKitConfigPath));
+  } else if (cfg.schema) {
+    targets.add(path.dirname(abs(cfg.schema)));
+  }
   for (const t of resolveTemplateDirsSync(cfg, cwd)) targets.add(t);
   return [...targets];
 }
