@@ -27,3 +27,7 @@ packages:
 allowBuilds:
   esbuild: true
   sharp: false
+  # better-sqlite3 is a generator-service devDependency: its tests run emitted sqlite services
+  # against a real database. The install script fetches a prebuilt binding via prebuild-install
+  # and compiles only where none exists; without `true` here the module cannot load at all.
+  better-sqlite3: true
