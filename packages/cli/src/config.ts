@@ -166,6 +166,33 @@ export const GeneratorSchema = z.object({
    * it is also what terminates a cycle: `users -> posts -> users` stops here.
    */
   nestedDepth: z.number().int().optional(),
+  /**
+   * Give every primary key, and every foreign key pointing at one, a nominal type, so a
+   * `users.id` cannot be passed where a `posts.id` is wanted.
+   *
+   * Type level only, in all five validators. Measured on zod 4.4.3, `.brand()` returns the same
+   * schema object it was called on and the parsed value of `1` is `1`, so nothing about what a
+   * schema accepts changes and no bytes are added to the bundle. TypeBox has no brand of its own
+   * and gets a `TUnsafe` cast, which leaves the schema object identical.
+   *
+   * Off by default: it changes the inferred type of every consumer of the select schemas, which
+   * is the point, but it is a change to existing call sites rather than an addition.
+   *
+   * `true` is the shorthand for `{ enabled: true }`. `{ foreignKeys: false }` brands only the
+   * keys themselves, and `{ aliases: false }` stops the `export type UsersId = ...` lines.
+   */
+  branded: z
+    .union([
+      z.boolean(),
+      z
+        .object({
+          enabled: z.boolean().optional(),
+          foreignKeys: z.boolean().optional(),
+          aliases: z.boolean().optional(),
+        })
+        .strict(),
+    ])
+    .optional(),
   naming: NamingSchema.optional(),
   outputHeader: z
     .object({
