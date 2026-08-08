@@ -91,6 +91,17 @@ export const GeneratorSchema = z.object({
   template: z.string().optional(),
   includeRelations: z.boolean().optional(),
   /**
+   * Write an enum used by two or more columns once under `$defs` in the `json-schema` per-table
+   * modules, and `$ref` it at each use.
+   *
+   * Off by default, and the reason is a consumer pattern rather than a doubt about the keyword. A
+   * per-table schema is used whole and one property at a time, and a `$ref` cannot survive being
+   * pulled out with its property: `properties[col]` compiled on its own is a dangling reference
+   * that ajv refuses outright. The OpenAPI document shares regardless, because a document is only
+   * ever read whole.
+   */
+  sharedEnums: z.boolean().optional(),
+  /**
    * Type `json` and `jsonb` columns from the schema rather than leaving them wide.
    *
    * `.$type<T>()` is a compile-time cast, so no runtime-derived validator can see it and

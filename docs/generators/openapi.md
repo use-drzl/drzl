@@ -128,15 +128,24 @@ a document, and the plain draft is emitted as the 3.1 it already is.
 **OpenAPI 3.0's Schema Object is closed.** Its meta-schema sets `additionalProperties: false` and
 allows nothing beside the keywords it lists except `^x-`. That is stricter than plain JSON Schema,
 where an unknown keyword is merely ignored: in a 3.0 document a keyword from a later draft makes the
-whole document fail validation. Five things are translated for it:
+whole document fail validation. Six things are translated for it:
 
-|                  | `openapi-3.1`               | `openapi-3.0`                         |
-| ---------------- | --------------------------- | ------------------------------------- |
-| nullable         | `type: ['string', 'null']`  | `type: 'string', nullable: true`      |
-| exclusive bound  | `exclusiveMinimum: 0`       | `minimum: 0, exclusiveMinimum: true`  |
-| positional array | `prefixItems: [...]`        | no equivalent, falls back to a length |
-| a pinned value   | `const: 'gold'`             | `enum: ['gold']`                      |
-| base64 bytes     | `contentEncoding: 'base64'` | `format: 'byte'`                      |
+|                     | `openapi-3.1`                     | `openapi-3.0`                         |
+| ------------------- | --------------------------------- | ------------------------------------- |
+| nullable            | `type: ['string', 'null']`        | `type: 'string', nullable: true`      |
+| exclusive bound     | `exclusiveMinimum: 0`             | `minimum: 0, exclusiveMinimum: true`  |
+| positional array    | `prefixItems: [...]`              | no equivalent, falls back to a length |
+| a pinned value      | `const: 'gold'`                   | `enum: ['gold']`                      |
+| base64 bytes        | `contentEncoding: 'base64'`       | `format: 'byte'`                      |
+| a nullable enum ref | `anyOf: [{$ref}, {type: 'null'}]` | no equivalent, the enum stays inline  |
+
+An enum on two or more columns is published once under `components.schemas` and referenced from each
+use, in both versions. Not `$defs`: 3.0 rejects the keyword outright, and 3.1 accepts it and then
+cannot resolve `#/$defs/mood`, because a `$ref` in a document resolves against the document root.
+The last row above is why a nullable enum column keeps its inline list in a 3.0 document: `type:
+'null'` is not one of that version's six types, and 3.0 defines every sibling of `$ref` to be
+ignored, so `{ $ref, nullable: true }` is a schema that silently refuses null. See
+[shared enums](/generators/json-schema#shared-enums).
 
 No `examples` are emitted in either. 3.0 has no such keyword in a schema at all, and DRZL has no
 example data to put there: a Drizzle schema says what a value must look like, never what one is.

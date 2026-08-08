@@ -25,6 +25,9 @@ import {
   COLUMN_FORMATS,
   insertColumns,
   isIntegerColumn,
+  lengthCheckLabel,
+  lengthMeasure,
+  measureExpression,
   moduleFileName,
   moduleSpecifier,
   nonFiniteAccepted,
@@ -977,7 +980,7 @@ function renderTableSchemas(
   );
   const needsRows =
     rows.some((r) => rowCols.some((s) => s.has(r.left) && s.has(r.right))) ||
-    lengths.some((k) => rowCols.some((s) => s.has(k.column))) ||
+    tbHasLengthBranch(lengths, [insertCols, updateCols, selectCols]) ||
     (
       [
         [insertCols, 'insert'],
@@ -994,7 +997,7 @@ function renderTableSchemas(
       const own = parsedChecksFor(tbl);
       return (
         own.rows.some((r) => present.has(r.left) && present.has(r.right)) ||
-        own.lengths.some((k) => present.has(k.column)) ||
+        tbHasLengthBranch(own.lengths, [cs]) ||
         cs.some(
           (c) => tbNeedsCapKind(c) || tbNeedsNonFiniteKind(c) || tbNeedsDateKind(c, m, coerceDates)
         )
@@ -1212,8 +1215,27 @@ function tbCapExpr(c: Column, base: string, mode: Mode): string {
   return out.length ? `Type.Intersect([${base}, ${out.join(', ')}])` : base;
 }
 
+/**
+ * `length(col)` and `octet_length(col)` as intersection branches on the object.
+ *
+ * On the object rather than on the field, which is where TypeBox has to put them. The measurement
+ * depends on the column, so the column is looked up here and `lengthMeasure` answers it; see the
+ * ArkType generator, which resolves it the same way for the same reason.
+ */
+/**
+ * Whether any count clause lands on any of these column sets.
+ *
+ * The same question `tbLengthBranches` answers per set, asked once so the `Kind`/`TypeRegistry`
+ * import cannot be decided by a wider rule than the one that emits the branches. A count on a
+ * column whose shape answers none is dropped, so a condition testing only the column *name* would
+ * import two symbols nothing then uses.
+ */
+function tbHasLengthBranch(lengths: LengthCheck[], sets: Column[][]): boolean {
+  return sets.some((cols) => tbLengthBranches(lengths, cols).length > 0);
+}
+
 function tbLengthBranches(lengths: LengthCheck[], cols: Column[]): string[] {
-  const present = new Set(cols.map((c) => c.name));
+  const byName = new Map(cols.map((c) => [c.name, c]));
   const OPS: Record<LengthCheck['operator'], string> = {
     '>=': '>=',
     '>': '>',
@@ -1222,19 +1244,21 @@ function tbLengthBranches(lengths: LengthCheck[], cols: Column[]): string[] {
     '=': '===',
     '<>': '!==',
   };
-  return lengths
-    .filter((k) => present.has(k.column))
-    .map((k) => {
-      const v = `o[${JSON.stringify(k.column)}]`;
-      const msg = JSON.stringify(
-        `${k.name ? `${k.name}: ` : ''}length(${k.column}) ${k.operator} ${k.value}`
-      );
-      return `Type.Unsafe<unknown>({
+  return lengths.flatMap((k) => {
+    const col = byName.get(k.column);
+    const measure = col && lengthMeasure(col, k);
+    if (!measure) return [];
+    const v = `o[${JSON.stringify(k.column)}]`;
+    const msg = JSON.stringify(lengthCheckLabel(k));
+    const count = measureExpression(measure, v);
+    return [
+      `Type.Unsafe<unknown>({
     [Kind]: 'DrzlRowCheck',
     description: ${msg},
-    assert: (o: any) => o == null || ${v} == null || [...${v}].length ${OPS[k.operator]} ${k.value},
-  })`;
-    });
+    assert: (o: any) => o == null || ${v} == null || ${count} ${OPS[k.operator]} ${k.value},
+  })`,
+    ];
+  });
 }
 
 function tbWrapRows(

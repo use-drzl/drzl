@@ -174,13 +174,17 @@ describe('a byte budget in a format with no byte-length keyword', () => {
     expect(v('a'.repeat(101))).toBe(false);
   });
 
-  it('leaves a base64 column alone, where a character cap would refuse a legal value', async () => {
+  it('caps a base64 column at the encoded length, never at the byte count', async () => {
     // Not hypothetical: MYSQL_TEXT_CAPS covers the blob family too, and scripts/verify-packed.sh
     // records that on drizzle-orm 1.0.0-rc.4 a `tinyblob` column comes back carrying maxBytes
     // 255. Binary travels as base64, which is four characters for every three bytes, so a
     // character cap taken from a byte budget would refuse a full column: 255 bytes is 340 base64
-    // characters. That is the one direction this must never take, and the shape is what keeps it
-    // out, so the assertion is on the emitted keyword rather than on the guard.
+    // characters. That is the one direction this must never take.
+    //
+    // The cap emitted is the *encoded* length, `4 * ceil(255 / 3)` = 340, which is the padded
+    // length of a full column and an upper bound on the unpadded one. It refuses nothing the
+    // column accepts and it does catch a payload too big to be one, which is more than the
+    // keyword-free document said. See `octet-length.spec.ts` for the measurements.
     const s = await emitted(
       col({
         tsType: 'Uint8Array',
@@ -189,9 +193,11 @@ describe('a byte budget in a format with no byte-length keyword', () => {
         shape: { kind: 'buffer' } as never,
       })
     );
-    expect(s.maxLength, 'no character cap on an encoded string').toBeUndefined();
+    expect(s.maxLength, 'the encoded length, not the byte count').toBe(340);
     const v = compile(s);
     expect(v('A'.repeat(340)), 'a full 255 byte value, base64 encoded').toBe(true);
+    expect(v('A'.repeat(344)), '258 bytes, which the column cannot hold').toBe(false);
+    expect(String(s.description)).toContain('At most 255 bytes');
   });
 
   it('carries the cap into the OpenAPI 3.0 spelling too', async () => {

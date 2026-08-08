@@ -20,6 +20,7 @@ type GeneratorConfig = ValidationGeneratorConfig & {
   components?: unknown;
   document?: unknown;
   includeRelations?: unknown;
+  sharedEnums?: unknown;
 };
 
 export function jsonSchemaOptions(
@@ -36,5 +37,7 @@ export function jsonSchemaOptions(
     // Read only while emitting a document, where it adds `/users/{id}/posts`. The per-table
     // schemas are flat whatever it says.
     includeRelations: g.includeRelations,
+    // The mirror image: read only for the per-table modules, since the document shares regardless.
+    sharedEnums: g.sharedEnums,
   };
 }

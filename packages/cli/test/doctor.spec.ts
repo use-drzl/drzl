@@ -138,6 +138,47 @@ export const rows = pgTable(
 );
 `;
 
+/**
+ * Byte counts, which is the one clause whose answer depends on the column and not the expression.
+ *
+ * Measured on PostgreSQL 17.5 through PGlite: `octet_length` is the byte count on a `text` and on a
+ * `bytea` alike, and `length` is the character count on the first and the byte count on the second.
+ * Both are answerable in JavaScript, so both are enforced. A MySQL `varbinary(n)` is the one that
+ * is not: the value arrives as a string produced by a lossy decode, so neither its characters nor
+ * their UTF-8 re-encoding is the number the server took.
+ */
+const COUNTS_SCHEMA = `
+import { sql } from 'drizzle-orm';
+import { check as pgCheck, pgTable, serial, text } from 'drizzle-orm/pg-core';
+
+export const files = pgTable(
+  'files',
+  {
+    id: serial('id').primaryKey(),
+    name: text('name').notNull(),
+    body: text('body').notNull(),
+  },
+  (t) => [
+    pgCheck('name_chars', sql\`length(\${t.name}) <= 20\`),
+    pgCheck('body_bytes', sql\`octet_length(\${t.body}) <= 5\`),
+  ]
+);
+`;
+
+const MYSQL_COUNTS_SCHEMA = `
+import { sql } from 'drizzle-orm';
+import { check, int, mysqlTable, varbinary } from 'drizzle-orm/mysql-core';
+
+export const blobs = mysqlTable(
+  'blobs',
+  {
+    id: int('id').primaryKey(),
+    bin: varbinary('bin', { length: 8 }).notNull(),
+  },
+  (t) => [check('bin_bytes', sql\`octet_length(\${t.bin}) <= 8\`)]
+);
+`;
+
 /** The six Gel temporal columns the analyzer deliberately leaves `unknown`. */
 const GEL_SCHEMA = `
 import { gelTable, boolean, localDate, localTime, dateDuration, relDuration, duration, timestamp } from 'drizzle-orm/gel-core';
@@ -167,6 +208,8 @@ let clean: Analysis;
 let gel: Analysis;
 let keys: Analysis;
 let reads: Analysis;
+let counts: Analysis;
+let mysqlCounts: Analysis;
 
 beforeAll(async () => {
   problem = await analyzed('problem', PROBLEM_SCHEMA);
@@ -174,6 +217,8 @@ beforeAll(async () => {
   gel = await analyzed('gel', GEL_SCHEMA);
   keys = await analyzed('keys', KEYS_SCHEMA);
   reads = await analyzed('reads', READS_SCHEMA);
+  counts = await analyzed('counts', COUNTS_SCHEMA);
+  mysqlCounts = await analyzed('mysql-counts', MYSQL_COUNTS_SCHEMA);
 }, 60_000);
 
 const kinds = (a: Analysis, kind: string) =>
@@ -219,11 +264,13 @@ describe('columns DRZL cannot type', () => {
 describe('CHECK constraints DRZL will not enforce', () => {
   it('reports every check the shared parser declines, with its reason', () => {
     const declined = kinds(problem, 'check-declined');
+    // `blob_bytes` used to be here. `octet_length(blob) <= 5` on a `text` column is a byte budget
+    // and the generators state it now, so it is enforced rather than declined; the count that is
+    // still unanswerable is `bin_bytes`, and it is reported as `check-uncountable`.
     expect(declined.map((f) => f.constraint).sort()).toEqual([
       'age_budget',
       'age_not',
       'age_or',
-      'blob_bytes',
       'credit_null',
       'email_re',
       'empty_one',
@@ -233,6 +280,27 @@ describe('CHECK constraints DRZL will not enforce', () => {
     expect(byName.get('age_or')!.message).toContain('range');
     expect(byName.get('age_not')!.message).toContain('contains NOT');
     expect(byName.get('mixed_and')!.message).toContain('part of an AND');
+  });
+
+  it('says nothing about a byte count it can take', () => {
+    // Both are enforced now, so a report naming either would be telling the reader their
+    // constraint is unchecked when it is checked.
+    const found = buildDoctorReport(counts, 'x.ts').findings.filter((f) =>
+      f.kind.startsWith('check-')
+    );
+    expect(found.map((f) => `${f.kind} ${f.constraint}`)).toEqual([]);
+  });
+
+  it('reports a byte count on a column whose bytes JavaScript cannot see', () => {
+    const found = kinds(mysqlCounts, 'check-uncountable');
+    expect(found.map((f) => f.constraint)).toEqual(['bin_bytes']);
+    expect(found[0].column).toBe('bin');
+    expect(found[0].message).toContain('byte-string');
+    expect(found[0].message).toContain('byte count');
+    expect(found[0].hint, 'says what to do, not just what happened').toMatch(/lossy decode/);
+    // Not also reported as a scalar mismatch: a count is not a comparison against a literal.
+    expect(kinds(mysqlCounts, 'check-not-scalar')).toHaveLength(0);
+    expect(kinds(mysqlCounts, 'check-declined')).toHaveLength(0);
   });
 
   it('advises on the two refusals that have a fix, rather than restating the rule', () => {

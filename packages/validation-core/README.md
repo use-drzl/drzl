@@ -53,9 +53,15 @@ Shared interfaces and helpers used by validation generators.
 - CHECK constraints (shared by every generator that reads them)
   - `parseCheck(expression, name)` -> the parts of a `CHECK` that can be stated with certainty:
     column comparisons, `BETWEEN`, `IN (...)`, top-level `AND`, `length()`/`char_length()`,
-    `cardinality()`/`array_length(col, 1)`, and comparisons between two columns. A disjunction, a
-    negation, `octet_length`, an unrecognised function call and a regex match are all refused
-    whole rather than half-applied.
+    `octet_length()`, `cardinality()`/`array_length(col, 1)`, and comparisons between two columns.
+    A negation, an unrecognised function call and a regex match are all refused whole rather than
+    half-applied, and a disjunction is read only where the whole of it pins one column to a set.
+  - `lengthMeasure(column, check)` -> how to answer a count on a given column, as one of
+    `'codePoints'`, `'utf8Bytes'` or `'byteLength'`, or nothing where no expression answers it.
+    The unit is on the check and the answer needs the column too: measured on PostgreSQL 17.5,
+    `length()` is the character count on a `text` and the byte count on a `bytea`, and
+    `char_length(bytea)` is not a function that exists. `measureExpression(measure, variable)`
+    renders it and `lengthCheckLabel(check)` renders the message the ledger keys on.
   - `COLUMN_FORMATS` -> patterns for the column formats that are expressible. Only `numeric` is:
     Postgres accepts `today`, `January 8, 1999` and `allballs`, so a date or time pattern would
     reject rows the database takes.

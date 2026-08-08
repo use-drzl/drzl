@@ -61,7 +61,7 @@ A constraint with no native form stays a `v.check`. The constraint sits on the i
 evaluates to TRUE **or NULL**.
 
 Only unambiguous comparisons are translated. `start_date < end_date` is applied on the object,
-`length()` and `cardinality()` are applied on the field, and disjunctions, negations, regex
+`length()`, `octet_length()` and `cardinality()` are applied on the field, and negations, regex
 matches and unrecognised function calls are skipped rather
 than guessed at, since a schema enforcing a guess rejects rows the database would accept. See
 [Zod → CHECK constraints](/generators/zod#check-constraints) for the full table.

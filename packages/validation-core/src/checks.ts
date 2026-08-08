@@ -65,7 +65,8 @@ export interface RowCheck {
 }
 
 /**
- * A constraint on a column's *character* count, from `CHECK (length(name) > 3)`.
+ * A constraint on a count derived from a column's value, from `CHECK (length(name) > 3)` and
+ * `CHECK (octet_length(blob) <= 5)`.
  *
  * Kept apart from `ColumnCheck` because it is not a comparison of the value: it compares a count
  * derived from it, and the count Postgres takes is code points rather than UTF-16 units. See
@@ -76,7 +77,109 @@ export interface LengthCheck {
   operator: ColumnCheck['operator'];
   /** Decimal, as text, matching how the other bounds are carried. */
   value: string;
+  /**
+   * Which count the expression asked for.
+   *
+   * Absent on a pre-1.x parse, where every count was a character count, so a consumer reading this
+   * treats `undefined` as `'characters'`. `lengthMeasure` is the one place that decision is made.
+   *
+   * This is *not* the whole answer, because the same function means different things on different
+   * column types. Measured on PostgreSQL 17.5 through PGlite, on a `text` holding three emoji and
+   * a `bytea` holding six bytes:
+   *
+   *   | expression        | text | bytea          |
+   *   | ----------------- | ---- | -------------- |
+   *   | `octet_length(x)` | 12   | 6              |
+   *   | `length(x)`       | 3    | 6              |
+   *   | `char_length(x)`  | 3    | does not exist |
+   *
+   * So the unit says what the *expression* asked for and `lengthMeasure` says how to answer it for
+   * a given column.
+   */
+  unit?: 'characters' | 'bytes';
   name?: string;
+}
+
+/**
+ * How a `LengthCheck` is answered in JavaScript, once the column it names is known.
+ *
+ * Three answers, and no two of them agree on the same value:
+ *
+ *   `codePoints`   `[...v].length`                              a character count
+ *   `utf8Bytes`    `new TextEncoder().encode(v).length`         a byte count of a string
+ *   `byteLength`   `v.length`, on a Uint8Array                  a byte count of a binary payload
+ *
+ * `v.length` on a *string* is none of them: it counts UTF-16 units, which is 6 for the three emoji
+ * whose character count is 3 and whose byte count is 12.
+ */
+export type LengthMeasure = 'codePoints' | 'utf8Bytes' | 'byteLength';
+
+/**
+ * How to answer a count on this column, or nothing where no expression answers it.
+ *
+ * The one place the column type and the expression meet, held here rather than in each generator so
+ * the emitted predicate and the constraint ledger cannot disagree about what is enforced.
+ *
+ * Three refusals, each because the count would be a different measurement than the database took:
+ *
+ * - **An array.** Postgres has no `length(anyarray)`; `cardinality` is the array's own count and is
+ *   carried separately.
+ * - **A byte-string column**, MySQL's `binary(n)`/`varbinary(n)`. It arrives as a string produced by
+ *   a lossy decode, so neither its code points nor their UTF-8 re-encoding is the server's byte
+ *   count: `<ff ff ff>` from a `varbinary(3)` comes back as 3 code points that re-encode to 9
+ *   bytes. See `ColumnShape`.
+ * - **Anything that is not a string or a binary payload.** `length` is defined for text, bytea and
+ *   bit strings, so a count on a number column cannot come from a schema the database accepted, and
+ *   spreading a number with `[...v]` would throw rather than fail.
+ *
+ * A `bytea` answers both functions with the same number, which is why the unit is not consulted
+ * there. `char_length(bytea)` is the one spelling that would break that, and Postgres does not have
+ * it: `function char_length(bytea) does not exist`, measured.
+ */
+export function lengthMeasure(
+  column: { tsType?: string; arrayDimensions?: number; shape?: { kind: string } },
+  check: LengthCheck
+): LengthMeasure | undefined {
+  if (column.arrayDimensions) return undefined;
+  if (column.shape?.kind === 'buffer') return 'byteLength';
+  if (column.shape) return undefined;
+  if (column.tsType !== 'string') return undefined;
+  return check.unit === 'bytes' ? 'utf8Bytes' : 'codePoints';
+}
+
+/**
+ * The JavaScript expression that takes one of the three measurements, over a named variable.
+ *
+ * A function of the variable name rather than a constant, because the five validation generators
+ * put the count in three different places: zod and valibot pipe the value itself, while ArkType and
+ * TypeBox reach it off the row object as `o["blob"]`. `CODEPOINT_LENGTH` is the fixed-variable
+ * spelling of the first arm and stays for the call sites that already use it.
+ */
+export function measureExpression(measure: LengthMeasure, variable: string): string {
+  switch (measure) {
+    case 'codePoints':
+      return `[...${variable}].length`;
+    case 'utf8Bytes':
+      return `new TextEncoder().encode(${variable}).length`;
+    case 'byteLength':
+      // A Uint8Array's own `length` is its byte count, unlike a string's, which counts UTF-16
+      // units. Asserted in `test/octet-length.spec.ts` rather than assumed.
+      return `${variable}.length`;
+  }
+}
+
+/**
+ * A count constraint as the sentence every emitted schema attaches and the ledger keys on.
+ *
+ * Held here rather than spelled out in each generator, because the constraint error map matches an
+ * issue's message against this string exactly: the two drifting by one character is a map that
+ * silently answers nothing. `char_length` is normalised to `length`, as it always has been, since
+ * the two are the same function in Postgres.
+ */
+export function lengthCheckLabel(check: LengthCheck): string {
+  const fn = check.unit === 'bytes' ? 'octet_length' : 'length';
+  const rule = `${fn}(${check.column}) ${check.operator} ${check.value}`;
+  return check.name ? `${check.name}: ${rule}` : rule;
 }
 
 /**
@@ -126,16 +229,20 @@ export type ParsedCheck =
 
 const COMPARISON = /^\s*([A-Za-z_][A-Za-z0-9_]*)\s*(>=|<=|<>|!=|>|<|=)\s*(.+?)\s*$/;
 const IN_LIST = /^\s*([A-Za-z_][A-Za-z0-9_]*)\s+IN\s*\((.+)\)\s*$/i;
-// `length` and `char_length` are the same function in Postgres and both count characters.
-// `octet_length` is deliberately absent: it counts bytes, which depends on the encoding and
-// cannot be derived from a JavaScript string without choosing one.
+// `length` and `char_length` are the same function in Postgres and both count characters *on a
+// text column*; on a `bytea` `length` is the byte count and `char_length` does not exist. That
+// second half is resolved by `lengthMeasure` rather than here, since the expression alone does not
+// say what the column is.
+// `octet_length` is the byte count on both, and is read as its own unit rather than as a third
+// spelling of `length`: a character cap standing in for a byte budget accepts a multi-byte value
+// the column refuses.
 // `cardinality(a)` is the element count. `array_length(a, 1)` is the length of the first
 // dimension, which is the same number for a one-dimensional array; any other dimension is not an
 // element count and is refused.
 const CARDINALITY_OF =
   /^\s*(?:cardinality\s*\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*\)|array_length\s*\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*,\s*1\s*\))\s*(>=|<=|<>|!=|>|<|=)\s*(\d+)\s*$/i;
 const LENGTH_OF =
-  /^\s*(?:length|char_length)\s*\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*\)\s*(>=|<=|<>|!=|>|<|=)\s*(\d+)\s*$/i;
+  /^\s*(length|char_length|octet_length)\s*\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*\)\s*(>=|<=|<>|!=|>|<|=)\s*(\d+)\s*$/i;
 
 /** What a SQL identifier is made of, and so what does and does not end a keyword. */
 const WORD = /[A-Za-z0-9_]/;
@@ -593,16 +700,17 @@ export function parseCheck(expression: string | undefined, name?: string): Parse
   if (IS_BOOLEAN.test(expr))
     return { ok: false, reason: 'a boolean IS test, whose literal this version does not read' };
 
-  // `length(col) <op> n`: a character-count bound. The only function call this parser reads, and
-  // it is read rather than refused because the mapping is exact, which is more than can be said
-  // for the others: see the skip list in the docs.
+  // `length(col) <op> n` and `octet_length(col) <op> n`: a bound on a count derived from the value.
+  // The only function calls this parser reads, and they are read rather than refused because the
+  // mapping is exact, which is more than can be said for the others: see the skip list in the docs.
   const lengthOf = expr.match(LENGTH_OF);
   if (lengthOf) {
-    const op = lengthOf[2] === '!=' ? '<>' : (lengthOf[2] as ColumnCheck['operator']);
+    const op = lengthOf[3] === '!=' ? '<>' : (lengthOf[3] as ColumnCheck['operator']);
+    const unit = lengthOf[1]!.toLowerCase() === 'octet_length' ? 'bytes' : 'characters';
     return {
       ok: true,
       checks: [],
-      lengths: [{ column: lengthOf[1], operator: op, value: lengthOf[3], name }],
+      lengths: [{ column: lengthOf[2], operator: op, value: lengthOf[4], unit, name }],
     };
   }
 

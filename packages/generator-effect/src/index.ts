@@ -25,6 +25,9 @@ import {
   COLUMN_FORMATS,
   insertColumns,
   isIntegerColumn,
+  lengthCheckLabel,
+  lengthMeasure,
+  measureExpression,
   moduleFileName,
   moduleSpecifier,
   nonFiniteAccepted,
@@ -371,15 +374,18 @@ function capSteps(c: Column, mode: Mode): string[] {
  * Code points, for the reason `capSteps` gives: SQL's `length()` counts characters.
  */
 function lengthSteps(c: Column, lengths: LengthCheck[]): string[] {
-  if (c.arrayDimensions || c.shape) return [];
   return lengths
     .filter((k) => k.column === c.name)
-    .map((k) =>
-      filter(
-        `${CODEPOINT_LENGTH} ${OPS[k.operator]} ${k.value}`,
-        `${k.name ? `${k.name}: ` : ''}length(${c.name}) ${k.operator} ${k.value}`
-      )
-    );
+    .flatMap((k) => {
+      const measure = lengthMeasure(c, k);
+      if (!measure) return [];
+      return [
+        filter(
+          `${measureExpression(measure, 'v')} ${OPS[k.operator]} ${k.value}`,
+          lengthCheckLabel(k)
+        ),
+      ];
+    });
 }
 
 /**
@@ -507,7 +513,10 @@ function exprForColumn(
   replaced: boolean
 ): string {
   const shaped = shapeExpr(c, mode, replaced);
-  if (shaped) return shaped;
+  // A shaped column takes no scalar comparison, but a `bytea` does take a byte count, which is the
+  // one clause `lengthMeasure` answers on a shape. Piped on here rather than folded into
+  // `shapeExpr`, which describes the column and knows nothing about its constraints.
+  if (shaped) return piped(shaped, lengthSteps(c, lengths));
 
   // `CHECK (status IN ('a', 'b'))` is a union of literals, which effect spells as one call.
   const set = sets.find((x) => x.column === c.name);

@@ -99,11 +99,10 @@ describe('what it refuses, and why that matters', () => {
   });
 
   it('refuses a function call it cannot map exactly', () => {
-    // `length` is read, because a character count maps exactly. These do not: `lower` would need
-    // a locale to be faithful, and `octet_length` counts bytes, which depends on the encoding and
-    // cannot be derived from a JavaScript string without picking one.
+    // `length` and `octet_length` are read, because each maps exactly onto one JavaScript
+    // measurement: see `test/octet-length.spec.ts`. These do not: `lower` would need a locale to
+    // be faithful, and `abs` is arithmetic on a value this parser never evaluates.
     expect(rejected("lower(name) = 'x'")).toBeTruthy();
-    expect(rejected('octet_length(name) > 3')).toBeTruthy();
     expect(rejected('abs(n) > 3')).toBeTruthy();
   });
 
@@ -250,15 +249,17 @@ describe('row-level comparisons', () => {
 });
 
 describe('character-count constraints', () => {
-  // The one function call this parser reads, because the mapping is exact. Counted in code
-  // points by the generators, since Postgres counts characters and `.length` counts UTF-16 units.
+  // Counted in code points by the generators, since Postgres counts characters and `.length`
+  // counts UTF-16 units. `octet_length` is the byte-count sibling and has its own file.
   it('reads length() and char_length() alike', () => {
     for (const e of ['length(name) > 3', 'char_length(name) > 3', 'LENGTH(name) > 3']) {
       const r = parseCheck(e, 'min_name');
       expect(r.ok, e).toBe(true);
       if (!r.ok) continue;
       expect(r.checks, 'not a value comparison').toHaveLength(0);
-      expect(r.lengths).toEqual([{ column: 'name', operator: '>', value: '3', name: 'min_name' }]);
+      expect(r.lengths).toEqual([
+        { column: 'name', operator: '>', value: '3', unit: 'characters', name: 'min_name' },
+      ]);
     }
   });
 

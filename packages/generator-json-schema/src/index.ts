@@ -14,7 +14,7 @@
  *   components   `components.schemas` for an OpenAPI document, on `components: true`
  *   document     the whole OpenAPI document, paths and all, on `document: true`
  */
-import type { Analysis, Table } from '@drzl/analyzer';
+import type { Analysis, Enum, Table } from '@drzl/analyzer';
 import type { ResolvedAffix, ValidationGenerateOptions } from '@drzl/validation-core';
 import {
   formatCode,
@@ -34,6 +34,7 @@ import { componentsDocument, tableSchemas, type JsonSchemaTarget, type Mode } fr
 
 export * from './schemas.js';
 export * from './openapi.js';
+export * from './enums.js';
 
 const DEFAULT_FILE_SUFFIX = '.schema.ts';
 
@@ -41,10 +42,11 @@ function renderTableModule(
   table: Table,
   affix: ResolvedAffix,
   target: JsonSchemaTarget,
-  applyDefaults: boolean
+  applyDefaults: boolean,
+  enums?: Enum[]
 ): string {
   const T = table.tsName;
-  const schemas = tableSchemas(table, { target, applyDefaults });
+  const schemas = tableSchemas(table, { target, applyDefaults, ...(enums ? { enums } : {}) });
   const decl = (mode: Mode) =>
     `export const ${schemaName(mode, T, affix)} = ${JSON.stringify(schemas[mode], null, 2)} as const;
 
@@ -98,6 +100,21 @@ export interface JsonSchemaGenerateOptions extends ValidationGenerateOptions {
    * document is being emitted; the per-table schemas are flat whatever this says.
    */
   includeRelations?: boolean;
+  /**
+   * Write an enum used by two or more columns once under `$defs`, and `$ref` it at each use.
+   *
+   * **Off by default, and the reason is a consumer pattern rather than a doubt about the keyword.**
+   * A per-table schema is used two ways: whole, and one property at a time. Reaching into
+   * `properties[col]` is the JSON Schema equivalent of reading zod's `.shape`, it is how a form
+   * builder gets one field's rules, and it is how `scripts/verify-packed.sh` checks these schemas
+   * against a real Postgres. A `$ref` cannot survive that: pulled out of the schema that holds its
+   * `$defs`, it is a dangling reference and ajv refuses to compile it at all, `can't resolve
+   * reference #/$defs/mood from id #`. Whole, it compiles and validates exactly as before.
+   *
+   * So this is a trade rather than an improvement, and it is stated rather than made for you. The
+   * OpenAPI document shares regardless, because a document is only ever consumed whole.
+   */
+  sharedEnums?: boolean;
 }
 
 /** `document: true`, `document: {...}` and `document: false` as one shape, or `null` for off. */
@@ -127,7 +144,13 @@ export class JsonSchemaGenerator {
 
     for (const table of this.analysis.tables) {
       const filePath = path.join(out, moduleFileName(table.tsName, fileSuffix));
-      const code = renderTableModule(table, affix, target, !!opts.applyDefaults);
+      const code = renderTableModule(
+        table,
+        affix,
+        target,
+        !!opts.applyDefaults,
+        opts.sharedEnums ? this.analysis.enums : undefined
+      );
       const formatted = await formatCode(
         buildHeader(opts.outputHeader) + code,
         filePath,
@@ -157,6 +180,7 @@ export class JsonSchemaGenerator {
         target,
         applyDefaults: !!opts.applyDefaults,
         includeRelations: !!opts.includeRelations,
+        enums: this.analysis.enums,
         info: document.info,
         servers: document.servers,
         validationStatus: document.validationStatus,
@@ -208,7 +232,8 @@ export class JsonSchemaGenerator {
       table,
       resolveAffix(opts),
       opts?.target ?? 'draft-2020-12',
-      !!opts?.applyDefaults
+      !!opts?.applyDefaults,
+      opts?.sharedEnums ? this.analysis.enums : undefined
     );
   }
 }

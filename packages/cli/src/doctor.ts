@@ -27,13 +27,18 @@
  *
  * - A CHECK that DRZL does translate. `age >= 18` folds into `.gte(18)` and `start < end` becomes
  *   an object-level refinement; listing them as findings would drown the ones that matter.
- * - `length(col)` and `cardinality(col)` landing on a column that cannot take them. Some of the
- *   validation generators drop those and some emit something for them, so no single sentence here
- *   is true of all of them. It is also unreachable from a working schema: Postgres has no
- *   `length(anyarray)` and no `cardinality(integer)`, so the DDL is refused before DRZL sees it.
+ * - `cardinality(col)` landing on a column with no elements to count. Unreachable from a working
+ *   schema: Postgres has no `cardinality(integer)`, so the DDL is refused before DRZL sees it.
+ *
+ * `length(col)` and `octet_length(col)` used to be on that list and are not any more, for two
+ * reasons that both stopped being true at once. The five validation generators now ask
+ * `lengthMeasure` the same question rather than each applying its own guard, so one sentence is
+ * true of all of them; and the clause is reachable, because MySQL has `OCTET_LENGTH` and a
+ * `varbinary(n)` column whose byte count in JavaScript is not the one the server took. See
+ * `check-uncountable`.
  */
 import type { Analysis, Column, Issue, Table } from '@drzl/analyzer';
-import { parseCheck } from '@drzl/validation-core';
+import { lengthMeasure, parseCheck, type LengthCheck } from '@drzl/validation-core';
 import chalk from 'chalk';
 
 export type DoctorFindingKind =
@@ -52,6 +57,16 @@ export type DoctorFindingKind =
   | 'check-unknown-column'
   /** A CHECK comparing an array or structured column against a scalar literal. */
   | 'check-not-scalar'
+  /**
+   * A CHECK counting a column whose count JavaScript cannot take the way the database did.
+   *
+   * `CHECK (octet_length(bin) <= 8)` on a MySQL `varbinary(8)` is the reachable case: the value
+   * arrives as a string produced by a lossy decode, so neither its characters nor their UTF-8
+   * re-encoding is the server's byte count, and any predicate written from it would be enforcing a
+   * different constraint. Reported rather than silently dropped, for the same reason `IS NULL` is:
+   * the parser reading an expression must not be the same event as the report forgetting it.
+   */
+  | 'check-uncountable'
   /** A table the generators cannot key. */
   | 'no-primary-key'
   /** A table keyed on more columns than the generators use. */
@@ -153,6 +168,30 @@ function describeShape(c: Column): string {
   }
 }
 
+/** What the clause asked to be counted, in the words the expression used. */
+const countNoun = (l: LengthCheck) => (l.unit === 'bytes' ? 'byte count' : 'character count');
+
+/**
+ * What to do about a count nothing can take, or the generic sentence.
+ *
+ * Only the byte-string column has an answer, and it is the only one reachable from a schema a
+ * database accepted, so the rest get the generic form rather than invented advice.
+ */
+function countHint(c: Column): string {
+  if (c.shape?.kind === 'byteString')
+    return (
+      'A binary(n)/varbinary(n) column hands the caller a string produced by a lossy decode, so ' +
+      'its width is code points coming out and bytes going in and neither is a count of the ' +
+      'value in hand. The column already caps itself at n bytes; a second bound stated here ' +
+      'would be a different measurement. Leave this one to the database.'
+    );
+  return (
+    'Only constraints whose meaning is unambiguous are translated, because a validator ' +
+    'enforcing a guess rejects rows the database accepts. Your database still enforces ' +
+    'this one; nothing DRZL emits does.'
+  );
+}
+
 /**
  * The generic advice for a declined CHECK, or something the reader can act on.
  *
@@ -228,6 +267,26 @@ function checkFindings(table: Table): DoctorFinding[] {
         hint:
           'A column that may only ever be NULL is usually a constraint written the wrong way ' +
           'round. Drop the column, or state the rule as a CHECK on the column that decides it.',
+      });
+    }
+
+    // A count clause the emitted schemas drop. Per clause rather than per column, because the
+    // sentence names the function that was written and `length` and `octet_length` can both be on
+    // one column at once.
+    for (const l of parsed.lengths ?? []) {
+      const col = byName.get(l.column);
+      if (!col || lengthMeasure(col, l)) continue;
+      out.push({
+        kind: 'check-uncountable',
+        level: 'warn',
+        table: table.tsName,
+        column: l.column,
+        constraint: k.name,
+        message:
+          `CHECK ${label} on "${table.tsName}" counts ${describeShape(col)} column ` +
+          `"${l.column}", whose ${countNoun(l)} in JavaScript is not the one the database took, ` +
+          `so it is not translated. Expression: ${expr}`,
+        hint: countHint(col),
       });
     }
 
@@ -369,7 +428,7 @@ const SECTIONS: Array<{ kinds: DoctorFindingKind[]; title: string; why: string }
     why: 'These get a validator that accepts any value.',
   },
   {
-    kinds: ['check-declined', 'check-unknown-column', 'check-not-scalar'],
+    kinds: ['check-declined', 'check-unknown-column', 'check-not-scalar', 'check-uncountable'],
     title: 'CHECK constraints DRZL does not enforce',
     why: 'Your database still enforces these. Nothing DRZL generates does.',
   },

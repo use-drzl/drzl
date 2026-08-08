@@ -17,6 +17,9 @@ import {
   importSpecifier,
   insertColumns,
   isIntegerColumn,
+  lengthCheckLabel,
+  lengthMeasure,
+  measureExpression,
   nestedArmNotes,
   nestedNodeColumns,
   nestedSchemaName,
@@ -285,12 +288,14 @@ function vShapeExpr(c: Column, mode: Mode): string | undefined {
 }
 
 /**
- * `v.check(...)` actions for the `length(col)` constraints naming this column.
+ * `v.check(...)` actions for the `length(col)` and `octet_length(col)` constraints naming this
+ * column.
  *
- * Code points, because Postgres counts characters. See the zod generator.
+ * Code points for a character count, because Postgres counts characters; the UTF-8 encoding for a
+ * byte count on a string, and the array's own length for one on a `bytea`. See the zod generator,
+ * and `lengthMeasure` for the one place that choice is made.
  */
 function vLengthChecks(c: Column, lengths: LengthCheck[]): string[] {
-  if (c.arrayDimensions || c.shape) return [];
   const OPS: Record<LengthCheck['operator'], string> = {
     '>=': '>=',
     '>': '>',
@@ -301,11 +306,12 @@ function vLengthChecks(c: Column, lengths: LengthCheck[]): string[] {
   };
   return lengths
     .filter((k) => k.column === c.name)
-    .map((k) => {
-      const msg = JSON.stringify(
-        `${k.name ? `${k.name}: ` : ''}length(${c.name}) ${k.operator} ${k.value}`
-      );
-      return `v.check((val) => [...val].length ${OPS[k.operator]} ${k.value}, ${msg})`;
+    .flatMap((k) => {
+      const measure = lengthMeasure(c, k);
+      if (!measure) return [];
+      const msg = JSON.stringify(lengthCheckLabel(k));
+      const count = measureExpression(measure, 'val');
+      return [`v.check((val) => ${count} ${OPS[k.operator]} ${k.value}, ${msg})`];
     });
 }
 
@@ -344,7 +350,13 @@ function vExprForColumn(
   lengths: LengthCheck[] = []
 ): string {
   const shaped = vShapeExpr(c, mode);
-  if (shaped) return shaped;
+  if (shaped) {
+    // A shaped column takes no scalar comparison, but a `bytea` does take a byte count, which is
+    // the one clause `lengthMeasure` answers on a shape. Piped on here rather than folded into
+    // `vShapeExpr`, which describes the column and knows nothing about its constraints.
+    const shapeChecks = vLengthChecks(c, lengths);
+    return shapeChecks.length ? `v.pipe(${shaped}, ${shapeChecks.join(', ')})` : shaped;
+  }
   // `CHECK (status IN ('a', 'b'))` constrains the column to a set, which is what a picklist is.
   const set = sets.find((x) => x.column === c.name);
   if (set) {

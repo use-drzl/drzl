@@ -8,7 +8,7 @@
  * Split out of `index.ts` so `openapi.ts` can build a document from these without the two importing
  * each other. Nothing here changed in the move except the two keywords named on `openapi-3.0`.
  */
-import type { Column, Table } from '@drzl/analyzer';
+import type { Column, Enum, Table } from '@drzl/analyzer';
 import type {
   CardinalityCheck,
   ColumnCheck,
@@ -24,6 +24,7 @@ import {
   selectColumns,
   updateColumns,
 } from '@drzl/validation-core';
+import { planSharedEnums, type EnumPlan, type EnumRefResolver } from './enums.js';
 
 export type Mode = 'insert' | 'update' | 'select';
 
@@ -77,7 +78,8 @@ function baseSchema(
   target: JsonSchemaTarget,
   checks: ColumnCheck[],
   sets: ColumnSet[],
-  lengths: LengthCheck[]
+  lengths: LengthCheck[],
+  enumRef?: EnumRefResolver
 ): Schema {
   const s = c.shape;
   if (s) {
@@ -89,9 +91,14 @@ function baseSchema(
       case 'custom':
         // Nothing is known about a custom type's runtime shape, so nothing is claimed.
         return {};
-      case 'buffer':
+      case 'buffer': {
         // Binary cannot travel as JSON. Both spellings say how it did.
-        return base64(target);
+        const bin = base64(target);
+        // `CHECK (octet_length(blob) <= n)` is the one clause a binary column takes, and the
+        // measurement it asks for is the plain byte count. See `applyBinaryLengths`.
+        applyBinaryLengths(bin, c, lengths);
+        return bin;
+      }
       case 'tuple':
         // `prefixItems` is 2020-12. OpenAPI 3.0 has no positional form at all, so it falls back
         // to a homogeneous array of the right length, which is the closest true statement.
@@ -150,7 +157,12 @@ function baseSchema(
   const set = sets.find((x) => x.column === c.name);
   if (set) return { enum: set.values.map((v) => (set.kind === 'string' ? v : Number(v))) };
 
-  if (c.enumValues && c.enumValues.length) return { enum: [...c.enumValues] };
+  if (c.enumValues && c.enumValues.length) {
+    // A declared enum this document publishes once, or the list itself. See `enums.ts` for which
+    // enums are shared and why a reference is not always usable.
+    const ref = enumRef?.(c.enumValues);
+    return ref ? { $ref: ref } : { enum: [...c.enumValues] };
+  }
 
   const mine = c.arrayDimensions ? [] : checks.filter((k) => k.column === c.name);
   const eq = mine.find((k) => k.operator === '=');
@@ -168,7 +180,7 @@ function baseSchema(
       if (c.format === 'uuid') out.format = UUID_FORMAT;
       else if (c.format && COLUMN_FORMATS[c.format]) out.pattern = COLUMN_FORMATS[c.format];
       if (c.maxLength !== undefined) out.maxLength = c.maxLength;
-      applyByteCap(out, c);
+      applyByteCap(out, c, lengths);
       applyLengths(out, c, lengths);
       return out;
     }
@@ -226,16 +238,54 @@ function baseSchema(
  *
  * Before `applyLengths`, so a `CHECK (length(col) <= n)` narrower than the budget still wins:
  * that one is reachable from a real schema, and it is asserted too.
+ *
+ * The budget itself is the smallest of the ones the column carries, whether it came from the type
+ * or from a `CHECK (octet_length(col) <= n)`, so the prose names the number actually in force. Two
+ * budgets with the description written from the wrong one is a document stating a limit looser than
+ * its own `maxLength`.
  */
-function applyByteCap(out: Schema, c: Column) {
-  if (!c.maxBytes) return;
-  out.maxLength = Math.min(Number(out.maxLength ?? Infinity), c.maxBytes);
-  out.description = `At most ${c.maxBytes} bytes of UTF-8, which JSON Schema has no keyword for. maxLength counts characters: it refuses nothing the column accepts, and a string of multi-byte characters can satisfy it and still be too long for the column.`;
+function applyByteCap(out: Schema, c: Column, lengths: LengthCheck[]) {
+  const budget = byteBudget(c, lengths);
+  if (budget === undefined) return;
+  out.maxLength = Math.min(Number(out.maxLength ?? Infinity), budget);
+  out.description = BYTE_BUDGET_NOTE(budget);
 }
 
-/** `length(col) >= n` as `minLength` and `maxLength`, which count characters as SQL does. */
+/** The inclusive upper bound a count clause states, or nothing where it states no ceiling. */
+function ceilingOf(k: LengthCheck): number | undefined {
+  if (k.operator === '<=' || k.operator === '=') return Number(k.value);
+  if (k.operator === '<') return Number(k.value) - 1;
+  return undefined;
+}
+
+/** Every byte ceiling on a column, as the one number that binds: the smallest of them. */
+function byteBudget(c: Column, lengths: LengthCheck[]): number | undefined {
+  const bounds = [
+    ...(c.maxBytes ? [c.maxBytes] : []),
+    ...lengths
+      .filter((k) => k.column === c.name && k.unit === 'bytes')
+      .map(ceilingOf)
+      .filter((n): n is number => n !== undefined),
+  ];
+  return bounds.length ? Math.min(...bounds) : undefined;
+}
+
+/**
+ * `length(col) >= n` as `minLength` and `maxLength`, which count characters as SQL does.
+ *
+ * A `CHECK (octet_length(col) <= n)` is a *byte* budget rather than a character count, so it goes
+ * through `applyByteCap` with the type's own budget and is skipped here. The two are different
+ * measurements of the same string and the difference is the whole reason the parser carries a unit:
+ * measured on PostgreSQL 17.5, a string of three emoji answers 3 to `length()` and 12 to
+ * `octet_length()`, so a byte bound written as a character count would be four times looser than
+ * the constraint at worst.
+ *
+ * A byte *floor* reaches no keyword at all. `octet_length(t) >= 10` implies only `length(t) >= 3`,
+ * since UTF-8 spends at most four bytes per character, which is a bound that catches almost nothing
+ * and one more formula to be wrong about.
+ */
 function applyLengths(out: Schema, c: Column, lengths: LengthCheck[]) {
-  for (const k of lengths.filter((x) => x.column === c.name)) {
+  for (const k of lengths.filter((x) => x.column === c.name && x.unit !== 'bytes')) {
     const n = Number(k.value);
     if (k.operator === '>=') out.minLength = Math.max(Number(out.minLength ?? 0), n);
     else if (k.operator === '>') out.minLength = Math.max(Number(out.minLength ?? 0), n + 1);
@@ -247,6 +297,37 @@ function applyLengths(out: Schema, c: Column, lengths: LengthCheck[]) {
     }
   }
 }
+
+/**
+ * A byte budget on a binary column, as a cap on the base64 string that carries it.
+ *
+ * A `bytea` cannot travel as JSON, so the document describes it as base64 and the only length this
+ * format can bound is the encoded string's. Base64 of n bytes is exactly `4 * ceil(n / 3)`
+ * characters when padded and fewer when not, measured over n = 0 to 20, so that number is an upper
+ * bound under either spelling and refuses nothing the column accepts. It is not a tight one: 6
+ * bytes encode to the same 8 characters as 5, so a cap of 5 bytes still lets a 6 byte value
+ * through. The exact rule goes in `description`, as every other cap this generator cannot state
+ * does.
+ *
+ * Only the ceiling. A base64 *minimum* would have to hold for the unpadded spelling too, and the
+ * two disagree by up to two characters at every length, so the bound would be looser than the
+ * arithmetic makes it look for no gain.
+ */
+function applyBinaryLengths(out: Schema, c: Column, lengths: LengthCheck[]) {
+  const budget = byteBudget(c, lengths);
+  if (budget === undefined) return;
+  out.maxLength = 4 * Math.ceil(budget / 3);
+  out.description =
+    `At most ${budget} bytes, which JSON Schema has no keyword for. The value travels as ` +
+    `base64, and maxLength counts the characters of that encoding: it refuses nothing the ` +
+    `column accepts, and a value one or two bytes over the limit encodes to the same number of ` +
+    `characters as one inside it.`;
+}
+
+const BYTE_BUDGET_NOTE = (n: number) =>
+  `At most ${n} bytes of UTF-8, which JSON Schema has no keyword for. maxLength counts ` +
+  `characters: it refuses nothing the column accepts, and a string of multi-byte characters can ` +
+  `satisfy it and still be too long for the column.`;
 
 /**
  * Declared range and CHECK comparisons as numeric keywords.
@@ -318,6 +399,10 @@ function cardinalityBounds(c: Column, cardinalities: CardinalityCheck[]): Schema
  */
 function makeNullable(s: Schema, target: JsonSchemaTarget): Schema {
   if (target === 'openapi-3.0') return { ...s, nullable: true };
+  // A reference has nothing to add null to, and adding a key beside it is the OpenAPI 3.0 trap in
+  // reverse: `{ $ref, type: [...] }` says nothing about the referenced schema. `anyOf` is the
+  // spelling that does, and it validates against the real 3.1 meta-schema.
+  if ('$ref' in s) return { anyOf: [s, { type: 'null' }] };
   if (s.type === undefined) {
     // `const` and `enum` constrain the value directly, so null has to be added to them instead.
     if (Array.isArray(s.enum)) return { ...s, enum: [...s.enum, null] };
@@ -338,9 +423,17 @@ function columnSchema(
   sets: ColumnSet[],
   lengths: LengthCheck[],
   cardinalities: CardinalityCheck[],
-  applyDefault: boolean
+  applyDefault: boolean,
+  enumRef?: EnumRefResolver
 ): Schema {
-  let s = baseSchema(c, mode, target, checks, sets, lengths);
+  const wantsDefault = mode === 'insert' && applyDefault && c.defaultValue !== undefined;
+  // OpenAPI 3.0 defines every sibling of `$ref` to be ignored, so a reference cannot carry the two
+  // keywords this function adds: `nullable: true` beside one is a schema that refuses null, and a
+  // `default` beside one is a value no reader sees. Both wrappers land on the *column*, so an array
+  // of enums is unaffected: the reference is on the element and the wrapper is on the array.
+  const refBlockedBy30 =
+    target === 'openapi-3.0' && !c.arrayDimensions && (c.nullable || wantsDefault);
+  let s = baseSchema(c, mode, target, checks, sets, lengths, refBlockedBy30 ? undefined : enumRef);
   // Drizzle keeps an array on the element's own column class, so everything above describes the
   // element and the wrapping belongs here.
   const dims = c.arrayDimensions ?? 0;
@@ -378,7 +471,10 @@ function tableSchema(
   mode: Mode,
   target: JsonSchemaTarget,
   applyDefaults: boolean,
-  parsed: ReturnType<typeof collect>
+  parsed: ReturnType<typeof collect>,
+  enums: EnumPlan | undefined,
+  /** `$defs` for a standalone module; absent where the definitions live in the document instead. */
+  localDefs: boolean
 ): Schema {
   const properties: Schema = {};
   const required: string[] = [];
@@ -391,7 +487,8 @@ function tableSchema(
       parsed.sets,
       parsed.lengths,
       parsed.cardinalities,
-      applyDefaults
+      applyDefaults,
+      enums?.resolve
     );
     // An update makes everything optional. On insert a column the database will fill in may be
     // omitted. On select nothing may be: the row came out of the database, so every column has a
@@ -407,6 +504,10 @@ function tableSchema(
     if (!optional) required.push(c.name);
   }
   const desc = rowDescription(parsed.rows, cols);
+  // After the properties, so it holds exactly the enums this schema referenced. A `$defs` entry
+  // nothing points at is dead weight in the consumer's bundle, and one that is missing is a
+  // dangling `$ref` that ajv refuses to compile at all.
+  const defs = localDefs ? (enums?.definitions() ?? {}) : {};
   return {
     ...(target === 'draft-2020-12' ? { $schema: DRAFT } : {}),
     $id: `${table.tsName}.${mode}`,
@@ -416,6 +517,7 @@ function tableSchema(
     properties,
     ...(required.length ? { required } : {}),
     additionalProperties: false,
+    ...(Object.keys(defs).length ? { $defs: defs } : {}),
   };
 }
 
@@ -430,20 +532,85 @@ function collect(table: Table) {
   };
 }
 
-/** The three schemas for one table, as data rather than as source. */
+/** What a caller can say about the enums a set of schemas shares. */
+export interface EnumSharingOptions {
+  /**
+   * The analysis's own enums, which is where a shared definition gets its *name*.
+   *
+   * Omitted, every enum is inlined at every use, which is what this generator did before. A column
+   * carries its values and no name at all, and `mood` is a better key than anything derivable from
+   * `['sad','ok','happy']`, so an enum the analysis does not name stays inline.
+   */
+  enums?: Enum[];
+}
+
+/**
+ * The three schemas for one table, as data rather than as source.
+ *
+ * A shared enum lands in this schema's own `$defs`, and only on `draft-2020-12`. The other two
+ * targets describe a schema destined for an OpenAPI document, where `$defs` is either invalid
+ * outright (3.0's Schema Object is closed) or valid and unresolvable (3.1 resolves a `$ref` against
+ * the document root, so `#/$defs/mood` names nothing). Both measured. A document shares through
+ * `components.schemas` instead; see `componentsDocument`.
+ *
+ * The scope is one schema, so an enum has to be on two columns of *this mode* to be shared. Deciding
+ * it per table instead would put a `$defs` entry with one reference into the insert schema of a
+ * table whose second use is a generated column.
+ */
 export function tableSchemas(
   table: Table,
-  opts: { target?: JsonSchemaTarget; applyDefaults?: boolean } = {}
+  opts: { target?: JsonSchemaTarget; applyDefaults?: boolean } & EnumSharingOptions = {}
 ): Record<Mode, Schema> {
   const target = opts.target ?? 'draft-2020-12';
   const parsed = collect(table);
-  const build = (cols: Column[], mode: Mode) =>
-    tableSchema(table, cols, mode, target, !!opts.applyDefaults, parsed);
+  const localDefs = target === 'draft-2020-12';
+  const build = (cols: Column[], mode: Mode) => {
+    const plan = localDefs
+      ? planSharedEnums(cols, opts.enums, (key) => `#/$defs/${key}`)
+      : undefined;
+    return tableSchema(table, cols, mode, target, !!opts.applyDefaults, parsed, plan, localDefs);
+  };
   return {
     insert: build(insertColumns(table), 'insert'),
     update: build(updateColumns(table), 'update'),
     select: build(selectColumns(table), 'select'),
   };
+}
+
+/**
+ * The same three schemas, sharing enums through a plan somebody else owns.
+ *
+ * `componentsDocument` and `openApiDocument` share over the whole document rather than over one
+ * schema, and they publish the definitions beside the table schemas rather than inside them. So the
+ * plan is built once out there and handed down, and nothing here emits a `$defs`.
+ */
+function tableSchemasWith(
+  table: Table,
+  target: JsonSchemaTarget,
+  applyDefaults: boolean,
+  plan: EnumPlan | undefined,
+  modes: readonly Mode[] = MODES
+): Record<Mode, Schema> {
+  const parsed = collect(table);
+  const columns: Record<Mode, () => Column[]> = {
+    insert: () => insertColumns(table),
+    update: () => updateColumns(table),
+    select: () => selectColumns(table),
+  };
+  const out = {} as Record<Mode, Schema>;
+  for (const mode of modes) {
+    out[mode] = tableSchema(
+      table,
+      columns[mode](),
+      mode,
+      target,
+      applyDefaults,
+      parsed,
+      plan,
+      false
+    );
+  }
+  return out;
 }
 
 /**
@@ -461,19 +628,73 @@ export function tableSchemas(
  *   outright: `data/$id must match pattern "^[^#]*#?$"`. In OpenAPI the **map key** is the
  *   identity, and `$ref: '#/components/schemas/<name>'` is written by whatever points at it, not
  *   by the schema itself.
+ *
+ * **No shared enum definitions here, and that is the one place this differs from `openApiDocument`.**
+ * A `$ref` is a promise about where the thing holding it will be mounted, and this object is a
+ * fragment whose mount point is the caller's: `#/components/schemas/mood` is resolvable once it has
+ * been spread into a document at exactly that path and nowhere else. Every entry here is therefore
+ * self-contained, so a caller can hand one schema to a validator on its own, which
+ * `scripts/verify-packed.sh` does and which a cross-reference silently breaks: ajv answers
+ * `can't resolve reference #/components/schemas/mood from id #`. The whole document knows where it
+ * is and does share; see `openApiDocument`.
  */
 export function componentsDocument(
   tables: Table[],
   opts: { target?: JsonSchemaTarget; applyDefaults?: boolean } = {}
 ): { schemas: Record<string, Schema> } {
+  const target = opts.target ?? 'draft-2020-12';
   const schemas: Record<string, Schema> = {};
   for (const table of tables) {
-    const built = tableSchemas(table, opts);
-    for (const mode of ['insert', 'update', 'select'] as const) {
-      const name = `${table.tsName}${mode[0].toUpperCase()}${mode.slice(1)}`;
+    const built = tableSchemasWith(table, target, !!opts.applyDefaults, undefined);
+    for (const mode of MODES) {
       const { $schema: _dialect, $id: _id, ...rest } = built[mode];
-      schemas[name] = rest;
+      schemas[componentSchemaName(table, mode)] = rest;
     }
   }
   return { schemas };
+}
+
+const MODES = ['insert', 'update', 'select'] as const;
+
+/** The map key a table's schema is published under, which is also what a `$ref` to it spells. */
+export const componentSchemaName = (table: Table, mode: Mode) =>
+  `${table.tsName}${mode[0].toUpperCase()}${mode.slice(1)}`;
+
+/**
+ * Every table's schemas for a document, plus the shared enum definitions to publish beside them.
+ *
+ * The half of `componentsDocument` that `openApiDocument` needs, which is not quite the same thing:
+ * a document carries only the modes something points at, and it reserves `Error` for its own use.
+ */
+export function documentSchemas(
+  tables: Table[],
+  opts: {
+    target: JsonSchemaTarget;
+    applyDefaults: boolean;
+    reserved: ReadonlySet<string>;
+    /**
+     * Which modes of each table the document carries.
+     *
+     * Only those are built, so `definitions()` holds exactly the enums something in the document
+     * points at. Built unconditionally, a table whose only enum column sits in a mode the document
+     * drops would publish a definition nothing references.
+     */
+    modes: (table: Table) => readonly Mode[];
+  } & EnumSharingOptions
+): {
+  built: Map<Table, Partial<Record<Mode, Schema>>>;
+  definitions: () => Record<string, { enum: string[] }>;
+} {
+  const plan = planSharedEnums(
+    tables.flatMap((t) => t.columns),
+    opts.enums,
+    (key) => `#/components/schemas/${key}`,
+    opts.reserved
+  );
+  const built = new Map<Table, Partial<Record<Mode, Schema>>>();
+  for (const table of tables) {
+    const all = tableSchemasWith(table, opts.target, opts.applyDefaults, plan, opts.modes(table));
+    built.set(table, all);
+  }
+  return { built, definitions: () => plan?.definitions() ?? {} };
 }
