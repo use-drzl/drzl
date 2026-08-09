@@ -1236,8 +1236,10 @@ export const matrix = mysqlTable('matrix', {
   m_smallint: smallint().notNull(),
   m_mediumint: mediumint().notNull(),
   m_int: int().notNull(),
+  m_int_u: int({ unsigned: true }).notNull(),
   m_bigint_n: bigint({ mode: 'number' }).notNull(),
   m_bigint_b: bigint({ mode: 'bigint' }).notNull(),
+  m_bigint_b_u: bigint({ mode: 'bigint', unsigned: true }).notNull(),
   m_serial: serial().notNull(),
   m_real: real().notNull(),
   m_double: double().notNull(),
@@ -1496,6 +1498,9 @@ export const POOL: [string, unknown][] = [
   // They are appended rather than filed with the other numbers so that adding them reorders no
   // existing signature: every list here is built in pool order.
   ['17', 17], ['18', 18], ['50', 50], ['100', 100], ['101', 101],
+  ['4294967295', 4294967295], ['4294967296', 4294967296],
+  ['-1n', -1n], ['18446744073709551615n', 18446744073709551615n],
+  ['18446744073709551616n', 18446744073709551616n],
 ];
 
 /**
@@ -2217,7 +2222,7 @@ const ALLOWED: Record<string, Waiver> = {
     modes: WRITE,
     why: 'coerceDates accepts a parseable date string or an epoch number on write, in all four generators',
     divergence: {
-      '*/*': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', 17, 18, 50, 100, 101 | T: `,
+      '*/*': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', 17, 18, 50, 100, 101, 4294967295, 4294967296 | T: `,
     },
   },
   'pg/c_ts_d': {
@@ -2225,7 +2230,7 @@ const ALLOWED: Record<string, Waiver> = {
     modes: WRITE,
     why: 'as pg/c_date_d',
     divergence: {
-      '*/*': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', 17, 18, 50, 100, 101 | T: `,
+      '*/*': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', 17, 18, 50, 100, 101, 4294967295, 4294967296 | T: `,
     },
   },
   'mysql/m_date': {
@@ -2233,7 +2238,7 @@ const ALLOWED: Record<string, Waiver> = {
     modes: WRITE,
     why: 'as pg/c_date_d',
     divergence: {
-      '*/*': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', 17, 18, 50, 100, 101 | T: `,
+      '*/*': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', 17, 18, 50, 100, 101, 4294967295, 4294967296 | T: `,
     },
   },
   'mysql/m_datetime': {
@@ -2241,7 +2246,7 @@ const ALLOWED: Record<string, Waiver> = {
     modes: WRITE,
     why: 'as pg/c_date_d',
     divergence: {
-      '*/*': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', 17, 18, 50, 100, 101 | T: `,
+      '*/*': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', 17, 18, 50, 100, 101, 4294967295, 4294967296 | T: `,
     },
   },
   'mysql/m_ts': {
@@ -2249,7 +2254,7 @@ const ALLOWED: Record<string, Waiver> = {
     modes: WRITE,
     why: 'as pg/c_date_d',
     divergence: {
-      '*/*': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', 17, 18, 50, 100, 101 | T: `,
+      '*/*': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', 17, 18, 50, 100, 101, 4294967295, 4294967296 | T: `,
     },
   },
   'sqlite/s_int_ts': {
@@ -2257,7 +2262,7 @@ const ALLOWED: Record<string, Waiver> = {
     modes: WRITE,
     why: 'as pg/c_date_d',
     divergence: {
-      '*/*': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', 17, 18, 50, 100, 101 | T: `,
+      '*/*': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', 17, 18, 50, 100, 101, 4294967295, 4294967296 | T: `,
     },
   },
   'sqlite/s_int_ts_ms': {
@@ -2265,7 +2270,7 @@ const ALLOWED: Record<string, Waiver> = {
     modes: WRITE,
     why: 'as pg/c_date_d',
     divergence: {
-      '*/*': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', 17, 18, 50, 100, 101 | T: `,
+      '*/*': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', 17, 18, 50, 100, 101, 4294967295, 4294967296 | T: `,
     },
   },
   // Official emits `Type.String({ format: 'uuid' })`, and TypeBox fails a format it has no entry
@@ -2370,8 +2375,8 @@ const ALLOWED: Record<string, Waiver> = {
   // fix: official `drizzle-orm/arktype` already accepts NaN in its union-shaped arms, so NaN was
   // never a divergence there and still is not. Measured directly: `{x:'number'}` rejects NaN,
   // `{x:'(bound | null)'}` accepts it.
-  'pg/c_real': { libs: LIB_NAMES, modes: MODE_NAMES, why: 'bounded where Postgres stops accepting rather than at drizzle-zod +/-8388607, which refuses rows the column returns. Non-finite values were added on top: Postgres stores NaN and both infinities in a float column and returns them, and a Select schema refusing what the database hands back fails on real rows (AW).', divergence: { 'select,insert/*': `L: 9000000, 2147483648, 9007199254740993, 3.4028235e38, NaN, Infinity | T: `, 'update/zod,valibot,typebox': `L: 9000000, 2147483648, 9007199254740993, 3.4028235e38, NaN, Infinity | T: `, 'update/arktype': `L: 9000000, 2147483648, 9007199254740993, 3.4028235e38, Infinity | T: ` } },
-  'mysql/m_float': { libs: LIB_NAMES, modes: MODE_NAMES, why: 'as pg/c_real, but at MySQL edge: a real MySQL 8.4 refuses 3.4028235e38 where Postgres takes it', divergence: { '*/zod,valibot,typebox': `L: 9000000, 2147483648, 9007199254740993 | T: `, 'update/arktype': `L: 9000000, 2147483648, 9007199254740993 | T: NaN`, 'select,insert/arktype': `L: 9000000, 2147483648, 9007199254740993 | T: ` } },
+  'pg/c_real': { libs: LIB_NAMES, modes: MODE_NAMES, why: 'bounded where Postgres stops accepting rather than at drizzle-zod +/-8388607, which refuses rows the column returns. Non-finite values were added on top: Postgres stores NaN and both infinities in a float column and returns them, and a Select schema refusing what the database hands back fails on real rows (AW).', divergence: { 'select,insert/*': `L: 9000000, 2147483648, 9007199254740993, 3.4028235e38, NaN, Infinity, 4294967295, 4294967296 | T: `, 'update/zod,valibot,typebox': `L: 9000000, 2147483648, 9007199254740993, 3.4028235e38, NaN, Infinity, 4294967295, 4294967296 | T: `, 'update/arktype': `L: 9000000, 2147483648, 9007199254740993, 3.4028235e38, Infinity, 4294967295, 4294967296 | T: ` } },
+  'mysql/m_float': { libs: LIB_NAMES, modes: MODE_NAMES, why: 'as pg/c_real, but at MySQL edge: a real MySQL 8.4 refuses 3.4028235e38 where Postgres takes it', divergence: { '*/zod,valibot,typebox': `L: 9000000, 2147483648, 9007199254740993, 4294967295, 4294967296 | T: `, 'update/arktype': `L: 9000000, 2147483648, 9007199254740993, 4294967295, 4294967296 | T: NaN`, 'select,insert/arktype': `L: 9000000, 2147483648, 9007199254740993, 4294967295, 4294967296 | T: ` } },
   // All four libraries now carry the same signature, where zod and typebox used to differ from
   // valibot and arktype on the infinities. That convergence is the fix: the two that refused a
   // non-finite number no longer do.
@@ -2390,7 +2395,7 @@ const ALLOWED: Record<string, Waiver> = {
   //
   // No `except` any more. It named update/arktype as the one cell of twelve reporting parity, and
   // that cell diverges now: official accepts the value the column refuses there too.
-  'pg/c_numeric_n': { libs: LIB_NAMES, modes: MODE_NAMES, why: 'Postgres stores NaN in a numeric column and returns it, and refuses a value past the declared precision; official reads no precision so it accepts what the column will not hold', divergence: { 'select,insert/*': `L: NaN | T: 2147483648`, 'update/zod,valibot,typebox': `L: NaN | T: 2147483648`, 'update/arktype': `L:  | T: 2147483648` } },
+  'pg/c_numeric_n': { libs: LIB_NAMES, modes: MODE_NAMES, why: 'Postgres stores NaN in a numeric column and returns it, and refuses a value past the declared precision; official reads no precision so it accepts what the column will not hold', divergence: { 'select,insert/*': `L: NaN | T: 2147483648, 4294967295, 4294967296`, 'update/zod,valibot,typebox': `L: NaN | T: 2147483648, 4294967295, 4294967296`, 'update/arktype': `L:  | T: 2147483648, 4294967295, 4294967296` } },
   'pg/c_double': { libs: LIB_NAMES, modes: MODE_NAMES, why: 'no finite bound is true of an 8 byte float, which holds every finite JS number. Non-finite values were added on top: Postgres stores NaN and both infinities in a float column and returns them, and a Select schema refusing what the database hands back fails on real rows (AW).', divergence: { 'select,insert/*': `L: 9007199254740993, 3.4028235e38, NaN, Infinity | T: `, 'update/zod,valibot,typebox': `L: 9007199254740993, 3.4028235e38, NaN, Infinity | T: `, 'update/arktype': `L: 9007199254740993, 3.4028235e38, Infinity | T: ` } },
   'mysql/m_real': { libs: LIB_NAMES, modes: MODE_NAMES, why: 'as pg/c_double; MySQL REAL is a synonym for DOUBLE', divergence: { '*/zod,typebox': `L: 9007199254740993, 3.4028235e38 | T: `, '*/valibot': `L: 9007199254740993, 3.4028235e38, Infinity | T: `, 'update/arktype': `L: 9007199254740993, 3.4028235e38, Infinity | T: NaN`, 'select,insert/arktype': `L: 9007199254740993, 3.4028235e38, Infinity | T: ` } },
   'mysql/m_double': { libs: LIB_NAMES, modes: MODE_NAMES, why: 'as pg/c_double', divergence: { '*/zod,typebox': `L: 9007199254740993, 3.4028235e38 | T: `, '*/valibot': `L: 9007199254740993, 3.4028235e38, Infinity | T: `, 'update/arktype': `L: 9007199254740993, 3.4028235e38, Infinity | T: NaN`, 'select,insert/arktype': `L: 9007199254740993, 3.4028235e38, Infinity | T: ` } },
@@ -2450,7 +2455,7 @@ const ALLOWED: Record<string, Waiver> = {
   // Every arktype arm gains `Infinity` alone here, where `c_real` above diverges only on update:
   // the nullable wrapper makes all three modes union shaped, and official accepts NaN in all of
   // them. Same reason, wider reach.
-  'pg/n_real': { libs: LIB_NAMES, modes: MODE_NAMES, why: 'as pg/c_real, through the nullable wrapper', divergence: { '*/zod,valibot,typebox': `L: 9000000, 2147483648, 9007199254740993, 3.4028235e38, NaN, Infinity | T: `, '*/arktype': `L: 9000000, 2147483648, 9007199254740993, 3.4028235e38, Infinity | T: ` } },
+  'pg/n_real': { libs: LIB_NAMES, modes: MODE_NAMES, why: 'as pg/c_real, through the nullable wrapper', divergence: { '*/zod,valibot,typebox': `L: 9000000, 2147483648, 9007199254740993, 3.4028235e38, NaN, Infinity, 4294967295, 4294967296 | T: `, '*/arktype': `L: 9000000, 2147483648, 9007199254740993, 3.4028235e38, Infinity, 4294967295, 4294967296 | T: ` } },
   'pg/c_bytea_null': { libs: LIB_NAMES, modes: MODE_NAMES, why: 'as pg/c_bytea, through the nullable wrapper', divergence: { '*/*': `L: Uint8Array | T: ` } },
   'pg/valibot/n_json': { libs: ['valibot'], modes: MODE_NAMES, why: 'as pg/valibot/c_json', divergence: { '*/*': `L:  | T: Infinity, Date, Buffer, Uint8Array` } },
   'pg/valibot/n_point': { libs: ['valibot'], modes: MODE_NAMES, why: 'as pg/valibot/c_point', divergence: { '*/*': `L:  | T: [1,2,3]` } },
@@ -2460,7 +2465,7 @@ const ALLOWED: Record<string, Waiver> = {
     modes: WRITE,
     why: 'as pg/c_ts_d',
     divergence: {
-      '*/*': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', 17, 18, 50, 100, 101 | T: `,
+      '*/*': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', 17, 18, 50, 100, 101, 4294967295, 4294967296 | T: `,
     },
   },
   // The first divergence in either pass that comes from a CHECK, because `matrix` carries none and
@@ -2479,14 +2484,14 @@ const ALLOWED: Record<string, Waiver> = {
   'pg/n_check': { libs: LIB_NAMES, modes: MODE_NAMES, why: 'DRZL enforces the column CHECK; no first-party module reads one', divergence: { '*/*': `L:  | T: 0, 1, -1, 200, 40000, 9000000, 1900, 2000, 2500, 17, 101` } },
   'mysql/m_n_text': { libs: LIB_NAMES, modes: MODE_NAMES, why: 'as mysql/m_text', divergence: { '*/*': `L:  | T: 22000 cjk` } },
   'mysql/m_n_tinytext': { libs: LIB_NAMES, modes: MODE_NAMES, why: 'as mysql/m_tinytext', divergence: { '*/*': `L:  | T: 100 emoji` } },
-  'mysql/m_n_float': { libs: LIB_NAMES, modes: MODE_NAMES, why: 'as mysql/m_float, and arktype is tighter in every mode rather than only on update: the nullable arm leaks on the object, the optional one only through the key', divergence: { '*/zod,valibot,typebox': `L: 9000000, 2147483648, 9007199254740993 | T: `, '*/arktype': `L: 9000000, 2147483648, 9007199254740993 | T: NaN` } },
+  'mysql/m_n_float': { libs: LIB_NAMES, modes: MODE_NAMES, why: 'as mysql/m_float, and arktype is tighter in every mode rather than only on update: the nullable arm leaks on the object, the optional one only through the key', divergence: { '*/zod,valibot,typebox': `L: 9000000, 2147483648, 9007199254740993, 4294967295, 4294967296 | T: `, '*/arktype': `L: 9000000, 2147483648, 9007199254740993, 4294967295, 4294967296 | T: NaN` } },
   'mysql/valibot/m_n_json': { libs: ['valibot'], modes: MODE_NAMES, why: 'as pg/valibot/c_json', divergence: { '*/*': `L:  | T: Infinity, Date, Buffer, Uint8Array` } },
   'mysql/m_n_datetime': {
     libs: LIB_NAMES,
     modes: WRITE,
     why: 'as pg/c_date_d',
     divergence: {
-      '*/*': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', 17, 18, 50, 100, 101 | T: `,
+      '*/*': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', 17, 18, 50, 100, 101, 4294967295, 4294967296 | T: `,
     },
   },
   'mysql/m_n_check': { libs: LIB_NAMES, modes: MODE_NAMES, why: 'as pg/n_check, in MySQL spelling', divergence: { '*/*': `L:  | T: 0, 1, -1, 200, 40000, 9000000, 1900, 2000, 2500, 17, 101` } },
@@ -2498,7 +2503,7 @@ const ALLOWED: Record<string, Waiver> = {
     modes: WRITE,
     why: 'as sqlite/s_int_ts',
     divergence: {
-      '*/*': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', 17, 18, 50, 100, 101 | T: `,
+      '*/*': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', 17, 18, 50, 100, 101, 4294967295, 4294967296 | T: `,
     },
   },
   'sqlite/s_n_ts_ms': {
@@ -2506,10 +2511,10 @@ const ALLOWED: Record<string, Waiver> = {
     modes: WRITE,
     why: 'as sqlite/s_int_ts_ms',
     divergence: {
-      '*/*': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', 17, 18, 50, 100, 101 | T: `,
+      '*/*': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', 17, 18, 50, 100, 101, 4294967295, 4294967296 | T: `,
     },
   },
-  'sqlite/s_n_check': { libs: LIB_NAMES, modes: MODE_NAMES, why: "as pg/n_check; the extra label is official's SQLite integer bound being the safe-integer range where its Postgres one is int32", divergence: { '*/*': `L:  | T: 0, 1, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, 17, 101` } },
+  'sqlite/s_n_check': { libs: LIB_NAMES, modes: MODE_NAMES, why: "as pg/n_check; the extra label is official's SQLite integer bound being the safe-integer range where its Postgres one is int32", divergence: { '*/*': `L:  | T: 0, 1, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, 17, 101, 4294967295, 4294967296` } },
 
   // No arktype bigint entry. There were three, reading "ArkType cannot bound a bigint in its
   // string DSL", and only half of that was true: the DSL cannot state the bound, but a narrow can,
@@ -2633,7 +2638,7 @@ const selectOptionalProblems: string[] = [];
 // 24 is three dialects times two tables times four libraries, and 504 is every column of all six
 // tables in each of the four. Nothing is lost to a crash here: the omissions that crash do so on
 // official's side, and this check reads DRZL's alone.
-const SELECT_REACH = { schemas: 24, keys: 504 };
+const SELECT_REACH = { schemas: 24, keys: 512 };
 const selectSchemas = new Set<string>();
 let selectKeysInspected = 0;
 
@@ -2872,7 +2877,7 @@ let findings = 0;
  * and say nothing. The 0.4x stage has carried this since it was written; this pass had only the
  * per-pairing guard, which cannot see a whole dialect quietly dropping out.
  */
-const EXPECTED_COMPARISONS = (40 + 18 + 29 + 12 + 14 + 13) * 4 * 3;
+const EXPECTED_COMPARISONS = (40 + 18 + 31 + 12 + 14 + 13) * 4 * 3;
 let totalCompared = 0;
 /**
  * The same denominator for the presence axis, counted separately.
@@ -7489,8 +7494,8 @@ const ALLOWED: Record<string, Entry> = {
   'sqlite/s_blob': { libs: LIB_NAMES, modes: MODE_NAMES, divergence: { '*/*': `L: Uint8Array | T: ` }, drzl: 'as pg/c_bytea', official: 'as pg/c_bytea', filed: 'not a defect: as pg/c_bytea' },
   'sqlite/s_blob_buf': { libs: LIB_NAMES, modes: MODE_NAMES, divergence: { '*/*': `L: Uint8Array | T: ` }, drzl: 'as sqlite/s_blob', official: 'as sqlite/s_blob', filed: 'as sqlite/s_blob' },
   'sqlite/s_n_blob': { libs: LIB_NAMES, modes: MODE_NAMES, divergence: { '*/*': `L: Uint8Array | T: ` }, drzl: 'as sqlite/s_blob', official: 'as sqlite/s_blob', filed: 'as sqlite/s_blob' },
-  'sqlite/s_int_ts_ms': { libs: LIB_NAMES, modes: WRITE, divergence: { '*/*': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', 17, 18, 50, 100, 101 | T: ` }, drzl: 'as pg/c_date_d', official: 'as pg/c_date_d', filed: 'not a defect: as pg/c_date_d' },
-  'sqlite/s_n_ts_ms': { libs: LIB_NAMES, modes: WRITE, divergence: { '*/*': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', 17, 18, 50, 100, 101 | T: ` }, drzl: 'as sqlite/s_int_ts_ms', official: 'as sqlite/s_int_ts_ms', filed: 'as sqlite/s_int_ts_ms' },
+  'sqlite/s_int_ts_ms': { libs: LIB_NAMES, modes: WRITE, divergence: { '*/*': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', 17, 18, 50, 100, 101, 4294967295, 4294967296 | T: ` }, drzl: 'as pg/c_date_d', official: 'as pg/c_date_d', filed: 'not a defect: as pg/c_date_d' },
+  'sqlite/s_n_ts_ms': { libs: LIB_NAMES, modes: WRITE, divergence: { '*/*': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', 17, 18, 50, 100, 101, 4294967295, 4294967296 | T: ` }, drzl: 'as sqlite/s_int_ts_ms', official: 'as sqlite/s_int_ts_ms', filed: 'as sqlite/s_int_ts_ms' },
 
   // Two independent differences meet on this column, and only the first of them is in the v1 pass.
   //
@@ -7564,17 +7569,17 @@ const ALLOWED: Record<string, Entry> = {
     libs: LIB_NAMES,
     modes: WRITE,
     divergence: {
-      '*/*': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', 17, 18, 50, 100, 101 | T: `,
+      '*/*': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', 17, 18, 50, 100, 101, 4294967295, 4294967296 | T: `,
     },
     drzl: 'a Date, or a string or number coerced to one',
     official: 'a Date only',
     filed: 'not a defect: coerceDates',
   },
-  'pg/c_ts_d': { libs: LIB_NAMES, modes: WRITE, divergence: { '*/*': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', 17, 18, 50, 100, 101 | T: `,     }, drzl: 'as pg/c_date_d', official: 'as pg/c_date_d', filed: 'as pg/c_date_d' },
-  'mysql/m_date': { libs: LIB_NAMES, modes: WRITE, divergence: { '*/*': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', 17, 18, 50, 100, 101 | T: `,     }, drzl: 'as pg/c_date_d', official: 'as pg/c_date_d', filed: 'as pg/c_date_d' },
-  'mysql/m_datetime': { libs: LIB_NAMES, modes: WRITE, divergence: { '*/*': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', 17, 18, 50, 100, 101 | T: `,     }, drzl: 'as pg/c_date_d', official: 'as pg/c_date_d', filed: 'as pg/c_date_d' },
-  'mysql/m_ts': { libs: LIB_NAMES, modes: WRITE, divergence: { '*/*': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', 17, 18, 50, 100, 101 | T: `,     }, drzl: 'as pg/c_date_d', official: 'as pg/c_date_d', filed: 'as pg/c_date_d' },
-  'sqlite/s_int_ts': { libs: LIB_NAMES, modes: WRITE, divergence: { '*/*': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', 17, 18, 50, 100, 101 | T: `,     }, drzl: 'as pg/c_date_d', official: 'as pg/c_date_d', filed: 'as pg/c_date_d' },
+  'pg/c_ts_d': { libs: LIB_NAMES, modes: WRITE, divergence: { '*/*': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', 17, 18, 50, 100, 101, 4294967295, 4294967296 | T: `,     }, drzl: 'as pg/c_date_d', official: 'as pg/c_date_d', filed: 'as pg/c_date_d' },
+  'mysql/m_date': { libs: LIB_NAMES, modes: WRITE, divergence: { '*/*': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', 17, 18, 50, 100, 101, 4294967295, 4294967296 | T: `,     }, drzl: 'as pg/c_date_d', official: 'as pg/c_date_d', filed: 'as pg/c_date_d' },
+  'mysql/m_datetime': { libs: LIB_NAMES, modes: WRITE, divergence: { '*/*': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', 17, 18, 50, 100, 101, 4294967295, 4294967296 | T: `,     }, drzl: 'as pg/c_date_d', official: 'as pg/c_date_d', filed: 'as pg/c_date_d' },
+  'mysql/m_ts': { libs: LIB_NAMES, modes: WRITE, divergence: { '*/*': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', 17, 18, 50, 100, 101, 4294967295, 4294967296 | T: `,     }, drzl: 'as pg/c_date_d', official: 'as pg/c_date_d', filed: 'as pg/c_date_d' },
+  'sqlite/s_int_ts': { libs: LIB_NAMES, modes: WRITE, divergence: { '*/*': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', 17, 18, 50, 100, 101, 4294967295, 4294967296 | T: `,     }, drzl: 'as pg/c_date_d', official: 'as pg/c_date_d', filed: 'as pg/c_date_d' },
   // TypeBox fails a format it has no entry for rather than ignoring it, so official's schema
   // rejects every valid uuid in any project that has not populated `FormatRegistry` first.
   'pg/c_uuid': {
@@ -7645,9 +7650,9 @@ const ALLOWED: Record<string, Entry> = {
     libs: LIB_NAMES,
     modes: MODE_NAMES,
     divergence: {
-      'select,insert/*': `L: 9000000, 2147483648, 9007199254740993, 3.4028235e38, NaN, Infinity | T: `,
-      'update/zod,valibot,typebox': `L: 9000000, 2147483648, 9007199254740993, 3.4028235e38, NaN, Infinity | T: `,
-      'update/arktype': `L: 9000000, 2147483648, 9007199254740993, 3.4028235e38, Infinity | T: `,
+      'select,insert/*': `L: 9000000, 2147483648, 9007199254740993, 3.4028235e38, NaN, Infinity, 4294967295, 4294967296 | T: `,
+      'update/zod,valibot,typebox': `L: 9000000, 2147483648, 9007199254740993, 3.4028235e38, NaN, Infinity, 4294967295, 4294967296 | T: `,
+      'update/arktype': `L: 9000000, 2147483648, 9007199254740993, 3.4028235e38, Infinity, 4294967295, 4294967296 | T: `,
     },
     drzl: 'a number within the magnitude Postgres accepts into a real, plus the non-finite values it stores',
     official: 'a number within +/-8388607, which refuses rows the column returns',
@@ -7656,10 +7661,10 @@ const ALLOWED: Record<string, Entry> = {
   // The analyzer reads precision and scale now, so this bounds where the column bounds and refuses
   // 2147483648, which `numeric(10,2)` answers 22003 for. Official reads neither number, so it
   // accepts a value the column will not hold. See the v1 copy for the full reasoning (AK).
-  'pg/c_numeric_n': { libs: LIB_NAMES, modes: MODE_NAMES, divergence: { 'select,insert/*': `L: NaN | T: 2147483648`, 'update/zod,valibot,typebox': `L: NaN | T: 2147483648`, 'update/arktype': `L:  | T: 2147483648` }, drzl: 'a number bounded by the declared precision, plus the NaN Postgres stores', official: 'an unbounded number that refuses the NaN the database hands back', filed: 'not a defect: the database is the arbiter, as pg/c_real' },
+  'pg/c_numeric_n': { libs: LIB_NAMES, modes: MODE_NAMES, divergence: { 'select,insert/*': `L: NaN | T: 2147483648, 4294967295, 4294967296`, 'update/zod,valibot,typebox': `L: NaN | T: 2147483648, 4294967295, 4294967296`, 'update/arktype': `L:  | T: 2147483648, 4294967295, 4294967296` }, drzl: 'a number bounded by the declared precision, plus the NaN Postgres stores', official: 'an unbounded number that refuses the NaN the database hands back', filed: 'not a defect: the database is the arbiter, as pg/c_real' },
   // Not `as pg/c_real` in the signature, which it was until MySQL was measured: the two 4 byte
   // floats have different edges, and `3.4028235e38` is the probe that says so.
-  'mysql/m_float': { libs: LIB_NAMES, modes: MODE_NAMES, divergence: { '*/zod,valibot,typebox': `L: 9000000, 2147483648, 9007199254740993 | T: `, 'update/arktype': `L: 9000000, 2147483648, 9007199254740993 | T: NaN`, 'select,insert/arktype': `L: 9000000, 2147483648, 9007199254740993 | T: ` }, drzl: 'as pg/c_real, at the narrower MySQL edge', official: 'as pg/c_real', filed: 'as pg/c_real' },
+  'mysql/m_float': { libs: LIB_NAMES, modes: MODE_NAMES, divergence: { '*/zod,valibot,typebox': `L: 9000000, 2147483648, 9007199254740993, 4294967295, 4294967296 | T: `, 'update/arktype': `L: 9000000, 2147483648, 9007199254740993, 4294967295, 4294967296 | T: NaN`, 'select,insert/arktype': `L: 9000000, 2147483648, 9007199254740993, 4294967295, 4294967296 | T: ` }, drzl: 'as pg/c_real, at the narrower MySQL edge', official: 'as pg/c_real', filed: 'as pg/c_real' },
   'pg/c_double': {
     libs: LIB_NAMES,
     modes: MODE_NAMES,
@@ -7682,10 +7687,10 @@ const ALLOWED: Record<string, Entry> = {
   // twin's is the evidence that the wrapping loses nothing. Three have no twin and they are the
   // three CHECK columns: no column of `matrix` carries a CHECK, and no first-party module reads
   // one at all.
-  'pg/n_real': { libs: LIB_NAMES, modes: MODE_NAMES, divergence: { '*/zod,valibot,typebox': `L: 9000000, 2147483648, 9007199254740993, 3.4028235e38, NaN, Infinity | T: `, '*/arktype': `L: 9000000, 2147483648, 9007199254740993, 3.4028235e38, Infinity | T: ` }, drzl: 'as pg/c_real', official: 'as pg/c_real', filed: 'as pg/c_real' },
+  'pg/n_real': { libs: LIB_NAMES, modes: MODE_NAMES, divergence: { '*/zod,valibot,typebox': `L: 9000000, 2147483648, 9007199254740993, 3.4028235e38, NaN, Infinity, 4294967295, 4294967296 | T: `, '*/arktype': `L: 9000000, 2147483648, 9007199254740993, 3.4028235e38, Infinity, 4294967295, 4294967296 | T: ` }, drzl: 'as pg/c_real', official: 'as pg/c_real', filed: 'as pg/c_real' },
   'pg/n_json': { libs: ['valibot'], modes: MODE_NAMES, divergence: { '*/*': `L:  | T: Infinity, Date, Buffer, Uint8Array` }, drzl: 'as pg/c_json', official: 'as pg/c_json', filed: 'as pg/c_json' },
   'pg/n_point': { libs: ['valibot'], modes: MODE_NAMES, divergence: { '*/*': `L:  | T: [1,2,3]` }, drzl: 'as pg/c_point', official: 'as pg/c_point', filed: 'as pg/c_point' },
-  'pg/n_ts': { libs: LIB_NAMES, modes: WRITE, divergence: { '*/*': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', 17, 18, 50, 100, 101 | T: `, }, drzl: 'as pg/c_date_d', official: 'as pg/c_date_d', filed: 'as pg/c_date_d' },
+  'pg/n_ts': { libs: LIB_NAMES, modes: WRITE, divergence: { '*/*': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', 17, 18, 50, 100, 101, 4294967295, 4294967296 | T: `, }, drzl: 'as pg/c_date_d', official: 'as pg/c_date_d', filed: 'as pg/c_date_d' },
   // The database has already answered this one in this same script: the CHECK ground-truth stage
   // runs 53 probes over the `checked` table against a real Postgres and reports rows Postgres
   // rejects and the validator accepts as DRZL 0, drizzle-orm 22, and `k_between BETWEEN 5 AND 15`
@@ -7694,14 +7699,14 @@ const ALLOWED: Record<string, Entry> = {
   'pg/n_check': { libs: LIB_NAMES, modes: MODE_NAMES, divergence: { '*/*': `L:  | T: 0, 1, -1, 200, 40000, 9000000, 1900, 2000, 2500, 17, 101` }, drzl: 'the column CHECK, as a bound', official: 'no CHECK at all: no first-party module reads one', filed: 'not a defect: this is what DRZL is for' },
   'mysql/m_n_text': { libs: LIB_NAMES, modes: MODE_NAMES, divergence: { '*/*': `L:  | T: 22000 cjk` }, drzl: 'as mysql/m_text', official: 'as mysql/m_text', filed: 'as mysql/m_text' },
   'mysql/m_n_tinytext': { libs: LIB_NAMES, modes: MODE_NAMES, divergence: { '*/*': `L:  | T: 100 emoji` }, drzl: 'as mysql/m_tinytext', official: 'as mysql/m_tinytext', filed: 'as mysql/m_tinytext' },
-  'mysql/m_n_float': { libs: LIB_NAMES, modes: MODE_NAMES, divergence: { '*/zod,valibot,typebox': `L: 9000000, 2147483648, 9007199254740993 | T: `, '*/arktype': `L: 9000000, 2147483648, 9007199254740993 | T: NaN` }, drzl: 'as mysql/m_float', official: 'as mysql/m_float', filed: 'as pg/c_real' },
+  'mysql/m_n_float': { libs: LIB_NAMES, modes: MODE_NAMES, divergence: { '*/zod,valibot,typebox': `L: 9000000, 2147483648, 9007199254740993, 4294967295, 4294967296 | T: `, '*/arktype': `L: 9000000, 2147483648, 9007199254740993, 4294967295, 4294967296 | T: NaN` }, drzl: 'as mysql/m_float', official: 'as mysql/m_float', filed: 'as pg/c_real' },
   'mysql/m_n_json': { libs: ['valibot'], modes: MODE_NAMES, divergence: { '*/*': `L:  | T: Infinity, Date, Buffer, Uint8Array` }, drzl: 'as pg/c_json', official: 'as pg/c_json', filed: 'as pg/c_json' },
-  'mysql/m_n_datetime': { libs: LIB_NAMES, modes: WRITE, divergence: { '*/*': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', 17, 18, 50, 100, 101 | T: `, }, drzl: 'as pg/c_date_d', official: 'as pg/c_date_d', filed: 'as pg/c_date_d' },
+  'mysql/m_n_datetime': { libs: LIB_NAMES, modes: WRITE, divergence: { '*/*': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', 17, 18, 50, 100, 101, 4294967295, 4294967296 | T: `, }, drzl: 'as pg/c_date_d', official: 'as pg/c_date_d', filed: 'as pg/c_date_d' },
   'mysql/m_n_check': { libs: LIB_NAMES, modes: MODE_NAMES, divergence: { '*/*': `L:  | T: 0, 1, -1, 200, 40000, 9000000, 1900, 2000, 2500, 17, 101` }, drzl: 'as pg/n_check', official: 'as pg/n_check', filed: 'as pg/n_check' },
   'sqlite/s_n_real': { libs: LIB_NAMES, modes: MODE_NAMES, divergence: { '*/zod,typebox': `L: 9007199254740993, 3.4028235e38 | T: `, '*/valibot': `L: 9007199254740993, 3.4028235e38, Infinity | T: `, '*/arktype': `L: 9007199254740993, 3.4028235e38, Infinity | T: NaN` }, drzl: 'as pg/c_double', official: 'as pg/c_double', filed: 'as pg/c_real' },
   'sqlite/s_n_json': { libs: ['valibot'], modes: MODE_NAMES, divergence: { '*/*': `L:  | T: Infinity, Date, Buffer, Uint8Array` }, drzl: 'as pg/c_json', official: 'as pg/c_json', filed: 'as pg/c_json' },
-  'sqlite/s_n_ts': { libs: LIB_NAMES, modes: WRITE, divergence: { '*/*': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', 17, 18, 50, 100, 101 | T: `, }, drzl: 'as pg/c_date_d', official: 'as pg/c_date_d', filed: 'as pg/c_date_d' },
-  'sqlite/s_n_check': { libs: LIB_NAMES, modes: MODE_NAMES, divergence: { '*/*': `L:  | T: 0, 1, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, 17, 101` }, drzl: 'as pg/n_check', official: 'as pg/n_check', filed: 'as pg/n_check' },
+  'sqlite/s_n_ts': { libs: LIB_NAMES, modes: WRITE, divergence: { '*/*': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', 17, 18, 50, 100, 101, 4294967295, 4294967296 | T: `, }, drzl: 'as pg/c_date_d', official: 'as pg/c_date_d', filed: 'as pg/c_date_d' },
+  'sqlite/s_n_check': { libs: LIB_NAMES, modes: MODE_NAMES, divergence: { '*/*': `L:  | T: 0, 1, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, 17, 101, 4294967295, 4294967296` }, drzl: 'as pg/n_check', official: 'as pg/n_check', filed: 'as pg/n_check' },
   // ---- binary and varbinary, where only DRZL enforces the declared width ----------------------
   // These two were DEFECTS here until the analyzer stopped calling a byte string a Uint8Array. They
   // are waivers now because DRZL is the stricter side and the server agrees with it.
@@ -7824,8 +7829,8 @@ const DEFECTS: Record<string, Entry> = {
     libs: LIB_NAMES,
     modes: MODE_NAMES,
     divergence: {
-      '*/zod': `L: 0, 1, -1, 200, 40000, 9000000, 2147483648, 1900, 2500, 17, 18, 50, 100, 101 | T: `,
-      '*/valibot,arktype,typebox': `L: 0, 1, -1, 200, 40000, 9000000, 2147483648, 9007199254740993, 3.4028235e38, 1900, 2500, 17, 18, 50, 100, 101 | T: `,
+      '*/zod': `L: 0, 1, -1, 200, 40000, 9000000, 2147483648, 1900, 2500, 17, 18, 50, 100, 101, 4294967295, 4294967296 | T: `,
+      '*/valibot,arktype,typebox': `L: 0, 1, -1, 200, 40000, 9000000, 2147483648, 9007199254740993, 3.4028235e38, 1900, 2500, 17, 18, 50, 100, 101, 4294967295, 4294967296 | T: `,
     },
     drzl: 'an unbounded integer',
     official: 'an integer within 1901..2155',
@@ -7842,7 +7847,7 @@ const DEFECTS: Record<string, Entry> = {
   'sqlite/s_blob_bigint': {
     libs: LIB_NAMES,
     modes: MODE_NAMES,
-    divergence: { '*/*': `L: 2n**70n | T: ` },
+    divergence: { '*/*': `L: 2n**70n, 18446744073709551615n, 18446744073709551616n | T: ` },
     drzl: 'an unbounded bigint',
     official: 'a bigint within the signed 64-bit range',
     filed: 'new',
@@ -7878,7 +7883,7 @@ const DEFECTS: Record<string, Entry> = {
   'sqlite/s_n_bigint': {
     libs: LIB_NAMES,
     modes: MODE_NAMES,
-    divergence: { '*/*': `L: 2n**70n | T: ` },
+    divergence: { '*/*': `L: 2n**70n, 18446744073709551615n, 18446744073709551616n | T: ` },
     drzl: 'as sqlite/s_blob_bigint',
     official: 'as sqlite/s_blob_bigint',
     filed: 'as sqlite/s_blob_bigint',
@@ -7953,7 +7958,7 @@ const PRESENCE_BARREN: Record<string, string> = {
  * same line and finds nothing. Measured on the v1 pass by making a select schema barren at a column
  * already declared in `PRESENCE_BARREN`, which dropped 40 keys and hid a real optional one.
  */
-const SELECT_REACH = { schemas: 24, keys: 492 };
+const SELECT_REACH = { schemas: 24, keys: 500 };
 
 const SELECT_OPTIONAL: Record<string, string> = {
   // The three Postgres entries that stood here are gone, and nobody edited them out: naming
@@ -8223,7 +8228,7 @@ const PREFIX: Record<string, string> = { select: 'Select', insert: 'Insert', upd
  * against 0.45.2 and was green throughout. A fixture that grows a column fails here and has to be
  * re-measured, which is the intended cost.
  */
-const EXPECTED_COMPARISONS = (39 + 17 + 28 + 12 + 14 + 13) * 4 * 3;
+const EXPECTED_COMPARISONS = (39 + 17 + 30 + 12 + 14 + 13) * 4 * 3;
 
 // Read off disk rather than through `require.resolve`, whose `exports` map has no `./package.json`
 // entry for drizzle-orm. Reading it is also the point: this reports the version of the tree the
