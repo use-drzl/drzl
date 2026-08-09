@@ -32,6 +32,7 @@ import {
 import { buildDoctorReport, renderDoctorReport } from './doctor.js';
 import { diffSnapshots, restoreSnapshot, snapshotAll } from './drift.js';
 import { GeneratorNotInstalledError, loadGenerator } from './generator-loader.js';
+import { INIT_GENERATOR_CHOICES, runInit } from './init.js';
 import { maybeShowSponsorMessage } from './sponsor.js';
 import { CLI_VERSION } from './version.js';
 
@@ -1309,39 +1310,28 @@ program
 
 program
   .command('init')
-  .description('Scaffold a drzl.config.ts')
-  .option('-y, --yes', 'accept defaults')
-  .action(async (_opts: any) => {
-    const fs = await import('node:fs/promises');
-    const path = await import('node:path');
-    const target = path.resolve(process.cwd(), 'drzl.config.ts');
-    // One router generator, not both: they default to the same `outDir` and would each write an
-    // `index.ts` there, so a scaffold naming both would emit a config whose second generator
-    // silently overwrote the first. Swapping the kind is a one-word edit; running both needs a
-    // `path` on one of them, which is what the comment says.
-    // `import type`, not the `defineConfig` value import the docs use, because `drzl init` also
-    // runs under `npx` in a project that has no local `@drzl/cli` to resolve. A type-only import
-    // is erased before the config is ever executed, so the scaffold still runs there; a value
-    // import would have made the very first generate fail on a module that is not installed.
-    const template = `import type { DrzlConfigInput } from '@drzl/cli/config';
-
-export default {
-  schema: 'src/db/schema.ts',
-  outDir: 'src/api',
-  analyzer: { includeRelations: true, validateConstraints: true },
-  generators: [
-    // For tRPC instead: { kind: 'trpc', template: 'standard', includeRelations: true }
-    // To run both, give one of them its own \`path\`; they share \`outDir\` otherwise.
-    { kind: 'orpc', template: 'standard', includeRelations: true }
-  ]
-} satisfies DrzlConfigInput\n`;
-    try {
-      await fs.writeFile(target, template, { flag: 'wx' });
-      console.log(chalk.green(`Created ${target}`));
-    } catch (e: any) {
-      console.error(chalk.red('Init failed:'), e?.message ?? e);
-      process.exit(1);
-    }
+  .description('Scaffold a drzl.config.ts, finding your schema and asking what to generate')
+  .option('-y, --yes', 'take the defaults and ask nothing')
+  .option('--schema <path>', 'the schema file to write into the config, skipping detection')
+  .option(
+    '--generators <list>',
+    `comma-separated: ${INIT_GENERATOR_CHOICES.map((c) => c.kind).join(', ')}`
+  )
+  .action(async (opts: any) => {
+    // Every prompt has a flag, and every flag skips its prompt. That equivalence is what keeps
+    // the interactive command usable from CI: nothing can only be answered by a human.
+    const outcome = await runInit({
+      cwd: process.cwd(),
+      yes: !!opts.yes,
+      schemaFlag: opts.schema,
+      generatorsFlag: opts.generators,
+      stdin: process.stdin,
+      stdout: process.stdout,
+      env: process.env,
+      log: (s) => console.log(s.startsWith('Created ') ? chalk.green(s) : chalk.gray(s)),
+      error: (s) => console.error(chalk.red(s)),
+    });
+    if (outcome.code !== 0) process.exit(outcome.code);
   });
 
 /**

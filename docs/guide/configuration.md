@@ -582,14 +582,14 @@ export default defineConfig({
 
 `defineConfig` is the identity function: it returns what you pass it and exists only to attach the
 type. If you would rather not import a value, the annotation alone does the same job, which is
-what `drzl init` scaffolds:
+what [`drzl init`](/cli/init) scaffolds:
 
 ```ts
 import type { DrzlConfigInput } from '@drzl/cli/config';
 
 export default {
   schema: 'src/db/schema.ts',
-  generators: [{ kind: 'orpc' }],
+  generators: [{ kind: 'zod', path: 'src/validators/zod' }],
 } satisfies DrzlConfigInput;
 ```
 
@@ -634,8 +634,8 @@ reporting them. DRZL's one refinement holds the affix rules, so:
 - **Illegal affix characters are caught.** The rule is re-encoded as a `pattern`, and a test fuzzes
   it against the CLI's own check over every printable ASCII position to keep the two identical.
 - **Affix collisions are not caught.** Two modes whose prefix and suffix resolve to the same
-  identifier is a comparison between sibling values, which JSON Schema cannot express. `drzl
-  generate` still refuses, naming the two modes and the identifier they collide on.
+  identifier is a comparison between sibling values, which JSON Schema cannot express.
+  `drzl generate` still refuses, naming the two modes and the identifier they collide on.
 
 Unknown top-level keys are accepted by the schema because the CLI accepts them too: it ignores
 what it does not recognise rather than failing. Keys inside `columns` and `affix` are strict in
