@@ -31,6 +31,35 @@ jobs:
       - run: pnpm -C packages/analyzer fuzz:gate
       - run: pnpm lint
 
+  # Bun and Deno, against the packed tarballs. Everything else in CI runs only on Node, so nothing
+  # else would notice a generator whose output depends on which runtime ran it. One did: Bun's
+  # resolver auto-installs a missing package from npm, so @biomejs/biome was fetched mid-generate
+  # and reformatted the output on a project that never depended on it, which then made
+  # `generate --check` fail back on Node.
+  #
+  # Versions are pinned to the ones docs/guide/runtimes.md names, so the page and the gate cannot
+  # drift apart. That deliberately trades early warning of an upstream regression for a claim that
+  # is exactly true; a scheduled job on the latest of each is the shape to add if the trade stops
+  # being worth it, and it belongs with plan item 99's nightly rather than here.
+  runtime-compat:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: 'pnpm'
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.9.5
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build:packages
+      - run: bash scripts/runtime-compat.sh
+
   # Everything above imports from source. This job is the only one that exercises what a
   # consumer actually gets: the packed tarballs, installed with npm into a tree that shares
   # nothing with this workspace, driven through `drzl generate`, with the emitted output

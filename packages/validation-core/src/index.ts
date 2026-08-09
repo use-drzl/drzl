@@ -602,6 +602,78 @@ function nearestExistingDir(from: string): string {
 }
 
 /**
+ * Whether a resolved manifest path belongs to a project's installed dependencies.
+ *
+ * Resolving a package is normally the same question as having it installed, and on Node and Deno
+ * it is: their resolvers walk `node_modules` and answer a missing package with MODULE_NOT_FOUND.
+ * Bun's does not. When nothing is found it auto-installs the package from npm and resolves into
+ * its own global cache, so `require.resolve('@biomejs/biome/package.json')` succeeds under Bun
+ * against a project whose package.json has never mentioned Biome. Measured under Bun 1.3.14:
+ *
+ *   node   -> MODULE_NOT_FOUND
+ *   deno   -> MODULE_NOT_FOUND
+ *   bun    -> /home/<user>/.bun/install/cache/@biomejs/biome@2.5.7@@@1/package.json
+ *
+ * That made `drzl generate` emit Biome-formatted files under Bun and unformatted files under Node
+ * from the same schema and the same config, so `generate --check` under Node called every file
+ * out of date; and it fetched a package, plus a multi-megabyte native binary, from the network in
+ * the middle of codegen. It was not stable within Bun either, since whether the auto-install fired
+ * depended on the state of a cache outside the project.
+ *
+ * A `node_modules` path segment is the discriminator, and it is exact rather than a heuristic:
+ * npm, pnpm's `.pnpm` store and Yarn PnP's zip and unplugged paths all reach a package through
+ * one, and Bun's auto-install cache is the one shape that does not, because it is not a project
+ * install. Under Node and Deno this can never fire, since their resolvers have no other kind of
+ * path to return, so it costs those runtimes nothing. A Bun project that really does install
+ * Biome resolves through its `node_modules` like everyone else and still formats.
+ */
+export function isProjectInstallPath(manifestPath: string): boolean {
+  return manifestPath.split(path.sep).includes('node_modules');
+}
+
+/**
+ * Find `@biomejs/biome`'s manifest, anchoring each candidate directory in its own `createRequire`.
+ *
+ * The obvious spelling is one `createRequire` and `resolve(spec, { paths: [startDir, cwd] })`,
+ * which is what this was. Node honours that list; Bun does not. Measured under Bun 1.3.14 with
+ * Biome genuinely installed in the project and the output directory outside it (an absolute
+ * `outDir`), which is the exact case `paths` was added for:
+ *
+ *   node -> /app/node_modules/@biomejs/biome/package.json      (fell back to cwd, correct)
+ *   bun  -> ~/.bun/install/cache/@biomejs/biome@2.5.7@@@1/...  (auto-installed instead)
+ *
+ * So Bun never tried the second entry: rather than walking on to `process.cwd()`, it answered the
+ * miss from `startDir` by fetching the package from npm. Anchoring a separate `createRequire` at
+ * each candidate asks the question Bun does answer correctly, one directory at a time, and both
+ * runtimes then find the same project install. Order is preserved from the `paths` array it
+ * replaces: the directory being written into wins, and the process working directory is the
+ * fallback.
+ *
+ * A resolution that is not a project install is skipped rather than returned, so Bun's
+ * auto-install cache never wins over a real install further up. See `isProjectInstallPath`.
+ */
+function biomeManifest(startDir: string): string {
+  const anchors = [startDir, process.cwd()];
+  let lastError: unknown;
+  for (const anchor of anchors) {
+    let resolved: string;
+    try {
+      const require_ = createRequire(pathToFileURL(path.join(anchor, 'noop.js')));
+      resolved = require_.resolve('@biomejs/biome/package.json');
+    } catch (err) {
+      lastError = err;
+      continue;
+    }
+    if (isProjectInstallPath(resolved)) return resolved;
+    lastError = new Error(
+      `@biomejs/biome resolved to ${resolved}, which is not part of this project's installed ` +
+        'dependencies. Add @biomejs/biome to the project to format with it.'
+    );
+  }
+  throw lastError ?? new Error('@biomejs/biome could not be resolved');
+}
+
+/**
  * Locate the Biome executable belonging to the project being generated into.
  *
  * `@biomejs/biome` cannot be imported. Its manifest declares `bin` and carries no `main`, no
@@ -623,12 +695,7 @@ function nearestExistingDir(from: string): string {
  * are being written into.
  */
 function biomeBinary(startDir: string): string {
-  const require_ = createRequire(pathToFileURL(path.join(startDir, 'noop.js')));
-  // `paths` covers the case where the output directory sits outside the project, as it does for an
-  // absolute `outDir`; the process working directory is then the better anchor.
-  const manifestPath = require_.resolve('@biomejs/biome/package.json', {
-    paths: [startDir, process.cwd()],
-  });
+  const manifestPath = biomeManifest(startDir);
   const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
   // A string at 1.5.3 and below, an object from 1.9.4 on. Both shapes are still installable.
   const relative = typeof manifest.bin === 'string' ? manifest.bin : manifest.bin?.biome;

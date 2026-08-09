@@ -36,6 +36,7 @@ export default {
         items: [
           { text: 'Getting Started', link: '/guide/getting-started' },
           { text: 'Configuration', link: '/guide/configuration' },
+          { text: 'Bun and Deno', link: '/guide/runtimes' },
           { text: 'Benchmarks', link: '/guide/benchmarks' },
         ],
       },
