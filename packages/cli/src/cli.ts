@@ -1319,7 +1319,13 @@ program
     // `index.ts` there, so a scaffold naming both would emit a config whose second generator
     // silently overwrote the first. Swapping the kind is a one-word edit; running both needs a
     // `path` on one of them, which is what the comment says.
-    const template = `export default {
+    // `import type`, not the `defineConfig` value import the docs use, because `drzl init` also
+    // runs under `npx` in a project that has no local `@drzl/cli` to resolve. A type-only import
+    // is erased before the config is ever executed, so the scaffold still runs there; a value
+    // import would have made the very first generate fail on a module that is not installed.
+    const template = `import type { DrzlConfigInput } from '@drzl/cli/config';
+
+export default {
   schema: 'src/db/schema.ts',
   outDir: 'src/api',
   analyzer: { includeRelations: true, validateConstraints: true },
@@ -1328,7 +1334,7 @@ program
     // To run both, give one of them its own \`path\`; they share \`outDir\` otherwise.
     { kind: 'orpc', template: 'standard', includeRelations: true }
   ]
-} as const\n`;
+} satisfies DrzlConfigInput\n`;
     try {
       await fs.writeFile(target, template, { flag: 'wx' });
       console.log(chalk.green(`Created ${target}`));

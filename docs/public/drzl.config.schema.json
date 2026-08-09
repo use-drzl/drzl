@@ -1,0 +1,717 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://use-drzl.github.io/drzl/drzl.config.schema.json",
+  "title": "DRZL configuration",
+  "description": "Configuration for the drzl CLI. Also describes drzl.config.ts, which gets the same shape from the defineConfig export of @drzl/cli/config.",
+  "type": "object",
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "description": "Path or URL of this schema, for editor completion. Ignored by drzl."
+    },
+    "schema": {
+      "type": "string"
+    },
+    "drizzleKit": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "string"
+        }
+      ]
+    },
+    "outDir": {
+      "default": "src/api",
+      "type": "string"
+    },
+    "include": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "exclude": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "columns": {
+      "type": "object",
+      "propertyNames": {
+        "type": "string"
+      },
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "omit": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "pick": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "importExtension": {
+      "default": "js",
+      "type": "string",
+      "enum": [
+        "js",
+        "none",
+        "ts"
+      ]
+    },
+    "analyzer": {
+      "default": {
+        "includeRelations": true,
+        "validateConstraints": true,
+        "includeHeuristicRelations": false
+      },
+      "type": "object",
+      "properties": {
+        "includeRelations": {
+          "default": true,
+          "type": "boolean"
+        },
+        "validateConstraints": {
+          "default": true,
+          "type": "boolean"
+        },
+        "includeHeuristicRelations": {
+          "default": false,
+          "type": "boolean"
+        }
+      }
+    },
+    "generators": {
+      "default": [
+        {
+          "kind": "orpc"
+        }
+      ],
+      "minItems": 1,
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "orpc",
+              "trpc",
+              "hono",
+              "express",
+              "fastify",
+              "nestjs",
+              "graphql",
+              "service",
+              "zod",
+              "valibot",
+              "arktype",
+              "typebox",
+              "effect",
+              "json-schema"
+            ]
+          },
+          "validator": {
+            "type": "string",
+            "enum": [
+              "standard",
+              "zod"
+            ]
+          },
+          "importExtension": {
+            "type": "string",
+            "enum": [
+              "js",
+              "none",
+              "ts"
+            ]
+          },
+          "template": {
+            "type": "string"
+          },
+          "includeRelations": {
+            "type": "boolean"
+          },
+          "sharedEnums": {
+            "type": "boolean"
+          },
+          "coerceDates": {
+            "type": "string",
+            "enum": [
+              "input",
+              "all",
+              "none"
+            ]
+          },
+          "typedJson": {
+            "type": "boolean"
+          },
+          "typedColumns": {
+            "type": "boolean"
+          },
+          "applyDefaults": {
+            "type": "boolean"
+          },
+          "duplicateFinder": {
+            "type": "boolean"
+          },
+          "constraints": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "enabled": {
+                    "type": "boolean"
+                  },
+                  "errorMap": {
+                    "type": "boolean"
+                  }
+                },
+                "additionalProperties": false
+              }
+            ]
+          },
+          "meta": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "enabled": {
+                    "type": "boolean"
+                  },
+                  "description": {
+                    "type": "boolean"
+                  }
+                },
+                "additionalProperties": false
+              }
+            ]
+          },
+          "standardSchema": {
+            "type": "boolean"
+          },
+          "nestedSchemas": {
+            "type": "boolean"
+          },
+          "nestedDepth": {
+            "type": "integer",
+            "minimum": -9007199254740991,
+            "maximum": 9007199254740991
+          },
+          "branded": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "enabled": {
+                    "type": "boolean"
+                  },
+                  "foreignKeys": {
+                    "type": "boolean"
+                  },
+                  "aliases": {
+                    "type": "boolean"
+                  }
+                },
+                "additionalProperties": false
+              }
+            ]
+          },
+          "naming": {
+            "type": "object",
+            "properties": {
+              "routerSuffix": {
+                "default": "Router",
+                "type": "string"
+              },
+              "procedureCase": {
+                "default": "camel",
+                "type": "string",
+                "enum": [
+                  "camel",
+                  "kebab",
+                  "snake"
+                ]
+              }
+            }
+          },
+          "outputHeader": {
+            "type": "object",
+            "properties": {
+              "enabled": {
+                "default": true,
+                "type": "boolean"
+              },
+              "text": {
+                "type": "string"
+              }
+            }
+          },
+          "format": {
+            "type": "object",
+            "properties": {
+              "enabled": {
+                "default": true,
+                "type": "boolean"
+              },
+              "engine": {
+                "default": "auto",
+                "type": "string",
+                "enum": [
+                  "auto",
+                  "prettier",
+                  "biome"
+                ]
+              },
+              "configPath": {
+                "type": "string"
+              }
+            }
+          },
+          "target": {
+            "type": "string",
+            "enum": [
+              "draft-2020-12",
+              "openapi-3.1",
+              "openapi-3.0"
+            ]
+          },
+          "components": {
+            "type": "boolean"
+          },
+          "document": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "enabled": {
+                    "type": "boolean"
+                  },
+                  "format": {
+                    "type": "string",
+                    "enum": [
+                      "ts",
+                      "json",
+                      "both"
+                    ]
+                  },
+                  "info": {
+                    "type": "object",
+                    "properties": {
+                      "title": {
+                        "type": "string"
+                      },
+                      "version": {
+                        "type": "string"
+                      },
+                      "description": {
+                        "type": "string"
+                      }
+                    },
+                    "additionalProperties": false
+                  },
+                  "servers": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "url": {
+                          "type": "string"
+                        },
+                        "description": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "url"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "validationStatus": {
+                    "anyOf": [
+                      {
+                        "type": "number",
+                        "const": 400
+                      },
+                      {
+                        "type": "number",
+                        "const": 422
+                      }
+                    ]
+                  }
+                },
+                "additionalProperties": false
+              }
+            ]
+          },
+          "path": {
+            "type": "string"
+          },
+          "dataAccess": {
+            "default": "stub",
+            "type": "string",
+            "enum": [
+              "stub",
+              "drizzle"
+            ]
+          },
+          "dbImportPath": {
+            "type": "string"
+          },
+          "schemaImportPath": {
+            "type": "string"
+          },
+          "schemaSuffix": {
+            "type": "string"
+          },
+          "fileSuffix": {
+            "type": "string"
+          },
+          "affix": {
+            "type": "object",
+            "properties": {
+              "tableCase": {
+                "type": "string",
+                "enum": [
+                  "preserve",
+                  "pascal"
+                ]
+              },
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "prefix": {
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "pattern": "^(?:[A-Za-z_$][A-Za-z0-9_$]*)?$"
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "insert": {
+                            "type": "string",
+                            "pattern": "^(?:[A-Za-z_$][A-Za-z0-9_$]*)?$"
+                          },
+                          "update": {
+                            "type": "string",
+                            "pattern": "^(?:[A-Za-z_$][A-Za-z0-9_$]*)?$"
+                          },
+                          "select": {
+                            "type": "string",
+                            "pattern": "^(?:[A-Za-z_$][A-Za-z0-9_$]*)?$"
+                          }
+                        },
+                        "additionalProperties": false
+                      }
+                    ]
+                  },
+                  "suffix": {
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "pattern": "^(?:[A-Za-z0-9_$]+)?$"
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "insert": {
+                            "type": "string",
+                            "pattern": "^(?:[A-Za-z0-9_$]+)?$"
+                          },
+                          "update": {
+                            "type": "string",
+                            "pattern": "^(?:[A-Za-z0-9_$]+)?$"
+                          },
+                          "select": {
+                            "type": "string",
+                            "pattern": "^(?:[A-Za-z0-9_$]+)?$"
+                          }
+                        },
+                        "additionalProperties": false
+                      }
+                    ]
+                  }
+                },
+                "additionalProperties": false
+              },
+              "type": {
+                "type": "object",
+                "properties": {
+                  "prefix": {
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "pattern": "^(?:[A-Za-z_$][A-Za-z0-9_$]*)?$"
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "insert": {
+                            "type": "string",
+                            "pattern": "^(?:[A-Za-z_$][A-Za-z0-9_$]*)?$"
+                          },
+                          "update": {
+                            "type": "string",
+                            "pattern": "^(?:[A-Za-z_$][A-Za-z0-9_$]*)?$"
+                          },
+                          "select": {
+                            "type": "string",
+                            "pattern": "^(?:[A-Za-z_$][A-Za-z0-9_$]*)?$"
+                          }
+                        },
+                        "additionalProperties": false
+                      }
+                    ]
+                  },
+                  "suffix": {
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "pattern": "^(?:[A-Za-z0-9_$]+)?$"
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "insert": {
+                            "type": "string",
+                            "pattern": "^(?:[A-Za-z0-9_$]+)?$"
+                          },
+                          "update": {
+                            "type": "string",
+                            "pattern": "^(?:[A-Za-z0-9_$]+)?$"
+                          },
+                          "select": {
+                            "type": "string",
+                            "pattern": "^(?:[A-Za-z0-9_$]+)?$"
+                          }
+                        },
+                        "additionalProperties": false
+                      }
+                    ]
+                  }
+                },
+                "additionalProperties": false
+              }
+            },
+            "additionalProperties": false
+          },
+          "databaseInjection": {
+            "type": "object",
+            "properties": {
+              "enabled": {
+                "type": "boolean"
+              },
+              "databaseType": {
+                "type": "string"
+              },
+              "databaseTypeImport": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "type": "string"
+                  },
+                  "from": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "name",
+                  "from"
+                ]
+              }
+            }
+          },
+          "validation": {
+            "type": "object",
+            "properties": {
+              "useShared": {
+                "default": false,
+                "type": "boolean"
+              },
+              "library": {
+                "default": "zod",
+                "type": "string",
+                "enum": [
+                  "zod",
+                  "valibot",
+                  "arktype"
+                ]
+              },
+              "importPath": {
+                "type": "string"
+              },
+              "schemaSuffix": {
+                "type": "string"
+              },
+              "affix": {
+                "type": "object",
+                "properties": {
+                  "tableCase": {
+                    "type": "string",
+                    "enum": [
+                      "preserve",
+                      "pascal"
+                    ]
+                  },
+                  "schema": {
+                    "type": "object",
+                    "properties": {
+                      "prefix": {
+                        "anyOf": [
+                          {
+                            "type": "string",
+                            "pattern": "^(?:[A-Za-z_$][A-Za-z0-9_$]*)?$"
+                          },
+                          {
+                            "type": "object",
+                            "properties": {
+                              "insert": {
+                                "type": "string",
+                                "pattern": "^(?:[A-Za-z_$][A-Za-z0-9_$]*)?$"
+                              },
+                              "update": {
+                                "type": "string",
+                                "pattern": "^(?:[A-Za-z_$][A-Za-z0-9_$]*)?$"
+                              },
+                              "select": {
+                                "type": "string",
+                                "pattern": "^(?:[A-Za-z_$][A-Za-z0-9_$]*)?$"
+                              }
+                            },
+                            "additionalProperties": false
+                          }
+                        ]
+                      },
+                      "suffix": {
+                        "anyOf": [
+                          {
+                            "type": "string",
+                            "pattern": "^(?:[A-Za-z0-9_$]+)?$"
+                          },
+                          {
+                            "type": "object",
+                            "properties": {
+                              "insert": {
+                                "type": "string",
+                                "pattern": "^(?:[A-Za-z0-9_$]+)?$"
+                              },
+                              "update": {
+                                "type": "string",
+                                "pattern": "^(?:[A-Za-z0-9_$]+)?$"
+                              },
+                              "select": {
+                                "type": "string",
+                                "pattern": "^(?:[A-Za-z0-9_$]+)?$"
+                              }
+                            },
+                            "additionalProperties": false
+                          }
+                        ]
+                      }
+                    },
+                    "additionalProperties": false
+                  },
+                  "type": {
+                    "type": "object",
+                    "properties": {
+                      "prefix": {
+                        "anyOf": [
+                          {
+                            "type": "string",
+                            "pattern": "^(?:[A-Za-z_$][A-Za-z0-9_$]*)?$"
+                          },
+                          {
+                            "type": "object",
+                            "properties": {
+                              "insert": {
+                                "type": "string",
+                                "pattern": "^(?:[A-Za-z_$][A-Za-z0-9_$]*)?$"
+                              },
+                              "update": {
+                                "type": "string",
+                                "pattern": "^(?:[A-Za-z_$][A-Za-z0-9_$]*)?$"
+                              },
+                              "select": {
+                                "type": "string",
+                                "pattern": "^(?:[A-Za-z_$][A-Za-z0-9_$]*)?$"
+                              }
+                            },
+                            "additionalProperties": false
+                          }
+                        ]
+                      },
+                      "suffix": {
+                        "anyOf": [
+                          {
+                            "type": "string",
+                            "pattern": "^(?:[A-Za-z0-9_$]+)?$"
+                          },
+                          {
+                            "type": "object",
+                            "properties": {
+                              "insert": {
+                                "type": "string",
+                                "pattern": "^(?:[A-Za-z0-9_$]+)?$"
+                              },
+                              "update": {
+                                "type": "string",
+                                "pattern": "^(?:[A-Za-z0-9_$]+)?$"
+                              },
+                              "select": {
+                                "type": "string",
+                                "pattern": "^(?:[A-Za-z0-9_$]+)?$"
+                              }
+                            },
+                            "additionalProperties": false
+                          }
+                        ]
+                      }
+                    },
+                    "additionalProperties": false
+                  }
+                },
+                "additionalProperties": false
+              }
+            }
+          },
+          "templateOptions": {
+            "type": "object",
+            "propertyNames": {
+              "type": "string"
+            },
+            "additionalProperties": {}
+          }
+        },
+        "required": [
+          "kind"
+        ]
+      }
+    }
+  }
+}

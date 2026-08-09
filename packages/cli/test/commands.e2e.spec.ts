@@ -54,6 +54,13 @@ describe('drzl init', () => {
     expect(config).toContain('schema:');
     expect(config).toContain('generators:');
 
+    // The scaffold is the first config most users see, and it had no type annotation at all, so
+    // it got no completion in an editor. The annotation has to stay type-only: this fixture has
+    // no `@drzl/cli` to resolve, exactly like a project that ran the CLI through `npx`, and the
+    // `generate` below is what proves the import is erased rather than resolved.
+    expect(config).toContain("import type { DrzlConfigInput } from '@drzl/cli/config'");
+    expect(config).toContain('satisfies DrzlConfigInput');
+
     // The config `init` writes has to be one `generate` accepts. Scaffolding something that
     // then fails is worse than scaffolding nothing.
     await run(process.execPath, [CLI, 'generate'], { cwd: dir, maxBuffer: 20 * 1024 * 1024 });
