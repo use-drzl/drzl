@@ -1,11 +1,22 @@
-import chalk from 'chalk';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
+import { Output } from './output.js';
 
 export interface SponsorMessageOptions {
   reason?: string;
   minIntervalMs?: number;
   force?: boolean;
+  /**
+   * Where to write, and whether to write at all.
+   *
+   * This used to be `console.log`, which put an advertisement on stdout in the middle of the file
+   * list a script was parsing: 246 bytes of it, measured on 4.22.0. It is narration, so it goes to
+   * stderr, and `Output.wantsAsides` is what decides whether an unrequested aside has a reader:
+   * not under `--quiet`, not under `--json`, and not when stderr is a pipe, because a tip written
+   * into somebody's build log is only noise. The pre-existing `CI` gate below is the same idea
+   * arrived at one environment at a time.
+   */
+  out?: Output;
 }
 
 interface SponsorCachePayload {
@@ -27,18 +38,20 @@ const tips = [
   'Use output headers to track generated files and trim noisy diffs.',
 ];
 
-const green = (msg: string) => chalk.hex('#6ee7b7')(msg);
-const cyan = (msg: string) => chalk.cyan(msg);
-const gray = (msg: string) => chalk.gray(msg);
-
 export function maybeShowSponsorMessage({
   reason = 'generate',
   minIntervalMs = DEFAULT_INTERVAL_MS,
   force = false,
+  out = new Output(),
 }: SponsorMessageOptions = {}) {
+  const green = (msg: string) => out.errStyle.hex('#6ee7b7')(msg);
+  const cyan = (msg: string) => out.errStyle.cyan(msg);
+  const gray = (msg: string) => out.errStyle.gray(msg);
+
   const hideViaEnv = process.env.DRZL_HIDE_SPONSOR?.toLowerCase();
   const hideRequested = hideViaEnv === '1' || hideViaEnv === 'true';
   if (hideRequested || (process.env.CI && !force) || (shownThisProcess && !force)) return;
+  if (!out.wantsAsides && !force) return;
 
   try {
     mkdirSync(CACHE_DIR, { recursive: true });
@@ -60,11 +73,11 @@ export function maybeShowSponsorMessage({
     shownThisProcess = true;
     const tip = tips[payload.runs % tips.length];
 
-    console.log(
+    out.stderr.write(
       `\n${cyan(`🚀 DRZL finished a ${reason} run (#${payload.runs.toLocaleString()}).`)}\n\n` +
         `${green('✨ Sponsors keep DRZL shipping. Consider supporting ongoing dev:')}\n` +
         `  ${green('GitHub Sponsors')}  ${gray('→ https://github.com/sponsors/omar-dulaimi')}\n\n` +
-        `${green('Pro tip:')} ${tip}\n`
+        `${green('Pro tip:')} ${tip}\n\n`
     );
   } catch {
     // Swallow to avoid impacting generator success paths

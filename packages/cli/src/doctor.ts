@@ -39,7 +39,17 @@
  */
 import type { Analysis, Column, Issue, Table } from '@drzl/analyzer';
 import { lengthMeasure, parseCheck, type LengthCheck } from '@drzl/validation-core';
-import chalk from 'chalk';
+import { Chalk, type ChalkInstance } from 'chalk';
+
+/**
+ * The styling this report uses when the caller does not say.
+ *
+ * Level 0, so a caller who forgets gets plain text rather than escape sequences in a file. This
+ * file used to import chalk's default instance, which decides colour from `process.stdout` alone
+ * and ignores `NO_COLOR` entirely, so `drzl doctor` printed the same 32 escapes with the variable
+ * set as without it. The decision belongs to `output.ts` and is passed in.
+ */
+const PLAIN: ChalkInstance = new Chalk({ level: 0 });
 
 export type DoctorFindingKind =
   /** A column whose validator will accept any value. */
@@ -472,7 +482,8 @@ function wrap(text: string, indent: string, first = indent, width = 96): string 
  * A clean schema prints what was looked at rather than nothing, because an empty page cannot be
  * told apart from a command that failed to run.
  */
-export function renderDoctorReport(report: DoctorReport): string {
+export function renderDoctorReport(report: DoctorReport, style: ChalkInstance = PLAIN): string {
+  const chalk = style;
   const out: string[] = [];
   const plural = (n: number, one: string) => `${n} ${one}${n === 1 ? '' : 's'}`;
 

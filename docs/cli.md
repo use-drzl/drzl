@@ -24,6 +24,9 @@ bunx @drzl/cli --help
 
 :::
 
+Every command shares the same output rules, the same `--json` contract and the same three exit
+codes: see [Output & exit codes](/cli/output).
+
 Jump to commands:
 
 - Init: set up a starter config → [/cli/init](/cli/init)
@@ -32,6 +35,17 @@ Jump to commands:
 - Generate: run configured generators → [/cli/generate](/cli/generate)
 - Generate (oRPC): quick oRPC without config → [/cli/generate-orpc](/cli/generate-orpc)
 - Watch: watch schema and regenerate → [/cli/watch](/cli/watch)
+- Output: streams, colour, `--json`, exit codes → [/cli/output](/cli/output)
+
+## Every command
+
+- `--json`: write one JSON document to stdout and nothing else
+- `-q, --quiet`: drop the progress narration on stderr; errors still print
+- stdout carries the answer, stderr carries the narration
+- colour is off on a stream that is not a terminal, and off entirely under `NO_COLOR`
+- `0` did the work, `1` could not do the work, `2` did the work and found something
+
+All four are documented in [Output & exit codes](/cli/output).
 
 ## Commands & Options
 
@@ -65,10 +79,11 @@ Options:
 
 - `--relations` (default true): include relation inference
 - `--validate` (default true): validate constraints
-- `--out <file>`: write JSON to file
-- `--json` (default false): print JSON to stdout (overrides `--out`)
+- `--out <file>`: write JSON to file, as a bare `Analysis` with no envelope
+- `--json` (default false): print one JSON document to stdout (overrides `--out`)
 
-Exits non‑zero when errors are found in `issues`.
+Exits `1` when the schema could not be read at all, and `2` when it was read and `issues` holds an
+error-level entry. See [Exit codes](/cli/output#exit-codes).
 
 ### doctor
 
@@ -102,6 +117,7 @@ Options:
 - `-c, --config <path>`: which config to read the schema path from
 - `--json`: print the report as JSON instead of prose
 - `--strict`: exit `2` when anything is reported
+- `-q, --quiet`: drop the narration on stderr; the report still prints
 
 Exits `0` by default even with findings, because a schema carrying a `customType` is normal and
 usable. Exits `1` only when the schema could not be read at all.
@@ -137,11 +153,15 @@ bunx @drzl/cli generate -c drzl.config.ts
 Options:
 
 - `-c, --config <path>`: path to config file
+- `--check`: regenerate and report drift without changing the tree
+- `--json`, `-q, --quiet`
 
 Behavior:
 
 - Analyzes your schema
-- Runs each generator in `generators[]`, printing a file summary per kind
+- Runs each generator in `generators[]`, printing a file summary per kind on stdout
+- Warnings, the spinner and the progress bar go to stderr, so `drzl generate > files.txt` holds
+  only the paths that were written
 
 ### generate:orpc
 
@@ -174,6 +194,10 @@ Options:
 - `-o, --outDir <dir>` (default `src/api`)
 - `--template <name>` (default `standard`): can be `standard` or a custom path
 - `--includeRelations`: include relation endpoints
+- `--json`, `-q, --quiet`
+
+Exits `1` when the schema is missing or cannot be imported. It used to exit `0` after writing a
+placeholder file that read "No tables detected in analysis".
 
 ### generate:trpc
 
@@ -205,6 +229,9 @@ Options:
 - `--template <name>` (default `standard`): `standard` or `service`
 - `--includeRelations`: include a lookup per single-column foreign key
 - `--servicesDir <dir>` (default `src/services`): only consulted by `--template service`
+- `--json`, `-q, --quiet`
+
+Exits `1` when the schema is missing or cannot be imported.
 
 See [Generate (tRPC)](/cli/generate-trpc).
 
@@ -239,7 +266,12 @@ Options:
 - `-c, --config <path>`
 - `--pipeline <name>`: `all | analyze | generate-orpc | generate-trpc | generate-hono | generate-express | generate-fastify | generate-nestjs | generate-graphql` (default `all`)
 - `--debounce <ms>`: debounce milliseconds (default `200`)
-- `--json`: emit structured JSON logs
+- `--json`: emit structured JSON logs on stdout, one object per line
+- `-q, --quiet`: drop the narration; errors still print
+- `--poll`: force polling, which helps on WSL, Docker and network mounts
+
+A watch has no answer to give, so everything human it prints goes to stderr. Exits `1` when there
+is no config or the schema path cannot be resolved.
 
 ### init
 
@@ -265,10 +297,17 @@ bunx @drzl/cli init
 
 :::
 
+Options:
+
+- `-y, --yes`: take the defaults and ask nothing
+- `--schema <path>`, `--generators <list>`
+- `--json` (implies `--yes`), `-q, --quiet`
+
 ---
 
 See also:
 
+- Output, `--json` and exit codes: [/cli/output](/cli/output)
 - Config reference: [/guide/configuration](/guide/configuration)
 - Generators:
   - [/generators/orpc](/generators/orpc)

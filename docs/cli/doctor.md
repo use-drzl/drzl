@@ -147,6 +147,8 @@ npx @drzl/cli doctor src/db/schema.ts --json
 
 ```json
 {
+  "command": "doctor",
+  "exitCode": 0,
   "schema": "src/db/schema.ts",
   "dialect": "postgres",
   "ok": false,
@@ -162,6 +164,11 @@ npx @drzl/cli doctor src/db/schema.ts --json
   ]
 }
 ```
+
+`ok` here means "there is nothing to report about your schema", which it has always meant. It is
+not a statement about whether the run worked: a report full of findings is a perfectly successful
+`doctor`. The run's own answer is `exitCode`, and that is why the shared envelope defines no `ok`
+of its own. See [Output & exit codes](/cli/output#one-name-two-meanings-and-why).
 
 `kind` is a stable identifier, so a CI step can count one category without matching on prose:
 
@@ -198,4 +205,5 @@ validator check the value, which nothing can do for a `customType`, but it recov
 TypeScript type so the call site is still narrowed. See
 [Generators → Zod](/generators/zod#typedjson).
 
-See also: [Analyze](/cli/analyze) · [Generate](/cli/generate)
+See also: [Analyze](/cli/analyze) · [Generate](/cli/generate) ·
+[Output & exit codes](/cli/output)
