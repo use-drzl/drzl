@@ -19,6 +19,12 @@ export default {
       level: [2, 3],
       label: 'On this page',
     },
+    // MiniSearch, built into VitePress, indexing at build time and running in the browser. No
+    // service, no account, no API key, and nothing to keep in sync with the deployed site: the
+    // index ships with the site that produced it.
+    search: {
+      provider: 'local',
+    },
     nav: [
       { text: 'Roadmap', link: '/roadmap/premium-templates' },
       { text: 'Sponsor', link: '/sponsor' },
