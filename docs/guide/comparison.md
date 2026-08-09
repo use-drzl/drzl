@@ -108,7 +108,8 @@ accept a parseable date string or an epoch number where the first-party modules 
 ## Where DRZL is worse
 
 **Six columns on drizzle-orm 0.45.2 where the first-party validator is right and DRZL is not.**
-Filed rather than fixed, and printed by name on every run:
+Filed rather than fixed, and carried by name in the gate's own defect ledger, which fails the
+run if any of them stops reproducing:
 
 ```
       mysql/m_year: DRZL emits an unbounded integer, official emits an integer within 1901..2155 [new]
