@@ -44,6 +44,16 @@ export interface SchemaProblem {
   hint: string;
 }
 
+/**
+ * The clause that closes a hint by saying what did not happen because of this.
+ *
+ * A parameter rather than a constant, because these three problems are not `generate`'s alone any
+ * more: `drzl explain` reaches every one of them and has never written a file in its life, so
+ * "Nothing was generated." there is a sentence about a thing the command does not do. The default
+ * keeps every existing caller's text byte for byte.
+ */
+export const NOTHING_GENERATED = 'Nothing was generated.';
+
 /** The least this file needs to know about an analyzer issue. */
 export interface AnalyzerIssue {
   code?: string;
@@ -77,7 +87,8 @@ export function describeSchemaTarget(schema: string | readonly string[]): string
  */
 export function schemaLoadFailure(
   issues: readonly AnalyzerIssue[],
-  schema: string | readonly string[]
+  schema: string | readonly string[],
+  consequence: string = NOTHING_GENERATED
 ): SchemaProblem | undefined {
   const blocking = issues.filter(
     (issue) => issue.level === 'error' && issue.code && UNREADABLE_CODES.has(issue.code)
@@ -93,7 +104,9 @@ export function schemaLoadFailure(
     return {
       code: SCHEMA_UNREADABLE_CODE,
       message: `Schema file not found (${SCHEMA_UNREADABLE_CODE}): ${named}${more}`,
-      hint: 'Check the "schema" path in your drzl config, or point --config at another one. Nothing was generated.',
+      hint:
+        'Check the "schema" path in your drzl config, or point --config at another one. ' +
+        consequence,
     };
   }
 
@@ -108,8 +121,8 @@ export function schemaLoadFailure(
     code: SCHEMA_UNREADABLE_CODE,
     message,
     hint: single
-      ? `Fix that error and run again. \`drzl analyze ${single}\` prints it in full. Nothing was generated.`
-      : 'Fix that error and run again. Nothing was generated.',
+      ? `Fix that error and run again. \`drzl analyze ${single}\` prints it in full. ${consequence}`
+      : `Fix that error and run again. ${consequence}`,
   };
 }
 
@@ -133,9 +146,12 @@ export function nothingToGenerate(opts: {
   analyzed: readonly { name: string }[];
   /** The tables left for the generators. */
   remaining: readonly { name: string }[];
+  /** What did not happen because of this. See `NOTHING_GENERATED`. */
+  consequence?: string;
 }): SchemaProblem | undefined {
   if (opts.remaining.length > 0) return undefined;
   const target = describeSchemaTarget(opts.schema);
+  const consequence = opts.consequence ?? NOTHING_GENERATED;
 
   if (!opts.analyzed.length) {
     return {
@@ -144,7 +160,7 @@ export function nothingToGenerate(opts: {
       hint:
         'That module imported cleanly and exported no tables, so every generator would write an ' +
         'empty barrel. Export them from it, for example: export const users = pgTable(...). ' +
-        'Nothing was generated.',
+        consequence,
     };
   }
 
@@ -158,6 +174,7 @@ export function nothingToGenerate(opts: {
       `${target} declares ${names.length} table${names.length === 1 ? '' : 's'}: ${shown}${rest}.`,
     hint:
       'Check "include" and "exclude" in your drzl config. A pattern is matched against the whole ' +
-      'database table name, with * as the only metacharacter. Nothing was generated.',
+      'database table name, with * as the only metacharacter. ' +
+      consequence,
   };
 }

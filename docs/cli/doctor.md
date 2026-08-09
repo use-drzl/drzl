@@ -205,5 +205,11 @@ validator check the value, which nothing can do for a `customType`, but it recov
 TypeScript type so the call site is still narrowed. See
 [Generators → Zod](/generators/zod#typedjson).
 
-See also: [Analyze](/cli/analyze) · [Generate](/cli/generate) ·
+See also: [Analyze](/cli/analyze) · [Explain](/cli/explain) · [Generate](/cli/generate) ·
 [Output & exit codes](/cli/output)
+
+`doctor` reports the findings across every table and says nothing about a table that is fine.
+[`explain`](/cli/explain) is the other direction: everything about one table, including the
+constraints it *does* enforce and the facts it read off each column, with the same silent failures
+called out at the bottom. Reach for `doctor` when the question is "what will not work in this
+schema", and for `explain` when it is "what did DRZL make of this table".

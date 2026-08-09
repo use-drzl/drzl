@@ -10,6 +10,7 @@ to, whether it carries colour, what `--quiet` and `--json` do to it, and what th
 | Command                        | On stdout                                              |
 | ------------------------------ | ------------------------------------------------------ |
 | `analyze`                      | the analysis, as JSON                                  |
+| `explain`                      | the table report, as prose or as JSON                  |
 | `doctor`                       | the report, as prose or as JSON                        |
 | `generate`                     | the list of files written, one per line                |
 | `generate:orpc`, `generate:trpc` | the list of files written                            |
@@ -76,7 +77,7 @@ It does not remove:
   swallowed failure is worse off than one with no `--quiet` at all
 - **the exit code**, which means exactly what it means without the flag
 - **the answer** on stdout for the commands whose answer is text: `analyze` still prints the
-  analysis, `doctor` still prints the report
+  analysis, and `doctor` and `explain` still print their reports
 
 For `generate`, `generate:orpc`, `generate:trpc` and `init`, what the command produces is files on
 disk, so all of their text is a report about the work, and `--quiet` leaves them silent on success.
@@ -136,6 +137,8 @@ not produce its payload at all:
 | `DRZL_GEN_001`    | `generate` failed for any other reason                                 |
 | `DRZL_GEN_002`    | A generator threw, or is not installed                                 |
 | `DRZL_GEN_003`    | A generator wrote to disk during `--dry-run` or `--check`; see below   |
+| `DRZL_EXPLAIN_001`| `explain` was given a table name no table answers to                   |
+| `DRZL_EXPLAIN_002`| `explain` was given a name that reaches more than one table            |
 
 `DRZL_GEN_003` means an installed `@drzl/generator-*` package is older than the CLI and does not
 know how to report a file instead of writing it. Anything it wrote has been put back, and the fix
@@ -166,6 +169,19 @@ A schema that is missing or will not import is the one failure `analyze` reports
 document rather than through a failure envelope, because it still has one to give: the analysis
 comes back empty with the reason in `issues`, which says more than a one-line message would. The
 `exitCode` is `1` either way.
+
+### `explain --json`
+
+The explanation of one table, with the envelope merged in at the top level, so `.schema`,
+`.dialect` and `.table` sit beside `command` and `exitCode`. See
+[Explain](/cli/explain#json) for the shape of `.table`, key by key.
+
+```json
+{ "command": "explain", "exitCode": 0, "schema": "src/db/schema.ts", "dialect": "postgres", "table": {} }
+```
+
+With no table argument the document carries `tables`, an array of one summary per table, instead
+of `table`. Those are the only two shapes, and `.table` is present in exactly one of them.
 
 ### `doctor --json`
 
@@ -285,6 +301,7 @@ first and shows a diff or a report on the second.
 | Command                          | `0`                       | `1`                                                        | `2`                             |
 | -------------------------------- | ------------------------- | ---------------------------------------------------------- | ------------------------------- |
 | `analyze`                        | analysed                  | schema missing or could not be imported                    | analysed, with error-level issues |
+| `explain`                        | explained                 | no such table, an ambiguous name, or no schema to read      | not used                        |
 | `doctor`                         | reported                  | schema missing or could not be imported                    | findings **and** `--strict`     |
 | `generate`                       | generated                 | no config, invalid config, nothing to generate from, a generator threw | `--check` found drift |
 | `generate --dry-run`             | reported what it would write | as `generate`                                           | not used                        |
@@ -324,3 +341,7 @@ And two commands stopped reporting success when they had failed:
 
 `doctor`'s codes are unchanged: `0` when it read the schema, `1` when it could not, `2` with
 `--strict` and findings.
+
+`explain` arrived after this scheme and uses two of the three. A CHECK nothing enforces is a normal,
+usable schema, so a `2` there would fail a pipeline for a schema that is fine, which is the mistake
+`doctor` avoided by defaulting to `0`. `doctor --strict` is the command that exists to fail on that.

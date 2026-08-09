@@ -31,6 +31,7 @@ Jump to commands:
 
 - Init: set up a starter config → [/cli/init](/cli/init)
 - Analyze: inspect a schema → [/cli/analyze](/cli/analyze)
+- Explain: what DRZL understood about one table → [/cli/explain](/cli/explain)
 - Doctor: what DRZL cannot type or enforce → [/cli/doctor](/cli/doctor)
 - Generate: run configured generators → [/cli/generate](/cli/generate)
 - Generate (oRPC): quick oRPC without config → [/cli/generate-orpc](/cli/generate-orpc)
@@ -84,6 +85,43 @@ Options:
 
 Exits `1` when the schema could not be read at all, and `2` when it was read and `issues` holds an
 error-level entry. See [Exit codes](/cli/output#exit-codes).
+
+### explain
+
+Show what DRZL understood about one table: the type it resolved for every column, the facts the
+generators read off it, the constraints it will enforce, and the ones it read and could not use.
+
+::: code-group
+
+```bash [pnpm]
+pnpm dlx @drzl/cli explain <table> [--json] [-s src/db/schema.ts] [-c drzl.config.ts]
+```
+
+```bash [npm]
+npx @drzl/cli explain <table> [--json] [-s src/db/schema.ts] [-c drzl.config.ts]
+```
+
+```bash [yarn]
+yarn dlx @drzl/cli explain <table> [--json] [-s src/db/schema.ts] [-c drzl.config.ts]
+```
+
+```bash [bun]
+bunx @drzl/cli explain <table> [--json] [-s src/db/schema.ts] [-c drzl.config.ts]
+```
+
+:::
+
+Options:
+
+- `[table]`: the table, by database name, qualified name or export name. Omit it for the index.
+- `-s, --schema <path>`: the schema to read, overriding the config
+- `-c, --config <path>`: which config to read the schema path from
+- `--json`, `-q, --quiet`
+
+Writes nothing. Exits `0` when the table was explained, `1` when the name reaches no table or more
+than one, or when there is no schema to read.
+
+See [Explain](/cli/explain).
 
 ### doctor
 

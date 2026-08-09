@@ -63,3 +63,9 @@ A failure is a document too, never prose on stdout:
 
 `1` and `2` were both `2` before. They are different events: the first means the document you
 asked for is not there, the second means it is there and something in it needs looking at.
+
+## See also
+
+This prints the whole `Analysis` and points at nothing in it. When the question is about one table,
+[`explain`](/cli/explain) reads the same analysis and says what DRZL made of that table, including
+which of its constraints reach the generated schemas and which do not.
