@@ -20,6 +20,13 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 WORK="$(mktemp -d)"
+
+# Lines a documentation page quotes are recorded here as well as printed, so the stage at the end
+# of this file can compare them against what the run actually said. The six database-truth
+# harnesses and both parity passes pipe their whole output into this file; a plain echo the docs
+# quote has to say so itself, which is what this is for. If a page starts quoting a line that does
+# not go through here, that stage fails naming the line rather than passing quietly.
+quoted() { printf '%s\n' "$1" | tee -a "$WORK/printed.log"; }
 trap 'rm -rf "$WORK"' EXIT
 
 TARS="$WORK/tars"
@@ -208,7 +215,7 @@ for dir in "$ROOT"/packages/*/; do
   (cd "$dir" && pnpm pack --pack-destination "$TARS" >/dev/null)
   count=$((count + 1))
 done
-echo "    packed $count package(s)"
+quoted "    packed $count package(s)"
 if [ "$count" -eq 0 ]; then
   echo "FAIL: nothing was packed. A build that emits nothing must not pass silently." >&2
   exit 1
@@ -751,7 +758,7 @@ EOF
     echo "FAIL: emitted output does not typecheck under moduleResolution=$mr" >&2
     exit 1
   fi
-  echo "    $mr ok"
+  quoted "    $mr ok"
 done
 
 
@@ -1013,7 +1020,7 @@ if [ "$doc_failed" -ne 0 ]; then
   echo "      A config a reader can copy has to produce code that compiles." >&2
   exit 1
 fi
-echo "    all $doc_total documented configs generate and typecheck"
+quoted "    all $doc_total documented configs generate and typecheck"
 
 # ---------------------------------------------------------------------------------------------
 # duplicateFinder must cover the primary key.
