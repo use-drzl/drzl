@@ -33,6 +33,7 @@ import {
   measureExpression,
   needsNumericCanon,
   nonFiniteAccepted,
+  nonFiniteRefused,
   NUMERIC_CANON_NAME,
   NUMERIC_CANON_SOURCE,
   parseCheck,
@@ -627,8 +628,8 @@ function renderObjectShape(
         atNumericCanonNarrows(c, checks, sets) +
         atNonFiniteNarrow(c, checks) +
         // Mutually exclusive with the one above it: that one is reached only where the column
-        // admits `NaN` and this one only where it does not.
-        atNanNarrow(c, mode, checks, sets, !!dflt) +
+        // admits `NaN` and this one only where the server refuses one of the three.
+        atNonFiniteRefusedNarrow(c, mode, checks, sets, !!dflt) +
         atDateNarrow(c, mode, coerceDates);
       // A defaultable definition is only valid as an object *property*: `type("bigint = 7")`
       // throws "Defaultable definitions like 'number = 0' are only valid as properties in an
@@ -885,28 +886,45 @@ function atUnionArm(c: Column, mode: Mode, defaulted: boolean): boolean {
 }
 
 /**
- * `NaN` refused on a column that stores none, in the two places the string DSL stops refusing it.
+ * The non-finite doubles a column stores none of, refused where the string DSL stops refusing them.
  *
- * The mirror image of `atNonFiniteNarrow`, and the dialect is the whole of the difference. Postgres
- * really does store `NaN` in a float, so `allowsNaN` is true there and the schema must take it; a
- * real MySQL 8.4 refuses it on `float` and on `double` and silently writes `0.00` for a
- * `decimal(10,2)`, so `allowsNaN` is false and the schema must not. One flag, set by the analyzer,
- * decides which, and nothing here reads the dialect.
+ * The mirror image of `atNonFiniteNarrow`, and the dialect is the whole of the difference, read off
+ * the flags the analyzer sets rather than off the dialect itself. Postgres really does store `NaN`
+ * and both infinities in a float and hand them back, so a schema there must take them; a real MySQL
+ * 8.4.11 answers `ER_WARN_DATA_OUT_OF_RANGE` for all three on a `float`, a `double` and a `real`,
+ * measured on the binary prepared path, so a schema there must not. SQLite states neither, because
+ * it stores both infinities and turns `NaN` into NULL, and it keeps whatever ArkType does.
  *
- * The mechanism is ArkType's, measured on the installed version and asserted in this package's
- * `nan-union-arm` spec rather than remembered:
+ * Two leaks with two different shapes, and one narrow answers whichever is present:
  *
- *   `min <= number <= max`            refuses NaN
- *   `(min <= number <= max | null)`   ACCEPTS NaN, and still refuses an infinity and 1e300
+ * `NaN` needs a union arm. A bounded ArkType number stops refusing it the moment it becomes one
+ * branch beside a unit, because `NaN` is the one value that compares false against both ends of a
+ * range. Both arms this file writes are such a union: `| null` for a nullable column, visible on the
+ * object itself, and the `?` on an optional key, visible through `schema.get(key)`.
+ *
+ * An infinity needs no arm at all. A bare `number` takes both wherever it stands, and only a range
+ * holds them back, one end each: `number >= 0` still takes `Infinity`. So the leak is every mode
+ * and both paths on a column with no range, which is what MySQL's `double` and `real` are, since
+ * every finite JS number fits in an 8 byte float and no finite bound on one is truthful. MySQL's
+ * `float` carries the float32 range and was never affected.
+ *
+ * Measured on the installed ArkType, asserted in this package's `nan-union-arm` and
+ * `mysql-infinity` specs rather than remembered:
+ *
+ *   `min <= number <= max`            refuses NaN,  refuses both infinities
+ *   `(min <= number <= max | null)`   ACCEPTS NaN,  refuses both infinities and 1e300
  *   `{ "x?": "min <= number <= max" }`  the object refuses NaN, `.get("x")` ACCEPTS it
- *   `number`                          refuses NaN
- *   `(number | null)`                 ACCEPTS NaN
- *   `(number.integer | null)`         refuses NaN
+ *   `number`                          refuses NaN,  ACCEPTS both infinities, everywhere
+ *   `(number | null)`                 ACCEPTS NaN,  ACCEPTS both infinities
+ *   `number >= 0`                     refuses NaN,  ACCEPTS `Infinity`, refuses `-Infinity`
+ *   `(number.integer | null)`         refuses NaN,  refuses both infinities
  *
- * It is `NaN` alone, because `NaN` is the one value that compares false against both ends of a
- * range: an infinity fails a bound inside a union exactly as it does outside one. And it spares the
- * integers, because integrality is a predicate rather than a comparison and `NaN` fails it, so no
- * integer column pays for this.
+ * `Number.isFinite` is false for `NaN` too, so where the column refuses all three one narrow states
+ * the whole answer and the `NaN` one would be bytes in the consumer's bundle for a verdict already
+ * reached. Where a range already holds the infinities back, `NaN` is what is left.
+ *
+ * The integers are spared either way, because integrality is a predicate rather than a comparison
+ * and every non-finite number fails it, so no integer column pays for this.
  *
  * A narrow rather than a union branch or a keyword, because there is no keyword for it. Every
  * number keyword ArkType has was tried inside a `| null`: `number.integer` and `number.epoch`
@@ -914,10 +932,10 @@ function atUnionArm(c: Column, mode: Mode, defaulted: boolean): boolean {
  * three unit keywords intersect with a range to an unsatisfiable type that throws at import.
  *
  * The guards below mirror the arms of `atTypeForColumn` that render something other than a bare or
- * ranged `number`. A set, an enum and an equality all render as literals, which `NaN` is not, so a
- * narrow beside them would be bytes in the consumer's bundle for a verdict already reached.
+ * ranged `number`. A set, an enum and an equality all render as literals, which none of the three
+ * is, so a narrow beside them would again be bytes for a verdict already reached.
  */
-function atNanNarrow(
+function atNonFiniteRefusedNarrow(
   c: Column,
   mode: Mode,
   checks: ColumnCheck[],
@@ -925,14 +943,24 @@ function atNanNarrow(
   defaulted: boolean
 ): string {
   if (c.tsType !== 'number' || c.shape) return '';
-  // The column stores `NaN` and the schema has to take it. `atNonFiniteNarrow` holds that side.
-  if (nonFiniteAccepted(c).nan) return '';
-  if (!atUnionArm(c, mode, defaulted)) return '';
   if (c.enumValues && c.enumValues.length) return '';
   if (sets.some((s) => s.column === c.name)) return '';
   // The same discard `atTypeForColumn` makes: a scalar check describes an element, never the list.
-  if (atNarrowRange(c, c.arrayDimensions ? [] : checks).equals !== undefined) return '';
+  const { lower, upper, equals } = atNarrowRange(c, c.arrayDimensions ? [] : checks);
+  if (equals !== undefined) return '';
   if (isIntegerColumn(c)) return '';
+
+  // Both ends declared is what refuses both infinities; one end refuses one of them and none
+  // refuses neither. The analyzer sets the two flags as a pair, so the column reaching this is one
+  // the server refuses every non-finite value on and `Number.isFinite` is exactly its answer.
+  const refused = nonFiniteRefused(c);
+  if (refused.infinity && refused.nan && !(lower && upper)) {
+    return atNarrow(c, (v) => `Number.isFinite(${v})`, 'a finite number');
+  }
+
+  // The column stores `NaN` and the schema has to take it. `atNonFiniteNarrow` holds that side.
+  if (nonFiniteAccepted(c).nan) return '';
+  if (!atUnionArm(c, mode, defaulted)) return '';
   return atNarrow(c, (v) => `!Number.isNaN(${v})`, 'a number, not NaN');
 }
 

@@ -119,8 +119,23 @@ branches on its own.
 
 A `numeric` in number mode takes `NaN` and keeps refusing both infinities, because Postgres refuses
 an infinity in any `numeric` carrying a precision and nothing in the analysis reads one. Integer
-columns are unchanged, and so are MySQL and SQLite. A declared default is still restricted to a
-finite number: the literal is written through `JSON.stringify`, which renders all three as `null`.
+columns are unchanged, and so is SQLite, which stores both infinities in a `real` and hands them
+back. A declared default is still restricted to a finite number: the literal is written through
+`JSON.stringify`, which renders all three as `null`.
+
+MySQL and SingleStore run the other way, and that is the same question answered by a different
+server: measured on MySQL 8.4.11, a `float`, a `double` and a `real` refuse `Infinity`, `-Infinity`
+and `NaN` alike. ArkType's bare `number` takes both infinities wherever it stands, and a range
+refuses them, so a column with no range carries a narrow and the bounded `float` keeps its DSL
+string. `Number.isFinite` is false for `NaN` too, so one narrow states the whole answer:
+
+```ts
+c_float:  "-3402... <= number <= 3402...",                        // float()
+c_double: type("number").narrow(                                  // double()
+  (v, ctx) => v == null || Number.isFinite(v) || ctx.mustBe("a finite number")
+),
+```
+
 See
 [Zod → `NaN` and the infinities](/generators/zod#nan-and-the-infinities-are-values-not-out-of-range-numbers).
 

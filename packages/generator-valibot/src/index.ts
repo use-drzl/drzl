@@ -33,6 +33,7 @@ import {
   nestedSchemaName,
   nestedTypeName,
   nonFiniteAccepted,
+  nonFiniteRefused,
   parseCheck,
   parsesToADate,
   renderConstraintsModule,
@@ -109,7 +110,10 @@ function vDateExpr(
  * so they are pasted rather than parsed. `literal` spells each one, which is the only difference
  * between the number and bigint cases.
  */
-function vBounds(c: Column, literal: (v: string) => string, checks: ColumnCheck[] = []): string[] {
+function vBoundEnds(
+  c: Column,
+  checks: ColumnCheck[] = []
+): { lo?: { action: string; value: string }; hi?: { action: string; value: string } } {
   let lo = c.min !== undefined ? { action: 'minValue', value: c.min } : undefined;
   let hi = c.max !== undefined ? { action: 'maxValue', value: c.max } : undefined;
 
@@ -125,8 +129,48 @@ function vBounds(c: Column, literal: (v: string) => string, checks: ColumnCheck[
     else if (k.operator === '<=') hi = { action: 'maxValue', value: k.value };
     else if (k.operator === '<') hi = { action: 'ltValue', value: k.value };
   }
+  return { lo, hi };
+}
 
+function vBounds(c: Column, literal: (v: string) => string, checks: ColumnCheck[] = []): string[] {
+  const { lo, hi } = vBoundEnds(c, checks);
   return [lo, hi].filter(Boolean).map((x) => `v.${x!.action}(${literal(x!.value)})`);
+}
+
+/**
+ * `Infinity` and `-Infinity` refused on a column the server refuses them on, or nothing.
+ *
+ * The mirror of `vNonFiniteBranches` and the dialect is the whole of the difference, read off the
+ * one flag the analyzer sets rather than off the dialect itself. Postgres stores both in a float
+ * and hands them back, so a schema there must take them; MySQL 8.4.11 answers
+ * `ER_WARN_DATA_OUT_OF_RANGE` for either on a `float`, a `double` and a `real`, measured on the
+ * binary prepared path, so a schema there must not. SQLite states neither and is left alone, which
+ * is why `nonFiniteRefused` reads `=== false` rather than "not accepted": that engine stores both
+ * infinities too and turns `NaN` into NULL, and half of that answer is worse than none.
+ *
+ * Only where a bound is not already doing it, and one end at a time. Measured on the installed
+ * valibot: `v.number()` takes both, `v.maxValue(n)` refuses `+Infinity` whatever `n` is and
+ * `v.minValue(n)` refuses `-Infinity`, so a column with both ends declared already refuses both and
+ * a check beside them would be bytes in the consumer's bundle for a verdict already reached. That
+ * is exactly MySQL's `float`, which carries the float32 range; its `double` and `real` carry no
+ * finite bound, because every finite JS number fits in an 8 byte float, and they are what leaked.
+ *
+ * `Number.isFinite` rather than `v.finite()`, and the difference is only in what a failure says:
+ * both refuse `NaN` as well, which is right here, since the same server refuses that too.
+ *
+ * An integer column cannot reach this: only the three float classes carry the flag, and
+ * `v.integer()` refuses a non-finite number by itself. An equality check is skipped for the same
+ * reason it is in the ArkType generator, since `val === 7` has already reached the verdict.
+ */
+function vFiniteCheck(c: Column, checks: ColumnCheck[]): string[] {
+  if (!nonFiniteRefused(c).infinity) return [];
+  if (isIntegerColumn(c)) return [];
+  if (checks.some((k) => k.column === c.name && k.kind === 'number' && k.operator === '=')) {
+    return [];
+  }
+  const { lo, hi } = vBoundEnds(c, checks);
+  if (lo && hi) return [];
+  return [`v.check((val) => Number.isFinite(val), 'a finite number')`];
 }
 
 /**
@@ -445,7 +489,11 @@ function vExprForColumn(
       return piped('v.string()', caps.length ? caps : []);
     case 'number': {
       const bounds = vBounds(c, (v) => v, checks);
-      const actions = [...(isIntegerColumn(c) ? ['v.integer()'] : []), ...bounds];
+      const actions = [
+        ...(isIntegerColumn(c) ? ['v.integer()'] : []),
+        ...bounds,
+        ...vFiniteCheck(c, checks),
+      ];
       const branches = vNonFiniteBranches(c, bounds.length > 0);
       if (!branches.length) return piped('v.number()', actions);
       // The bounds stay on the number branch and the union is what `extra` then applies to, so a

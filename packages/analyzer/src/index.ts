@@ -929,6 +929,27 @@ export function describeV1Column(column: any): Partial<Column> | null {
         out.allowsNaN = true;
         out.allowsInfinity = true;
       }
+      // The other direction, and a third state rather than the absence of the first: MySQL and
+      // SingleStore refuse all three here, which `false` says and an absent flag does not. Leaving
+      // it absent is what let an unbounded `double` accept an `Infinity` the server answers
+      // `ER_WARN_DATA_OUT_OF_RANGE` for, in the two libraries whose bare number takes one.
+      //
+      // MySQL by codec, for the reason the bound above uses one: `float`, `double` and `real` are
+      // MySQL's own spellings and no other dialect states them, all swept off real 1.0.0-rc.4
+      // columns. SingleStore states no codec at all on that release, so it is read off the class
+      // name instead, which is the third marker this function already uses for mssql and cockroach.
+      // Neither of those two joins here and neither does SQLite: mssql and cockroach were never
+      // asked, and SQLite really does store both infinities while turning `NaN` into NULL, which is
+      // a third answer that has to arrive whole. See `NON_FINITE_BY_CLASS`.
+      if (
+        codec === 'float' ||
+        codec === 'double' ||
+        codec === 'real' ||
+        entityKind.startsWith('SingleStore')
+      ) {
+        out.allowsNaN = false;
+        out.allowsInfinity = false;
+      }
       break;
     }
     case 'uuid':
@@ -1933,35 +1954,63 @@ export class SchemaAnalyzer {
   // which no table keyed on a class name can hold; see `declaredDecimalRange`.
 
   /**
-   * The Postgres number columns that hold a non-finite double, and which of the three each holds.
+   * The number columns whose server has an answer about a non-finite double, and what it is.
+   *
+   * Three states rather than two, and the third is the reason this table has a `false` half at all.
+   * A column present here with `true` stores the value and hands it back, so a schema refusing it
+   * refuses rows the column returns. A column present with `false` is one the server was asked
+   * about and refused, so a schema accepting it promises what the server will not take. A column
+   * *absent* is one nobody has measured, and the generators leave whatever their library does alone
+   * rather than guessing; `nonFiniteAccepted` and `nonFiniteRefused` in `@drzl/validation-core` are
+   * the two readings of that.
    *
    * The class-name half of what `describeV1Column` reads off the codec, and the two must agree: a
    * fact stated on one path and not the other is a schema that changes when the user upgrades
-   * drizzle, which the cross-major diff in `verify-packed.sh` fails on. These three class names are
-   * the same on both majors, read off real `pgTable` columns on 0.45.2 and on 1.0.0-rc.4, so this
-   * table also answers for a v1 column and the two answers are identical rather than merely
-   * compatible. non-finite-numbers.spec.ts asserts that agreement through the real analyzer.
+   * drizzle, which the cross-major diff in `verify-packed.sh` fails on. Every class name here is the
+   * same on both majors, read off real columns on 0.45.2 and on 1.0.0-rc.4, so this table also
+   * answers for a v1 column and the two answers are identical rather than merely compatible.
+   * non-finite-numbers.spec.ts asserts that agreement through the real analyzer.
    *
-   * No MySQL, SingleStore or SQLite class belongs here: MySQL refuses all three on a `float`/
-   * `double` and stores `0.00` for a `decimal`, and SQLite returns both infinities while silently
-   * turning `NaN` into NULL, which is a different answer that has to arrive whole.
+   * Postgres and Gel store all three. Gel joined on a measurement of its own rather than on being
+   * Postgres-backed: a live Gel 7.1 stored `nan`, `inf` and `-inf` in both `std::float32` and
+   * `std::float64` and handed all three back, through a cast and again through a stored property.
+   * Without them every row of such a column failed validation.
    *
-   * Gel does belong, and is the fourth and fifth entries. Measured on a live Gel 7.1 rather than
-   * inferred from it being Postgres-backed: both `std::float32` and `std::float64` stored `nan`,
-   * `inf` and `-inf` and handed all three back as `NaN`, `Infinity` and `-Infinity`, through a cast
-   * and again through a stored property. Without them every row of such a column failed validation.
+   * MySQL and SingleStore refuse all three, and that used to be left unstated on the reasoning that
+   * a column stating nothing costs nothing. It cost two libraries: `v.number()` and ArkType's
+   * `number` take both infinities where `z.number()` and `Type.Number()` refuse them, so an
+   * unbounded `double` or `real` accepted a value the server answers `ER_WARN_DATA_OUT_OF_RANGE`
+   * for. Measured on MySQL 8.4.11 in `STRICT_TRANS_TABLES`, on the binary prepared path, which is
+   * the one that puts the real IEEE double on the wire: `float`, `double` and `real` refuse
+   * `Infinity`, `-Infinity` and `NaN` alike, while `double` and `real` store 1e300 and
+   * 3.4028235e38 unchanged. SingleStore is MySQL wire-compatible and unmeasured, and takes MySQL's
+   * answer here exactly as it already takes MySQL's float32 bound in `INEXACT_RANGES`.
    *
-   * `PgNumeric` is absent because its value is a string, and its pattern already accepts `NaN` and
-   * `Infinity`. `PgNumericNumber` is absent because its answer is no longer flat: it takes `NaN` at
-   * any width and an infinity only where no precision is declared, which is a per-column question
-   * this table cannot ask. `columnConstraints` answers it beside the bound that decides it.
+   * No SQLite class belongs here in either direction. A real SQLite 3.53.4 stores both infinities in
+   * a `real` and hands them back, and silently turns `NaN` into NULL, so it is neither the Postgres
+   * answer nor the MySQL one; it is filed on its own and a column needs both halves of it or none.
+   *
+   * The decimal families are absent too. `PgNumeric` is a string whose pattern already accepts `NaN`
+   * and `Infinity`. `PgNumericNumber` is a per-column question this table cannot ask: it takes `NaN`
+   * at any width and an infinity only where no precision is declared, and `columnConstraints`
+   * answers it beside the bound that decides it. MySQL's `decimal` is absent because the two client
+   * paths disagree: on the binary prepared path MySQL 8.4.11 silently stored `0.00` for all three,
+   * where the text path answers `Incorrect decimal value`, and "refuses" is only half true of a
+   * column that accepted the row.
    */
-  private static readonly PG_NON_FINITE: Record<string, { nan: boolean; infinity: boolean }> = {
-    PgReal: { nan: true, infinity: true },
-    PgDoublePrecision: { nan: true, infinity: true },
-    GelReal: { nan: true, infinity: true },
-    GelDoublePrecision: { nan: true, infinity: true },
-  };
+  private static readonly NON_FINITE_BY_CLASS: Record<string, { nan: boolean; infinity: boolean }> =
+    {
+      PgReal: { nan: true, infinity: true },
+      PgDoublePrecision: { nan: true, infinity: true },
+      GelReal: { nan: true, infinity: true },
+      GelDoublePrecision: { nan: true, infinity: true },
+      MySqlFloat: { nan: false, infinity: false },
+      MySqlDouble: { nan: false, infinity: false },
+      MySqlReal: { nan: false, infinity: false },
+      SingleStoreFloat: { nan: false, infinity: false },
+      SingleStoreDouble: { nan: false, infinity: false },
+      SingleStoreReal: { nan: false, infinity: false },
+    };
 
   /**
    * Constraints the column definition already carries, which the analysis used to throw away.
@@ -2020,7 +2069,7 @@ export class SchemaAnalyzer {
     // Beside the range rather than inside it, because no range can hold either fact: `>=`/`<=`
     // refuses `Infinity` whatever the bounds are and `NaN` compares false against both ends. The
     // range describes the finite values of the column and these two describe the rest.
-    const nonFinite = SchemaAnalyzer.PG_NON_FINITE[ctor];
+    const nonFinite = SchemaAnalyzer.NON_FINITE_BY_CLASS[ctor];
     if (nonFinite) {
       out.allowsNaN = nonFinite.nan;
       out.allowsInfinity = nonFinite.infinity;
