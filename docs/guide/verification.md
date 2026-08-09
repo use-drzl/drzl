@@ -4,6 +4,10 @@ One script, `scripts/verify-packed.sh`, runs in CI on every pull request and on 
 touches anything outside `docs/`. It is its own job rather than another step in the test job, so a
 green `pnpm -r test` can never be mistaken for a shippable artefact.
 
+That script is the stage order and nothing else. Each stage is a file under `scripts/verify/stages`,
+the TypeScript it runs is under `scripts/verify/harness`, and the schemas and configs it generates
+from are under `scripts/verify/fixtures`, so any single check here can be read on its own.
+
 Run the whole thing yourself:
 
 ```bash

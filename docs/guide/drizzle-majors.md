@@ -200,8 +200,8 @@ int('u', { unsigned: true });
 
 ## Where DRZL is still wrong on 0.4x
 
-Every one of these is in a ledger in `scripts/verify-packed.sh`, counted and named on every run, and
-an entry that stops reproducing fails the run as loudly as an unledgered difference.
+Every one of these is in a ledger in `scripts/verify/harness/parity-0-4x.ts`, counted and named on
+every run, and an entry that stops reproducing fails the run as loudly as an unledgered difference.
 
 - **17 columns get a coarser `dbType` label**, because 0.4x carries no codec: `varchar`, `char` and
   `smallint` fold to `TEXT` or `INTEGER`, `date` to `TIMESTAMP`, `inet`, `cidr` and `macaddr` to
