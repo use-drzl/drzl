@@ -6431,37 +6431,56 @@ fi
 # "three actual databases" makes the extraction return nothing, and the count guard below exits 1
 # rather than reporting that everything matched.
 echo "==> the numbers the documentation quotes, against this run"
-DOC_BENCH="$ROOT/docs/guide/benchmarks.md"
+# Each entry is <file>|<phrase>: the first fenced block after <phrase> in that file is compared.
+# The phrase is matched with awk's index() rather than as a pattern, so a phrase carrying
+# punctuation cannot quietly become a regex that matches somewhere else.
+DOC_BLOCKS=(
+  "docs/guide/benchmarks.md|three real databases"
+  "docs/guide/verification.md|Lines from the run behind this page"
+  "docs/guide/comparison.md|the run behind this page printed"
+  "docs/guide/comparison.md|printed by name on every run"
+)
 doc_missing=0
 doc_checked=0
 doc_skipped=0
-while IFS= read -r doc_line; do
-  doc_trim="$(printf '%s' "$doc_line" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
-  [ -z "$doc_trim" ] && continue
-  if [ -z "${MYSQL_URL:-}" ] && printf '%s' "$doc_trim" | grep -q 'MySQL'; then
-    doc_skipped=$((doc_skipped + 1))
-    echo "    not compared, that stage did not run without MYSQL_URL: $doc_trim"
-    continue
-  fi
-  doc_checked=$((doc_checked + 1))
-  if ! grep -Fq -- "$doc_trim" "$WORK/printed.log"; then
-    if [ "$doc_missing" -eq 0 ]; then
-      echo "    FAIL: docs/guide/benchmarks.md quotes this script's output, and this run did not"
-      echo "          print these lines. Paste what the run printed, or say what changed:"
+for doc_entry in "${DOC_BLOCKS[@]}"; do
+  doc_rel="${doc_entry%%|*}"
+  doc_phrase="${doc_entry#*|}"
+  doc_seen=0
+  while IFS= read -r doc_line; do
+    doc_trim="$(printf '%s' "$doc_line" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
+    [ -z "$doc_trim" ] && continue
+    doc_seen=$((doc_seen + 1))
+    if [ -z "${MYSQL_URL:-}" ] && printf '%s' "$doc_trim" | grep -q 'MySQL'; then
+      doc_skipped=$((doc_skipped + 1))
+      echo "    not compared, that stage did not run without MYSQL_URL: $doc_trim"
+      continue
     fi
-    echo "      $doc_trim"
-    doc_missing=$((doc_missing + 1))
+    doc_checked=$((doc_checked + 1))
+    if ! grep -Fq -- "$doc_trim" "$WORK/printed.log"; then
+      if [ "$doc_missing" -eq 0 ]; then
+        echo "    FAIL: the documentation quotes this script's output, and this run did not"
+        echo "          print these lines. Paste what the run printed, or say what changed:"
+      fi
+      echo "      $doc_rel: $doc_trim"
+      doc_missing=$((doc_missing + 1))
+    fi
+  done < <(awk -v p="$doc_phrase" 'index($0,p)>0{found=1} found && /^```$/{n++; next} found && n==1' "$ROOT/$doc_rel")
+  # Per block, not once at the end. A dead anchor in one file would otherwise hide behind another
+  # file's matches and the run would report that everything matched. Counted on lines extracted
+  # rather than lines compared, so a block that is entirely MySQL lines does not read as dead on a
+  # run without MYSQL_URL.
+  if [ "$doc_seen" -eq 0 ]; then
+    echo "    FAIL: found no quoted lines in $doc_rel after the phrase \"$doc_phrase\", so this" >&2
+    echo "          check measured nothing there. The prose above the block was probably edited." >&2
+    exit 1
   fi
-done < <(awk '/three real databases/{found=1} found && /^```$/{n++; next} found && n==1' "$DOC_BENCH")
-if [ "$doc_checked" -eq 0 ]; then
-  echo "    FAIL: found no quoted lines to compare, so this check measured nothing." >&2
-  exit 1
-fi
+done
 if [ "$doc_missing" -gt 0 ]; then
   echo "FAIL: the documentation quotes numbers this run did not produce." >&2
   exit 1
 fi
-echo "    $doc_checked line(s) of docs/guide/benchmarks.md matched this run's output, $doc_skipped not compared"
+echo "    $doc_checked line(s) across ${#DOC_BLOCKS[@]} documented block(s) matched this run's output, $doc_skipped not compared"
 
 cd "$APP"
 
