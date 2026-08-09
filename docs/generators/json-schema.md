@@ -238,14 +238,15 @@ A schema with nothing shared is byte-for-byte what it was.
 The schema describes the value **after** `JSON.stringify`, which is not always what the TypeScript
 type says:
 
-| Column                  | Schema                                                                                                                                       |
-| ----------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
-| `bigint`                | `{ type: 'string', pattern: '^-?\\d+$' }`, because `JSON.stringify` throws on a bigint                                                       |
-| `bytea`, `blob`         | `{ type: 'string', contentEncoding: 'base64' }`                                                                                              |
-| `timestamp`             | `{ type: 'string', format: 'date-time' }`                                                                                                    |
-| `json`, `jsonb`         | `{}`, which is how the format spells "any JSON value"                                                                                        |
-| `point`                 | `prefixItems` of two numbers, with `minItems` and `maxItems`                                                                                 |
-| `point({ mode: 'xy' })` | `{ type: 'object', properties: { x, y }, required: ['x', 'y'] }`, with no `additionalProperties`, because the column ignores an unlisted key |
+| Column                       | Schema                                                                                                                                       |
+| ---------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| `bigint`                     | `{ type: 'string', pattern: '^-?\\d+$' }`, because `JSON.stringify` throws on a bigint                                                       |
+| `bigint({ mode: 'string' })` | `{ type: 'string', pattern }` for the input syntax that dialect's server parses, which is not the same pattern as the row above              |
+| `bytea`, `blob`              | `{ type: 'string', contentEncoding: 'base64' }`                                                                                              |
+| `timestamp`                  | `{ type: 'string', format: 'date-time' }`                                                                                                    |
+| `json`, `jsonb`              | `{}`, which is how the format spells "any JSON value"                                                                                        |
+| `point`                      | `prefixItems` of two numbers, with `minItems` and `maxItems`                                                                                 |
+| `point({ mode: 'xy' })`      | `{ type: 'object', properties: { x, y }, required: ['x', 'y'] }`, with no `additionalProperties`, because the column ignores an unlisted key |
 
 `contentEncoding` is worth one warning. In draft 2020-12 and in OpenAPI 3.1 it is an **annotation**,
 not an assertion: a conforming validator records that the string is meant to be base64 and does not
