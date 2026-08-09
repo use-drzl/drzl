@@ -2400,8 +2400,16 @@ const ALLOWED: Record<string, Waiver> = {
   // that cell diverges now: official accepts the value the column refuses there too.
   'pg/c_numeric_n': { libs: LIB_NAMES, modes: MODE_NAMES, why: 'Postgres stores NaN in a numeric column and returns it, and refuses a value past the declared precision; official reads no precision so it accepts what the column will not hold', divergence: { 'select,insert/*': `L: NaN | T: 2147483648, 4294967295, 4294967296`, 'update/zod,valibot,typebox': `L: NaN | T: 2147483648, 4294967295, 4294967296`, 'update/arktype': `L:  | T: 2147483648, 4294967295, 4294967296` } },
   'pg/c_double': { libs: LIB_NAMES, modes: MODE_NAMES, why: 'no finite bound is true of an 8 byte float, which holds every finite JS number. Non-finite values were added on top: Postgres stores NaN and both infinities in a float column and returns them, and a Select schema refusing what the database hands back fails on real rows (AW).', divergence: { 'select,insert/*': `L: 9007199254740993, 3.4028235e38, NaN, Infinity | T: `, 'update/zod,valibot,typebox': `L: 9007199254740993, 3.4028235e38, NaN, Infinity | T: `, 'update/arktype': `L: 9007199254740993, 3.4028235e38, Infinity | T: ` } },
-  'mysql/m_real': { libs: LIB_NAMES, modes: MODE_NAMES, why: 'as pg/c_double; MySQL REAL is a synonym for DOUBLE', divergence: { '*/zod,typebox': `L: 9007199254740993, 3.4028235e38 | T: `, '*/valibot': `L: 9007199254740993, 3.4028235e38, Infinity | T: `, 'update/arktype': `L: 9007199254740993, 3.4028235e38, Infinity | T: NaN`, 'select,insert/arktype': `L: 9007199254740993, 3.4028235e38, Infinity | T: ` } },
-  'mysql/m_double': { libs: LIB_NAMES, modes: MODE_NAMES, why: 'as pg/c_double', divergence: { '*/zod,typebox': `L: 9007199254740993, 3.4028235e38 | T: `, '*/valibot': `L: 9007199254740993, 3.4028235e38, Infinity | T: `, 'update/arktype': `L: 9007199254740993, 3.4028235e38, Infinity | T: NaN`, 'select,insert/arktype': `L: 9007199254740993, 3.4028235e38, Infinity | T: ` } },
+  // Only the magnitudes now. The `Infinity` term these two carried was the entry reading "as
+  // pg/c_double" on a column whose database is not Postgres: an 8 byte float stores an infinity
+  // there and MySQL 8.4.11 answers ER_WARN_DATA_OUT_OF_RANGE for `Infinity`, `-Infinity` and `NaN`
+  // alike on `float`, `double` and `real`, measured on the binary prepared path, which is the one
+  // that puts the real IEEE double on the wire. The analyzer states that refusal now, valibot and
+  // arktype refuse it with it, and all four generators agree with official on those two values
+  // (BU). What is left is the pair of magnitudes, where DRZL is looser because no finite bound is
+  // truthful of an 8 byte float, and arktype's update-only NaN narrow.
+  'mysql/m_real': { libs: LIB_NAMES, modes: MODE_NAMES, why: 'as pg/c_double at the magnitudes; MySQL REAL is a synonym for DOUBLE. Not as pg/c_double on the infinities, which is where the two databases part and this entry used to claim they did not', divergence: { '*/zod,valibot,typebox': `L: 9007199254740993, 3.4028235e38 | T: `, 'update/arktype': `L: 9007199254740993, 3.4028235e38 | T: NaN`, 'select,insert/arktype': `L: 9007199254740993, 3.4028235e38 | T: ` } },
+  'mysql/m_double': { libs: LIB_NAMES, modes: MODE_NAMES, why: 'as mysql/m_real, which is the same column under its other name', divergence: { '*/zod,valibot,typebox': `L: 9007199254740993, 3.4028235e38 | T: `, 'update/arktype': `L: 9007199254740993, 3.4028235e38 | T: NaN`, 'select,insert/arktype': `L: 9007199254740993, 3.4028235e38 | T: ` } },
   'sqlite/s_real': { libs: LIB_NAMES, modes: MODE_NAMES, why: 'as pg/c_double; SQLite REAL is an 8 byte IEEE float', divergence: { '*/zod,typebox': `L: 9007199254740993, 3.4028235e38 | T: `, '*/valibot': `L: 9007199254740993, 3.4028235e38, Infinity | T: `, 'update/arktype': `L: 9007199254740993, 3.4028235e38, Infinity | T: NaN`, 'select,insert/arktype': `L: 9007199254740993, 3.4028235e38, Infinity | T: ` } },
   // ---- binary and varbinary, where official refuses rows the server returns --------------------
   // Official emits `^[01]*$` capped at n for these columns on v1, which is a bit-string pattern on
@@ -2691,17 +2699,24 @@ const CROSS_ALLOWED: Record<string, CrossWaiver> = {
   'sqlite/s_text_json': { modes: ['select', 'insert', 'update'], why: 'as pg/c_json', divergence: { '*': `NaN: arktype accept, zod/valibot/typebox reject; Infinity: arktype accept, zod/valibot/typebox reject; Date: arktype accept, zod/valibot/typebox reject; Buffer: arktype accept, zod/valibot/typebox reject; Uint8Array: arktype accept, zod/valibot/typebox reject` } },
   'sqlite/s_blob_json': { modes: ['select', 'insert', 'update'], why: 'as pg/c_json', divergence: { '*': `NaN: arktype accept, zod/valibot/typebox reject; Infinity: arktype accept, zod/valibot/typebox reject; Date: arktype accept, zod/valibot/typebox reject; Buffer: arktype accept, zod/valibot/typebox reject; Uint8Array: arktype accept, zod/valibot/typebox reject` } },
   'sqlite/s_blob': { modes: ['select', 'insert', 'update'], why: 'as pg/c_json; a bare blob() is Drizzle json mode', divergence: { '*': `NaN: arktype accept, zod/valibot/typebox reject; Infinity: arktype accept, zod/valibot/typebox reject; Date: arktype accept, zod/valibot/typebox reject; Buffer: arktype accept, zod/valibot/typebox reject; Uint8Array: arktype accept, zod/valibot/typebox reject` } },
-  // The four generators split on `Infinity` for every 8 byte float column, and only since those
-  // columns stopped carrying a magnitude bound. That is not a difference in what DRZL asked for:
-  // all four are handed the same column, with `integer: false` and no range, and `z.number()` and
-  // `Type.Number()` refuse a non-finite number on their own while `v.number()` and arktype's
-  // `number` accept one. Postgres stores and returns Infinity in `real` and `double precision`
-  // alike, so valibot and arktype are the two that agree with the database here.
+  // The four generators split on `Infinity` for an 8 byte float column whose database stores one,
+  // and only since those columns stopped carrying a magnitude bound. That is not a difference in
+  // what DRZL asked for: all four are handed the same column, with `integer: false` and no range,
+  // and `z.number()` and `Type.Number()` refuse a non-finite number on their own while `v.number()`
+  // and arktype's `number` accept one. Postgres stores and returns Infinity in `real` and `double
+  // precision` alike, and a real SQLite 3.53.4 stores it in a `real` and hands it back, so valibot
+  // and arktype are the two that agree with the database on both of those.
   //
   // No `real` entry: the float4 bound refuses Infinity in all four, so they agree there for a
   // reason that has nothing to do with the libraries.
-  'mysql/m_real': { modes: ['select', 'insert', 'update'], why: 'as pg/c_double', divergence: { '*': `Infinity: valibot/arktype accept, zod/typebox reject` } },
-  'mysql/m_double': { modes: ['select', 'insert', 'update'], why: 'as pg/c_double', divergence: { '*': `Infinity: valibot/arktype accept, zod/typebox reject` } },
+  //
+  // No MySQL entry, and that is a fix rather than an omission. `mysql/m_real` and `mysql/m_double`
+  // sat here reading "as pg/c_double", which is the wrong arbiter for a MySQL column: measured on
+  // 8.4.11 on the binary prepared path, `float`, `double` and `real` answer
+  // ER_WARN_DATA_OUT_OF_RANGE for `Infinity` and `-Infinity` alike, so the two libraries that
+  // accepted them were the two disagreeing with the database rather than the two agreeing with it.
+  // The analyzer states that refusal now and valibot and arktype refuse it with it, so all four
+  // generators agree on those two columns and there is nothing left to waive (BU).
   'sqlite/s_real': { modes: ['select', 'insert', 'update'], why: 'as pg/c_double', divergence: { '*': `Infinity: valibot/arktype accept, zod/typebox reject` } },
   // The same two splits on the nullable table, which is what says the wrapper each generator puts
   // round a nullable column does not change which library can express what.
@@ -7700,8 +7715,12 @@ const ALLOWED: Record<string, Entry> = {
     official: 'a number within +/-140737488355327, which refuses an ordinary microsecond epoch',
     filed: 'not a defect: as pg/c_real',
   },
-  'mysql/m_real': { libs: LIB_NAMES, modes: MODE_NAMES, divergence: { '*/zod,typebox': `L: 9007199254740993, 3.4028235e38 | T: `, '*/valibot': `L: 9007199254740993, 3.4028235e38, Infinity | T: `, 'update/arktype': `L: 9007199254740993, 3.4028235e38, Infinity | T: NaN`, 'select,insert/arktype': `L: 9007199254740993, 3.4028235e38, Infinity | T: ` }, drzl: 'as pg/c_double', official: 'as pg/c_double', filed: 'as pg/c_real' },
-  'mysql/m_double': { libs: LIB_NAMES, modes: MODE_NAMES, divergence: { '*/zod,typebox': `L: 9007199254740993, 3.4028235e38 | T: `, '*/valibot': `L: 9007199254740993, 3.4028235e38, Infinity | T: `, 'update/arktype': `L: 9007199254740993, 3.4028235e38, Infinity | T: NaN`, 'select,insert/arktype': `L: 9007199254740993, 3.4028235e38, Infinity | T: ` }, drzl: 'as pg/c_double', official: 'as pg/c_double', filed: 'as pg/c_real' },
+  // The `Infinity` term is gone from both, on this major as on the other: MySQL 8.4.11 refuses both
+  // infinities on `float`, `double` and `real`, so DRZL refuses them too and agrees with official
+  // there. Only the magnitudes are left, plus arktype's update-only NaN narrow. See the ALLOWED
+  // entry in the v1 pass for the measurement (BU).
+  'mysql/m_real': { libs: LIB_NAMES, modes: MODE_NAMES, divergence: { '*/zod,valibot,typebox': `L: 9007199254740993, 3.4028235e38 | T: `, 'update/arktype': `L: 9007199254740993, 3.4028235e38 | T: NaN`, 'select,insert/arktype': `L: 9007199254740993, 3.4028235e38 | T: ` }, drzl: 'as pg/c_double at the magnitudes, refusing both infinities as MySQL does', official: 'as pg/c_double', filed: 'as pg/c_real' },
+  'mysql/m_double': { libs: LIB_NAMES, modes: MODE_NAMES, divergence: { '*/zod,valibot,typebox': `L: 9007199254740993, 3.4028235e38 | T: `, 'update/arktype': `L: 9007199254740993, 3.4028235e38 | T: NaN`, 'select,insert/arktype': `L: 9007199254740993, 3.4028235e38 | T: ` }, drzl: 'as mysql/m_real', official: 'as pg/c_double', filed: 'as pg/c_real' },
   'sqlite/s_real': { libs: LIB_NAMES, modes: MODE_NAMES, divergence: { '*/zod,typebox': `L: 9007199254740993, 3.4028235e38 | T: `, '*/valibot': `L: 9007199254740993, 3.4028235e38, Infinity | T: `, 'update/arktype': `L: 9007199254740993, 3.4028235e38, Infinity | T: NaN`, 'select,insert/arktype': `L: 9007199254740993, 3.4028235e38, Infinity | T: ` }, drzl: 'as pg/c_double', official: 'as pg/c_double', filed: 'as pg/c_real' },
 
   // ---- the nullable table --------------------------------------------------------------------

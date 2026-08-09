@@ -114,7 +114,20 @@ c_num:    v.union([v.pipe(v.number(), v.minValue(-9007199254740991),
 
 A `numeric` in number mode takes `NaN` and keeps refusing both infinities, because Postgres refuses
 an infinity in any `numeric` carrying a precision and nothing in the analysis reads one. Integer
-columns are unchanged, and so are MySQL and SQLite. See
+columns are unchanged, and so is SQLite, which stores both infinities in a `real` and hands them
+back.
+
+MySQL and SingleStore run the other way, and that is the same question answered by a different
+server: measured on MySQL 8.4.11, a `float`, a `double` and a `real` refuse `Infinity`, `-Infinity`
+and `NaN` alike. `v.number()` takes both infinities and `v.maxValue(n)` refuses only `+Infinity`, so
+the columns with no range gain a finite check and the bounded `float` needs nothing:
+
+```ts
+c_float:  v.pipe(v.number(), v.minValue(-3402...), v.maxValue(3402...)),   // float()
+c_double: v.pipe(v.number(), v.check((val) => Number.isFinite(val), 'a finite number')), // double()
+```
+
+See
 [Zod → `NaN` and the infinities](/generators/zod#nan-and-the-infinities-are-values-not-out-of-range-numbers).
 
 Valibot has no `json()` built-in, so a json column emits a recursive declaration at the top of the

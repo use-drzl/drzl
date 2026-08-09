@@ -36,14 +36,30 @@ const dir = path.resolve(__dirname, 'fixtures');
 /** A column as drizzle v1 presents one, which is what the codec path reads. */
 const v1col = (dataType: string, codec?: string) => ({ dataType, codec, dimensions: 0 });
 
-async function columnsOf(name: string, source: string) {
+/**
+ * A stand-in constructor carrying only drizzle's entity kind, for the dialects that state no codec.
+ *
+ * Read off real 1.0.0-rc.4 columns: `singlestoreTable({ d: double() })` stamps
+ * `dataType: 'number double'` with no codec at all and `drizzle:entityKind` of `SingleStoreDouble`,
+ * where the MySQL column beside it states codec `double`.
+ */
+const entityKind = (kind: string) => ({ [Symbol.for('drizzle:entityKind')]: kind }) as never;
+
+async function analysisOf(name: string, source: string) {
   await fs.mkdir(dir, { recursive: true });
   const file = path.join(dir, `${name}.mjs`);
   await fs.writeFile(file, source, 'utf8');
   const analysis = await new SchemaAnalyzer(path.relative(process.cwd(), file)).analyze({});
-  const t = analysis.tables[0];
-  expect(t, `no table was analyzed; issues: ${JSON.stringify(analysis.issues)}`).toBeTruthy();
-  return Object.fromEntries(t!.columns.map((c) => [c.name, c]));
+  expect(
+    analysis.tables[0],
+    `no table was analyzed; issues: ${JSON.stringify(analysis.issues)}`
+  ).toBeTruthy();
+  return analysis;
+}
+
+async function columnsOf(name: string, source: string) {
+  const analysis = await analysisOf(name, source);
+  return Object.fromEntries(analysis.tables[0]!.columns.map((c) => [c.name, c]));
 }
 
 /** The same Postgres table, written against each major. */
@@ -98,29 +114,55 @@ describe('the codec path, which drizzle v1 takes', () => {
     });
   });
 
-  it('says nothing about a mysql float, double or decimal', () => {
-    // MySQL refuses NaN and both infinities on a `float`/`double`, and silently stores 0.00 in a
-    // `decimal`, so none of the three is a value the column hands back.
+  it('states the refusal on a mysql float, double and real, and says nothing about a decimal', () => {
+    // `false` rather than absent, and the difference is the whole of this: absent means nobody
+    // asked, and the two libraries whose bare number takes an infinity then took one on a column
+    // the server refuses it on. Measured on MySQL 8.4.11 in STRICT_TRANS_TABLES on the binary
+    // prepared path, which is the one that puts the real IEEE double on the wire: all three columns
+    // answer ER_WARN_DATA_OUT_OF_RANGE for Infinity, -Infinity and NaN alike.
     for (const c of [
       v1col('number float', 'float'),
       v1col('number double', 'double'),
       v1col('number double', 'real'),
-      v1col('number', 'decimal:number'),
     ]) {
-      const out = describeV1Column(c)!;
-      expect(out.allowsNaN, JSON.stringify(c)).toBeUndefined();
-      expect(out.allowsInfinity, JSON.stringify(c)).toBeUndefined();
+      expect(describeV1Column(c), JSON.stringify(c)).toMatchObject({
+        allowsNaN: false,
+        allowsInfinity: false,
+      });
+    }
+    // The decimal families stay out of it. On the same prepared path MySQL silently stored 0.00 for
+    // all three, where the text path answers `Incorrect decimal value`, and "refuses" is only half
+    // true of a column that accepted the row.
+    const dec = describeV1Column(v1col('number', 'decimal:number'))!;
+    expect(dec.allowsNaN).toBeUndefined();
+    expect(dec.allowsInfinity).toBeUndefined();
+  });
+
+  it('states it for singlestore too, off the class name, since it declares no codec', () => {
+    // SingleStore is MySQL wire-compatible and unmeasured, and takes MySQL's answer here exactly as
+    // it already takes MySQL's float32 bound. It states no codec at all on 1.0.0-rc.4, so the class
+    // name is the marker, which is the third marker this function already uses for mssql and
+    // cockroach.
+    for (const kind of ['SingleStoreFloat', 'SingleStoreDouble', 'SingleStoreReal']) {
+      const c = { ...v1col('number double'), constructor: entityKind(kind) };
+      expect(describeV1Column(c), kind).toMatchObject({ allowsNaN: false, allowsInfinity: false });
     }
   });
 
-  it('says nothing about sqlite, singlestore, cockroach or mssql, which state no codec', () => {
+  it('says nothing about sqlite, cockroach or mssql, which state no codec either', () => {
     // Every one of these reaches the float/double arm with no codec at all on 1.0.0-rc.4. SQLite is
     // the one that really does store an infinity, and it turns NaN into NULL, so it needs its own
-    // answer rather than Postgres's.
+    // answer rather than Postgres's or MySQL's; cockroach and mssql were never asked.
     for (const c of [v1col('number float'), v1col('number double')]) {
       const out = describeV1Column(c)!;
       expect(out.allowsNaN, JSON.stringify(c)).toBeUndefined();
       expect(out.allowsInfinity, JSON.stringify(c)).toBeUndefined();
+    }
+    for (const kind of ['SQLiteReal', 'CockroachDoublePrecision', 'MsSqlFloat']) {
+      const c = { ...v1col('number double'), constructor: entityKind(kind) };
+      const out = describeV1Column(c)!;
+      expect(out.allowsNaN, kind).toBeUndefined();
+      expect(out.allowsInfinity, kind).toBeUndefined();
     }
     // A bare `number` with no codec is what a 0.4x column looks like, so this path declines it
     // outright and the class-name table answers instead. SQLite's `numeric({ mode: 'number' })` is
@@ -168,7 +210,7 @@ describe('the class-name path, which drizzle 0.4x takes', () => {
     }
   });
 
-  it('leaves mysql and sqlite alone', async () => {
+  it('states the mysql and singlestore refusal, and leaves their decimal alone', async () => {
     const my = await columnsOf(
       'mysql-non-finite-0.4x',
       `
@@ -179,10 +221,25 @@ describe('the class-name path, which drizzle 0.4x takes', () => {
       });
       `
     );
-    for (const name of ['f', 'd', 'r', 'n']) {
-      expect(my[name].allowsNaN, name).toBeUndefined();
-      expect(my[name].allowsInfinity, name).toBeUndefined();
+    for (const name of ['f', 'd', 'r']) {
+      expect(my[name], name).toMatchObject({ allowsNaN: false, allowsInfinity: false });
     }
+    expect(my.n.allowsNaN, 'decimal').toBeUndefined();
+    expect(my.n.allowsInfinity, 'decimal').toBeUndefined();
+
+    const ss = await columnsOf(
+      'singlestore-non-finite-0.4x',
+      `
+      import { singlestoreTable, float, double, real } from 'drizzle-orm/singlestore-core';
+      export const t = singlestoreTable('t', { f: float(), d: double(), r: real() });
+      `
+    );
+    for (const name of ['f', 'd', 'r']) {
+      expect(ss[name], name).toMatchObject({ allowsNaN: false, allowsInfinity: false });
+    }
+  });
+
+  it('leaves sqlite alone', async () => {
     const sq = await columnsOf(
       'sqlite-non-finite-0.4x',
       `
@@ -216,5 +273,31 @@ describe('the two majors', () => {
     expect(Object.keys(next), 'the v1 fixture analysed').toEqual(Object.keys(old));
     expect(flags(next).r, 'v1 reached the real column').toEqual([true, true]);
     expect(flags(next)).toEqual(flags(old));
+  });
+
+  it('give the same answer for the same mysql and singlestore tables', async () => {
+    // The same trap on the other side of the fact. The two paths reach it differently here: 0.4x by
+    // the class name, v1 by MySQL's own `float`/`double`/`real` codec, and SingleStore by its class
+    // name on both majors because it declares no codec at all.
+    const SOURCE = (pkg: string) => `
+      import { mysqlTable, float, double, real, decimal } from '${pkg}/mysql-core';
+      import { singlestoreTable, double as ssDouble } from '${pkg}/singlestore-core';
+      export const t = mysqlTable('t', {
+        f: float(), d: double(), r: real(),
+        n: decimal({ precision: 10, scale: 2, mode: 'number' }),
+      });
+      export const u = singlestoreTable('u', { d: ssDouble() });
+    `;
+    const flags = (a: any) =>
+      Object.fromEntries(
+        a.tables.flatMap((t: any) =>
+          t.columns.map((c: any) => [`${t.name}.${c.name}`, [c.allowsNaN, c.allowsInfinity]])
+        )
+      );
+    const old = flags(await analysisOf('mysql-non-finite-cross-0.4x', SOURCE('drizzle-orm')));
+    const next = flags(await analysisOf('mysql-non-finite-cross-v1', SOURCE('drizzle-orm-v1')));
+    expect(old['t.d'], '0.4x reached the double column').toEqual([false, false]);
+    expect(next['u.d'], 'v1 reached the singlestore column').toEqual([false, false]);
+    expect(next).toEqual(old);
   });
 });

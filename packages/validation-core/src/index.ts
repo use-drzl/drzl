@@ -436,6 +436,35 @@ export function nonFiniteAccepted(c: Column): { nan: boolean; infinity: boolean 
 }
 
 /**
+ * The non-finite doubles the emitted schema must *refuse*, as the analyzer stated them.
+ *
+ * The other reading of the same two flags, and not the negation of `nonFiniteAccepted`. Three
+ * states, because a column that was measured and refused the value is a different thing from a
+ * column nobody measured: `true` is stored and returned, `false` is offered and refused, absent is
+ * unstated. `nonFiniteAccepted` reads `=== true` and this reads `=== false`, so an unstated column
+ * answers no to both and every generator leaves it exactly as its library renders it.
+ *
+ * The distinction is load-bearing rather than tidy. MySQL and SQLite both leave a `real` unbounded,
+ * and MySQL answers `ER_WARN_DATA_OUT_OF_RANGE` for an infinity where SQLite stores it and hands it
+ * back. Reading "not accepted" as "refuse it" would have made one schema right and the other wrong
+ * from the same reading, and the SQLite half is filed separately because that engine also turns
+ * `NaN` into NULL and a column needs both halves of that answer or none.
+ *
+ * Guarded on `tsType` exactly as its sibling is, so a stale analysis carrying the flags on a string
+ * or a shaped column cannot put a numeric predicate beside a `z.string()`.
+ *
+ * What each generator does with a yes is its own: `z.number()` and `Type.Number()` already refuse
+ * every non-finite number with no bound at all, measured, so they emit nothing and read this only
+ * through the tests that pin that. `v.number()` and ArkType's `number` take both infinities, so
+ * those two add a finite predicate wherever no bound already holds one back. Effect builds on
+ * `Schema.Finite` unconditionally and needs nothing either.
+ */
+export function nonFiniteRefused(c: Column): { nan: boolean; infinity: boolean } {
+  if (c.tsType !== 'number' || c.shape) return { nan: false, infinity: false };
+  return { nan: c.allowsNaN === false, infinity: c.allowsInfinity === false };
+}
+
+/**
  * The columns a `CHECK (col IS NOT NULL)` on this table forbids NULL in.
  *
  * The whole constraint has to parse, not just the clause: `email IS NOT NULL OR my_fn(email) > 1`
