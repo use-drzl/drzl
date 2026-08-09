@@ -6,3 +6,10 @@ docs/.vitepress/cache/
 docs/.vitepress/dist/
 examples/*/.next/
 examples/*/next-env.d.ts
+
+# The verify-packed gate. These were heredocs inside a .sh file until the gate was split into real
+# files, so prettier had never seen a byte of them, and their bytes are not a style question: the
+# generated-output-size stage counts the column declarations in
+# scripts/verify/fixtures/parity-pg.schema.ts and divides the emitted bytes by that number, and the
+# docs quote the result. A `pnpm format` that rewraps a fixture moves a published figure.
+scripts/verify/

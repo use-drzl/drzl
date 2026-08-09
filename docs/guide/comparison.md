@@ -162,7 +162,8 @@ prints both facts by name rather than omitting them.
 ## How to check any of this
 
 None of the above is a claim you have to take on trust. `pnpm verify:packed` prints every line
-quoted here, and the ledgers that record each divergence live in `scripts/verify-packed.sh` beside
+quoted here, and the ledgers that record each divergence live in
+`scripts/verify/harness/parity.ts` and `scripts/verify/harness/parity-0-4x.ts` beside
 the measurement that settled it. An entry that stops being true fails the run just as loudly as a
 difference nobody declared. See [How it is verified](/guide/verification).
 
