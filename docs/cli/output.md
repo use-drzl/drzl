@@ -87,7 +87,8 @@ drzl generate --quiet          # prints the error to stderr, exits 1, when the c
 ```
 
 `generate --check --quiet` still names the files that drifted. That list is the finding the check
-exists to produce, and an exit code of `2` with no list is an answer nobody can act on.
+exists to produce, and an exit code of `2` with no list is an answer nobody can act on. It does drop
+the diff under each one, which is the explanation rather than the finding.
 
 ## `--json`
 
@@ -134,6 +135,11 @@ not produce its payload at all:
 | `DRZL_SCHEMA_003` | The config's `include`/`exclude` filters removed every table           |
 | `DRZL_GEN_001`    | `generate` failed for any other reason                                 |
 | `DRZL_GEN_002`    | A generator threw, or is not installed                                 |
+| `DRZL_GEN_003`    | A generator wrote to disk during `--dry-run` or `--check`; see below   |
+
+`DRZL_GEN_003` means an installed `@drzl/generator-*` package is older than the CLI and does not
+know how to report a file instead of writing it. Anything it wrote has been put back, and the fix
+is to update the generator packages.
 
 ### One name, two meanings, and why
 
@@ -178,26 +184,53 @@ The `DoctorReport`, with the envelope merged in at the top level. See
   "command": "generate",
   "exitCode": 0,
   "check": null,
-  "generators": [{ "kind": "zod", "files": ["/abs/path/users.zod.ts"] }],
+  "dryRun": false,
+  "generators": [
+    {
+      "kind": "zod",
+      "files": ["/abs/path/users.zod.ts"],
+      "changes": [{ "file": "src/validators/zod/users.zod.ts", "status": "unchanged" }]
+    }
+  ],
   "warnings": ["1 column could not be typed: ..."]
 }
 ```
 
 - `generators` is one entry per configured generator, in config order, each with the absolute
   paths it wrote.
+- `changes` is the same set of files with a verdict each: `created`, `changed` or `unchanged`.
+  Paths are relative to the working directory, so a document is readable and comparable across
+  machines. `files` keeps its absolute paths, unchanged.
 - `warnings` holds every warning the human run prints to stderr, as strings.
+- `dryRun` is `true` when `--dry-run` was passed. The document is otherwise identical, because a
+  dry run answers the same question; nothing was written.
 - `check` is `null` unless `--check` was passed, and otherwise:
 
 ```json
 {
   "check": {
     "upToDate": false,
-    "drift": [{ "file": "src/validators/zod/users.zod.ts", "status": "changed" }]
+    "diffFileCap": 20,
+    "drift": [
+      {
+        "file": "src/validators/zod/users.zod.ts",
+        "status": "changed",
+        "diff": "--- a/src/validators/zod/users.zod.ts\n+++ b/...\n@@ -6,7 +6,7 @@\n..."
+      }
+    ]
   }
 }
 ```
 
-`status` is `added`, `removed` or `changed`. Paths are relative to the working directory.
+`status` is `added` or `changed`. Paths are relative to the working directory.
+
+`diff` is a unified diff of the file on disk (`a/`) against what the schema produces (`b/`), or
+`null` for the entries past `diffFileCap`. Those entries are still listed with their status: the cap
+limits the explanation, never the finding. A file too long or too different to diff carries a
+one-line summary saying which cap it hit rather than an empty string.
+
+`removed` was a possible `status` before 4.23 and is not produced any more. See
+[Generate](/cli/generate#check-fail-ci-when-generated-output-is-stale) for why.
 
 ### `generate:orpc --json`, `generate:trpc --json`
 
@@ -254,6 +287,7 @@ first and shows a diff or a report on the second.
 | `analyze`                        | analysed                  | schema missing or could not be imported                    | analysed, with error-level issues |
 | `doctor`                         | reported                  | schema missing or could not be imported                    | findings **and** `--strict`     |
 | `generate`                       | generated                 | no config, invalid config, nothing to generate from, a generator threw | `--check` found drift |
+| `generate --dry-run`             | reported what it would write | as `generate`                                           | not used                        |
 | `generate:orpc`, `generate:trpc` | generated                 | nothing to generate from, or a generator threw             | not used                        |
 | `init`                           | config written            | a config already exists, or it could not be written        | not used                        |
 | `watch`                          | (runs until interrupted)  | no config, or the schema path could not be resolved        | not used                        |

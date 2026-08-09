@@ -41,7 +41,19 @@ import {
   type ResolvedSchemaSource,
 } from './drizzle-kit.js';
 import { buildDoctorReport, renderDoctorReport } from './doctor.js';
-import { diffSnapshots, restoreSnapshot, snapshotAll } from './drift.js';
+import { snapshotAll } from './drift.js';
+import {
+  describeCounts,
+  displayPath,
+  driftStatusOf,
+  EmitPlan,
+  pendingChanges,
+  verifyNothingWasWritten,
+  type EmittedFile,
+  type FileVerdict,
+} from './emit-plan.js';
+import { unifiedDiff } from './unified-diff.js';
+import { createRebuildScheduler, resolveDebounce } from './watch-loop.js';
 import { GeneratorNotInstalledError, loadGenerator } from './generator-loader.js';
 import { INIT_GENERATOR_CHOICES, runInit } from './init.js';
 import { maybeShowSponsorMessage } from './sponsor.js';
@@ -105,6 +117,57 @@ function reportSchemaProblem(out: Output, command: string, problem: SchemaProble
     out.hint(problem.hint);
   }
   process.exit(EXIT_FAILED);
+}
+
+/**
+ * How many drifted files `--check` prints a diff for.
+ *
+ * A cap rather than no cap, because the case that produces the most drift is the one where a diff
+ * helps least: a bumped generator version rewrites the header of every file, and a CI log holding
+ * eight hundred near-identical hunks is a log nobody opens. Twenty is enough to read.
+ *
+ * The number of files beyond it is always stated, and every file is still named in the list above
+ * the diffs, so nothing is hidden: what is capped is the explanation, never the finding.
+ */
+const DIFF_FILE_CAP = 20;
+
+/**
+ * Show what changed in each drifted file (item 81).
+ *
+ * On stderr, with the rest of the narration, for the reason `--check`'s file list is: the diff is
+ * a report about the work rather than the work, and `drzl generate --check > out.txt` should not
+ * put a patch in the file. `--quiet` drops these and keeps the list, which is the finding.
+ */
+function printCheckDiffs(out: Output, drift: EmittedFile[]): void {
+  const shown = drift.slice(0, DIFF_FILE_CAP);
+  for (const d of shown) {
+    const label = displayPath(d.file);
+    const text = unifiedDiff(d.before ?? '', d.after, {
+      fromLabel: `a/${label}`,
+      toLabel: `b/${label}`,
+    });
+    if (!text) continue;
+    out.note('');
+    for (const line of text.split('\n')) {
+      if (!line) continue;
+      // Coloured per line rather than per hunk, so a redirected stream gets the same text with no
+      // escapes at all; `errStyle` has already answered that question for this stream.
+      if (line.startsWith('+++') || line.startsWith('---')) out.note(out.errStyle.bold(line));
+      else if (line.startsWith('@@')) out.note(out.errStyle.cyan(line));
+      else if (line.startsWith('+')) out.note(out.errStyle.green(line));
+      else if (line.startsWith('-')) out.note(out.errStyle.red(line));
+      else out.note(out.errStyle.gray(line));
+    }
+  }
+  if (drift.length > shown.length) {
+    out.note('');
+    out.note(
+      out.errStyle.gray(
+        `${drift.length - shown.length} more file(s) differ. Diffs are capped at ` +
+          `${DIFF_FILE_CAP} files; every drifted file is named in the list above.`
+      )
+    );
+  }
 }
 
 /**
@@ -280,10 +343,25 @@ withOutputFlags(
       '--check',
       'regenerate and fail if the result differs from what is on disk, without changing it'
     )
+    .option('--dry-run', 'report what would be written, and write nothing', false)
 ).action(async (opts: any) => {
   const out = outputFor(opts);
+  /**
+   * Whether this run writes anything at all.
+   *
+   * `--check` and `--dry-run` are the same run with different reports at the end: both compute
+   * every file's content, neither puts any of it on disk. `--check` then asks whether anything
+   * differs and fails if it does; `--dry-run` prints what it found and succeeds either way.
+   * Passing both is not an error, it is a `--check` that also says nothing was written, which is
+   * already what `--check` says.
+   */
+  const planning = !!opts.check || !!opts.dryRun;
   /** Everything the `--json` document reports, filled in as the run makes it true. */
-  const emitted: Array<{ kind: string; files: string[] }> = [];
+  const emitted: Array<{
+    kind: string;
+    files: string[];
+    changes: Array<{ file: string; status: FileVerdict }>;
+  }> = [];
   const warnings: string[] = [];
   /** A warning goes to stderr for a human and into the document for a machine, never both. */
   const warn = (text: string) => {
@@ -381,10 +459,23 @@ withOutputFlags(
         remaining: analysis.tables,
       });
       if (empty) reportSchemaProblem(out, 'generate', empty);
-      // Under --check the existing output is captured before anything overwrites it, so the
-      // regenerated result can be compared against it and the tree put back either way.
-      const driftDirs = computeGeneratorOutputDirs(cfg);
-      const driftBefore = opts.check ? await snapshotAll(driftDirs) : null;
+      // Where every generator writes, which is both the set `--check` and `--dry-run` have to know
+      // the current contents of, and the set they have to prove they left alone afterwards.
+      const outputDirs = computeGeneratorOutputDirs(cfg);
+      // Read once, up front, for two jobs at the same time: it is the "what is on disk now" half
+      // of every per-file verdict below, so the plan never reads a file itself, and it is the
+      // baseline `verifyNothingWasWritten` compares against at the end. Only for a run that writes
+      // nothing; an ordinary `generate` reads each file as it emits it, which costs one read per
+      // generated file rather than one per file in the output tree.
+      const existing = planning ? await snapshotAll(outputDirs) : undefined;
+      /**
+       * Every file this run produces, with the content already there beside it.
+       *
+       * Handed to each generator as `fileSink`, so the content is captured at the moment it would
+       * be written rather than inferred afterwards from what landed on disk. Items 68, 80 and 81
+       * all read this one object.
+       */
+      const plan = new EmitPlan({ write: !planning, existing });
       const total = analysis.tables.length || 1;
       // Whether this draws anything at all is `shouldShowProgress`'s decision: a terminal, no
       // `--quiet`, no `--json`, and enough tables that the bar will move (item 72).
@@ -392,12 +483,58 @@ withOutputFlags(
       /** One completed generator, reported the same way whichever branch produced it. */
       const generated = (kind: string, files: string[]) => {
         progress.stop();
-        emitted.push({ kind, files });
+        // A path the generator says it wrote that never reached the sink is a generator that
+        // ignored `fileSink`, which on a user's machine means an installed generator package older
+        // than this CLI. Under `--dry-run` or `--check` that is a run writing to a tree it promised
+        // not to touch, so it stops here rather than reporting a plan that is not what happened.
+        // `verifyNothingWasWritten` catches the same thing from the other side; this one can name
+        // the generator.
+        const missed = plan.unrecorded(files);
+        if (missed.length && planning) {
+          const message =
+            `The ${kind} generator wrote ${missed.length} file(s) directly instead of reporting ` +
+            `them, so this run could not be a preview. Update @drzl/generator-${kind} to a ` +
+            `version that supports --dry-run. First file: ${displayPath(missed[0])}`;
+          if (opts.json) out.jsonData(jsonFailure('generate', 'DRZL_GEN_003', message));
+          else out.error(message);
+          process.exit(EXIT_FAILED);
+        }
+        const verdicts = plan.verdictsFor(files).filter(Boolean) as EmittedFile[];
+        // One entry per generator *entry*, keyed by nothing: a config may list two generators of
+        // the same kind pointed at different paths, and a lookup by kind would report the first
+        // one's verdicts twice.
+        emitted.push({
+          kind,
+          files,
+          changes: verdicts.map((v) => ({ file: v.file, status: v.verdict })),
+        });
         if (opts.json) return;
-        // stdout, and deliberately: for `generate` the list of files written is the answer, and a
-        // caller without `--json` has nothing else to read. `--quiet` is what removes it.
         if (out.quiet) return;
-        out.succeed(out.errStyle.green(`Generated (${kind}): ${files.length} files`));
+        // Item 80: the count is what the run cost, the verdicts are what it did. A generator that
+        // rewrote twelve identical files and one changed one used to report "13 files", which is
+        // true and is not the sentence anyone was looking for.
+        //
+        // The verb changes with the mode, because "Generated" over a run that wrote nothing is the
+        // same class of untruth as the green tick items 70 and 71 were filed about.
+        out.succeed(
+          out.errStyle.green(
+            `${planning ? 'Would write' : 'Generated'} (${kind}): ${files.length} files`
+          ) + out.errStyle.gray(` (${describeCounts(plan.counts(files))})`)
+        );
+        // Only the files that are not the same as before, and named relative to the working
+        // directory, because this is the short list a person scans. The full absolute list is
+        // still on stdout below, unchanged, for whatever is parsing it. Skipped under `--check`,
+        // which prints the same files again below with their drift status and a diff each.
+        for (const v of verdicts) {
+          if (opts.check) break;
+          if (v.verdict === 'unchanged') continue;
+          const mark = v.verdict === 'created' ? '+' : '~';
+          out.note('  ' + out.errStyle.cyan(mark + ' ' + displayPath(v.file)));
+        }
+        // stdout, and deliberately: for `generate` the list of files written is the answer, and a
+        // caller without `--json` has nothing else to read. `--quiet` is what removes it. Under
+        // `--dry-run` it is the list that *would* be written, which is the same answer to the same
+        // question and keeps `drzl generate --dry-run > files.txt` working.
         for (const f of files) out.data('  - ' + out.outStyle.cyan(f));
       };
       /** One generator that threw. Reports it in whichever shape was asked for, then stops. */
@@ -437,6 +574,7 @@ withOutputFlags(
             // file, because the config schema had no such key and zod stripped it in silence.
             databaseInjection: g.databaseInjection,
             servicesDir,
+            fileSink: plan,
             onProgress: ({ index }) => progress.update(index),
           });
           generated(g.kind, files);
@@ -455,6 +593,7 @@ withOutputFlags(
             const gen = new TRPCGenerator(analysis);
             const { files } = await gen.generate({
               ...trpcOptions(g, cfg, servicesDir),
+              fileSink: plan,
               onProgress: ({ index }: { index: number }) => progress.update(index),
             });
             generated('trpc', files);
@@ -474,6 +613,7 @@ withOutputFlags(
             const gen = new HonoGenerator(analysis);
             const { files } = await gen.generate({
               ...honoOptions(g, cfg),
+              fileSink: plan,
               onProgress: ({ index }: { index: number }) => progress.update(index),
             });
             generated('hono', files);
@@ -493,6 +633,7 @@ withOutputFlags(
             const gen = new ExpressGenerator(analysis);
             const { files } = await gen.generate({
               ...expressOptions(g, cfg),
+              fileSink: plan,
               onProgress: ({ index }: { index: number }) => progress.update(index),
             });
             generated('express', files);
@@ -512,6 +653,7 @@ withOutputFlags(
             const gen = new FastifyGenerator(analysis);
             const { files } = await gen.generate({
               ...fastifyOptions(g, cfg),
+              fileSink: plan,
               onProgress: ({ index }: { index: number }) => progress.update(index),
             });
             generated('fastify', files);
@@ -531,6 +673,7 @@ withOutputFlags(
             const gen = new NestJSGenerator(analysis);
             const { files } = await gen.generate({
               ...nestjsOptions(g, cfg),
+              fileSink: plan,
               onProgress: ({ index }: { index: number }) => progress.update(index),
             });
             generated('nestjs', files);
@@ -551,6 +694,7 @@ withOutputFlags(
             const gen = new GraphQLGenerator(analysis);
             const { files } = await gen.generate({
               ...graphqlOptions(g, cfg),
+              fileSink: plan,
               onProgress: ({ index }: { index: number }) => progress.update(index),
             });
             generated('graphql', files);
@@ -578,6 +722,7 @@ withOutputFlags(
               // mode has a `db` parameter to receive it. This branch never passed the option, so
               // the two halves of one generated project disagreed about the signature.
               databaseInjection: g.databaseInjection,
+              fileSink: plan,
             });
             generated('service', files);
           } catch (e: any) {
@@ -593,13 +738,14 @@ withOutputFlags(
             const target = g.path ?? 'src/validators/zod';
             // `meta` is zod-only; see `GeneratorCapabilities.meta` for why it is not passed to the
             // other four rather than being passed and ignored.
-            const files = await gen.generate(
-              validationOptions(g, cfg, target, {
+            const files = await gen.generate({
+              ...validationOptions(g, cfg, target, {
                 schemaTypes: true,
                 meta: true,
                 constraints: true,
-              }) as never
-            );
+              }),
+              fileSink: plan,
+            } as never);
             generated('zod', files);
           } catch (e: any) {
             failGenerator(g.kind, e);
@@ -612,9 +758,10 @@ withOutputFlags(
             );
             const gen = new ValibotGenerator(analysis);
             const target = g.path ?? 'src/validators/valibot';
-            const files = await gen.generate(
-              validationOptions(g, cfg, target, { schemaTypes: true, constraints: true }) as never
-            );
+            const files = await gen.generate({
+              ...validationOptions(g, cfg, target, { schemaTypes: true, constraints: true }),
+              fileSink: plan,
+            } as never);
             generated('valibot', files);
           } catch (e: any) {
             failGenerator(g.kind, e);
@@ -627,9 +774,10 @@ withOutputFlags(
             );
             const gen = new ArkTypeGenerator(analysis);
             const target = g.path ?? 'src/validators/arktype';
-            const files = await gen.generate(
-              validationOptions(g, cfg, target, { schemaTypes: false }) as never
-            );
+            const files = await gen.generate({
+              ...validationOptions(g, cfg, target, { schemaTypes: false }),
+              fileSink: plan,
+            } as never);
             generated('arktype', files);
           } catch (e: any) {
             failGenerator(g.kind, e);
@@ -646,7 +794,10 @@ withOutputFlags(
             );
             const gen = new JsonSchemaGenerator(analysis);
             const target = g.path ?? 'src/validators/json-schema';
-            const files = await gen.generate(jsonSchemaOptions(g, cfg, target) as never);
+            const files = await gen.generate({
+              ...jsonSchemaOptions(g, cfg, target),
+              fileSink: plan,
+            } as never);
             generated('json-schema', files);
           } catch (e: any) {
             failGenerator(g.kind, e);
@@ -659,12 +810,13 @@ withOutputFlags(
             );
             const gen = new TypeBoxGenerator(analysis);
             const target = g.path ?? 'src/validators/typebox';
-            const files = await gen.generate(
-              validationOptions(g, cfg, target, {
+            const files = await gen.generate({
+              ...validationOptions(g, cfg, target, {
                 schemaTypes: true,
                 standardSchema: true,
-              }) as never
-            );
+              }),
+              fileSink: plan,
+            } as never);
             generated('typebox', files);
           } catch (e: any) {
             failGenerator(g.kind, e);
@@ -677,26 +829,54 @@ withOutputFlags(
             );
             const gen = new EffectGenerator(analysis);
             const target = g.path ?? 'src/validators/effect';
-            const files = await gen.generate(
-              validationOptions(g, cfg, target, { schemaTypes: true }) as never
-            );
+            const files = await gen.generate({
+              ...validationOptions(g, cfg, target, { schemaTypes: true }),
+              fileSink: plan,
+            } as never);
             generated('effect', files);
           } catch (e: any) {
             failGenerator(g.kind, e);
           }
         }
       }
-      if (driftBefore) {
-        const after = await snapshotAll(driftDirs);
-        const drift = diffSnapshots(driftBefore, after);
-        // Restored whether or not anything drifted, so `--check` never leaves the tree altered.
-        await restoreSnapshot(driftBefore, after);
+      /**
+       * The `generators` array both document shapes carry, with the verdicts merged in.
+       *
+       * `files` keeps its absolute paths, because that is what it has always published and a
+       * script resolving them is entitled to keep working. `changes` is relative, because it is
+       * new and a document naming somebody's home directory in every entry is worse to read and
+       * impossible to compare across machines.
+       */
+      const generatorsDocument = () =>
+        emitted.map((e) => ({
+          kind: e.kind,
+          files: e.files,
+          changes: e.changes.map((c) => ({ file: displayPath(c.file), status: c.status })),
+        }));
 
+      if (planning) {
+        // The claim `--dry-run` and `--check` make, checked rather than asserted. `existing` is the
+        // snapshot taken before any generator ran, so anything that differs now was written by a
+        // generator that ignored the sink, and it is put back before this reports.
+        const wrote = await verifyNothingWasWritten(outputDirs, existing!);
+        if (wrote.length) {
+          const message =
+            `${wrote.length} file(s) were written by a run that promised to write none, and have ` +
+            `been restored. This means an installed generator package is older than this CLI. ` +
+            `Update your @drzl/generator-* packages. First file: ${displayPath(wrote[0])}`;
+          if (opts.json) out.jsonData(jsonFailure('generate', 'DRZL_GEN_003', message));
+          else out.error(message);
+          process.exit(EXIT_FAILED);
+        }
+      }
+
+      if (opts.check) {
+        const drift = pendingChanges(plan);
         const upToDate = drift.length === 0;
         // Drift is EXIT_FINDINGS, not EXIT_FAILED, and that is the whole reason the scheme has two
-        // failure codes. The check ran perfectly: it regenerated, compared, restored the tree, and
-        // is reporting what it found. A CI job that wants to show a diff acts on that differently
-        // from a config it could not read, and until now both were 1.
+        // failure codes. The check ran perfectly: it regenerated in memory, compared, wrote
+        // nothing, and is reporting what it found. A CI job that wants to show a diff acts on that
+        // differently from a config it could not read, and until 4.23 both were 1.
         const code = upToDate ? EXIT_OK : EXIT_FINDINGS;
 
         if (opts.json) {
@@ -706,12 +886,22 @@ withOutputFlags(
             exitCode: code,
             check: {
               upToDate,
-              drift: drift.map((d) => ({
-                file: path.relative(process.cwd(), d.file),
-                status: d.status,
+              drift: drift.map((d, i) => ({
+                file: displayPath(d.file),
+                status: driftStatusOf(d.verdict),
+                // Item 81. Beyond the cap the entry is still here with its status, and only the
+                // diff is absent, so a machine reading this never loses a file.
+                diff:
+                  i < DIFF_FILE_CAP
+                    ? unifiedDiff(d.before ?? '', d.after, {
+                        fromLabel: `a/${displayPath(d.file)}`,
+                        toLabel: `b/${displayPath(d.file)}`,
+                      })
+                    : null,
               })),
+              diffFileCap: DIFF_FILE_CAP,
             },
-            generators: emitted.map((e) => ({ kind: e.kind, files: e.files })),
+            generators: generatorsDocument(),
             warnings,
           });
           process.exit(code);
@@ -720,11 +910,17 @@ withOutputFlags(
         if (!upToDate) {
           out.error(`\nGenerated output is out of date (${drift.length} file(s)):`);
           for (const d of drift) {
-            const mark = d.status === 'added' ? '+' : d.status === 'removed' ? '-' : '~';
+            const status = driftStatusOf(d.verdict);
+            const mark = status === 'added' ? '+' : '~';
             out.error(
-              `  ${mark} ${out.errStyle.yellow(d.status.padEnd(8))} ${path.relative(process.cwd(), d.file)}`
+              `  ${mark} ${out.errStyle.yellow(status.padEnd(8))} ${displayPath(d.file)}`
             );
           }
+          // Item 81: the list says which files, the diff says what about them. Printed after the
+          // list rather than instead of it, so a reader who only wants the names still gets them
+          // on the first few lines, and `--quiet` keeps the list and drops the diffs, since the
+          // list is the finding and the diff is the explanation.
+          printCheckDiffs(out, drift);
           out.hint('\nRun `drzl generate` and commit the result. Nothing was written by this check.');
           process.exit(code);
         }
@@ -738,10 +934,26 @@ withOutputFlags(
           command: 'generate',
           exitCode: EXIT_OK,
           check: null,
-          generators: emitted.map((e) => ({ kind: e.kind, files: e.files })),
+          dryRun: !!opts.dryRun,
+          generators: generatorsDocument(),
           warnings,
         });
         return;
+      }
+
+      if (opts.dryRun) {
+        // Item 68, and `EXIT_OK` on purpose. A dry run that computed its answer did what it was
+        // asked; `2` is for a run that found what it was told to look for, and "this file would
+        // change" is not a finding here, it is the answer. A preview of a project that has never
+        // been generated would otherwise exit non-zero for being new, and the flag people reach
+        // for before their first `generate` would look like a failure. `--check` is the flag whose
+        // question is "is anything stale", and it still answers `2`.
+        const counts = plan.counts();
+        out.succeed(
+          out.errStyle.green(`Dry run: ${counts.total} file(s) would be written`) +
+            out.errStyle.gray(` (${describeCounts(counts)}). Nothing was written.`)
+        );
+        process.exit(EXIT_OK);
       }
 
       if (cfg.generators.length) {
@@ -898,7 +1110,8 @@ program
     'all | analyze | generate-orpc | generate-trpc | generate-hono | generate-express | generate-fastify | generate-nestjs | generate-graphql',
     'all'
   )
-  .option('--debounce <ms>', 'debounce ms', '200')
+  .option('--debounce <ms>', 'wait this long after the last change before rebuilding', '200')
+  .option('--clear', 'clear the terminal before each rebuild', false)
   .option('--json', 'emit JSON logs', false)
   .option('-q, --quiet', 'drop the progress narration on stderr; errors still print', false)
   .option('--poll', 'force polling (helps WSL/Docker/remote FS)', false)
@@ -927,6 +1140,37 @@ program
       }
       out.error(problem.message);
       out.hint(problem.hint);
+    };
+
+    /**
+     * Wipe the terminal before a rebuild, if that was asked for and there is a terminal (item 75).
+     *
+     * Three things were wrong with the `console.clear()` this replaces, and only the first is the
+     * one the plan item names.
+     *
+     * It was not optional. Every rebuild wiped the screen, taking the previous rebuild's errors
+     * and the startup banner listing the watched directories with it, so the answer to "what did
+     * it say last time" was always "it is gone". A watcher a person leaves running all day is the
+     * last place to throw away scrollback without being asked.
+     *
+     * It was decided from the wrong stream. `console.clear()` writes to stdout and does nothing
+     * when stdout is not a terminal, but everything this command prints for a human is on stderr.
+     * So `drzl watch > events.json` on a terminal left the terminal uncleared, and the stream that
+     * would have been cleared was the one carrying the JSON. That is the same defect item 77 fixed
+     * for colour, arrived at from the other direction.
+     *
+     * It also wrote the escape to a stream a program may be reading. Node happens to make that
+     * harmless by checking `isTTY` first, which is why nothing leaked, but the check belonged to
+     * the stream being cleared rather than to whichever one `console` was bound to.
+     *
+     * `2J` erases the display and `3J` the scrollback, then the cursor goes home. Sent together,
+     * because erasing the display alone leaves the previous rebuild one scroll away and the point
+     * of asking for this is a screen holding only the current run.
+     */
+    const clearScreen = () => {
+      if (!opts.clear || opts.json || out.quiet) return;
+      if (!out.stderr.isTTY) return;
+      out.stderr.write('\u001b[2J\u001b[3J\u001b[H');
     };
 
     // Wrapped, unlike the reload inside `run`, which has its own catch. A config that does not
@@ -1081,7 +1325,7 @@ program
         );
         syncWatcherTargets(watcher, nextTargets);
 
-        if (!opts.json) console.clear();
+        clearScreen();
 
         if (opts.json) {
           out.jsonData({
@@ -1091,7 +1335,7 @@ program
           });
         }
 
-        // After the console.clear() above, or the warning would be wiped before anyone saw it.
+        // After the clear above, or the warning would be wiped before anyone saw it.
         for (const w of source.warnings) out.warn(w);
 
         const analyzer = new SchemaAnalyzer(source.schema);
@@ -1472,8 +1716,14 @@ program
       }
     };
 
-    const debounced = Number(opts.debounce) || 200;
-    let timer: NodeJS.Timeout | null = null;
+    // Item 75. The debounce that was here collapsed the wait and not the work, so a change
+    // arriving during a rebuild started a second one on top of it; see `watch-loop.ts` for the
+    // measurement. `run` itself is unchanged, and the scheduler decides when it happens.
+    const scheduler = createRebuildScheduler({
+      run,
+      debounceMs: resolveDebounce(opts.debounce, (w) => out.warn(w)),
+    });
+
     const trigger = (file?: string) => {
       if (file) {
         const full = abs(file);
@@ -1481,8 +1731,7 @@ program
           if (full === dir || isInside(full, dir)) return;
         }
       }
-      if (timer) clearTimeout(timer);
-      timer = setTimeout(run, debounced);
+      scheduler.trigger();
     };
 
     if (opts.json) {
@@ -1508,7 +1757,10 @@ program
       .on('unlink', (p) => trigger(p))
       .on('error', (err) => out.error('Watcher error:', messageOf(err)));
 
-    await run();
+    // Through the same guard as every later rebuild, so a save landing during the startup build
+    // waits for it rather than racing it. The watcher is attached by now, which is exactly when
+    // that becomes possible.
+    await scheduler.runNow();
   });
 
 withOutputFlags(

@@ -1,3 +1,4 @@
+import { fileWriter } from '@drzl/validation-core';
 import type { Analysis, Table, Column } from '@drzl/analyzer';
 import type {
   CardinalityCheck,
@@ -1340,7 +1341,7 @@ export class ArkTypeGenerator implements ValidationRenderer<ArkTypeGenerateOptio
   constructor(private analysis: Analysis) {}
 
   async generate(opts: ArkTypeGenerateOptions) {
-    const fs = await import('node:fs/promises');
+    const fs = fileWriter(opts.fileSink);
     const path = await import('node:path');
     const out = path.resolve(process.cwd(), opts.outDir);
     const files: string[] = [];

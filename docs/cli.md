@@ -153,13 +153,16 @@ bunx @drzl/cli generate -c drzl.config.ts
 Options:
 
 - `-c, --config <path>`: path to config file
-- `--check`: regenerate and report drift without changing the tree
+- `--check`: regenerate and report drift, with a diff, without writing anything
+- `--dry-run`: report what would be written, and write nothing
 - `--json`, `-q, --quiet`
 
 Behavior:
 
 - Analyzes your schema
 - Runs each generator in `generators[]`, printing a file summary per kind on stdout
+- Says how many files it created, changed and left alone, and names the ones that are not the same
+  as before
 - Warnings, the spinner and the progress bar go to stderr, so `drzl generate > files.txt` holds
   only the paths that were written
 
@@ -265,7 +268,8 @@ Options:
 
 - `-c, --config <path>`
 - `--pipeline <name>`: `all | analyze | generate-orpc | generate-trpc | generate-hono | generate-express | generate-fastify | generate-nestjs | generate-graphql` (default `all`)
-- `--debounce <ms>`: debounce milliseconds (default `200`)
+- `--debounce <ms>`: wait this long after the last change before rebuilding (default `200`)
+- `--clear`: clear the terminal before each rebuild, off by default
 - `--json`: emit structured JSON logs on stdout, one object per line
 - `-q, --quiet`: drop the narration; errors still print
 - `--poll`: force polling, which helps on WSL, Docker and network mounts

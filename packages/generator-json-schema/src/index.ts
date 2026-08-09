@@ -14,6 +14,7 @@
  *   components   `components.schemas` for an OpenAPI document, on `components: true`
  *   document     the whole OpenAPI document, paths and all, on `document: true`
  */
+import { fileWriter } from '@drzl/validation-core';
 import type { Analysis, Enum, Table } from '@drzl/analyzer';
 import type { ResolvedAffix, ValidationGenerateOptions } from '@drzl/validation-core';
 import {
@@ -132,7 +133,7 @@ export class JsonSchemaGenerator {
   constructor(private analysis: Analysis) {}
 
   async generate(opts: JsonSchemaGenerateOptions) {
-    const fs = await import('node:fs/promises');
+    const fs = fileWriter(opts.fileSink);
     const path = await import('node:path');
     const out = path.resolve(process.cwd(), opts.outDir);
     const files: string[] = [];
