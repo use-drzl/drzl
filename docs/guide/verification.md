@@ -158,16 +158,26 @@ Until recently nothing in this project checked a number in its own documentation
 rather than assumed: substituting a wrong float bound into the shipped TypeBox page left the lint,
 typecheck, package test, docs build and config extraction steps all at exit 0.
 
-One block is checked now. The output block under
-[Benchmarks / What is not measured here](/guide/benchmarks#what-is-not-measured-here) quotes this
-script's own output, and the script compares that block against what this run printed, line by
+Three blocks are checked now, each one a place where a page quotes this script's own output:
+
+- [Benchmarks / What is not measured here](/guide/benchmarks#what-is-not-measured-here)
+- [What one run printed](#what-one-run-printed), on this page
+- [Compared with drizzle-orm](/guide/comparison), the block under "the run behind this page
+  printed"
+
+Each is found by a phrase in the prose above it and compared against what this run printed, line by
 line and literally. A fabricated digit fails the run and names the line. Lines mentioning MySQL are
 skipped by name, out loud, when `MYSQL_URL` is not set, because that stage did not run. If the
-prose the extraction anchors on is reworded so that nothing is found, the run fails rather than
-reporting that everything matched.
+prose an extraction anchors on is reworded so that nothing is found, the run fails rather than
+reporting that everything matched, and that guard is per block rather than once at the end, so a
+dead anchor in one page cannot hide behind another page's matches.
 
-Every other number in these docs, including the ones on this page, is quoted from a run and is not
-compared by anything.
+One block that looks like it belongs here deliberately does not: the defect table on the comparison
+page is assembled from this script's own ledger rather than quoted from its output, because a
+ledgered defect reproducing is the quiet case and no run prints those column names. Listing it
+would fail every run over lines nothing ever prints.
+
+Every other number in these docs is quoted from a run and is not compared by anything.
 
 ## The checks are themselves measured
 
@@ -191,12 +201,18 @@ sides for every value, so the comparison agreed while measuring nothing.
 Lines from the run behind this page, verbatim: commit `74def57`, Node 22.22.0, `MYSQL_URL` set to a
 local MySQL 8.4.11 on utf8mb4 in strict mode.
 
+One line has moved since that run: the documented-config count is a count of runnable blocks in
+these docs rather than a measurement of the code, and it went from 35 to 36 when the
+[Recipes](/examples/recipes) page added one. It is updated in place rather than left stale, because
+this block is one of the three the gate compares against every run and a stale line fails it.
+Nothing else here is affected by a documentation change.
+
 ```
     packed 19 package(s)
     bundler ok
     node16 ok
     nodenext ok
-    all 35 documented configs generate and typecheck
+    all 36 documented configs generate and typecheck
     drizzle-orm 1.0.0-rc.4, with its own zod, valibot, arktype and typebox-legacy modules
     1548 column comparisons
     55 documented divergence(s), 30 of them with DRZL accepting something official refuses, 0 stated as a rejection count and a complement

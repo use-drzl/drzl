@@ -7,16 +7,16 @@ to, whether it carries colour, what `--quiet` and `--json` do to it, and what th
 
 **stdout** carries what you asked for and nothing else:
 
-| Command                        | On stdout                                              |
-| ------------------------------ | ------------------------------------------------------ |
-| `analyze`                      | the analysis, as JSON                                  |
-| `explain`                      | the table report, as prose or as JSON                  |
-| `doctor`                       | the report, as prose or as JSON                        |
-| `generate`                     | the list of files written, one per line                |
-| `generate:orpc`, `generate:trpc` | the list of files written                            |
-| `init`                         | nothing (what it produces is a file on disk)           |
-| `watch`                        | nothing, unless `--json`, which puts the event stream there |
-| any command with `--json`      | exactly one JSON document                              |
+| Command                          | On stdout                                                   |
+| -------------------------------- | ----------------------------------------------------------- |
+| `analyze`                        | the analysis, as JSON                                       |
+| `explain`                        | the table report, as prose or as JSON                       |
+| `doctor`                         | the report, as prose or as JSON                             |
+| `generate`                       | the list of files written, one per line                     |
+| `generate:orpc`, `generate:trpc` | the list of files written                                   |
+| `init`                           | nothing (what it produces is a file on disk)                |
+| `watch`                          | nothing, unless `--json`, which puts the event stream there |
+| any command with `--json`        | exactly one JSON document                                   |
 
 **stderr** carries everything else: the spinner, the progress bar, warnings, the "Generated
 (zod): 3 files" summary, errors, and the sponsor tip.
@@ -107,10 +107,10 @@ document instead.
 
 Every document carries:
 
-| Key        | Meaning                                                            |
-| ---------- | ------------------------------------------------------------------ |
-| `command`  | the command that produced it, for example `generate` or `doctor`   |
-| `exitCode` | the code the process is about to return, so you read one field     |
+| Key        | Meaning                                                          |
+| ---------- | ---------------------------------------------------------------- |
+| `command`  | the command that produced it, for example `generate` or `doctor` |
+| `exitCode` | the code the process is about to return, so you read one field   |
 
 A **failure** document carries three more, and no payload. It is emitted when the command could
 not produce its payload at all:
@@ -127,22 +127,25 @@ not produce its payload at all:
 
 `code` is a stable identifier. `message` is the same sentence the human run prints.
 
-| Code              | Meaning                                                                |
-| ----------------- | ---------------------------------------------------------------------- |
-| `DRZL_CFG_001`    | There is no `drzl.config`                                              |
-| `DRZL_CFG_002`    | The config does not validate; the message names each key                |
-| `DRZL_SCHEMA_001` | The schema file is missing, or the module would not import             |
-| `DRZL_SCHEMA_002` | The schema imported cleanly and declares no Drizzle tables             |
-| `DRZL_SCHEMA_003` | The config's `include`/`exclude` filters removed every table           |
-| `DRZL_GEN_001`    | `generate` failed for any other reason                                 |
-| `DRZL_GEN_002`    | A generator threw, or is not installed                                 |
-| `DRZL_GEN_003`    | A generator wrote to disk during `--dry-run` or `--check`; see below   |
-| `DRZL_EXPLAIN_001`| `explain` was given a table name no table answers to                   |
-| `DRZL_EXPLAIN_002`| `explain` was given a name that reaches more than one table            |
+| Code               | Meaning                                                              |
+| ------------------ | -------------------------------------------------------------------- |
+| `DRZL_CFG_001`     | There is no `drzl.config`                                            |
+| `DRZL_CFG_002`     | The config does not validate; the message names each key             |
+| `DRZL_SCHEMA_001`  | The schema file is missing, or the module would not import           |
+| `DRZL_SCHEMA_002`  | The schema imported cleanly and declares no Drizzle tables           |
+| `DRZL_SCHEMA_003`  | The config's `include`/`exclude` filters removed every table         |
+| `DRZL_GEN_001`     | `generate` failed for any other reason                               |
+| `DRZL_GEN_002`     | A generator threw, or is not installed                               |
+| `DRZL_GEN_003`     | A generator wrote to disk during `--dry-run` or `--check`; see below |
+| `DRZL_EXPLAIN_001` | `explain` was given a table name no table answers to                 |
+| `DRZL_EXPLAIN_002` | `explain` was given a name that reaches more than one table          |
 
 `DRZL_GEN_003` means an installed `@drzl/generator-*` package is older than the CLI and does not
 know how to report a file instead of writing it. Anything it wrote has been put back, and the fix
 is to update the generator packages.
+
+[Troubleshooting](/guide/troubleshooting) has a section per code, with the message each one prints
+and what to do about it.
 
 ### One name, two meanings, and why
 
@@ -177,7 +180,13 @@ The explanation of one table, with the envelope merged in at the top level, so `
 [Explain](/cli/explain#json) for the shape of `.table`, key by key.
 
 ```json
-{ "command": "explain", "exitCode": 0, "schema": "src/db/schema.ts", "dialect": "postgres", "table": {} }
+{
+  "command": "explain",
+  "exitCode": 0,
+  "schema": "src/db/schema.ts",
+  "dialect": "postgres",
+  "table": {}
+}
 ```
 
 With no table argument the document carries `tables`, an array of one summary per table, instead
@@ -289,26 +298,26 @@ One JSON object per line on stdout, each with an `event` key: `watching`, `trigg
 
 Three codes, and only three.
 
-| Code | Meaning                                                  |
-| ---- | -------------------------------------------------------- |
-| `0`  | The command did what it was asked.                       |
-| `1`  | DRZL could not do the work.                              |
-| `2`  | DRZL did the work, and found what it was asked to find.  |
+| Code | Meaning                                                 |
+| ---- | ------------------------------------------------------- |
+| `0`  | The command did what it was asked.                      |
+| `1`  | DRZL could not do the work.                             |
+| `2`  | DRZL did the work, and found what it was asked to find. |
 
 The distinction between `1` and `2` is the one a pipeline acts on differently: a build stops on the
 first and shows a diff or a report on the second.
 
-| Command                          | `0`                       | `1`                                                        | `2`                             |
-| -------------------------------- | ------------------------- | ---------------------------------------------------------- | ------------------------------- |
-| `analyze`                        | analysed                  | schema missing or could not be imported                    | analysed, with error-level issues |
-| `explain`                        | explained                 | no such table, an ambiguous name, or no schema to read      | not used                        |
-| `doctor`                         | reported                  | schema missing or could not be imported                    | findings **and** `--strict`     |
-| `generate`                       | generated                 | no config, invalid config, nothing to generate from, a generator threw | `--check` found drift |
-| `generate --dry-run`             | reported what it would write | as `generate`                                           | not used                        |
-| `generate:orpc`, `generate:trpc` | generated                 | nothing to generate from, or a generator threw             | not used                        |
-| `init`                           | config written            | a config already exists, or it could not be written        | not used                        |
-| `watch`                          | (runs until interrupted)  | no config, or the schema path could not be resolved        | not used                        |
-| any command                      |                           | an unknown flag or a missing argument                      |                                 |
+| Command                          | `0`                          | `1`                                                                    | `2`                               |
+| -------------------------------- | ---------------------------- | ---------------------------------------------------------------------- | --------------------------------- |
+| `analyze`                        | analysed                     | schema missing or could not be imported                                | analysed, with error-level issues |
+| `explain`                        | explained                    | no such table, an ambiguous name, or no schema to read                 | not used                          |
+| `doctor`                         | reported                     | schema missing or could not be imported                                | findings **and** `--strict`       |
+| `generate`                       | generated                    | no config, invalid config, nothing to generate from, a generator threw | `--check` found drift             |
+| `generate --dry-run`             | reported what it would write | as `generate`                                                          | not used                          |
+| `generate:orpc`, `generate:trpc` | generated                    | nothing to generate from, or a generator threw                         | not used                          |
+| `init`                           | config written               | a config already exists, or it could not be written                    | not used                          |
+| `watch`                          | (runs until interrupted)     | no config, or the schema path could not be resolved                    | not used                          |
+| any command                      |                              | an unknown flag or a missing argument                                  |                                   |
 
 "Nothing to generate from" is a schema that would not load, a schema declaring no tables, or a
 config whose filters removed all of them. See
@@ -331,7 +340,7 @@ Codes moved, all in the same direction: towards `1` meaning "could not run".
   what it found. A job that only tests for a non-zero exit is unaffected.
 - `watch` with no config, or with an unresolvable schema, was `2` and is now `1`.
 - `analyze` on a schema that is missing or will not import was `2`, and is now `1`. An error-level
-  issue in a schema it *did* read is still `2`.
+  issue in a schema it _did_ read is still `2`.
 
 And two commands stopped reporting success when they had failed:
 

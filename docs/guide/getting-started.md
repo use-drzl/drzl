@@ -129,6 +129,8 @@ Next steps
 
 - CLI commands → [/cli](/cli)
 - Config reference → [/guide/configuration](/guide/configuration)
+- Recipes → [/examples/recipes](/examples/recipes)
+- Something failed → [/guide/troubleshooting](/guide/troubleshooting)
 - Adapters → [/adapters/overview](/adapters/overview)
 - Hosting on Supabase/Neon, PlanetScale or Cloudflare D1? → provider quickstarts for
   [Postgres](/quickstarts/supabase-neon), [MySQL](/quickstarts/planetscale) and

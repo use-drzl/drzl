@@ -233,6 +233,9 @@ export default defineConfig({
 drzl generate
 ```
 
+For the whole path from that config to a served, validated document, with the validator and the
+server, see [Publishing an OpenAPI document](/examples/recipes#publishing-an-openapi-document).
+
 ## The whole document, for two tables
 
 `users` (`id serial primary key`, `email text not null unique`) and `posts` (`id serial primary

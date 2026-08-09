@@ -38,6 +38,8 @@ Jump to commands:
 - Watch: watch schema and regenerate → [/cli/watch](/cli/watch)
 - Output: streams, colour, `--json`, exit codes → [/cli/output](/cli/output)
 
+Something failed? [Troubleshooting](/guide/troubleshooting) is keyed by the message the CLI printed.
+
 ## Every command
 
 - `--json`: write one JSON document to stdout and nothing else
