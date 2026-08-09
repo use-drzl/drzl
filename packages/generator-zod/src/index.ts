@@ -1,3 +1,4 @@
+import { fileWriter } from '@drzl/validation-core';
 import type { Analysis, Column, Table } from '@drzl/analyzer';
 import type {
   ResolvedAffix,
@@ -1037,7 +1038,7 @@ export class ZodGenerator implements ValidationRenderer<ZodGenerateOptions> {
   constructor(private analysis: Analysis) {}
 
   async generate(opts: ZodGenerateOptions) {
-    const fs = await import('node:fs/promises');
+    const fs = fileWriter(opts.fileSink);
     const path = await import('node:path');
     const out = path.resolve(process.cwd(), opts.outDir);
     const files: string[] = [];

@@ -1,3 +1,4 @@
+import { fileWriter, type FileSink } from '@drzl/validation-core';
 import type { Analysis, Column, Table } from '@drzl/analyzer';
 import { qualifiedTableName } from '@drzl/analyzer';
 import type { AffixOptions, ImportExtension } from '@drzl/validation-core';
@@ -57,6 +58,16 @@ export interface GenerateOptions {
     databaseTypeImport?: { name: string; from: string };
   };
   servicesDir?: string; // Path to services directory (e.g. 'src/services')
+  /**
+   * Where the generated files go, when that is not the filesystem.
+   *
+   * Omitted, they go to disk exactly as before. Passed, every write and every `mkdir` is handed
+   * to the sink instead, which is what `drzl generate --dry-run` and `drzl generate --check`
+   * are built on: both need the content a run would produce without the run producing it. See
+   * `emit.ts` in @drzl/validation-core for why this is an option rather than an interception of
+   * `node:fs/promises`.
+   */
+  fileSink?: FileSink;
 }
 
 export interface ProcedureSpec {
@@ -543,7 +554,7 @@ export class ORPCGenerator {
   }
 
   async generate(opts: GenerateOptions) {
-    const fs = await import('node:fs/promises');
+    const fs = fileWriter(opts.fileSink);
     const path = await import('node:path');
     const out = path.resolve(process.cwd(), opts.outputDir);
     await fs.mkdir(out, { recursive: true });

@@ -1,3 +1,4 @@
+import { fileWriter, type FileSink } from '@drzl/validation-core';
 import type { Analysis, Table, Column } from '@drzl/analyzer';
 import type { ImportExtension } from '@drzl/validation-core';
 import { formatCode, importSpecifier, resolveConfiguredImport } from '@drzl/validation-core';
@@ -27,6 +28,16 @@ export interface ServiceGenerateOptions {
     databaseType?: string; // Type annotation for injected database (e.g. 'DrizzleD1Database', 'Database' or 'import("../db").Database')
     databaseTypeImport?: { name: string; from: string }; // Optional: import type { name } from 'from'
   };
+  /**
+   * Where the generated files go, when that is not the filesystem.
+   *
+   * Omitted, they go to disk exactly as before. Passed, every write and every `mkdir` is handed
+   * to the sink instead, which is what `drzl generate --dry-run` and `drzl generate --check`
+   * are built on: both need the content a run would produce without the run producing it. See
+   * `emit.ts` in @drzl/validation-core for why this is an option rather than an interception of
+   * `node:fs/promises`.
+   */
+  fileSink?: FileSink;
 }
 
 function cap(s: string) {
@@ -483,7 +494,7 @@ export class ServiceGenerator {
   constructor(private analysis: Analysis) {}
 
   async generate(opts: ServiceGenerateOptions) {
-    const fs = await import('node:fs/promises');
+    const fs = fileWriter(opts.fileSink);
     const path = await import('node:path');
     const out = path.resolve(process.cwd(), opts.outDir);
     const typesDir = path.join(out, 'types');

@@ -6,12 +6,14 @@ import { pathToFileURL } from 'node:url';
 import type { Analysis, Column } from '@drzl/analyzer';
 import type { BrandingOption } from './branding.js';
 import { parseCheck } from './checks.js';
+import type { FileSink } from './emit.js';
 import type { ImportExtension } from './files.js';
 import type { AffixOptions } from './naming.js';
 
 export * from './branding.js';
 export * from './checks.js';
 export * from './constraints.js';
+export * from './emit.js';
 export * from './files.js';
 export * from './meta.js';
 export * from './naming.js';
@@ -168,6 +170,15 @@ export interface ValidationGenerateOptions {
     insert?: boolean;
     update?: boolean;
   };
+  /**
+   * Where the generated files go, when that is not the filesystem.
+   *
+   * Omitted, they go to disk exactly as before. Passed, every write and every `mkdir` is handed to
+   * the sink instead, which is what `drzl generate --dry-run` and `drzl generate --check` are
+   * built on: both need the content a run would produce without the run producing it. See
+   * `emit.ts` for why this is an option rather than an interception of `node:fs/promises`.
+   */
+  fileSink?: FileSink;
 }
 
 export interface ValidationRenderer<

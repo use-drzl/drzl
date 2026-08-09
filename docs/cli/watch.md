@@ -12,19 +12,19 @@ Usage:
 ::: code-group
 
 ```bash [pnpm]
-pnpm dlx @drzl/cli watch -c drzl.config.ts --pipeline all --debounce 200 [--json]
+pnpm dlx @drzl/cli watch -c drzl.config.ts --pipeline all --debounce 200 [--clear] [--json]
 ```
 
 ```bash [npm]
-npx @drzl/cli watch -c drzl.config.ts --pipeline all --debounce 200 [--json]
+npx @drzl/cli watch -c drzl.config.ts --pipeline all --debounce 200 [--clear] [--json]
 ```
 
 ```bash [yarn]
-yarn dlx @drzl/cli watch -c drzl.config.ts --pipeline all --debounce 200 [--json]
+yarn dlx @drzl/cli watch -c drzl.config.ts --pipeline all --debounce 200 [--clear] [--json]
 ```
 
 ```bash [bun]
-bunx @drzl/cli watch -c drzl.config.ts --pipeline all --debounce 200 [--json]
+bunx @drzl/cli watch -c drzl.config.ts --pipeline all --debounce 200 [--clear] [--json]
 ```
 
 :::
@@ -34,10 +34,43 @@ Options:
 - `-c, --config <path>`
 - `--pipeline <name>`: `all | analyze | generate-orpc | generate-trpc | generate-hono | generate-express | generate-fastify | generate-nestjs | generate-graphql` (default `all`)
   Anything other than `all` or `analyze` runs exactly one generator kind and skips the rest.
-- `--debounce <ms>`: debounce milliseconds (default `200`)
+- `--debounce <ms>`: wait this long after the last change before rebuilding (default `200`)
+- `--clear`: clear the terminal before each rebuild, off by default
 - `--json`: emit structured JSON logs on stdout, one object per line
 - `-q, --quiet`: drop the narration; errors still print
 - `--poll`: force polling, which helps on WSL, Docker and network mounts
+
+## One rebuild at a time
+
+A save that lands while a rebuild is running does not start a second one. It is remembered, and one
+more rebuild follows when the current one finishes, however many saves arrived meanwhile.
+
+This is what the debounce alone could not do. `--debounce` collapses changes arriving close
+together and then starts a rebuild that takes as long as it takes; every change arriving during
+_that_ used to start another one on top of it, writing the same output directory. Measured on a
+600-table schema where one rebuild takes about 1.4s, six saves 700ms apart produced six rebuilds
+with four running at once. Now the same burst produces at most one rebuild in flight, and no save
+is dropped.
+
+`--debounce` itself stays at 200ms, which is measured rather than chosen. With the write-settling
+this watcher asks chokidar for, one editor save reaches it as a single event, and the widest gap
+inside one burst was 9ms, from a tool rewriting two files back to back. Without that settling the
+same bursts spread out to at most 121ms, from format-on-save. 200ms covers the widest of them and
+is short enough that a save still feels immediate.
+
+`--debounce 0` is allowed and means "rebuild on the next tick". A value that is not a number is
+now refused with a warning instead of being silently replaced by 200.
+
+## Clearing the screen
+
+`--clear` wipes the terminal before each rebuild, so the screen holds only the current run. It is
+**off by default**, because a watcher left running all day should not throw away the previous
+rebuild's errors without being asked, and it does nothing at all when stderr is not a terminal, so
+`drzl watch 2> build.log` never puts an escape sequence in the log.
+
+Before 4.23 the screen was cleared on every rebuild with no way to stop it, and the decision was
+made from stdout rather than from the stream the output is on, so `drzl watch > events.json` at a
+terminal cleared nothing.
 
 ## Streams
 
