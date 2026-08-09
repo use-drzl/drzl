@@ -53,6 +53,12 @@ budget, which is a different measurement on the same kind of column), `min`/`max
 `arrayDimensions`, `format`, and `shape` for values that are not scalars (json, buffer, tuple,
 numberObject, vector, bitstring, customType).
 
+`format` names a pattern in `COLUMN_FORMATS`, and two of its values name a dialect: a
+`bigint({ mode: 'string' })` column is `pgBigint` on Postgres and `mysqlBigint` on MySQL and
+SingleStore, because the two servers really do parse that text differently (`'0x1f'` is 31 on one
+and an error on the other, `'12.5'` is 13 on one and an error on the other). SQL Server carries no
+format for it, since none was measured.
+
 `DRZL_ANL_UNKNOWN_COLUMN` is reported for any column whose validator would accept anything, which
 is the shape a missing type mapping takes: nothing throws, and every row passes.
 

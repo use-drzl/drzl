@@ -220,7 +220,7 @@ export function isGeneratedColumn(c: Column, _primaryKeyColumns: string[] = []):
  * the real hazard is over-rejection. A check that turns away something Postgres accepts breaks
  * working code, which is worse than the bare `string` it replaces.
  *
- * That is why there is exactly one entry. Candidates for `date`, `timestamp`, `time`, `interval`,
+ * The list is short for that reason. Candidates for `date`, `timestamp`, `time`, `interval`,
  * `inet`, `cidr` and `macaddr` were all built and all rejected, each by a value Postgres accepts
  * and the pattern did not:
  *
@@ -229,6 +229,11 @@ export function isGeneratedColumn(c: Column, _primaryKeyColumns: string[] = []):
  *   macaddr   `2020-01-01`, which Postgres pads into `20:20:00:01:00:01`
  *   inet      `10.1/16`, `::ffff:1.2.3.4`
  *   cidr      parses as `inet` and then demands zero host bits, which no regex can state
+ *
+ * **One key per dialect where the servers disagree.** `numeric` is Postgres's alone, and the
+ * analyzer withholds it from SQLite for that reason. The two `bigint` entries are the case where
+ * withholding is not enough, because both dialects have a real answer and the answers contradict
+ * each other in both directions. See them below.
  */
 export const COLUMN_FORMATS: Record<string, string> = {
   // Sign, decimals, exponents, NaN/Infinity, surrounding whitespace, and the underscore digit
@@ -238,6 +243,51 @@ export const COLUMN_FORMATS: Record<string, string> = {
     '^\\s*([+-]?(0[xX][0-9a-fA-F](_?[0-9a-fA-F])*|0[oO][0-7](_?[0-7])*|0[bB][01](_?[01])*)' +
     '|[+-]?(\\d(_?\\d)*(\\.(\\d(_?\\d)*)?)?|\\.\\d(_?\\d)*)([eE][+-]?\\d(_?\\d)*)?' +
     '|[+-]?(NaN|Infinity))\\s*$',
+
+  // What Postgres itself parses into a `bigint`, for a `bigint({ mode: 'string' })` column whose
+  // value goes to the server as text. `int8in` is a pure integer parser: an optional sign against
+  // the digits, decimal or a `0x`/`0o`/`0b` literal, single `_` separators between digits and one
+  // permitted directly after the base prefix, leading zeros, and surrounding whitespace. Measured
+  // against a real Postgres through PGlite over 16160 probes, boundary sweeps and random shapes:
+  // **zero** values the server takes and this refuses.
+  //
+  // Two things it deliberately does not say.
+  //
+  // **The magnitude.** Every one of the 4474 probes this admits and the server refuses is a value
+  // outside the signed 64 bit range, and nothing else: the syntax half is complete. The exact
+  // bound is expressible, since leading zeros and separators make it a per-digit ladder rather
+  // than a digit count, and it was built and verified at 16160/16160 against the server. It is
+  // not shipped, because at 1237 characters and around twenty alternation branches it exhausts
+  // ArkType's type-level instantiation budget: that generator states a format as a regex literal
+  // inside the type expression, and the emitted module then fails to compile with TS2589.
+  // Measured on arktype 2.2.3, this 101-character pattern compiles and the ladder does not, as
+  // `COLUMN_FORMATS.numeric` at 176 characters already does not. Emitting a module that does not
+  // typecheck is a worse failure than the bound it would buy, and the bound is unreachable by any
+  // value the probe pools carry. The ArkType defect is already reported and carved out of the
+  // parity gate's typecheck stage; when it is fixed, the ladder is what goes here.
+  //
+  // **Whitespace exactly.** Postgres pads with C `isspace`, which is the six ASCII characters, and
+  // JS `\s` also admits NBSP and the Unicode spaces. That admits a handful of strings the server
+  // refuses, which is the safe direction, and it is what `numeric` above already does.
+  pgBigint:
+    '^\\s*[+-]?(\\d(_?\\d)*|0[xX]_?[\\da-fA-F](_?[\\da-fA-F])*' +
+    '|0[oO]_?[0-7](_?[0-7])*|0[bB]_?[01](_?[01])*)\\s*$',
+
+  // The same column on MySQL, which parses it as a *decimal number* and then rounds. Measured
+  // against MySQL 8.4.11: `'12.5'` stores 13, `'1.5'` stores 2, `'.5'` stores 1, `'1e3'` stores
+  // 1000, and `'92233720368547758070e-1'` stores the int64 maximum. It refuses the two spellings
+  // Postgres takes, `'0x1f'` and `'1_000'`, both as "Data truncated". So no single pattern serves
+  // both servers: their union admits `'12.5'` on Postgres, which is one of the fourteen values
+  // that made this a defect, and their intersection turns away values each server really stores.
+  //
+  // Shared by the signed and the unsigned spelling, and this is why neither magnitude nor sign is
+  // stated here: the value the range applies to is the *rounded* one, so the text does not
+  // determine whether it fits. `'9223372036854775807.4'` is stored and `'9223372036854775807.6'`
+  // is refused; on a `bigint unsigned`, `'-0.4'` and `'-1e-1'` are both stored as 0 while `'-0.5'`
+  // is refused. A pattern cannot do that arithmetic, and guessing at it turns away working rows.
+  // Over 3319 probes against each of a signed and an unsigned column: zero values the server takes
+  // and this refuses.
+  mysqlBigint: '^\\s*[+-]?(\\d+(\\.\\d*)?|\\.\\d+)([eE][+-]?\\d*)?\\s*$',
 };
 
 /**

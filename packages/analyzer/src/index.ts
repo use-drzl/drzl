@@ -185,13 +185,18 @@ export interface Column {
   /**
    * A string column whose contents have a shape the database enforces.
    *
-   * Only formats checked against Postgres itself appear here, and the list is short because most
+   * Only formats checked against a real server appear here, and the list is short because most
    * candidates failed: Postgres reads `'today'` and `'January 8, 1999'` as dates, pads
    * `'2020-01-01'` into a macaddr, and accepts `'10.1/16'` as an inet. A check for any of those
    * would reject input the database accepts, and turning away valid data is worse than not
    * checking at all. See `COLUMN_FORMATS` in `@drzl/validation-core`.
+   *
+   * Two of the keys name a dialect, because the same column has two different answers: a
+   * `bigint({ mode: 'string' })` is parsed by Postgres as an integer literal, `'0x1f'` and
+   * `'1_000'` included, and by MySQL as a decimal number it then rounds, so `'12.5'` is a row on
+   * one server and an error on the other.
    */
-  format?: 'uuid' | 'numeric';
+  format?: 'uuid' | 'numeric' | 'pgBigint' | 'mysqlBigint';
 
   /**
    * The column's default, when it is a literal a schema can reproduce.
@@ -756,10 +761,29 @@ export function describeV1Column(column: any): Partial<Column> | null {
       // the column returns. The js half is the reliable key: two of the four dialects state no
       // codec for it.
       //
-      // No numeric facts on the string shape, mirroring the `numeric` arm below:
+      // Still no numeric facts on the string shape, mirroring the `numeric` arm below:
       // `isIntegerColumn` in validation-core reads "min and max both present" as an integer
-      // column, and the generators' string arms state no numeric facts to begin with. Bounding
-      // the string by pattern and range is a recorded follow-up, not this shape.
+      // column, and the generators' string arms state no numeric facts to begin with. What the
+      // string carries instead is a `format`, which is the vehicle every generator already routes
+      // through `COLUMN_FORMATS`.
+      //
+      // Bare, this column was a `z.string()` and its siblings, and against a real Postgres with
+      // the parity gate's own probe pool it took fourteen of the thirty-six values on an INSERT
+      // the server refuses, `drizzle-orm`'s own validator agreeing with the server on every one.
+      //
+      // The format is per dialect because the two servers disagree in both directions, measured
+      // on PGlite and on MySQL 8.4.11: Postgres stores `'0x1f'` as 31 and `'1_000'` as 1000 and
+      // refuses `'12.5'`; MySQL refuses the first two as "Data truncated" and stores `'12.5'` as
+      // 13, rounded. One pattern for both would have to be their union, which admits `'12.5'` on
+      // Postgres and so leaves the defect in place, or their intersection, which turns away rows
+      // each server really stores. See `COLUMN_FORMATS` for what each one states and what it
+      // deliberately does not.
+      //
+      // SingleStore takes MySQL's, as every other MySQL-shaped answer in this file does (see
+      // `decimalModeRange`), and it is wire-compatible with it. mssql takes neither: `MsSqlBigInt`
+      // states `string int64` too, and no SQL Server was measured for its conversion rules, so it
+      // keeps the bare string rather than a guessed pattern. Cockroach never reaches this arm at
+      // all, because `bigint({ mode: 'string' })` there builds `CockroachBigInt64`, a bigint wire.
       //
       // v1-only: drizzle-orm 0.45.2 spells `PgBigIntConfig<'number' | 'bigint'>` and branches
       // only on `mode === "number"`, so 0.4x has no string mode and a type-invalid
@@ -769,9 +793,16 @@ export function describeV1Column(column: any): Partial<Column> | null {
       // unsigned: true })` states `string uint64` on rc.4, measured off the real column, and
       // keying the guard on `int64` alone sent the unsigned spelling into the integer arm below,
       // which typed it `number` with the uint64 range: a wire the driver never uses in this mode.
+      // Both spellings take the same MySQL pattern, since the unsigned ceiling is a fact about
+      // the rounded value and not about the text; the ceiling itself is what `drizzle-orm` gets
+      // wrong, capping the unsigned column at the signed maximum and refusing 18446744073709551615
+      // on a row MySQL stores and returns.
       if ((semantic === 'int64' || semantic === 'uint64') && js === 'string') {
         out.tsType = 'string';
         out.dbType = 'BIGINT';
+        if (entityKind.startsWith('Pg')) out.format = 'pgBigint';
+        else if (entityKind.startsWith('MySql') || entityKind.startsWith('SingleStore'))
+          out.format = 'mysqlBigint';
         break;
       }
       // Every width Drizzle names. Missing `int8` and `int24` did not leave MySQL's `tinyint` and

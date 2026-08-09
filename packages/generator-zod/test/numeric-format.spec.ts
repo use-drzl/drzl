@@ -93,9 +93,11 @@ describe('scope', () => {
     expect(m.SelecttSchema.shape.name.safeParse('hello').success).toBe(true);
   });
 
-  it('carries only the one format, since the rest could not be verified', async () => {
+  it('carries only the formats a server was asked about, since the rest could not be verified', async () => {
     // Postgres reads 'today' as a date and pads '2020-01-01' into a macaddr, so patterns for
-    // those turned away valid input and were dropped rather than shipped.
-    expect(Object.keys(COLUMN_FORMATS)).toEqual(['numeric']);
+    // those turned away valid input and were dropped rather than shipped. The two `bigint` keys
+    // are the same rule applied twice over: each was measured against its own server, and there
+    // is no third key for mssql because no SQL Server was there to measure.
+    expect(Object.keys(COLUMN_FORMATS)).toEqual(['numeric', 'pgBigint', 'mysqlBigint']);
   });
 });

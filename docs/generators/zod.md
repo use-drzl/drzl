@@ -559,7 +559,35 @@ underscore digit separators and `0x`/`0o`/`0b` literals, so `1_000` and `0xDEAD_
 
 It is not applied on SQLite, whose NUMERIC affinity stores whatever text it is given.
 
-### Why numeric is the only format checked
+## `bigint({ mode: 'string' })` columns
+
+Drizzle v1 can hand a 64 bit column back as a string, and that string also goes to the server as
+text, so the same reasoning applies: a bare `z.string()` accepts `'hello'` for a column the server
+will refuse. Against a real Postgres it took 14 of the 36 values in DRZL's own probe pool that
+Postgres rejects, `drizzle-orm/zod` agreeing with Postgres on every one.
+
+The pattern here is **per dialect**, because the two servers disagree in both directions:
+
+| Value     | Postgres                        | MySQL                      |
+| --------- | ------------------------------- | -------------------------- |
+| `'0x1f'`  | stores 31                       | refused, "Data truncated"  |
+| `'1_000'` | stores 1000                     | refused, "Data truncated"  |
+| `'12.5'`  | refused, invalid input syntax   | stores 13, rounded         |
+| `'1e3'`   | refused                         | stores 1000                |
+
+So Postgres gets an integer-literal grammar (sign, whitespace, underscore separators, decimal or
+`0x`/`0o`/`0b`, leading zeros) and MySQL gets a decimal-number grammar, since MySQL parses the text
+as a number and rounds it. SingleStore takes MySQL's, and SQL Server takes neither, because no SQL
+Server was measured for it.
+
+Neither pattern states the magnitude. On MySQL it cannot: the range applies to the **rounded**
+value, so `'9223372036854775807.4'` is a row and `'9223372036854775807.6'` is not, and no regex
+does that arithmetic. On Postgres it can, and the exact bound was built and verified, but leading
+zeros and separators make it a per-digit ladder around 1200 characters long, which exhausts
+ArkType's type-level budget and emits a module that does not compile. A schema that fails to
+typecheck is a worse trade than the bound, so the syntax is stated and the magnitude is not.
+
+### Why so few formats are checked
 
 `date`, `timestamp`, `time`, `interval`, `inet`, `cidr` and `macaddr` were all attempted and all
 dropped. Each candidate pattern was run against a real Postgres, and each turned away input the

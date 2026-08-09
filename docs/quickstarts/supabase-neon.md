@@ -138,7 +138,7 @@ repeated:
   counts: [character limits count characters](/generators/zod#character-limits-count-characters).
 - `bornOn` stays a plain string on purpose. Postgres accepts `today`, `January 8, 1999` and
   `20200101` for a `date`, so any regex DRZL could emit would refuse values the database takes:
-  [why numeric is the only format checked](/generators/zod#why-numeric-is-the-only-format-checked).
+  [why so few formats are checked](/generators/zod#why-so-few-formats-are-checked).
   The measured insert below feeds it one of exactly those strings.
 - `serial` stays optional on insert rather than omitted, because the database accepts an
   explicit id: [which columns appear on insert](/generators/zod#which-columns-appear-on-insert).
@@ -236,7 +236,7 @@ Three claims, each measured:
 - A 41-character `name` was refused by the input schema before any connection was used.
 - `bornOn: 'January 8, 1999'` sailed through the plain-string schema and **Postgres stored it**
   as `1999-01-08`: the permissive date parser from the
-  [format-check grid](/generators/zod#why-numeric-is-the-only-format-checked), demonstrated in
+  [format-check grid](/generators/zod#why-so-few-formats-are-checked), demonstrated in
   one row.
 - A 40-emoji `name` passed the schema and the `varchar(40)` column both. An `n`-UTF-16-unit cap
   would have refused it at 40 code points; the database would not have.

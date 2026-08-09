@@ -62,9 +62,13 @@ Shared interfaces and helpers used by validation generators.
     `length()` is the character count on a `text` and the byte count on a `bytea`, and
     `char_length(bytea)` is not a function that exists. `measureExpression(measure, variable)`
     renders it and `lengthCheckLabel(check)` renders the message the ledger keys on.
-  - `COLUMN_FORMATS` -> patterns for the column formats that are expressible. Only `numeric` is:
-    Postgres accepts `today`, `January 8, 1999` and `allballs`, so a date or time pattern would
-    reject rows the database takes.
+  - `COLUMN_FORMATS` -> patterns for the column formats that are expressible, which is a short
+    list: Postgres accepts `today`, `January 8, 1999` and `allballs`, so a date or time pattern
+    would reject rows the database takes. `numeric` is Postgres's numeric input grammar, and
+    `pgBigint`/`mysqlBigint` are the two answers a `bigint({ mode: 'string' })` column has, since
+    Postgres parses that text as an integer literal (`0x1f` and `1_000` included) and MySQL parses
+    it as a decimal number it then rounds (`12.5` becomes 13). Each was measured against its own
+    server; neither states the magnitude, and the entry says why.
   - `CODEPOINT_LENGTH` -> `[...v].length`, since `varchar(n)` counts characters and JavaScript's
     `.length` counts UTF-16 units. All four generators use it.
   - `isIntegerColumn(c)`
