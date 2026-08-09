@@ -114,6 +114,9 @@ exists because the v1 side used to be the consumer tree, whose `drizzle-orm` is 
 unpinned, and `latest` is 0.45.2: this stage compared 0.45.2 with 0.45.2 for months and passed for
 the same reason a diff of a file against itself passes.
 
+The differences these two stages measure, and what each one does to your generated files, are on
+[drizzle-orm 0.4x and v1](/guide/drizzle-majors).
+
 ## A ledger fails when a defect stops reproducing
 
 Every ledger in the gate is asserted **in both directions**, and that is the part that makes them
