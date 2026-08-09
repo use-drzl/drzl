@@ -30,6 +30,23 @@ quoted() { printf '%s\n' "$1" | tee -a "$WORK/printed.log"; }
 trap 'rm -rf "$WORK"' EXIT
 
 TARS="$WORK/tars"
+
+# The two drizzle-orm versions this gate measures. The defaults are the pinned ones, which is what
+# every claim in docs/guide/drizzle-majors.md and docs/guide/comparison.md is stated against. The
+# nightly overrides them with whatever `latest` and `rc` serve that day, which is the only way an
+# upstream release gets caught on its own schedule rather than on the next pull request.
+DRIZZLE_PINS_OVERRIDDEN=0
+{ [ -z "${DRIZZLE_0_4X:-}" ] && [ -z "${DRIZZLE_V1:-}" ]; } || DRIZZLE_PINS_OVERRIDDEN=1
+DRIZZLE_0_4X="${DRIZZLE_0_4X:-0.45.2}"
+DRIZZLE_V1="${DRIZZLE_V1:-1.0.0-rc.4}"
+
+# Answering this without running anything is what lets the nightly compare the pins against the
+# registry in one cheap job.
+if [ "${1:-}" = "--print-pins" ]; then
+  printf '%s %s\n' "$DRIZZLE_0_4X" "$DRIZZLE_V1"
+  exit 0
+fi
+
 APP="$WORK/consumer"
 mkdir -p "$TARS" "$APP/src/db"
 
@@ -3987,7 +4004,7 @@ PARITY_HARNESS
 # explicit root dependency on this line, so peer auto-install has nothing left to add and the
 # flag only removes the walk-order sensitivity.
 npm install --no-audit --no-fund --loglevel=error --legacy-peer-deps \
-  "$TARS"/*.tgz drizzle-orm@1.0.0-rc.4 zod valibot arktype @sinclair/typebox tsx typescript \
+  "$TARS"/*.tgz drizzle-orm@"$DRIZZLE_V1" zod valibot arktype @sinclair/typebox tsx typescript \
   ajv@^8.17.1 ajv-formats@^3.0.1 @seriousme/openapi-schema-validator@^2.9.1 \
   @electric-sql/pglite >/dev/null
 
@@ -6439,7 +6456,7 @@ rm -rf "$OLD" "$NEW"; mkdir -p "$OLD/src" "$NEW/src"
 cd "$OLD"
 npm init -y >/dev/null 2>&1
 npm install --no-audit --no-fund --loglevel=error \
-  "$TARS"/*.tgz drizzle-orm@0.45.2 zod tsx >/dev/null
+  "$TARS"/*.tgz drizzle-orm@"$DRIZZLE_0_4X" zod tsx >/dev/null
 
 # The same tarballs and the other major. `zod` because the generate step below runs in the 0.4x
 # tree; this one only analyzes, and installing the same set keeps the two trees differing in
@@ -6447,7 +6464,7 @@ npm install --no-audit --no-fund --loglevel=error \
 # --legacy-peer-deps for the same reason as the parity install above: this tree also holds the
 # generator-effect tarball beside drizzle rc.4, whose optional effect peers are disjoint.
 ( cd "$NEW" && npm init -y >/dev/null 2>&1 && npm install --no-audit --no-fund --loglevel=error --legacy-peer-deps \
-  "$TARS"/*.tgz drizzle-orm@1.0.0-rc.4 zod tsx >/dev/null )
+  "$TARS"/*.tgz drizzle-orm@"$DRIZZLE_V1" zod tsx >/dev/null )
 
 # Written once and analyzed under both majors, so the comparison below is about the analyzer
 # rather than about two schemas that happen to differ. Every type here exists in both.
@@ -9523,6 +9540,11 @@ for doc_entry in "${DOC_BLOCKS[@]}"; do
     if [ -z "${MYSQL_URL:-}" ] && printf '%s' "$doc_trim" | grep -q 'MySQL'; then
       doc_skipped=$((doc_skipped + 1))
       echo "    not compared, that stage did not run without MYSQL_URL: $doc_trim"
+      continue
+    fi
+    if [ "$DRIZZLE_PINS_OVERRIDDEN" = 1 ] && printf '%s' "$doc_trim" | grep -q 'drizzle-orm'; then
+      doc_skipped=$((doc_skipped + 1))
+      echo "    not compared, this run overrode the drizzle-orm pins: $doc_trim"
       continue
     fi
     doc_checked=$((doc_checked + 1))

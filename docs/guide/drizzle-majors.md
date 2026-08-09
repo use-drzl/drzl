@@ -241,6 +241,36 @@ reaches the right answer despite the wrong bound.
 - **Nothing on this page is a claim about drizzle-orm's intent.** These are measurements of what each
   major builds, taken by importing it.
 
+## How long 0.4x is supported
+
+Supporting both majors is not free, and the cost is countable: about 11 percent of the gate's
+runtime, 81 of its roughly 150 ledger entries, one analyzer file carrying the whole 0.4x class map,
+six test files that exist only for it, and this page. It has also paid for itself repeatedly. Every
+array column, and every enum column, came back untyped on 0.4x while the gate was green; `point`
+and `line` were typed as strings, so the emitted schema rejected every real row; and six columns
+are still wrong on 0.45.2 and right on 1.0.0-rc.4.
+
+So the policy is staged, and every trigger is a number anyone can check rather than a date:
+
+| Stage | Trigger | What changes |
+| --- | --- | --- |
+| Both majors gated | in force today | every check on this page runs on every pull request under both majors |
+| 0.4x frozen | the `latest` dist-tag moves off the 0.4x line, so `npm install drizzle-orm` serves 1.x | the gate keeps the 0.4x version pinned that day and stops following new 0.4x releases. This page names that version |
+| 0.4x nightly only | 1.x reaches half of drizzle-orm's last-week downloads | the 0.4x stages move out of the per-pull-request gate into the nightly. `drzl generate` and `drzl doctor` print one line when the resolved drizzle-orm is 0.4x |
+| 0.4x removed | 0.4x falls below a tenth of last-week downloads | the 0.4x class map and its ledger entries are deleted, in a major of `@drzl/analyzer` and `@drzl/cli`. This page becomes history and says so |
+
+The trigger is checkable at `https://api.npmjs.org/versions/drizzle-orm/last-week`, which reports
+downloads per published version, so the split is counted rather than estimated. Read on 2026-08-09,
+over 18,085,669 downloads: **1.x at 5.24 percent**, **0.4x at 85.88 percent** (with 0.45.2 alone at
+69.33), and older releases at 8.88. On those numbers stage one holds, and there is no argument for
+anything else: the version most of the ecosystem installs is the version DRZL was silently broken
+on twice.
+
+Each transition is a deliberate release rather than an automatic one, so a single day's reading
+cannot trigger it, and each is a changeset, so it reaches the changelog and the release notes. From
+the third stage the CLI itself says so, which is the only channel that reaches someone who never
+opens the docs, and the removal is a major, so no caret range delivers it by accident.
+
 ## See also
 
 - [Upgrade notes](/guide/upgrading), for changes that came from a DRZL release rather than the ORM

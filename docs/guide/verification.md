@@ -196,6 +196,28 @@ The same discipline applies to the fixtures. Adding a value to the probe pool is
 changed something: an enum column whose members were absent from the pool was rejected by both
 sides for every value, so the comparison agreed while measuring nothing.
 
+## A failure names its own stage
+
+The gate has 62 places it can exit and 159 lines that can carry a FAIL, and none of them used to
+reach GitHub's checks page: a failed step showed `Process completed with exit code 1`, and the line
+that said what went wrong sat somewhere inside about 670 lines of output. CI now lifts the stage
+heading and the FAIL line onto the failure annotation and the job summary, so the first thing a
+reader sees names the stage that died.
+
+## Nightly, against what the registry serves
+
+Everything above pins the versions it measures, on purpose, so a claim on these pages is exactly
+true of a named version. The cost is that an upstream release is invisible until somebody opens a
+pull request, and then it lands on that pull request rather than on its own. A nightly workflow is
+the other half of that trade: it resolves drizzle-orm's `latest` and `rc` tags, runs the same gate
+against them, runs the runtime checks against whatever Bun and Deno ship that day, and prints the
+per-version download split the deprecation policy keys on.
+
+When it breaks it opens one issue, assigned, and a later failure comments on that issue rather than
+opening a second. The run that goes green again closes it, so the issue's state is the current
+state rather than a history. The gate itself is unchanged by any of this: with no overrides it runs
+the pinned versions, which is what every number on this site was measured against.
+
 ## What one run printed
 
 Lines from the run behind this page, verbatim: commit `74def57`, Node 22.22.0, `MYSQL_URL` set to a

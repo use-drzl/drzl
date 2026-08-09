@@ -22,7 +22,9 @@ Thanks for your interest in contributing! This guide explains how to set up your
     it column by column against the official `drizzle-orm` validators, and runs it against a real
     Postgres (PGlite) and a real SQLite (`node:sqlite`). Set `MYSQL_URL` to include MySQL, which
     CI provides as a service container; without it that stage skips and says so.
-  - It takes a couple of minutes and it is the only thing here that exercises what a consumer
+  - It takes about three minutes locally (160s measured on a 16-core laptop, and it barely
+    responds to cores because it is dominated by npm installs) and it is the only thing here that
+    exercises what a consumer
     actually gets. Everything else imports from source.
 
 ## Repo Structure (packages/)
