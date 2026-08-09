@@ -128,10 +128,11 @@ None of the six reproduces on 1.0.0-rc.4, and 0.45.2 is the major `npm install d
 serves, so this is the version most readers are on.
 
 **DRZL is slower on rows that pass.** On the table on the [Benchmarks](/guide/benchmarks) page,
-DRZL's zod output parses a valid row about 17% slower than `drizzle-orm/zod`'s, and that is the
-real cost of enforcing four constraints the other schema does not enforce. On rows that fail
-typing, which is what an API actually spends its validation time on, the two are within a few
-percent, because the cost of a rejected parse is dominated by building the error.
+DRZL's zod output parses a valid row 15% to 21% slower than `drizzle-orm/zod`'s across three
+consecutive runs, and that is the real cost of enforcing four constraints the other schema does not
+enforce. On rows that fail typing, which is what an API actually spends its validation time on, the
+two are within a few percent, because the cost of a rejected parse is dominated by building the
+error.
 
 **The ArkType output has the weakest JSON column of the four.** ArkType's string DSL has no
 recursive JSON value, so a `json` or `jsonb` column becomes a union of number, object, string,
