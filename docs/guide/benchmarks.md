@@ -122,3 +122,40 @@ allowed to be stricter than a coercing driver, since that is what a validator is
 reasoning is about untrusted input: a row read back came out of the database through the very
 driver the schema describes, so a schema refusing it fails on real rows and no amount of agreement
 makes it correct.
+
+## Two more benchmarks
+
+`bench.sh` measures one generator on one table of eight columns. Two more scripts answer what a
+table that size cannot, and neither is in CI either, for the same reason:
+
+```bash
+bash scripts/bench-validators.sh
+bash scripts/bench-scale.sh
+```
+
+**`bench-validators.sh`** runs the table above through all four validator generators, each against
+`drizzle-orm`'s own module for that library, on the same rows for the same number of repetitions.
+Every figure is a median with the range beside it, because one number implies a precision a handful
+of runs does not support.
+
+It then prices the thing people choose TypeBox for. A `CHECK` that SQL counts in characters cannot
+become a JSON Schema keyword, because every keyword counts UTF-16 units, so it becomes a registered
+kind. `TypeCompiler` cannot inline one: it emits `kind('DrzlRowCheck', 0, value)`, a call out of the
+compiled function and into the registry. The script measures tables that differ in nothing else, so
+what a kind costs is a subtraction rather than a claim, and it does the same for arktype's `narrow`,
+which is where that generator's `CHECK`s live and which costs proportionally more.
+
+Compilation itself is not where it lands. `TypeCompiler.Compile` takes the same tens of microseconds
+whether the schema carries four registered kinds or none; what changes is the speed of the checker
+it hands back.
+
+**`bench-scale.sh`** generates schemas of 25 to 400 tables with `scripts/gen-wide-schema.mjs`, which
+is where the fixture is defined: the arguments in the run are the description of it. It then splits
+one `drzl generate` into phases, end to end from the shell and again from inside the process, and
+attributes a real run's CPU by package.
+
+The answer is not per-table work. On a 200-table schema the generators and `validation-core`
+together account for under a tenth of the run; the largest single item is jiti transpiling the
+schema module the first time it sees it. That result is cached in `os.tmpdir()/jiti` rather than
+under the project, and the cache is keyed by content, so the cost returns after every edit to the
+schema and `drzl watch` pays it on every save.
