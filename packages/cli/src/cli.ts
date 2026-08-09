@@ -1,12 +1,17 @@
 #!/usr/bin/env node
 import { SchemaAnalyzer } from '@drzl/analyzer';
 import { ORPCGenerator } from '@drzl/generator-orpc';
-import chalk from 'chalk';
 import chokidar from 'chokidar';
-import cliProgress from 'cli-progress';
 import { Command } from 'commander';
 import * as path from 'node:path';
-import ora from 'ora';
+import {
+  EXIT_FAILED,
+  EXIT_FINDINGS,
+  EXIT_OK,
+  messageOf,
+  jsonFailure,
+  Output,
+} from './output.js';
 import { jsonSchemaOptions } from './json-schema-options.js';
 import { trpcOptions } from './trpc-options.js';
 import { honoOptions } from './hono-options.js';
@@ -48,15 +53,38 @@ import { CLI_VERSION } from './version.js';
  * `loadGenerator` marks the one case that is an install problem, so the package name comes off the
  * error rather than being repeated here beside the `import()` that already spells it.
  */
-function reportGeneratorFailure(kind: string, e: unknown): void {
+function reportGeneratorFailure(out: Output, kind: string, e: unknown): string {
   if (e instanceof GeneratorNotInstalledError) {
-    console.error(
-      chalk.red(`The ${kind} generator is not installed.`),
-      chalk.yellow(`\nInstall with: npm install ${e.specifier}`)
-    );
-    return;
+    out.error(`The ${kind} generator is not installed.`);
+    out.hint(`Install with: npm install ${e.specifier}`);
+    return `The ${kind} generator is not installed. Install with: npm install ${e.specifier}`;
   }
-  console.error(chalk.red(`The ${kind} generator failed:`), (e as any)?.message ?? e);
+  const detail = messageOf(e);
+  out.error(`The ${kind} generator failed:`, detail);
+  return `The ${kind} generator failed: ${detail}`;
+}
+
+/**
+ * The output layer for one command invocation.
+ *
+ * Built per run rather than as a module singleton, so `--quiet` and `--json` are answered once and
+ * every writer downstream shares that answer. See `output.ts` for the stream and colour rules.
+ */
+function outputFor(opts: { quiet?: boolean; json?: boolean }): Output {
+  return new Output({ quiet: !!opts.quiet, json: !!opts.json });
+}
+
+/**
+ * The two flags every command carries, declared once so none of them can be the one that forgets.
+ *
+ * Item 73 was that `--json` existed on three commands out of seven and `--quiet` on none, which
+ * makes both unusable from a script: a caller cannot write `drzl <anything> --json` and know it
+ * will work.
+ */
+function withOutputFlags(command: Command): Command {
+  return command
+    .option('--json', 'write one JSON document to stdout and nothing else', false)
+    .option('-q, --quiet', 'drop the progress narration on stderr; errors still print', false);
 }
 
 const program = new Command();
@@ -66,57 +94,74 @@ program.addHelpText(
   `\nNeed a template, adapter, or generator DRZL doesn't ship yet?\n→ DM @omardulaimidev on X: https://x.com/omardulaimidev\n`
 );
 
-program
-  .command('analyze')
-  .argument('<schema>', 'path to drizzle schema (TS)')
-  .option('--relations', 'include relations', true)
-  .option('--validate', 'validate constraints', true)
-  .option('--out <file>', 'write analysis JSON to file')
-  .option('--json', 'print JSON to stdout (overrides --out)', false)
-  .action(async (schema: string, opts: any) => {
-    try {
-      const analyzer = new SchemaAnalyzer(schema);
-      const spinner = !opts.json ? ora('Analyzing schema...').start() : null;
-      const start = Date.now();
-      const res = await analyzer.analyze({
-        includeRelations: !!opts.relations,
-        validateConstraints: !!opts.validate,
-      });
-      const ms = Date.now() - start;
-      const json = JSON.stringify(res, null, 2);
-      if (opts.json) {
-        console.log(json);
-      } else if (opts.out) {
-        const fs = await import('node:fs/promises');
-        await fs.writeFile(opts.out, json, 'utf8');
-        spinner?.succeed(chalk.green(`Analysis written to ${opts.out} in ${ms}ms`));
-      } else {
-        spinner?.succeed(chalk.green(`Analyzed in ${ms}ms`));
-        console.log(json);
-      }
-      process.exit(res.issues.some((i) => i.level === 'error') ? 2 : 0);
-    } catch (e: any) {
-      const msg = e?.message ?? String(e);
-      if (opts.json)
-        console.log(JSON.stringify({ event: 'error', code: 'DRZL_CLI_ANALYZE', message: msg }));
-      else
-        console.error(
-          chalk.red('Analyze failed (DRZL_CLI_ANALYZE):'),
-          msg,
-          '\nTip: run with --json for structured output.'
-        );
-      process.exit(1);
-    }
-  });
+withOutputFlags(
+  program
+    .command('analyze')
+    .argument('<schema>', 'path to drizzle schema (TS)')
+    .option('--relations', 'include relations', true)
+    .option('--validate', 'validate constraints', true)
+    .option('--out <file>', 'write analysis JSON to file')
+).action(async (schema: string, opts: any) => {
+  const out = outputFor(opts);
+  try {
+    const analyzer = new SchemaAnalyzer(schema);
+    const spinner = out.spinner('Analyzing schema...');
+    const start = Date.now();
+    const res = await analyzer.analyze({
+      includeRelations: !!opts.relations,
+      validateConstraints: !!opts.validate,
+    });
+    const ms = Date.now() - start;
 
-program
-  .command('doctor')
-  .description('Report what DRZL cannot type or enforce in your schema, and why')
-  .argument('[schema]', 'path to drizzle schema (TS); defaults to the schema in drzl.config')
-  .option('-c, --config <path>', 'path to drzl.config, read when no schema argument is given')
-  .option('--json', 'print the report as JSON instead of prose', false)
-  .option('--strict', 'exit 2 when anything is reported', false)
-  .action(async (schema: string | undefined, opts: any) => {
+    // A schema the analyzer could not open or could not import comes back as an error-level issue
+    // rather than as a throw, and the analysis it returns is empty. That is a run that could not
+    // happen, so it is EXIT_FAILED. Every other error-level issue describes a schema that *was*
+    // read and has something wrong in it, which is the EXIT_FINDINGS case: `analyze` printed a
+    // usable document and is telling the caller to look at it.
+    const unreadable = res.issues.some(
+      (i) => i.level === 'error' && (i.code === 'DRZL_ANL_NOFILE' || i.code === 'DRZL_ANL_IMPORT')
+    );
+    const errors = res.issues.some((i) => i.level === 'error');
+    const code = unreadable ? EXIT_FAILED : errors ? EXIT_FINDINGS : EXIT_OK;
+
+    if (opts.out && !opts.json) {
+      const fs = await import('node:fs/promises');
+      // The bare `Analysis`, because that is what the option says it writes. The envelope belongs
+      // to a command's answer on stdout, not to a file of analysis someone asked to keep.
+      await fs.writeFile(opts.out, JSON.stringify(res, null, 2), 'utf8');
+      spinner.succeed(`Analysis written to ${opts.out} in ${ms}ms`);
+    } else {
+      spinner.succeed(`Analyzed in ${ms}ms`);
+      // The analysis's own keys at the top level, so every existing reader of `.issues`, `.tables`
+      // and `.dialect` keeps working, with the envelope merged in beside them. No `ok` here, for
+      // the reason spelled out on `doctor` below: on a report command that name already belongs to
+      // a statement about the schema, and the run's answer is `exitCode`.
+      // Indented, because `verify-packed.sh` redirects this to a file and a person reads it.
+      const document = opts.json ? { command: 'analyze', exitCode: code, ...res } : res;
+      out.data(JSON.stringify(document, null, 2));
+    }
+    process.exit(code);
+  } catch (e: any) {
+    const msg = messageOf(e);
+    if (opts.json) out.jsonData(jsonFailure('analyze', 'DRZL_CLI_ANALYZE', msg));
+    else {
+      out.error('Analyze failed (DRZL_CLI_ANALYZE):', msg);
+      out.hint('Tip: run with --json for structured output.');
+    }
+    process.exit(EXIT_FAILED);
+  }
+});
+
+withOutputFlags(
+  program
+    .command('doctor')
+    .description('Report what DRZL cannot type or enforce in your schema, and why')
+    .argument('[schema]', 'path to drizzle schema (TS); defaults to the schema in drzl.config')
+    .option('-c, --config <path>', 'path to drzl.config, read when no schema argument is given')
+    .option('--strict', 'exit 2 when anything is reported', false)
+).action(async (schema: string | undefined, opts: any) => {
+  const out = outputFor(opts);
+  {
     try {
       // A schema path argument, like `analyze`, or the one already named in the config, since a
       // user who has a config should not have to retype the path they put in it. Resolution
@@ -130,10 +175,9 @@ program
       }
       if (!target) {
         const msg = 'No schema given. Pass a path, or run from a directory with a drzl.config.';
-        if (opts.json)
-          console.log(JSON.stringify({ event: 'error', code: 'DRZL_CLI_DOCTOR', message: msg }));
-        else console.error(chalk.red('Doctor failed (DRZL_CLI_DOCTOR):'), msg);
-        process.exit(1);
+        if (opts.json) out.jsonData(jsonFailure('doctor', 'DRZL_CLI_DOCTOR', msg));
+        else out.error('Doctor failed (DRZL_CLI_DOCTOR):', msg);
+        process.exit(EXIT_FAILED);
         return;
       }
 
@@ -149,57 +193,82 @@ program
         Array.isArray(target) ? target.join(', ') : target
       );
 
-      if (opts.json) console.log(JSON.stringify(report, null, 2));
-      else console.log(renderDoctorReport(report));
-
-      // An error-level issue means the schema was never read: the file is missing, or importing it
-      // threw. There is no report to act on, so this exits like `analyze`'s failure path rather
+      // An error-level finding means the schema was never read: the file is missing, or importing
+      // it threw. There is no report to act on, so that exits like `analyze`'s failure path rather
       // than pretending the empty analysis was a clean bill of health.
-      if (report.findings.some((f) => f.level === 'error')) {
-        process.exit(1);
-        return;
-      }
-      // Zero by default, and that is the whole point. A schema carrying a customType or a CHECK
+      //
+      // Zero otherwise, and that is the whole point. A schema carrying a customType or a CHECK
       // this parser will not guess at is normal and usable, and a doctor that failed every
       // pipeline reading one would be switched off within a week. `--strict` is the opt-in.
-      process.exit(opts.strict && report.findings.length ? 2 : 0);
-    } catch (e: any) {
-      const msg = e?.message ?? String(e);
-      if (opts.json)
-        console.log(JSON.stringify({ event: 'error', code: 'DRZL_CLI_DOCTOR', message: msg }));
-      else
-        console.error(
-          chalk.red('Doctor failed (DRZL_CLI_DOCTOR):'),
-          msg,
-          '\nTip: run with --json for structured output.'
-        );
-      process.exit(1);
-    }
-  });
+      const unreadable = report.findings.some((f) => f.level === 'error');
+      const code = unreadable
+        ? EXIT_FAILED
+        : opts.strict && report.findings.length
+          ? EXIT_FINDINGS
+          : EXIT_OK;
 
-program
-  .command('generate')
-  .description('Run configured generators (drzl.config.*)')
-  .option('-c, --config <path>', 'path to drzl.config')
-  .option(
-    '--check',
-    'regenerate and fail if the result differs from what is on disk, without changing it'
-  )
-  .action(async (opts: any) => {
+      // The report's own keys at the top level, so every reader of `.findings` and `.counts`
+      // keeps working, with the envelope's three keys merged in beside them. `ok` is about
+      // whether DRZL could run, not about whether the schema is clean: a report full of findings
+      // is a successful doctor run, which is why it is `!unreadable` rather than `report.ok`.
+      // `command` and `exitCode` first, the report's own keys after, and the order matters: this
+      // report has published an `ok` of its own since it shipped, and it means "nothing to report
+      // about the schema", which is not the same question as "could DRZL run". The report's
+      // meaning is the one that survives, and the run's answer is `exitCode`. That is also why the
+      // envelope defines no `ok` for the two report commands; see docs/cli/output.md.
+      if (opts.json)
+        out.data(JSON.stringify({ command: 'doctor', exitCode: code, ...report }, null, 2));
+      else out.data(renderDoctorReport(report, out.outStyle));
+
+      process.exit(code);
+    } catch (e: any) {
+      const msg = messageOf(e);
+      if (opts.json) out.jsonData(jsonFailure('doctor', 'DRZL_CLI_DOCTOR', msg));
+      else {
+        out.error('Doctor failed (DRZL_CLI_DOCTOR):', msg);
+        out.hint('Tip: run with --json for structured output.');
+      }
+      process.exit(EXIT_FAILED);
+    }
+  }
+});
+
+withOutputFlags(
+  program
+    .command('generate')
+    .description('Run configured generators (drzl.config.*)')
+    .option('-c, --config <path>', 'path to drzl.config')
+    .option(
+      '--check',
+      'regenerate and fail if the result differs from what is on disk, without changing it'
+    )
+).action(async (opts: any) => {
+  const out = outputFor(opts);
+  /** Everything the `--json` document reports, filled in as the run makes it true. */
+  const emitted: Array<{ kind: string; files: string[] }> = [];
+  const warnings: string[] = [];
+  /** A warning goes to stderr for a human and into the document for a machine, never both. */
+  const warn = (text: string) => {
+    warnings.push(text);
+    out.warn(text);
+  };
+  {
     try {
       let cfg = await loadConfig(opts.config);
       if (!cfg) {
-        console.error(
-          chalk.red('No config found (DRZL_CFG_001). Create drzl.config.ts or pass --config.')
-        );
-        process.exit(2);
+        const msg = 'No config found (DRZL_CFG_001). Create drzl.config.ts or pass --config.';
+        // Was exit 2 until now, which the scheme reserves for a run that found something. A
+        // config that is not there is a run that could not start.
+        if (opts.json) out.jsonData(jsonFailure('generate', 'DRZL_CFG_001', msg));
+        else out.error(msg);
+        process.exit(EXIT_FAILED);
         return;
       }
       // Where the schema comes from: `schema` in the drzl config, or, when that is omitted,
       // the drizzle-kit config, so a kit user never states the path twice. Resolved before the
       // spinner starts, because it throws the "neither file names a schema" error.
       const source = await resolveSchemaSource(cfg);
-      for (const w of source.warnings) console.warn(chalk.yellow(w));
+      for (const w of source.warnings) warn(w);
       // `typedJson`/`typedColumns` need one module to import tables from (`schemaPath` in
       // validation-options.ts). A drizzle-kit source resolved to exactly one file is that
       // module, so the option keeps working; several files have no single module, and the
@@ -209,15 +278,17 @@ program
       }
       if (source.source === 'drizzle-kit') {
         const n = (source.schema as string[]).length;
-        console.log(
-          chalk.gray(
+        // Narration, so stderr. It says where DRZL looked, not what it produced, and it used to
+        // sit on stdout in front of the file list anyone was parsing.
+        out.note(
+          out.errStyle.gray(
             `Schema from ${path.relative(process.cwd(), source.drizzleKitConfigPath!)} ` +
               `(${n} file${n === 1 ? '' : 's'})`
           )
         );
       }
       const analyzer = new SchemaAnalyzer(source.schema);
-      const spinner = ora('Analyzing...').start();
+      const spinner = out.spinner('Analyzing...');
       const t0 = Date.now();
       const analysis = await analyzer.analyze({
         includeRelations: cfg.analyzer.includeRelations,
@@ -237,7 +308,7 @@ program
         declared: source.drizzleKitDialect,
         analyzed: analysis.dialect,
       });
-      if (dialectWarning) console.warn(chalk.yellow(dialectWarning));
+      if (dialectWarning) warn(dialectWarning);
       // Both filters are applied before any generator sees the analysis, so every one of them
       // honours them without needing to know the options exist.
       //
@@ -249,18 +320,36 @@ program
       // reached rather than what survived it.
       const filterWarnings = tableFilterWarnings(narrowed.tables, cfg);
       analysis.tables = filterTables(narrowed.tables, cfg);
-      for (const w of [...narrowed.warnings, ...filterWarnings]) console.warn(chalk.yellow(w));
-      reportWideColumns(analysis.issues);
+      for (const w of [...narrowed.warnings, ...filterWarnings]) warn(w);
+      for (const w of wideColumnWarning(analysis.issues)) warn(w);
       // Under --check the existing output is captured before anything overwrites it, so the
       // regenerated result can be compared against it and the tree put back either way.
       const driftDirs = computeGeneratorOutputDirs(cfg);
       const driftBefore = opts.check ? await snapshotAll(driftDirs) : null;
-      const progress = new cliProgress.SingleBar(
-        { hideCursor: true },
-        cliProgress.Presets.shades_classic
-      );
       const total = analysis.tables.length || 1;
-      progress.start(total, 0);
+      // Whether this draws anything at all is `shouldShowProgress`'s decision: a terminal, no
+      // `--quiet`, no `--json`, and enough tables that the bar will move (item 72).
+      const progress = out.progress(total);
+      /** One completed generator, reported the same way whichever branch produced it. */
+      const generated = (kind: string, files: string[]) => {
+        progress.stop();
+        emitted.push({ kind, files });
+        if (opts.json) return;
+        // stdout, and deliberately: for `generate` the list of files written is the answer, and a
+        // caller without `--json` has nothing else to read. `--quiet` is what removes it.
+        if (out.quiet) return;
+        out.succeed(out.errStyle.green(`Generated (${kind}): ${files.length} files`));
+        for (const f of files) out.data('  - ' + out.outStyle.cyan(f));
+      };
+      /** One generator that threw. Reports it in whichever shape was asked for, then stops. */
+      const failGenerator = (kind: string, e: unknown): never => {
+        progress.stop();
+        // Prints for a human and returns the same sentence for the document; the writers inside
+        // it are already no-ops under `--json`, so neither shape can be the one that goes stale.
+        const message = reportGeneratorFailure(out, kind, e);
+        if (opts.json) out.jsonData(jsonFailure('generate', 'DRZL_GEN_002', message));
+        process.exit(EXIT_FAILED);
+      };
       // Where the service generator is actually writing, so a router template that imports
       // services spells a path that exists. Templates default this to 'src/services', and with
       // nothing passed that default was used no matter where the services really went, emitting
@@ -269,6 +358,10 @@ program
       const servicesDir =
         cfg.generators.find((x: { kind: string }) => x.kind === 'service')?.path ?? 'src/services';
       for (const g of cfg.generators) {
+        // Per generator rather than once outside the loop. The bar used to be started before the
+        // loop and stopped by whichever branch ran first, so in a config with two generators the
+        // second updated a bar that was already stopped and drew nothing at all.
+        progress.start();
         if (g.kind === 'orpc') {
           const gen = new ORPCGenerator(analysis);
           const { files } = await gen.generate({
@@ -287,9 +380,7 @@ program
             servicesDir,
             onProgress: ({ index }) => progress.update(index),
           });
-          progress.stop();
-          ora().succeed(chalk.green(`Generated (${g.kind}): ${files.length} files`));
-          files.forEach((f: string) => console.log('  -', chalk.cyan(f)));
+          generated(g.kind, files);
         } else if (g.kind === 'trpc') {
           try {
             // An optional dependency, like the json-schema generator and unlike oRPC. A package
@@ -307,13 +398,9 @@ program
               ...trpcOptions(g, cfg, servicesDir),
               onProgress: ({ index }: { index: number }) => progress.update(index),
             });
-            progress.stop();
-            ora().succeed(chalk.green(`Generated (trpc): ${files.length} files`));
-            files.forEach((f: string) => console.log('  -', chalk.cyan(f)));
+            generated('trpc', files);
           } catch (e: any) {
-            progress.stop();
-            reportGeneratorFailure(g.kind, e);
-            process.exit(1);
+            failGenerator(g.kind, e);
           }
         } else if (g.kind === 'hono') {
           try {
@@ -330,13 +417,9 @@ program
               ...honoOptions(g, cfg),
               onProgress: ({ index }: { index: number }) => progress.update(index),
             });
-            progress.stop();
-            ora().succeed(chalk.green(`Generated (hono): ${files.length} files`));
-            files.forEach((f: string) => console.log('  -', chalk.cyan(f)));
+            generated('hono', files);
           } catch (e: any) {
-            progress.stop();
-            reportGeneratorFailure(g.kind, e);
-            process.exit(1);
+            failGenerator(g.kind, e);
           }
         } else if (g.kind === 'express') {
           try {
@@ -353,13 +436,9 @@ program
               ...expressOptions(g, cfg),
               onProgress: ({ index }: { index: number }) => progress.update(index),
             });
-            progress.stop();
-            ora().succeed(chalk.green(`Generated (express): ${files.length} files`));
-            files.forEach((f: string) => console.log('  -', chalk.cyan(f)));
+            generated('express', files);
           } catch (e: any) {
-            progress.stop();
-            reportGeneratorFailure(g.kind, e);
-            process.exit(1);
+            failGenerator(g.kind, e);
           }
         } else if (g.kind === 'fastify') {
           try {
@@ -376,13 +455,9 @@ program
               ...fastifyOptions(g, cfg),
               onProgress: ({ index }: { index: number }) => progress.update(index),
             });
-            progress.stop();
-            ora().succeed(chalk.green(`Generated (fastify): ${files.length} files`));
-            files.forEach((f: string) => console.log('  -', chalk.cyan(f)));
+            generated('fastify', files);
           } catch (e: any) {
-            progress.stop();
-            reportGeneratorFailure(g.kind, e);
-            process.exit(1);
+            failGenerator(g.kind, e);
           }
         } else if (g.kind === 'nestjs') {
           try {
@@ -399,13 +474,9 @@ program
               ...nestjsOptions(g, cfg),
               onProgress: ({ index }: { index: number }) => progress.update(index),
             });
-            progress.stop();
-            ora().succeed(chalk.green(`Generated (nestjs): ${files.length} files`));
-            files.forEach((f: string) => console.log('  -', chalk.cyan(f)));
+            generated('nestjs', files);
           } catch (e: any) {
-            progress.stop();
-            reportGeneratorFailure(g.kind, e);
-            process.exit(1);
+            failGenerator(g.kind, e);
           }
         } else if (g.kind === 'graphql') {
           try {
@@ -423,13 +494,9 @@ program
               ...graphqlOptions(g, cfg),
               onProgress: ({ index }: { index: number }) => progress.update(index),
             });
-            progress.stop();
-            ora().succeed(chalk.green(`Generated (graphql): ${files.length} files`));
-            files.forEach((f: string) => console.log('  -', chalk.cyan(f)));
+            generated('graphql', files);
           } catch (e: any) {
-            progress.stop();
-            reportGeneratorFailure(g.kind, e);
-            process.exit(1);
+            failGenerator(g.kind, e);
           }
         } else if (g.kind === 'service') {
           try {
@@ -453,13 +520,9 @@ program
               // the two halves of one generated project disagreed about the signature.
               databaseInjection: g.databaseInjection,
             });
-            progress.stop();
-            ora().succeed(chalk.green(`Generated (service): ${files.length} files`));
-            files.forEach((f: string) => console.log('  -', chalk.cyan(f)));
+            generated('service', files);
           } catch (e: any) {
-            progress.stop();
-            reportGeneratorFailure(g.kind, e);
-            process.exit(1);
+            failGenerator(g.kind, e);
           }
         } else if (g.kind === 'zod') {
           try {
@@ -478,13 +541,9 @@ program
                 constraints: true,
               }) as never
             );
-            progress.stop();
-            ora().succeed(chalk.green(`Generated (zod): ${files.length} files`));
-            files.forEach((f: string) => console.log('  -', chalk.cyan(f)));
+            generated('zod', files);
           } catch (e: any) {
-            progress.stop();
-            reportGeneratorFailure(g.kind, e);
-            process.exit(1);
+            failGenerator(g.kind, e);
           }
         } else if (g.kind === 'valibot') {
           try {
@@ -497,13 +556,9 @@ program
             const files = await gen.generate(
               validationOptions(g, cfg, target, { schemaTypes: true, constraints: true }) as never
             );
-            progress.stop();
-            ora().succeed(chalk.green(`Generated (valibot): ${files.length} files`));
-            files.forEach((f: string) => console.log('  -', chalk.cyan(f)));
+            generated('valibot', files);
           } catch (e: any) {
-            progress.stop();
-            reportGeneratorFailure(g.kind, e);
-            process.exit(1);
+            failGenerator(g.kind, e);
           }
         } else if (g.kind === 'arktype') {
           try {
@@ -516,13 +571,9 @@ program
             const files = await gen.generate(
               validationOptions(g, cfg, target, { schemaTypes: false }) as never
             );
-            progress.stop();
-            ora().succeed(chalk.green(`Generated (arktype): ${files.length} files`));
-            files.forEach((f: string) => console.log('  -', chalk.cyan(f)));
+            generated('arktype', files);
           } catch (e: any) {
-            progress.stop();
-            reportGeneratorFailure(g.kind, e);
-            process.exit(1);
+            failGenerator(g.kind, e);
           }
         } else if (g.kind === 'json-schema') {
           try {
@@ -537,13 +588,9 @@ program
             const gen = new JsonSchemaGenerator(analysis);
             const target = g.path ?? 'src/validators/json-schema';
             const files = await gen.generate(jsonSchemaOptions(g, cfg, target) as never);
-            progress.stop();
-            ora().succeed(chalk.green(`Generated (json-schema): ${files.length} files`));
-            files.forEach((f: string) => console.log('  -', chalk.cyan(f)));
+            generated('json-schema', files);
           } catch (e: any) {
-            progress.stop();
-            reportGeneratorFailure(g.kind, e);
-            process.exit(1);
+            failGenerator(g.kind, e);
           }
         } else if (g.kind === 'typebox') {
           try {
@@ -559,13 +606,9 @@ program
                 standardSchema: true,
               }) as never
             );
-            progress.stop();
-            ora().succeed(chalk.green(`Generated (typebox): ${files.length} files`));
-            files.forEach((f: string) => console.log('  -', chalk.cyan(f)));
+            generated('typebox', files);
           } catch (e: any) {
-            progress.stop();
-            reportGeneratorFailure(g.kind, e);
-            process.exit(1);
+            failGenerator(g.kind, e);
           }
         } else if (g.kind === 'effect') {
           try {
@@ -578,13 +621,9 @@ program
             const files = await gen.generate(
               validationOptions(g, cfg, target, { schemaTypes: true }) as never
             );
-            progress.stop();
-            ora().succeed(chalk.green(`Generated (effect): ${files.length} files`));
-            files.forEach((f: string) => console.log('  -', chalk.cyan(f)));
+            generated('effect', files);
           } catch (e: any) {
-            progress.stop();
-            reportGeneratorFailure(g.kind, e);
-            process.exit(1);
+            failGenerator(g.kind, e);
           }
         }
       }
@@ -594,99 +633,200 @@ program
         // Restored whether or not anything drifted, so `--check` never leaves the tree altered.
         await restoreSnapshot(driftBefore, after);
 
-        if (drift.length) {
-          console.error(chalk.red(`\nGenerated output is out of date (${drift.length} file(s)):`));
+        const upToDate = drift.length === 0;
+        // Drift is EXIT_FINDINGS, not EXIT_FAILED, and that is the whole reason the scheme has two
+        // failure codes. The check ran perfectly: it regenerated, compared, restored the tree, and
+        // is reporting what it found. A CI job that wants to show a diff acts on that differently
+        // from a config it could not read, and until now both were 1.
+        const code = upToDate ? EXIT_OK : EXIT_FINDINGS;
+
+        if (opts.json) {
+          out.jsonData({
+            ok: true,
+            command: 'generate',
+            exitCode: code,
+            check: {
+              upToDate,
+              drift: drift.map((d) => ({
+                file: path.relative(process.cwd(), d.file),
+                status: d.status,
+              })),
+            },
+            generators: emitted.map((e) => ({ kind: e.kind, files: e.files })),
+            warnings,
+          });
+          process.exit(code);
+        }
+
+        if (!upToDate) {
+          out.error(`\nGenerated output is out of date (${drift.length} file(s)):`);
           for (const d of drift) {
             const mark = d.status === 'added' ? '+' : d.status === 'removed' ? '-' : '~';
-            console.error(
-              `  ${mark} ${chalk.yellow(d.status.padEnd(8))} ${path.relative(process.cwd(), d.file)}`
+            out.error(
+              `  ${mark} ${out.errStyle.yellow(d.status.padEnd(8))} ${path.relative(process.cwd(), d.file)}`
             );
           }
-          console.error(
-            chalk.dim(
-              '\nRun `drzl generate` and commit the result. Nothing was written by this check.'
-            )
-          );
-          process.exit(1);
+          out.hint('\nRun `drzl generate` and commit the result. Nothing was written by this check.');
+          process.exit(code);
         }
-        console.log(chalk.green('Generated output is up to date.'));
+        out.succeed(out.errStyle.green('Generated output is up to date.'));
+        process.exit(code);
+      }
+
+      if (opts.json) {
+        out.jsonData({
+          ok: true,
+          command: 'generate',
+          exitCode: EXIT_OK,
+          check: null,
+          generators: emitted.map((e) => ({ kind: e.kind, files: e.files })),
+          warnings,
+        });
         return;
       }
 
       if (cfg.generators.length) {
-        maybeShowSponsorMessage({ reason: 'generate' });
+        maybeShowSponsorMessage({ reason: 'generate', out });
       }
     } catch (e: any) {
-      console.error(
-        chalk.red('Generate failed (DRZL_GEN_001):'),
-        e?.message ?? e,
-        '\nTip: check your drzl.config.ts and template path.'
-      );
-      process.exit(1);
+      const msg = messageOf(e);
+      if (opts.json) out.jsonData(jsonFailure('generate', 'DRZL_GEN_001', msg));
+      else {
+        out.error('Generate failed (DRZL_GEN_001):', msg);
+        out.hint('Tip: check your drzl.config.ts and template path.');
+      }
+      process.exit(EXIT_FAILED);
     }
-  });
+  }
+});
 
-program
-  .command('generate:orpc')
-  .argument('<schema>', 'path to drizzle schema (TS)')
-  .option('-o, --outDir <dir>', 'output directory', 'src/api')
-  .option('--template <name>', 'template name', 'standard')
-  .option('--includeRelations', 'include relation endpoints')
-  .action(async (schema: string, opts: any) => {
-    try {
-      const analyzer = new SchemaAnalyzer(schema);
-      const analysis = await analyzer.analyze({
-        includeRelations: !!opts.includeRelations,
-        validateConstraints: true,
-      });
-      const gen = new ORPCGenerator(analysis);
-      const { files } = await gen.generate({
-        outputDir: opts.outDir,
-        template: opts.template,
-        includeRelations: !!opts.includeRelations,
-      });
-      console.log(chalk.green(`Generated:`), files.map((f) => chalk.cyan(f)).join(', '));
-      maybeShowSponsorMessage({ reason: 'generate:orpc' });
-    } catch (e: any) {
-      console.error(chalk.red('Generate orpc failed:'), e?.message ?? e);
-      process.exit(1);
-    }
-  });
+/**
+ * Refuse to generate from a schema that was never read.
+ *
+ * `generate:orpc no-such-file.ts` used to exit 0, having written a `placeholder.orpc.ts` whose
+ * contents read "No tables detected in analysis". Measured on 4.22.0 and again here. That is the
+ * same defect item 67 fixed in `init`, one command along: the first thing a new user runs reports
+ * success having read nothing, and a CI step guarding the generated tree passes.
+ *
+ * `NOFILE` and `IMPORT` are the analyzer's two "there is nothing to work with" codes; anything
+ * else it says is a description of a schema it did read.
+ */
+function unreadableSchema(issues: Array<{ level?: string; code?: string; message?: string }>) {
+  return issues.find(
+    (i) => i.level === 'error' && (i.code === 'DRZL_ANL_NOFILE' || i.code === 'DRZL_ANL_IMPORT')
+  );
+}
 
-program
-  .command('generate:trpc')
-  .argument('<schema>', 'path to drizzle schema (TS)')
-  .option('-o, --outDir <dir>', 'output directory', 'src/api')
-  .option('--template <name>', 'standard | service', 'standard')
-  .option('--includeRelations', 'include relation endpoints')
-  .option('--servicesDir <dir>', 'where the service generator writes', 'src/services')
-  .action(async (schema: string, opts: any) => {
-    try {
-      const analyzer = new SchemaAnalyzer(schema);
-      const analysis = await analyzer.analyze({
-        includeRelations: !!opts.includeRelations,
-        validateConstraints: true,
-      });
-      const { TRPCGenerator } = await loadGenerator(
-        '@drzl/generator-trpc',
-        () => import('@drzl/generator-trpc')
-      );
-      const gen = new TRPCGenerator(analysis);
-      const { files } = await gen.generate({
-        outputDir: opts.outDir,
-        template: opts.template,
-        includeRelations: !!opts.includeRelations,
-        // Only consulted by `--template service`, and passed unconditionally so this command
-        // cannot become the branch that forgets it.
-        servicesDir: opts.servicesDir,
-      });
-      console.log(chalk.green(`Generated:`), files.map((f: string) => chalk.cyan(f)).join(', '));
-      maybeShowSponsorMessage({ reason: 'generate:trpc' });
-    } catch (e: any) {
-      reportGeneratorFailure('trpc', e);
-      process.exit(1);
+withOutputFlags(
+  program
+    .command('generate:orpc')
+    .argument('<schema>', 'path to drizzle schema (TS)')
+    .option('-o, --outDir <dir>', 'output directory', 'src/api')
+    .option('--template <name>', 'template name', 'standard')
+    .option('--includeRelations', 'include relation endpoints')
+).action(async (schema: string, opts: any) => {
+  const out = outputFor(opts);
+  try {
+    const analyzer = new SchemaAnalyzer(schema);
+    const analysis = await analyzer.analyze({
+      includeRelations: !!opts.includeRelations,
+      validateConstraints: true,
+    });
+    const unreadable = unreadableSchema(analysis.issues);
+    if (unreadable) {
+      const msg = unreadable.message ?? `Schema could not be read: ${schema}`;
+      if (opts.json) out.jsonData(jsonFailure('generate:orpc', 'DRZL_CLI_SCHEMA', msg));
+      else out.error('Generate orpc failed:', msg);
+      process.exit(EXIT_FAILED);
+      return;
     }
-  });
+    const gen = new ORPCGenerator(analysis);
+    const { files } = await gen.generate({
+      outputDir: opts.outDir,
+      template: opts.template,
+      includeRelations: !!opts.includeRelations,
+    });
+    if (opts.json) {
+      out.jsonData({
+        ok: true,
+        command: 'generate:orpc',
+        exitCode: EXIT_OK,
+        generators: [{ kind: 'orpc', files }],
+      });
+      return;
+    }
+    if (!out.quiet) {
+      out.data(out.outStyle.green('Generated:') + ' ' + files.map((f) => out.outStyle.cyan(f)).join(', '));
+    }
+    maybeShowSponsorMessage({ reason: 'generate:orpc', out });
+  } catch (e: any) {
+    const msg = messageOf(e);
+    if (opts.json) out.jsonData(jsonFailure('generate:orpc', 'DRZL_CLI_ORPC', msg));
+    else out.error('Generate orpc failed:', msg);
+    process.exit(EXIT_FAILED);
+  }
+});
+
+withOutputFlags(
+  program
+    .command('generate:trpc')
+    .argument('<schema>', 'path to drizzle schema (TS)')
+    .option('-o, --outDir <dir>', 'output directory', 'src/api')
+    .option('--template <name>', 'standard | service', 'standard')
+    .option('--includeRelations', 'include relation endpoints')
+    .option('--servicesDir <dir>', 'where the service generator writes', 'src/services')
+).action(async (schema: string, opts: any) => {
+  const out = outputFor(opts);
+  try {
+    const analyzer = new SchemaAnalyzer(schema);
+    const analysis = await analyzer.analyze({
+      includeRelations: !!opts.includeRelations,
+      validateConstraints: true,
+    });
+    const unreadable = unreadableSchema(analysis.issues);
+    if (unreadable) {
+      const msg = unreadable.message ?? `Schema could not be read: ${schema}`;
+      if (opts.json) out.jsonData(jsonFailure('generate:trpc', 'DRZL_CLI_SCHEMA', msg));
+      else out.error('Generate trpc failed:', msg);
+      process.exit(EXIT_FAILED);
+      return;
+    }
+    const { TRPCGenerator } = await loadGenerator(
+      '@drzl/generator-trpc',
+      () => import('@drzl/generator-trpc')
+    );
+    const gen = new TRPCGenerator(analysis);
+    const { files } = await gen.generate({
+      outputDir: opts.outDir,
+      template: opts.template,
+      includeRelations: !!opts.includeRelations,
+      // Only consulted by `--template service`, and passed unconditionally so this command
+      // cannot become the branch that forgets it.
+      servicesDir: opts.servicesDir,
+    });
+    if (opts.json) {
+      out.jsonData({
+        ok: true,
+        command: 'generate:trpc',
+        exitCode: EXIT_OK,
+        generators: [{ kind: 'trpc', files }],
+      });
+      return;
+    }
+    if (!out.quiet) {
+      out.data(
+        out.outStyle.green('Generated:') +
+          ' ' +
+          files.map((f: string) => out.outStyle.cyan(f)).join(', ')
+      );
+    }
+    maybeShowSponsorMessage({ reason: 'generate:trpc', out });
+  } catch (e: any) {
+    const message = reportGeneratorFailure(out, 'trpc', e);
+    if (opts.json) out.jsonData(jsonFailure('generate:trpc', 'DRZL_CLI_TRPC', message));
+    process.exit(EXIT_FAILED);
+  }
+});
 
 program
   .command('watch')
@@ -699,12 +839,17 @@ program
   )
   .option('--debounce <ms>', 'debounce ms', '200')
   .option('--json', 'emit JSON logs', false)
+  .option('-q, --quiet', 'drop the progress narration on stderr; errors still print', false)
   .option('--poll', 'force polling (helps WSL/Docker/remote FS)', false)
   .action(async (opts: any) => {
+    // `watch` has no answer to give: it is narration until it is stopped. So everything human it
+    // prints goes to stderr, and stdout carries only the `--json` event stream, which is the one
+    // thing here a program reads.
+    const out = outputFor(opts);
     let cfg = await loadConfig(opts.config);
     if (!cfg) {
-      console.error(chalk.red('No config found. Create drzl.config.ts or pass --config.'));
-      process.exit(2);
+      out.error('No config found (DRZL_CFG_001). Create drzl.config.ts or pass --config.');
+      process.exit(EXIT_FAILED);
       return;
     }
 
@@ -723,11 +868,11 @@ program
     try {
       source = await resolveSchemaSource(cfg);
     } catch (e: any) {
-      console.error(chalk.red(String(e?.message ?? e)));
-      process.exit(2);
+      out.error(messageOf(e));
+      process.exit(EXIT_FAILED);
       return;
     }
-    for (const w of source.warnings) console.warn(chalk.yellow(w));
+    for (const w of source.warnings) out.warn(w);
 
     const ignoredOutDirs = new Set<string>(computeGeneratorOutputDirs(cfg).map(abs));
     const currentTargets = new Set<string>(
@@ -777,7 +922,7 @@ program
     });
 
     const logTrigger = (type: 'add' | 'change' | 'unlink', file: string) => {
-      if (opts.json) console.log(JSON.stringify({ event: 'trigger', type, file }));
+      if (opts.json) out.jsonData({ event: 'trigger', type, file });
     };
 
     watcher
@@ -795,6 +940,24 @@ program
       });
 
     let lastFiles: string[] = [];
+
+    /**
+     * One generator finishing a watch rebuild, reported the same way from all thirteen branches.
+     *
+     * The event keys are the ones `--json` has always emitted, because a watch feeding a script is
+     * the only reader that shape has. The human form is narration, so it goes to stderr with
+     * everything else this command prints.
+     */
+    const watchGenerated = (kind: string, files: string[]) => {
+      if (opts.json) {
+        out.jsonData({ event: 'generate_complete', kind, files });
+        return;
+      }
+      out.succeed(
+        out.errStyle.green(`Generated (${kind}): ${files.length} files`) +
+          (files.length ? ' ' + files.map((f) => out.errStyle.cyan(f)).join(', ') : '')
+      );
+    };
 
     const run = async () => {
       try {
@@ -824,17 +987,15 @@ program
         if (!opts.json) console.clear();
 
         if (opts.json) {
-          console.log(
-            JSON.stringify({
-              event: 'watch_config_applied',
-              targets: Array.from(currentTargets),
-              ignored: Array.from(ignoredOutDirs),
-            })
-          );
+          out.jsonData({
+            event: 'watch_config_applied',
+            targets: Array.from(currentTargets),
+            ignored: Array.from(ignoredOutDirs),
+          });
         }
 
         // After the console.clear() above, or the warning would be wiped before anyone saw it.
-        if (!opts.json) for (const w of source.warnings) console.warn(chalk.yellow(w));
+        for (const w of source.warnings) out.warn(w);
 
         const analyzer = new SchemaAnalyzer(source.schema);
         const analysis = await analyzer.analyze({
@@ -849,28 +1010,25 @@ program
           declared: source.drizzleKitDialect,
           analyzed: analysis.dialect,
         });
-        if (dialectWarning && !opts.json) console.warn(chalk.yellow(dialectWarning));
+        if (dialectWarning) out.warn(dialectWarning);
         // Same order and the same reasons as `generate`. A config edited mid-watch that names a
         // column that does not exist throws here, and `run`'s own catch reports it and keeps
         // watching, so the next save can fix it.
         const narrowed = filterColumns(analysis.tables, cfg.columns);
         const filterWarnings = tableFilterWarnings(narrowed.tables, cfg);
         analysis.tables = filterTables(narrowed.tables, cfg);
-        if (!opts.json)
-          for (const w of [...narrowed.warnings, ...filterWarnings]) console.warn(chalk.yellow(w));
-        if (!opts.json) reportWideColumns(analysis.issues);
+        for (const w of [...narrowed.warnings, ...filterWarnings]) out.warn(w);
+        for (const w of wideColumnWarning(analysis.issues)) out.warn(w);
 
         if (opts.pipeline === 'analyze') {
           if (opts.json) {
-            console.log(
-              JSON.stringify({
-                event: 'analyze_complete',
-                issues: analysis.issues,
-                tables: analysis.tables.length,
-              })
-            );
+            out.jsonData({
+              event: 'analyze_complete',
+              issues: analysis.issues,
+              tables: analysis.tables.length,
+            });
           } else {
-            console.log(chalk.green('Analyze complete.'));
+            out.succeed('Analyze complete.');
           }
           return;
         }
@@ -914,12 +1072,7 @@ program
               databaseInjection: g.databaseInjection,
               servicesDir,
             });
-            opts.json
-              ? console.log(JSON.stringify({ event: 'generate_complete', kind: g.kind, files }))
-              : console.log(
-                  chalk.green(`Generated (${g.kind}):`),
-                  files.map((f: string) => chalk.cyan(f)).join(', ')
-                );
+            watchGenerated(g.kind, files);
             newFiles.push(...files);
           } else if (g.kind === 'trpc') {
             try {
@@ -931,15 +1084,10 @@ program
               // The same builder `generate` uses, so the two dispatch loops cannot disagree
               // about what this generator is given.
               const { files } = await gen.generate(trpcOptions(g, cfg, servicesDir));
-              opts.json
-                ? console.log(JSON.stringify({ event: 'generate_complete', kind: g.kind, files }))
-                : console.log(
-                    chalk.green(`Generated (trpc): ${files.length} files`),
-                    files.map((f: string) => chalk.cyan(f)).join(', ')
-                  );
+              watchGenerated(g.kind, files);
               newFiles.push(...files);
             } catch (e: any) {
-              reportGeneratorFailure(g.kind, e);
+              reportGeneratorFailure(out, g.kind, e);
               return;
             }
           } else if (g.kind === 'hono') {
@@ -952,15 +1100,10 @@ program
               // The same builder `generate` uses, so the two dispatch loops cannot disagree
               // about what this generator is given.
               const { files } = await gen.generate(honoOptions(g, cfg));
-              opts.json
-                ? console.log(JSON.stringify({ event: 'generate_complete', kind: g.kind, files }))
-                : console.log(
-                    chalk.green(`Generated (hono): ${files.length} files`),
-                    files.map((f: string) => chalk.cyan(f)).join(', ')
-                  );
+              watchGenerated(g.kind, files);
               newFiles.push(...files);
             } catch (e: any) {
-              reportGeneratorFailure(g.kind, e);
+              reportGeneratorFailure(out, g.kind, e);
               return;
             }
           } else if (g.kind === 'express') {
@@ -973,15 +1116,10 @@ program
               // The same builder `generate` uses, so the two dispatch loops cannot disagree
               // about what this generator is given.
               const { files } = await gen.generate(expressOptions(g, cfg));
-              opts.json
-                ? console.log(JSON.stringify({ event: 'generate_complete', kind: g.kind, files }))
-                : console.log(
-                    chalk.green(`Generated (express): ${files.length} files`),
-                    files.map((f: string) => chalk.cyan(f)).join(', ')
-                  );
+              watchGenerated(g.kind, files);
               newFiles.push(...files);
             } catch (e: any) {
-              reportGeneratorFailure(g.kind, e);
+              reportGeneratorFailure(out, g.kind, e);
               return;
             }
           } else if (g.kind === 'fastify') {
@@ -994,15 +1132,10 @@ program
               // The same builder `generate` uses, so the two dispatch loops cannot disagree
               // about what this generator is given.
               const { files } = await gen.generate(fastifyOptions(g, cfg));
-              opts.json
-                ? console.log(JSON.stringify({ event: 'generate_complete', kind: g.kind, files }))
-                : console.log(
-                    chalk.green(`Generated (fastify): ${files.length} files`),
-                    files.map((f: string) => chalk.cyan(f)).join(', ')
-                  );
+              watchGenerated(g.kind, files);
               newFiles.push(...files);
             } catch (e: any) {
-              reportGeneratorFailure(g.kind, e);
+              reportGeneratorFailure(out, g.kind, e);
               return;
             }
           } else if (g.kind === 'nestjs') {
@@ -1015,15 +1148,10 @@ program
               // The same builder `generate` uses, so the two dispatch loops cannot disagree
               // about what this generator is given.
               const { files } = await gen.generate(nestjsOptions(g, cfg));
-              opts.json
-                ? console.log(JSON.stringify({ event: 'generate_complete', kind: g.kind, files }))
-                : console.log(
-                    chalk.green(`Generated (nestjs): ${files.length} files`),
-                    files.map((f: string) => chalk.cyan(f)).join(', ')
-                  );
+              watchGenerated(g.kind, files);
               newFiles.push(...files);
             } catch (e: any) {
-              reportGeneratorFailure(g.kind, e);
+              reportGeneratorFailure(out, g.kind, e);
               return;
             }
           } else if (g.kind === 'graphql') {
@@ -1036,15 +1164,10 @@ program
               // The same builder `generate` uses, so the two dispatch loops cannot disagree
               // about what this generator is given.
               const { files } = await gen.generate(graphqlOptions(g, cfg));
-              opts.json
-                ? console.log(JSON.stringify({ event: 'generate_complete', kind: g.kind, files }))
-                : console.log(
-                    chalk.green(`Generated (graphql): ${files.length} files`),
-                    files.map((f: string) => chalk.cyan(f)).join(', ')
-                  );
+              watchGenerated(g.kind, files);
               newFiles.push(...files);
             } catch (e: any) {
-              reportGeneratorFailure(g.kind, e);
+              reportGeneratorFailure(out, g.kind, e);
               return;
             }
           } else if (g.kind === 'service') {
@@ -1065,15 +1188,10 @@ program
                 importExtension: g.importExtension,
                 databaseInjection: g.databaseInjection,
               });
-              opts.json
-                ? console.log(JSON.stringify({ event: 'generate_complete', kind: g.kind, files }))
-                : console.log(
-                    chalk.green(`Generated (service): ${files.length} files`),
-                    files.map((f: string) => chalk.cyan(f)).join(', ')
-                  );
+              watchGenerated(g.kind, files);
               newFiles.push(...files);
             } catch (e: any) {
-              reportGeneratorFailure(g.kind, e);
+              reportGeneratorFailure(out, g.kind, e);
               return;
             }
           } else if (g.kind === 'zod') {
@@ -1098,15 +1216,10 @@ program
                   constraints: true,
                 }) as never
               );
-              opts.json
-                ? console.log(JSON.stringify({ event: 'generate_complete', kind: g.kind, files }))
-                : console.log(
-                    chalk.green(`Generated (zod): ${files.length} files`),
-                    files.map((f: string) => chalk.cyan(f)).join(', ')
-                  );
+              watchGenerated(g.kind, files);
               newFiles.push(...files);
             } catch (e: any) {
-              reportGeneratorFailure(g.kind, e);
+              reportGeneratorFailure(out, g.kind, e);
               return;
             }
           } else if (g.kind === 'valibot') {
@@ -1128,15 +1241,10 @@ program
                   constraints: true,
                 }) as never
               );
-              opts.json
-                ? console.log(JSON.stringify({ event: 'generate_complete', kind: g.kind, files }))
-                : console.log(
-                    chalk.green(`Generated (valibot): ${files.length} files`),
-                    files.map((f: string) => chalk.cyan(f)).join(', ')
-                  );
+              watchGenerated(g.kind, files);
               newFiles.push(...files);
             } catch (e: any) {
-              reportGeneratorFailure(g.kind, e);
+              reportGeneratorFailure(out, g.kind, e);
               return;
             }
           } else if (g.kind === 'arktype') {
@@ -1155,15 +1263,10 @@ program
               const files = await gen.generate(
                 validationOptions(g, cfg, target, { schemaTypes: false }) as never
               );
-              opts.json
-                ? console.log(JSON.stringify({ event: 'generate_complete', kind: g.kind, files }))
-                : console.log(
-                    chalk.green(`Generated (arktype): ${files.length} files`),
-                    files.map((f: string) => chalk.cyan(f)).join(', ')
-                  );
+              watchGenerated(g.kind, files);
               newFiles.push(...files);
             } catch (e: any) {
-              reportGeneratorFailure(g.kind, e);
+              reportGeneratorFailure(out, g.kind, e);
               return;
             }
           } else if (g.kind === 'typebox') {
@@ -1185,15 +1288,10 @@ program
                   standardSchema: true,
                 }) as never
               );
-              opts.json
-                ? console.log(JSON.stringify({ event: 'generate_complete', kind: g.kind, files }))
-                : console.log(
-                    chalk.green(`Generated (typebox): ${files.length} files`),
-                    files.map((f: string) => chalk.cyan(f)).join(', ')
-                  );
+              watchGenerated(g.kind, files);
               newFiles.push(...files);
             } catch (e: any) {
-              reportGeneratorFailure(g.kind, e);
+              reportGeneratorFailure(out, g.kind, e);
               return;
             }
           } else if (g.kind === 'effect') {
@@ -1210,15 +1308,10 @@ program
               const files = await gen.generate(
                 validationOptions(g, cfg, target, { schemaTypes: true }) as never
               );
-              opts.json
-                ? console.log(JSON.stringify({ event: 'generate_complete', kind: g.kind, files }))
-                : console.log(
-                    chalk.green(`Generated (effect): ${files.length} files`),
-                    files.map((f: string) => chalk.cyan(f)).join(', ')
-                  );
+              watchGenerated(g.kind, files);
               newFiles.push(...files);
             } catch (e: any) {
-              reportGeneratorFailure(g.kind, e);
+              reportGeneratorFailure(out, g.kind, e);
               return;
             }
           } else if (g.kind === 'json-schema') {
@@ -1232,15 +1325,10 @@ program
               // The same builder `generate` uses, so the two dispatch loops cannot disagree about
               // what this generator is given.
               const files = await gen.generate(jsonSchemaOptions(g, cfg, target) as never);
-              opts.json
-                ? console.log(JSON.stringify({ event: 'generate_complete', kind: g.kind, files }))
-                : console.log(
-                    chalk.green(`Generated (json-schema): ${files.length} files`),
-                    files.map((f: string) => chalk.cyan(f)).join(', ')
-                  );
+              watchGenerated(g.kind, files);
               newFiles.push(...files);
             } catch (e: any) {
-              reportGeneratorFailure(g.kind, e);
+              reportGeneratorFailure(out, g.kind, e);
               return;
             }
           }
@@ -1248,22 +1336,22 @@ program
 
         const added = newFiles.filter((f) => !lastFiles.includes(f));
         const removed = lastFiles.filter((f) => !newFiles.includes(f));
-        opts.json
-          ? console.log(JSON.stringify({ event: 'diff', added, removed }))
-          : (() => {
-              if (added.length) console.log(chalk.blue(`Added: ${added.join(', ')}`));
-              if (removed.length) console.log(chalk.yellow(`Removed: ${removed.join(', ')}`));
-            })();
-        if (newFiles.length && !opts.json) {
+        if (opts.json) {
+          out.jsonData({ event: 'diff', added, removed });
+        } else {
+          if (added.length) out.note(out.errStyle.blue(`Added: ${added.join(', ')}`));
+          if (removed.length) out.warn(`Removed: ${removed.join(', ')}`);
+        }
+        if (newFiles.length) {
           const reason =
             opts.pipeline && opts.pipeline !== 'all' ? `watch:${opts.pipeline}` : 'watch';
-          maybeShowSponsorMessage({ reason });
+          maybeShowSponsorMessage({ reason, out });
         }
         lastFiles = newFiles;
       } catch (e: any) {
-        opts.json
-          ? console.log(JSON.stringify({ event: 'error', message: String(e?.message ?? e) }))
-          : console.error(chalk.red('Watch pipeline failed:'), e?.message ?? e);
+        const msg = messageOf(e);
+        if (opts.json) out.jsonData({ event: 'error', message: msg });
+        else out.error('Watch pipeline failed:', msg);
       }
     };
 
@@ -1281,16 +1369,14 @@ program
     };
 
     if (opts.json) {
-      console.log(
-        JSON.stringify({
-          event: 'watching',
-          targets: Array.from(currentTargets),
-          ignored: Array.from(ignoredOutDirs),
-        })
-      );
+      out.jsonData({
+        event: 'watching',
+        targets: Array.from(currentTargets),
+        ignored: Array.from(ignoredOutDirs),
+      });
     } else {
-      console.log(
-        chalk.gray(
+      out.note(
+        out.errStyle.gray(
           'Watching:\n  ' +
             Array.from(currentTargets)
               .map((p) => path.relative(process.cwd(), p))
@@ -1303,36 +1389,63 @@ program
       .on('add', (p) => trigger(p))
       .on('change', (p) => trigger(p))
       .on('unlink', (p) => trigger(p))
-      .on('error', (err) => console.error(chalk.red('Watcher error:'), err));
+      .on('error', (err) => out.error('Watcher error:', messageOf(err)));
 
     await run();
   });
 
-program
-  .command('init')
-  .description('Scaffold a drzl.config.ts, finding your schema and asking what to generate')
-  .option('-y, --yes', 'take the defaults and ask nothing')
-  .option('--schema <path>', 'the schema file to write into the config, skipping detection')
-  .option(
-    '--generators <list>',
-    `comma-separated: ${INIT_GENERATOR_CHOICES.map((c) => c.kind).join(', ')}`
-  )
-  .action(async (opts: any) => {
-    // Every prompt has a flag, and every flag skips its prompt. That equivalence is what keeps
-    // the interactive command usable from CI: nothing can only be answered by a human.
-    const outcome = await runInit({
-      cwd: process.cwd(),
-      yes: !!opts.yes,
-      schemaFlag: opts.schema,
-      generatorsFlag: opts.generators,
-      stdin: process.stdin,
-      stdout: process.stdout,
-      env: process.env,
-      log: (s) => console.log(s.startsWith('Created ') ? chalk.green(s) : chalk.gray(s)),
-      error: (s) => console.error(chalk.red(s)),
-    });
-    if (outcome.code !== 0) process.exit(outcome.code);
+withOutputFlags(
+  program
+    .command('init')
+    .description('Scaffold a drzl.config.ts, finding your schema and asking what to generate')
+    .option('-y, --yes', 'take the defaults and ask nothing')
+    .option('--schema <path>', 'the schema file to write into the config, skipping detection')
+    .option(
+      '--generators <list>',
+      `comma-separated: ${INIT_GENERATOR_CHOICES.map((c) => c.kind).join(', ')}`
+    )
+).action(async (opts: any) => {
+  const out = outputFor(opts);
+  const failures: string[] = [];
+  // Every prompt has a flag, and every flag skips its prompt. That equivalence is what keeps
+  // the interactive command usable from CI: nothing can only be answered by a human.
+  //
+  // `--json` forces the non-interactive path as well as the shape. A prompt written into a
+  // document is a question nobody will answer and a document nobody can parse, and `--json` is
+  // only ever passed by something that is not a person.
+  const outcome = await runInit({
+    cwd: process.cwd(),
+    yes: !!opts.yes || !!opts.json,
+    schemaFlag: opts.schema,
+    generatorsFlag: opts.generators,
+    stdin: process.stdin,
+    stdout: process.stdout,
+    env: process.env,
+    // Narration on stderr, all of it: what `init` produces is a file on disk, and the lines it
+    // prints are a report about that.
+    log: (s) => out.note(s.startsWith('Created ') ? out.errStyle.green(s) : out.errStyle.gray(s)),
+    error: (s) => {
+      failures.push(s);
+      out.error(s);
+    },
   });
+  if (opts.json) {
+    out.jsonData(
+      outcome.code === 0
+        ? {
+            ok: true,
+            command: 'init',
+            exitCode: EXIT_OK,
+            written: outcome.written,
+            schema: outcome.plan?.schema ?? null,
+            schemaSource: outcome.plan?.schemaSource ?? null,
+            generators: outcome.plan?.generators ?? [],
+          }
+        : jsonFailure('init', 'DRZL_CLI_INIT', failures.join(' ') || 'init did not write a config')
+    );
+  }
+  process.exit(outcome.code === 0 ? EXIT_OK : EXIT_FAILED);
+});
 
 /**
  * Tell the user which columns got a validator that accepts anything.
@@ -1346,21 +1459,24 @@ program
  * Printed once with a count rather than a line per column, so a schema with fifty custom types
  * stays readable.
  */
-function reportWideColumns(issues: Array<{ code?: string; message?: string; hint?: string }>) {
+function wideColumnWarning(
+  issues: Array<{ code?: string; message?: string; hint?: string }>
+): string[] {
   const wide = issues.filter((i) => i.code === 'DRZL_ANL_UNKNOWN_COLUMN');
-  if (!wide.length) return;
-  console.warn(
-    chalk.yellow(`\n${wide.length} column${wide.length === 1 ? '' : 's'} could not be typed:`)
-  );
-  for (const i of wide.slice(0, 10)) console.warn(chalk.gray(`  - ${i.message}`));
-  if (wide.length > 10) console.warn(chalk.gray(`  ... and ${wide.length - 10} more`));
+  if (!wide.length) return [];
+  // One string rather than a write per line. The caller both prints it and puts it in the
+  // `--json` document, and a warning split across six writes cannot be put in a document at all
+  // without the two shapes drifting apart.
+  const lines = [`\n${wide.length} column${wide.length === 1 ? '' : 's'} could not be typed:`];
+  for (const i of wide.slice(0, 10)) lines.push(`  - ${i.message}`);
+  if (wide.length > 10) lines.push(`  ... and ${wide.length - 10} more`);
   // One hint for the set, since they are almost always the same two.
-  const hints = [...new Set(wide.map((i) => i.hint).filter(Boolean))];
-  for (const h of hints) console.warn(chalk.gray(`  ${h}`));
+  for (const h of [...new Set(wide.map((i) => i.hint).filter(Boolean))]) lines.push(`  ${h}`);
   // Untypeable columns are the only thing this line can see. A CHECK constraint the generators
   // decline produces no output at all and so cannot be counted here without parsing every one of
   // them on the generate path, which is what `doctor` is for.
-  console.warn(chalk.gray('  Run `drzl doctor` for the full report.'));
+  lines.push('  Run `drzl doctor` for the full report.');
+  return [lines.join('\n')];
 }
 
 program.parseAsync(process.argv);

@@ -90,11 +90,15 @@ afterAll(async () => {
 describe('drzl generate with no schema in drzl.config', () => {
   it('reads drizzle.config.ts, expands its glob, and generates for every table', async () => {
     const dir = await project('generate');
-    const { stdout } = await run(process.execPath, [CLI, 'generate'], {
+    const { stdout, stderr } = await run(process.execPath, [CLI, 'generate'], {
       cwd: dir,
       maxBuffer: 20 * 1024 * 1024,
     });
-    expect(stdout).toContain('drizzle.config.ts');
+    // stderr, not stdout. This line says where DRZL went looking, which is narration about the
+    // run rather than a thing the run produced, and it used to sit on stdout directly in front of
+    // the file list a caller was parsing. See docs/cli/output.md for the rule.
+    expect(stderr).toContain('drizzle.config.ts');
+    expect(stdout).not.toContain('drizzle.config.ts');
     // `.zod.ts`: the zod generator's default fileSuffix.
     expect(existsSync(path.join(dir, 'out', 'zod', 'users.zod.ts'))).toBe(true);
     expect(existsSync(path.join(dir, 'out', 'zod', 'posts.zod.ts'))).toBe(true);

@@ -58,3 +58,25 @@ import { appRouter } from './src/api/index.js';
 
 createHTTPServer({ router: appRouter, createContext: () => ({}) }).listen(3000);
 ```
+
+## Options, output and exit codes
+
+- `-o, --outDir <dir>` (default `src/api`)
+- `--template <name>` (default `standard`): `standard` or `service`
+- `--includeRelations`, `--servicesDir <dir>`
+- `--json`: one JSON document on stdout
+- `-q, --quiet`: silent on success, errors still on stderr
+
+`0` when it generated, and `1` when the schema is missing, could not be imported, or the generator
+is not installed. It used to exit `0` for a schema that was never read.
+
+```json
+{
+  "ok": true,
+  "command": "generate:trpc",
+  "exitCode": 0,
+  "generators": [{ "kind": "trpc", "files": ["/abs/path/users.ts"] }]
+}
+```
+
+See [Output & exit codes](/cli/output).

@@ -61,6 +61,7 @@ export default {
           { text: 'Generate (oRPC)', link: '/cli/generate-orpc' },
           { text: 'Generate (tRPC)', link: '/cli/generate-trpc' },
           { text: 'Watch', link: '/cli/watch' },
+          { text: 'Output & exit codes', link: '/cli/output' },
         ],
       },
       {

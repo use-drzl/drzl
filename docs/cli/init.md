@@ -130,3 +130,27 @@ All five config names are checked, not just `drzl.config.ts`. DRZL loads them in
 `.ts` first, so writing a `.ts` scaffold beside a `drzl.config.json` would leave that file
 untouched and still replace it in practice: the next `drzl generate` would run the scaffold. `init`
 refuses rather than shadowing.
+
+## Output and exit codes
+
+What `init` produces is a file on disk, so everything it prints is a report about that and goes to
+stderr. `-q, --quiet` silences it; errors still print.
+
+`--json` writes one document to stdout and implies `--yes`, since a prompt written into a document
+is a question nobody answers:
+
+```json
+{
+  "ok": true,
+  "command": "init",
+  "exitCode": 0,
+  "written": "/abs/path/drzl.config.ts",
+  "schema": "src/db/schema.ts",
+  "schemaSource": "convention",
+  "generators": ["zod"]
+}
+```
+
+`schemaSource` is `convention`, `drizzle-kit` or `none`, and `schema` is `null` when the config was
+written without one. Exits `0` when a config was written and `1` when it was not. See
+[Output & exit codes](/cli/output).
