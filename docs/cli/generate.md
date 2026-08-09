@@ -45,6 +45,49 @@ When the config has no `schema` key, the path is read from your drizzle-kit conf
 `Schema from drizzle.config.ts (3 files)`. See
 [Reading the schema path from drizzle-kit](/guide/configuration#reading-the-schema-path-from-drizzle-kit).
 
+## When there is nothing to generate from
+
+A run that would write nothing but an empty barrel exits `1` and writes no files at all. There are
+three ways to get there and they have three different fixes, so they are three different messages.
+
+**The schema module would not load** (`DRZL_SCHEMA_001`). The file is not there, or importing it
+threw: a syntax error, a missing package, a module that runs code at import time and fails.
+
+```
+Could not load the schema module src/db/schema.ts (DRZL_SCHEMA_001): Error: Cannot find module 'postgres'
+Fix that error and run again. `drzl analyze src/db/schema.ts` prints it in full. Nothing was generated.
+```
+
+```
+Schema file not found (DRZL_SCHEMA_001): src/db/schema.ts
+Check the "schema" path in your drzl config, or point --config at another one. Nothing was generated.
+```
+
+**The module loaded and declares no tables** (`DRZL_SCHEMA_002`). Nothing is wrong with your
+imports; the module exports no `pgTable`, `mysqlTable` or `sqliteTable`.
+
+```
+No Drizzle tables found in src/db/schema.ts (DRZL_SCHEMA_002).
+That module imported cleanly and exported no tables, so every generator would write an empty
+barrel. Export them from it, for example: export const users = pgTable(...). Nothing was generated.
+```
+
+**The config's filters removed every table** (`DRZL_SCHEMA_003`). The schema is fine and
+`include`/`exclude` left nothing, so the message names the tables that were really there:
+
+```
+Every table was removed by this config's filters (DRZL_SCHEMA_003). src/db/schema.ts declares 3 tables: users, posts, comments.
+Check "include" and "exclude" in your drzl config. A pattern is matched against the whole database
+table name, with * as the only metacharacter. Nothing was generated.
+```
+
+All three exit `1` under `--check` too: a check needs something to compare, and reporting an empty
+tree as up to date is how a broken schema passes CI. `generate:orpc` and `generate:trpc` report the
+same three and, unlike before, write no placeholder file.
+
+`drzl watch` reports all three and keeps watching rather than exiting, because a file saved
+mid-edit is expected to be in one of these states for a moment. See [Watch](/cli/watch).
+
 ## `--check`: fail CI when generated output is stale
 
 ```bash
