@@ -138,8 +138,29 @@ export function typeName(mode: NameMode, tsName: string, affix: ResolvedAffix): 
 }
 
 // A prefix opens the identifier, so it may not start with a digit. A suffix never does.
-const PREFIX_RE = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
-const SUFFIX_RE = /^[A-Za-z0-9_$]+$/;
+const ID_START = 'A-Za-z_$';
+const ID_PART = 'A-Za-z0-9_$';
+const PREFIX_BODY = `[${ID_START}][${ID_PART}]*`;
+const SUFFIX_BODY = `[${ID_PART}]+`;
+const PREFIX_RE = new RegExp(`^${PREFIX_BODY}$`);
+const SUFFIX_RE = new RegExp(`^${SUFFIX_BODY}$`);
+
+/**
+ * The same two rules, as JSON Schema `pattern` strings, for `drzl.config.schema.json`.
+ *
+ * `z.toJSONSchema` drops refinements without saying so, and the affix rules live in
+ * `ConfigSchema`'s only `.superRefine`. A generated schema would therefore have told an editor
+ * that `suffix: 'my-schema'` was fine, and the CLI would then have refused to generate from it.
+ * Re-encoding the character half here keeps one definition of the rule rather than a regex in
+ * this file and a hand-copied pattern in the schema builder.
+ *
+ * The body is optional because `checkOne` returns early for the empty string: an empty affix
+ * means "none" and is always legal. Equivalence with `validateAffix` is not argued from that
+ * sentence, it is fuzzed over every printable ASCII position in
+ * packages/cli/test/config-json-schema.spec.ts.
+ */
+export const AFFIX_PREFIX_PATTERN = `^(?:${PREFIX_BODY})?$`;
+export const AFFIX_SUFFIX_PATTERN = `^(?:${SUFFIX_BODY})?$`;
 
 /**
  * Reject affixes that cannot produce a compilable file, before anything is written:

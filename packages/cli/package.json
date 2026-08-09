@@ -22,7 +22,7 @@
     "dist"
   ],
   "scripts": {
-    "build": "tsup src/cli.ts src/config.ts --format esm,cjs --sourcemap --dts --clean",
+    "build": "tsup src/cli.ts src/config.ts --format esm,cjs --sourcemap --dts --clean && node scripts/gen-config-schema.mjs",
     "dev": "node --loader ts-node/esm src/cli.ts --help",
     "lint": "eslint . --ext .ts",
     "test": "vitest run --testTimeout=20000"
@@ -45,6 +45,7 @@
     "zod": "^4.4.3"
   },
   "devDependencies": {
+    "ajv": "^8.17.1",
     "drizzle-orm": "^0.45.2",
     "ts-node": "^10.9.2",
     "tsup": "^8.5.1",

@@ -552,13 +552,93 @@ generator's `validation.importPath` has to name the barrel file rather than its 
 
 ## Config File Formats
 
-DRZL accepts multiple config formats:
+DRZL looks for these filenames, in this order, and loads the first one that exists:
 
 - TypeScript: `drzl.config.ts`
 - ES Module: `drzl.config.mjs`
-- CommonJS: `drzl.config.js`
+- CommonJS: `drzl.config.js` and `drzl.config.cjs`
 - JSON: `drzl.config.json`
 
-When using JSON, ensure it’s strict JSON (no comments/trailing commas). TS/JS configs can export either a default object or use `defineConfig(...)`.
+`-c/--config` names a file directly and skips the search.
+
+Every form is parsed by the same schema and produces the same errors. When using JSON, ensure
+it's strict JSON (no comments/trailing commas).
+
+## Editor completion
+
+### TypeScript configs
+
+Wrap the object in `defineConfig` and your editor completes every key, every enum value and every
+generator option:
+
+```ts
+import { defineConfig } from '@drzl/cli/config';
+
+export default defineConfig({
+  schema: 'src/db/schema.ts',
+  generators: [{ kind: 'orpc' }],
+});
+```
+
+`defineConfig` is the identity function: it returns what you pass it and exists only to attach the
+type. If you would rather not import a value, the annotation alone does the same job, which is
+what `drzl init` scaffolds:
+
+```ts
+import type { DrzlConfigInput } from '@drzl/cli/config';
+
+export default {
+  schema: 'src/db/schema.ts',
+  generators: [{ kind: 'orpc' }],
+} satisfies DrzlConfigInput;
+```
+
+A type-only import is erased before the config runs, so this form also works when DRZL is not a
+local dependency, such as under `npx`.
+
+### JSON configs
+
+`drzl.config.json` gets the same completion from a JSON Schema, generated from the same zod schema
+the CLI validates with and shipped inside the package. Point at it with a `$schema` key:
+
+```json
+{
+  "$schema": "./node_modules/@drzl/cli/dist/drzl.config.schema.json",
+  "schema": "src/db/schema.ts",
+  "generators": [{ "kind": "orpc" }]
+}
+```
+
+DRZL ignores `$schema`, so the key is safe to leave in. The relative path resolves offline and
+always matches the version you installed. The same schema is published at
+`https://use-drzl.github.io/drzl/drzl.config.schema.json` if you would rather point at a URL.
+
+To avoid touching the config file, map it in VS Code's `.vscode/settings.json` instead:
+
+```json
+{
+  "json.schemas": [
+    {
+      "fileMatch": ["drzl.config.json"],
+      "url": "./node_modules/@drzl/cli/dist/drzl.config.schema.json"
+    }
+  ]
+}
+```
+
+### What the JSON Schema does not catch
+
+The schema is generated from the zod schema, and `z.toJSONSchema` drops refinements without
+reporting them. DRZL's one refinement holds the affix rules, so:
+
+- **Illegal affix characters are caught.** The rule is re-encoded as a `pattern`, and a test fuzzes
+  it against the CLI's own check over every printable ASCII position to keep the two identical.
+- **Affix collisions are not caught.** Two modes whose prefix and suffix resolve to the same
+  identifier is a comparison between sibling values, which JSON Schema cannot express. `drzl
+  generate` still refuses, naming the two modes and the identifier they collide on.
+
+Unknown top-level keys are accepted by the schema because the CLI accepts them too: it ignores
+what it does not recognise rather than failing. Keys inside `columns` and `affix` are strict in
+both.
 
 See package READMEs for generator‑specific options.

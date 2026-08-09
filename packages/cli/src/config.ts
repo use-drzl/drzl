@@ -1,6 +1,8 @@
 import type { AffixOptions } from '@drzl/validation-core';
 import {
+  AFFIX_PREFIX_PATTERN,
   AFFIX_PROBE_TABLE,
+  AFFIX_SUFFIX_PATTERN,
   DEFAULT_IMPORT_EXTENSION,
   IMPORT_EXTENSIONS,
   NAME_MODES,
@@ -21,30 +23,38 @@ export const NamingSchema = z
   })
   .partial();
 
-/** One affix for every mode, or a per-mode map. Keys match drzl's internal mode names. */
-const AffixValueSchema = z.union(
-  [
-    z.string(),
-    z
-      .object({
-        insert: z.string().optional(),
-        update: z.string().optional(),
-        select: z.string().optional(),
-      })
-      .strict(),
-  ],
-  {
-    error:
-      'Expected a string to use for every mode, or an object with any of the keys "insert", ' +
-      '"update" and "select". Those keys are lowercase, matching the mode names drzl uses ' +
-      'everywhere else.',
-  }
-);
+/**
+ * One affix for every mode, or a per-mode map. Keys match drzl's internal mode names.
+ *
+ * `pattern` is annotation only: it changes nothing about how this parses, and exists so the
+ * generated `drzl.config.schema.json` carries the character half of the affix rule that
+ * `z.toJSONSchema` drops along with the `.superRefine` that states it. `validateAffix` remains
+ * the enforcing copy, and its message is the one a user sees.
+ */
+const affixValueSchema = (pattern: string) =>
+  z.union(
+    [
+      z.string().meta({ pattern }),
+      z
+        .object({
+          insert: z.string().meta({ pattern }).optional(),
+          update: z.string().meta({ pattern }).optional(),
+          select: z.string().meta({ pattern }).optional(),
+        })
+        .strict(),
+    ],
+    {
+      error:
+        'Expected a string to use for every mode, or an object with any of the keys "insert", ' +
+        '"update" and "select". Those keys are lowercase, matching the mode names drzl uses ' +
+        'everywhere else.',
+    }
+  );
 
 const AffixPartSchema = z
   .object({
-    prefix: AffixValueSchema.optional(),
-    suffix: AffixValueSchema.optional(),
+    prefix: affixValueSchema(AFFIX_PREFIX_PATTERN).optional(),
+    suffix: affixValueSchema(AFFIX_SUFFIX_PATTERN).optional(),
   })
   .strict();
 
@@ -501,6 +511,72 @@ export function defineConfig<T extends DrzlConfigInput>(cfg: T): T {
   return cfg;
 }
 
+/**
+ * Every filename `drzl` will load a config from, in the order it tries them.
+ *
+ * One list because there were two. `computeWatchTargets` carried its own copy of four of these
+ * names, and the copy was missing `drzl.config.json`: a JSON config loaded fine, and then
+ * `drzl watch` never noticed an edit to it, because nothing was watching the file. The watcher's
+ * test spelled the same four names a third time, so it agreed with the bug.
+ */
+export const CONFIG_FILE_NAMES = [
+  'drzl.config.ts',
+  'drzl.config.mjs',
+  'drzl.config.js',
+  'drzl.config.cjs',
+  'drzl.config.json',
+] as const;
+
+/** Where the published schema answers from, and what `$schema` in a config should point at. */
+export const CONFIG_SCHEMA_ID = 'https://use-drzl.github.io/drzl/drzl.config.schema.json';
+
+/**
+ * `ConfigSchema` as a JSON Schema, for editors pointed at a `drzl.config.json`.
+ *
+ * Two things about `z.toJSONSchema` decide the arguments here, both measured rather than assumed:
+ *
+ *  - `io` defaults to `'output'`, which marks every key carrying a `.default()` as `required`.
+ *    That is four of the nine top-level keys, so the default would produce a schema that flags
+ *    all 32 configs in the docs and every minimal config a reader writes. `'input'` describes
+ *    what a user writes, which is what a config file is.
+ *  - refinements are dropped silently. The only one here is the affix `.superRefine`; its
+ *    character half is carried by the `pattern` annotations on `affixValueSchema`, and its
+ *    collision half cannot be stated in JSON Schema at all and stays a CLI-only error.
+ *
+ * draft-07 rather than 2020-12 because that is the dialect every editor implements fully, and
+ * this schema uses nothing newer.
+ */
+export function buildConfigJsonSchema(): Record<string, unknown> {
+  const generated = z.toJSONSchema(ConfigSchema, {
+    io: 'input',
+    target: 'draft-7',
+  }) as Record<string, unknown>;
+
+  const properties = {
+    // Declared so an editor suggests it and does not report the pointer a reader was told to
+    // add as an unknown key. `ConfigSchema` is not strict, so the CLI strips it and never sees it.
+    $schema: {
+      type: 'string',
+      description: 'Path or URL of this schema, for editor completion. Ignored by drzl.',
+    },
+    ...(generated.properties as Record<string, unknown>),
+  };
+
+  // Rebuilt rather than mutated so the key order of the written file is deliberate and stable:
+  // a diff of this artefact should show what changed in the config, not a reshuffle.
+  const { $schema, properties: _dropped, ...rest } = generated;
+  return {
+    $schema,
+    $id: CONFIG_SCHEMA_ID,
+    title: 'DRZL configuration',
+    description:
+      'Configuration for the drzl CLI. Also describes drzl.config.ts, which gets the same ' +
+      'shape from the defineConfig export of @drzl/cli/config.',
+    ...rest,
+    properties,
+  };
+}
+
 type GeneratorConfig = DrzlConfig['generators'][number];
 
 /** The generators that emit an RPC router, and so share `outDir` and `validation`. */
@@ -910,15 +986,7 @@ export async function importFreshConfigModule(p: string): Promise<unknown> {
 export async function loadConfig(customPath?: string): Promise<DrzlConfig | null> {
   const fsp = await import('node:fs/promises');
 
-  const candidates = customPath
-    ? [customPath]
-    : [
-        'drzl.config.ts',
-        'drzl.config.mjs',
-        'drzl.config.js',
-        'drzl.config.cjs',
-        'drzl.config.json',
-      ];
+  const candidates = customPath ? [customPath] : [...CONFIG_FILE_NAMES];
 
   for (const c of candidates) {
     const p = path.resolve(process.cwd(), c);
@@ -1040,12 +1108,7 @@ export function computeWatchTargets(
   // not exist: no event ever fired and `drzl watch` did its initial build and then sat inert.
   // A directory is watched recursively by chokidar itself, and the extension filtering that the
   // glob was doing now happens on the event instead.
-  const targets = new Set<string>([
-    abs('drzl.config.ts'),
-    abs('drzl.config.js'),
-    abs('drzl.config.mjs'),
-    abs('drzl.config.cjs'),
-  ]);
+  const targets = new Set<string>(CONFIG_FILE_NAMES.map(abs));
   if (source) {
     // The resolved source's directories cover both shapes: the drzl `schema` file's directory,
     // or every directory the drizzle-kit config's entries live in (glob bases included, so a
