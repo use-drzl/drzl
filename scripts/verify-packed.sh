@@ -1041,6 +1041,7 @@ export const matrix = pgTable('matrix', {
   c_smallint: smallint().notNull(),
   c_bigint_n: bigint({ mode: 'number' }).notNull(),
   c_bigint_b: bigint({ mode: 'bigint' }).notNull(),
+  c_bigint_s: bigint({ mode: 'string' }).notNull(),
   c_serial: serial().notNull(),
   c_real: real().notNull(),
   c_double: doublePrecision().notNull(),
@@ -1199,6 +1200,7 @@ export const checked = pgTable('checked', {
   k_card: text().array(),
   k_pair_a: integer(),
   k_pair_b: integer(),
+  k_bigint_s: bigint({ mode: 'string' }),
 }, (t) => [
   check('k_min_c', sql`${t.k_min} >= 18`),
   check('k_max_c', sql`${t.k_max} <= 100`),
@@ -1212,6 +1214,7 @@ export const checked = pgTable('checked', {
   check('k_len_max_c', sql`char_length(${t.k_len_max}) <= 5`),
   check('k_card_c', sql`cardinality(${t.k_card}) >= 2`),
   check('k_pair_c', sql`${t.k_pair_a} < ${t.k_pair_b}`),
+  check('k_bigint_s_c', sql`${t.k_bigint_s} IN (1, 2)`),
 ]);
 PARITY_PG
 cat > src/schema-mysql.ts <<'PARITY_MYSQL'
@@ -2635,10 +2638,10 @@ const selectOptionalProblems: string[] = [];
  * Both are measured by the run and compared with these, so examining fewer fails and examining more
  * fails too.
  */
-// 24 is three dialects times two tables times four libraries, and 504 is every column of all six
+// 24 is three dialects times two tables times four libraries, and 516 is every column of all six
 // tables in each of the four. Nothing is lost to a crash here: the omissions that crash do so on
 // official's side, and this check reads DRZL's alone.
-const SELECT_REACH = { schemas: 24, keys: 512 };
+const SELECT_REACH = { schemas: 24, keys: 516 };
 const selectSchemas = new Set<string>();
 let selectKeysInspected = 0;
 
@@ -2877,7 +2880,7 @@ let findings = 0;
  * and say nothing. The 0.4x stage has carried this since it was written; this pass had only the
  * per-pairing guard, which cannot see a whole dialect quietly dropping out.
  */
-const EXPECTED_COMPARISONS = (40 + 18 + 31 + 12 + 14 + 13) * 4 * 3;
+const EXPECTED_COMPARISONS = (41 + 18 + 31 + 12 + 14 + 13) * 4 * 3;
 let totalCompared = 0;
 /**
  * The same denominator for the presence axis, counted separately.
@@ -4444,7 +4447,11 @@ size_fail=0
 #                            15667 the script printed at that revision.
 report_size src/gen/pg/zod      zod      420  || size_fail=1
 report_size src/gen/pg/valibot  valibot  540  || size_fail=1
-report_size src/gen/pg/arktype  arktype  280  || size_fail=1
+# Raised 280 to 310 when the fixture gained the two mode-string bigint columns (matrix and
+# checked). Measured, not nudged: 22572/82 = 275 became 24486/84 = 291, so the pair costs 1914
+# bytes, about 957 each, which is the same "longest thing this generator emits, once per mode"
+# effect recorded above rather than drift. 310 keeps the headroom the note below argues for.
+report_size src/gen/pg/arktype  arktype  310  || size_fail=1
 # Raised from 430 to 460, deliberately and with the measurement written down rather than nudged up
 # until the run went quiet. Giving the other three generators an epoch-number branch (BC) costs
 # TypeBox 17 bytes per column, 427 to 444, because it cannot state a predicate declaratively and
@@ -4456,7 +4463,10 @@ report_size src/gen/pg/arktype  arktype  280  || size_fail=1
 # margin, which makes the next change to any date column fail for no reason of its own. A budget
 # with no headroom stops being a tripwire and becomes a tax on the next edit. Note arktype sits at
 # 275 against 280 for the same reason, and is the one to watch next.
-report_size src/gen/pg/typebox  typebox  460  || size_fail=1
+# Raised 460 to 490 for the same two columns: 36584/82 = 446 became 38945/84 = 463, the pair
+# costing 2361 bytes, about 1180 each. zod (294 against 420) and valibot (368 against 540) absorb
+# the pair without a raise.
+report_size src/gen/pg/typebox  typebox  490  || size_fail=1
 # No effect budget here. These paths are the parity tree, which cannot hold effect at all: see the
 # note on its npm install above. Measured at 438 bytes per column on this fixture, within five
 # bytes of TypeBox and for the same reason, so a budget of 460 is the right number the day that
@@ -4501,6 +4511,7 @@ CREATE TABLE matrix (
   c_smallint smallint,
   c_bigint_n bigint,
   c_bigint_b bigint,
+  c_bigint_s bigint,
   c_serial integer,
   c_real real,
   c_double double precision,
@@ -4559,6 +4570,7 @@ CREATE TABLE checked (
   k_card text[] CHECK (cardinality(k_card) >= 2),
   k_pair_a integer,
   k_pair_b integer,
+  k_bigint_s bigint CHECK (k_bigint_s IN (1, 2)),
   CONSTRAINT k_pair_c CHECK (k_pair_a < k_pair_b)
 );
 `;
@@ -6522,7 +6534,7 @@ MYSQL_TEXT
   echo "      analyze under both majors." >&2
   exit 1
 }
-sed -e 's/ bytea,//' -e '/c_bytea/d' "$PARITY/src/schema.ts" > src/matrix.ts
+sed -e 's/ bytea,//' -e '/c_bytea/d' -e '/bigint_s/d' "$PARITY/src/schema.ts" > src/matrix.ts
 if cmp -s "$PARITY/src/schema.ts" src/matrix.ts; then
   echo "FAIL: nothing was removed from the parity fixture, so either bytea is gone from it (in" >&2
   echo "      which case delete the edit above and analyze the file as it is) or the edit no" >&2
@@ -6531,6 +6543,17 @@ if cmp -s "$PARITY/src/schema.ts" src/matrix.ts; then
 fi
 if grep -q 'bytea' src/matrix.ts; then
   echo "FAIL: bytea survived the edit above, so this fixture cannot be imported under 0.4x." >&2
+  exit 1
+fi
+# The mode-string bigint columns need their own check, because they fail differently from bytea:
+# 0.4x has no string mode and does not complain about one, it builds the same PgBigInt64 the
+# bigint mode builds. So a delete that stopped matching would leave this pass comparing a
+# bigint-wire column under the name the v1 pass uses for a string-wire one, with both passes
+# green. The cmp above cannot catch that: bytea already satisfies it.
+if grep -q 'bigint_s' src/matrix.ts; then
+  echo "FAIL: a mode-string bigint column survived the edit above. 0.4x builds it as the bigint" >&2
+  echo "      mode without complaint, so this pass would compare a different column than the v1" >&2
+  echo "      pass does, under the same name, and both would still pass." >&2
   exit 1
 fi
 
