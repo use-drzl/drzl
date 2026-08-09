@@ -48,10 +48,16 @@ The CLI consumes this analysis to generate validation, services, and routers.
 - issues (warnings/errors) for constraints and shape
 
 Per column, beyond the type: `nullable`, `hasDefault`, `defaultValue` (literal defaults only),
-`isGenerated`, `enumValues`, `maxLength` (characters), `maxBytes` (MySQL's TEXT family is a byte
-budget, which is a different measurement on the same kind of column), `min`/`max`,
-`arrayDimensions`, `format`, and `shape` for values that are not scalars (json, buffer, tuple,
-numberObject, vector, bitstring, customType).
+`isGenerated`, `enumValues`, `maxLength` (characters), `maxBytes` (bytes, which is a different
+measurement on the same kind of column), `min`/`max`, `arrayDimensions`, `format`, and `shape` for
+values that are not scalars (json, buffer, tuple, numberObject, vector, bitstring, customType).
+
+`maxBytes` is set by MySQL and nothing else. Its TEXT and BLOB families carry their limit in the
+type rather than in a declared length, and count it in bytes: 255 for `tinytext` and `tinyblob`,
+65535 for `text` and `blob`, 16777215 for the medium pair and 4294967295 for the long pair. A
+`varchar(n)` is genuinely n characters and keeps `maxLength`. See
+[the analyzer page](https://use-drzl.github.io/drzl/packages/analyzer) for how the generators
+encode it.
 
 `format` names a pattern in `COLUMN_FORMATS`, and two of its values name a dialect: a
 `bigint({ mode: 'string' })` column is `pgBigint` on Postgres and `mysqlBigint` on MySQL and
