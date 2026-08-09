@@ -100,6 +100,12 @@ All exited 0 everywhere.
 | `drzl generate:trpc <schema>` | pass | pass | pass |
 | `drzl init` | pass | pass | pass |
 
+`drzl init` was measured before it gained schema detection and prompts. The work it does now on
+these three runtimes is a subset of what `drzl generate` above already does: it imports schema
+modules through the same analyzer. The prompts are the only new machinery, they are reached only
+when stdin and stdout are both terminals, and the `node:readline/promises` they need is imported
+inside that branch and falls back to the non-interactive defaults if a runtime cannot provide it.
+
 The analyzer loads your `drzl.config.ts` and your schema modules through jiti, with
 `tryNative: false` so the TypeScript is transformed by jiti rather than by whatever the host runtime
 would do with it. That is what makes the three runtimes agree: config loading does not go through

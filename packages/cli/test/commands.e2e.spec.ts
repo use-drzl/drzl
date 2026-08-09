@@ -1,9 +1,9 @@
 /**
- * End-to-end coverage for `init`, `generate:orpc` and `watch`, spawned as real processes.
+ * End-to-end coverage for `generate:orpc` and `watch`, spawned as real processes.
  *
- * All three shipped with no automated test of any kind. `init` in particular is the first
- * command a new user runs, and nothing checked that the config it writes can actually be run,
- * let alone that its output compiles.
+ * Both shipped with no automated test of any kind. `init` was covered here too until it grew
+ * prompts and schema detection; it now has `init.e2e.spec.ts` to itself, with its own temp root,
+ * so the two files cannot race each other's fixtures.
  *
  * Requires a build. CI builds before testing; locally, run `pnpm build` first.
  */
@@ -43,39 +43,6 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await fs.rm(ROOT, { recursive: true, force: true });
-});
-
-describe('drzl init', () => {
-  it('writes a config, and that config actually runs', async () => {
-    const dir = await project('init');
-    await run(process.execPath, [CLI, 'init'], { cwd: dir });
-
-    const config = await fs.readFile(path.join(dir, 'drzl.config.ts'), 'utf8');
-    expect(config).toContain('schema:');
-    expect(config).toContain('generators:');
-
-    // The scaffold is the first config most users see, and it had no type annotation at all, so
-    // it got no completion in an editor. The annotation has to stay type-only: this fixture has
-    // no `@drzl/cli` to resolve, exactly like a project that ran the CLI through `npx`, and the
-    // `generate` below is what proves the import is erased rather than resolved.
-    expect(config).toContain("import type { DrzlConfigInput } from '@drzl/cli/config'");
-    expect(config).toContain('satisfies DrzlConfigInput');
-
-    // The config `init` writes has to be one `generate` accepts. Scaffolding something that
-    // then fails is worse than scaffolding nothing.
-    await run(process.execPath, [CLI, 'generate'], { cwd: dir, maxBuffer: 20 * 1024 * 1024 });
-    expect(existsSync(path.join(dir, 'src', 'api', 'users.ts'))).toBe(true);
-  }, 120_000);
-
-  it('points at the schema path it scaffolds for, not an invented one', async () => {
-    const dir = await project('init-path');
-    await run(process.execPath, [CLI, 'init'], { cwd: dir });
-    const schemaPath = (await fs.readFile(path.join(dir, 'drzl.config.ts'), 'utf8')).match(
-      /schema:\s*['"]([^'"]+)['"]/
-    )?.[1];
-    expect(schemaPath).toBeTruthy();
-    expect(existsSync(path.join(dir, schemaPath!)), `config names ${schemaPath}`).toBe(true);
-  }, 60_000);
 });
 
 describe('drzl generate:orpc', () => {
