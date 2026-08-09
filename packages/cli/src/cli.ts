@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { SchemaAnalyzer } from '@drzl/analyzer';
+import { qualifiedTableName, SchemaAnalyzer } from '@drzl/analyzer';
 import { ORPCGenerator } from '@drzl/generator-orpc';
 import chokidar from 'chokidar';
 import { Command } from 'commander';
@@ -30,11 +30,22 @@ import {
 } from './config.js';
 import { ConfigValidationError } from './config-errors.js';
 import {
+  describeSchemaTarget,
   nothingToGenerate,
   schemaLoadFailure,
   type SchemaProblem,
 } from './schema-outcome.js';
 import { filterColumns } from './column-filter.js';
+import {
+  ambiguousTableProblem,
+  explainTable,
+  matchTable,
+  noSuchTableProblem,
+  renderExplanation,
+  renderIndex,
+  summarize,
+  type TableMatch,
+} from './explain.js';
 import {
   dialectMismatchWarning,
   resolveSchemaSource,
@@ -55,7 +66,7 @@ import {
 import { unifiedDiff } from './unified-diff.js';
 import { createRebuildScheduler, resolveDebounce } from './watch-loop.js';
 import { GeneratorNotInstalledError, loadGenerator } from './generator-loader.js';
-import { INIT_GENERATOR_CHOICES, runInit } from './init.js';
+import { detectSchema, INIT_GENERATOR_CHOICES, runInit } from './init.js';
 import { maybeShowSponsorMessage } from './sponsor.js';
 import { CLI_VERSION } from './version.js';
 
@@ -331,6 +342,172 @@ withOutputFlags(
       }
       process.exit(EXIT_FAILED);
     }
+  }
+});
+
+/**
+ * Where `drzl explain` reads the schema from, in the order the answers are trustworthy.
+ *
+ * `--schema` is what the caller said, so it wins outright. Then the config, through the same
+ * `resolveSchemaSource` every other command uses, so a drizzle-kit project needs no drzl config at
+ * all. Then item 66's loading-based detection, which is what makes `drzl explain users` work in a
+ * fresh checkout with nothing configured: a candidate is confirmed by importing it and finding
+ * Drizzle tables, not by its name.
+ *
+ * Never throws for want of a config. A diagnostic command that refuses to run until you have
+ * configured it is the one that gets reached for last.
+ */
+async function explainSchemaSource(
+  opts: { schema?: string; config?: string },
+  out: Output
+): Promise<
+  | { schema: string | string[]; label: string; note?: string; config?: DrzlConfig }
+  | undefined
+> {
+  // An explicit `--schema` reads no config at all, and so applies no filters. The flag says "look
+  // at this file", and narrowing it by a config that was written about a different one would
+  // report columns as removed that nothing removed.
+  if (opts.schema) return { schema: opts.schema, label: opts.schema };
+
+  const cfg = await loadConfig(opts.config, (w) => out.warn(w));
+  if (cfg) {
+    const source = await resolveSchemaSource(cfg);
+    for (const w of source.warnings) out.warn(w);
+    return {
+      schema: source.schema,
+      label: describeSchemaTarget(source.schema),
+      config: cfg,
+      ...(source.source === 'drizzle-kit' && source.drizzleKitConfigPath
+        ? { note: `Schema from ${path.relative(process.cwd(), source.drizzleKitConfigPath)}` }
+        : {}),
+    };
+  }
+
+  const detected = await detectSchema(process.cwd());
+  if (!detected.schema) return undefined;
+  return {
+    schema: detected.schema,
+    label: detected.schema,
+    note: detected.notes[detected.notes.length - 1],
+  };
+}
+
+withOutputFlags(
+  program
+    .command('explain')
+    .description('Show what DRZL understood about one table, and what it did not')
+    .argument(
+      '[table]',
+      'the table to explain, by database name, qualified name or export name; omit for the list'
+    )
+    .option('-c, --config <path>', 'path to drzl.config, read when --schema is not given')
+    .option('-s, --schema <path>', 'path to the schema, overriding the config')
+).action(async (tableName: string | undefined, opts: any) => {
+  const out = outputFor(opts);
+  /** Every failure this command has, reported the one way the output contract describes. */
+  const fail = (problem: { code: string; message: string; hint: string }): never => {
+    if (out.json) out.jsonData(jsonFailure('explain', problem.code, problem.message));
+    else {
+      out.error(problem.message);
+      out.hint(problem.hint);
+    }
+    process.exit(EXIT_FAILED);
+  };
+  try {
+    const source = await explainSchemaSource(opts, out);
+    if (!source) {
+      fail({
+        code: 'DRZL_CFG_001',
+        message:
+          'No schema found (DRZL_CFG_001). There is no drzl.config, no drizzle-kit config, and ' +
+          'no schema in the usual locations.',
+        hint: 'Pass --schema <path>, or run `drzl init` to write a config.',
+      });
+      return;
+    }
+    if (source.note) out.note(out.errStyle.gray(source.note));
+
+    const spinner = out.spinner('Reading the schema...');
+    const analysis = await new SchemaAnalyzer(source.schema).analyze({
+      // Both on, for the reason `doctor` turns both on: this command's job is to say everything
+      // that is known, and a relation that appears only under a flag is one a reader would be
+      // told is absent.
+      includeRelations: true,
+      validateConstraints: true,
+    });
+    spinner.stop();
+
+    // The analyzer's own verdict, not a guess from an empty table list: a module that would not
+    // import and a module that declares nothing are different mistakes in different files, and
+    // `schema-outcome.ts` is where that distinction already lives. Nothing about the sentence is
+    // reworded here beyond what did not happen, which for this command is never a file.
+    const problem =
+      schemaLoadFailure(analysis.issues, source.schema, 'There is nothing to explain.') ??
+      nothingToGenerate({
+        schema: source.schema,
+        analyzed: analysis.tables,
+        remaining: analysis.tables,
+        consequence: 'There is nothing to explain.',
+      });
+    if (problem) reportSchemaProblem(out, 'explain', problem);
+
+    const context = { schema: source.label, dialect: analysis.dialect };
+
+    if (!tableName) {
+      const tables = summarize(analysis);
+      if (out.json) out.jsonData({ command: 'explain', exitCode: EXIT_OK, ...context, tables });
+      else out.data(renderIndex(tables, context, out.outStyle));
+      process.exit(EXIT_OK);
+    }
+
+    const match = matchTable(analysis.tables, tableName);
+    if (match.kind === 'ambiguous') fail(ambiguousTableProblem(tableName, match.hits));
+    if (match.kind === 'none') {
+      fail(noSuchTableProblem(tableName, analysis.tables, match.suggestion));
+    }
+
+    // The filters are read but never applied to the search: a table this config excludes is
+    // exactly the one whose absence from the output needs explaining, and a command that could not
+    // find it would be answering "why is my table missing" with "there is no such table".
+    const cfg = source.config;
+    let keptTables: string[] | undefined;
+    let keptColumns: string[] | undefined;
+    if (cfg) {
+      keptTables = filterTables(analysis.tables, cfg).map((t) => qualifiedTableName(t));
+      try {
+        const narrowed = filterColumns(
+          [(match as Extract<TableMatch, { kind: 'found' }>).table],
+          cfg.columns
+        );
+        keptColumns = narrowed.tables[0]?.columns.map((c) => c.name);
+      } catch {
+        // A `columns` rule this config cannot honour is `generate`'s error to raise, and raising it
+        // here would leave a reader with no explanation at all of the table they asked about.
+        keptColumns = undefined;
+      }
+    }
+
+    const explanation = explainTable(
+      analysis,
+      match as Extract<TableMatch, { kind: 'found' }>,
+      { keptTables, keptColumns }
+    );
+    if (out.json) {
+      out.jsonData({ command: 'explain', exitCode: EXIT_OK, ...context, table: explanation });
+    } else {
+      out.data(renderExplanation(explanation, context, out.outStyle));
+    }
+    process.exit(EXIT_OK);
+  } catch (e: any) {
+    const msg = messageOf(e);
+    const code = drzlErrorCode(e, 'DRZL_CLI_EXPLAIN');
+    if (opts.json) out.jsonData(jsonFailure('explain', code, msg));
+    else if (e instanceof ConfigValidationError) out.error(msg);
+    else {
+      out.error('Explain failed (DRZL_CLI_EXPLAIN):', msg);
+      out.hint('Tip: run with --json for structured output.');
+    }
+    process.exit(EXIT_FAILED);
   }
 });
 

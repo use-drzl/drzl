@@ -571,6 +571,93 @@ if [ "$got_missing" != 1 ]; then
   exit 1
 fi
 echo "    exit codes: 0 on a readable schema, 1 on one it cannot read"
+
+# ---------------------------------------------------------------------------------------------
+# `drzl explain`, against the `drzl doctor` that reports the same silences.
+#
+# The two commands answer the same question from opposite ends and share none of the code that
+# answers it: `doctor` calls `parseCheck` itself and filters the analyzer's issues, while `explain`
+# reads `tableConstraints`, which is what the emitted constraint ledger is built from. So a drift
+# in either one is a drift between them, and this is the only place the two are compared.
+#
+# The assertion is not that `explain` prints something. It is that the things it lists as not
+# understood about `invoices` are exactly the things `doctor` reports about `invoices`: the same
+# untypeable column, and the same CHECK that no generator translates. `explain` going quiet about
+# either is the silence both commands exist to prevent, and a green run would not otherwise say so.
+echo "==> explain and doctor agree about what is not understood"
+npx drzl explain invoices -s src/db/doctor-fixture.ts --json > "$WORK/explain.json"
+
+node --input-type=module -e "
+import { readFile } from 'node:fs/promises';
+const report = JSON.parse(await readFile('$WORK/doctor.json', 'utf8'));
+const doc = JSON.parse(await readFile('$WORK/explain.json', 'utf8'));
+
+// No backticks anywhere in this block. It reaches node inside a double-quoted -e argument, so
+// bash reads one as command substitution; see the doctor stage above for what that cost once.
+const gaps = doc.table.gaps ?? [];
+const columns = new Set(gaps.filter((g) => g.kind === 'column').map((g) => g.subject));
+const checks = new Set(gaps.filter((g) => g.kind === 'check').map((g) => g.subject));
+
+const mine = (kind) => (report.findings ?? []).filter((f) => f.kind === kind && f.table === 'invoices');
+const doctorColumns = new Set(mine('unknown-column').map((f) => f.column));
+const doctorChecks = new Set(mine('check-declined').map((f) => f.constraint));
+
+// Sets rather than lists: doctor reports one finding per declined clause and explain one gap per
+// unenforced part, so the two can differ in count for one constraint while naming the same one.
+// The question here is which constraints and columns each names, and that has one answer.
+const differ = (a, b) => a.size !== b.size || [...a].some((x) => !b.has(x));
+if (differ(columns, doctorColumns) || differ(checks, doctorChecks)) {
+  console.error('    FAIL: doctor and explain disagree about the invoices table.');
+  console.error('      doctor columns: ' + JSON.stringify([...doctorColumns]));
+  console.error('      explain columns: ' + JSON.stringify([...columns]));
+  console.error('      doctor checks: ' + JSON.stringify([...doctorChecks]));
+  console.error('      explain checks: ' + JSON.stringify([...checks]));
+  process.exit(1);
+}
+// Both empty compares equal, so the equality above is satisfied by a fixture with nothing wrong
+// and by an explain that reports nothing whatever it is given. The fixture guarantees one of each.
+if (!columns.size || !checks.size) {
+  console.error('    FAIL: the fixture produced no untypeable column or no declined CHECK, so the');
+  console.error('          comparison above compared empty sets and proved nothing.');
+  process.exit(1);
+}
+// A verdict with no reason under it is a report that says a constraint is missing and leaves the
+// reader no way to act. The reason comes off the shared parser, so an empty one here means explain
+// has stopped carrying what that parser said rather than that the parser has stopped saying it.
+const unreasoned = (doc.table.constraints ?? [])
+  .flatMap((c) => (c.unenforced ?? []).map((u) => [c.id, u.reason]))
+  .filter(([, reason]) => !reason || !String(reason).trim());
+if (unreasoned.length) {
+  console.error('    FAIL: explain reported these constraints as unenforced and gave no reason:');
+  for (const [id] of unreasoned) console.error('      ' + id);
+  process.exit(1);
+}
+console.log(
+  '    ' + columns.size + ' untypeable column(s) and ' + checks.size +
+    ' unenforced CHECK(s), named identically by doctor and explain'
+);
+" || { echo "FAIL: explain and doctor disagree about what DRZL could not use." >&2; exit 1; }
+
+# The exit codes are what a script reads. A table that is there, a table that is not, and a name
+# that reaches two tables are three different answers, and only the packed artifact can be asked.
+cat > src/db/two-schemas.ts <<'TWO_SCHEMAS'
+import { integer, pgSchema, pgTable } from 'drizzle-orm/pg-core';
+const reporting = pgSchema('reporting');
+export const users = pgTable('users', { id: integer('id').primaryKey() });
+export const reportingUsers = reporting.table('users', { id: integer('id').primaryKey() });
+TWO_SCHEMAS
+
+explain_code() { npx drzl explain "$@" >/dev/null 2>&1; echo $?; }
+got_found=$(explain_code invoices -s src/db/doctor-fixture.ts)
+got_missing=$(explain_code no_such_table -s src/db/doctor-fixture.ts)
+got_ambiguous=$(explain_code users -s src/db/two-schemas.ts)
+if [ "$got_found" != 0 ] || [ "$got_missing" != 1 ] || [ "$got_ambiguous" != 1 ]; then
+  echo "FAIL: drzl explain exited $got_found on a table that exists, $got_missing on one that" >&2
+  echo "      does not, and $got_ambiguous on a name reaching two tables. Expected 0, 1, 1." >&2
+  exit 1
+fi
+echo "    exit codes: 0 explained, 1 no such table, 1 ambiguous name"
+rm -f src/db/two-schemas.ts
 rm -f src/db/doctor-fixture.ts
 
 BARREL="src/generated/zod/index.ts"
