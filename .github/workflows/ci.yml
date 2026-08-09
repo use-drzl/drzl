@@ -1,4 +1,11 @@
 name: ci
+concurrency:
+  # Superseded runs on the same pull request are cancelled; pushes to master are not, because the
+  # release workflow starts from the same push and a cancelled CI run there would leave the only
+  # record of that commit's gate incomplete.
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 on:
   push:
     paths-ignore:
@@ -93,9 +100,32 @@ jobs:
           node-version: 22
           cache: 'pnpm'
       - run: pnpm install --frozen-lockfile
-      - run: pnpm verify:packed
+      - name: Verify the packed artefacts
+        id: verify
         env:
           MYSQL_URL: mysql://root:root@127.0.0.1:3306/drzl
+        run: |
+          set -o pipefail
+          pnpm verify:packed 2>&1 | tee /tmp/verify-packed.log
+
+      # The gate has 62 exit sites and 159 FAIL lines, and none of them reach the checks page: a
+      # failed step shows "Process completed with exit code 1" and the authored FAIL line sits
+      # somewhere inside about 670 lines of output. This lifts that line, and the stage heading
+      # above it, onto the annotation and the job summary, so a reader learns which stage died
+      # without opening the log.
+      - name: Name what failed
+        if: failure() && steps.verify.outcome == 'failure'
+        run: |
+          stage=$(awk '$1 == "==>" { sub(/^[[:space:]]*==>[[:space:]]*/, ""); s = $0 } END { print s }' /tmp/verify-packed.log)
+          fail=$(awk '{ t = $0; sub(/^[[:space:]]+/, "", t); if (index(t, "FAIL") == 1) s = t } END { print s }' /tmp/verify-packed.log)
+          echo "::error title=verify-packed: ${stage:-unknown stage}::${fail:-the gate exited non-zero without printing a FAIL line}"
+          {
+            echo "### verify-packed failed"
+            echo
+            echo "Stage: **${stage:-unknown}**"
+            echo
+            echo "> ${fail:-no FAIL line was printed, so the gate died on an unguarded command}"
+          } >> "$GITHUB_STEP_SUMMARY"
 
   changeset-check:
     runs-on: ubuntu-latest

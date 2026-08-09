@@ -1,0 +1,264 @@
+name: nightly
+
+# Everything in ci.yml pins the versions it measures, deliberately, so a claim in the docs is
+# exactly true of a named version. The cost of that trade is that an upstream release is invisible
+# until somebody opens a pull request, and then it lands on that pull request instead of on its
+# own. This workflow is the other side of the trade: it runs the same gates against what the
+# registry serves today, on a schedule, and it opens exactly one issue when they break.
+on:
+  schedule:
+    # 03:20 UTC rather than the top of an hour. GitHub queues scheduled runs and drops them under
+    # load, and :00 is the busiest minute of every hour by a wide margin.
+    - cron: '20 3 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  # Cheap, always runs, and it is the only job that answers "did upstream move at all". It stays
+  # useful even on a day when the two expensive jobs below cannot run.
+  pins:
+    if: github.repository == 'use-drzl/drzl'
+    runs-on: ubuntu-latest
+    outputs:
+      latest: ${{ steps.resolve.outputs.latest }}
+      rc: ${{ steps.resolve.outputs.rc }}
+      pinned_0_4x: ${{ steps.resolve.outputs.pinned_0_4x }}
+      pinned_v1: ${{ steps.resolve.outputs.pinned_v1 }}
+      drifted: ${{ steps.resolve.outputs.drifted }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      - id: resolve
+        name: What the registry serves against what the gate pins
+        run: |
+          set -o pipefail
+          latest=$(npm view drizzle-orm dist-tags.latest)
+          rc=$(npm view drizzle-orm dist-tags.rc)
+          read -r pinned_0_4x pinned_v1 < <(bash scripts/verify-packed.sh --print-pins)
+
+          {
+            echo "| tag | registry | gate pins |"
+            echo "| --- | --- | --- |"
+            echo "| latest | $latest | $pinned_0_4x |"
+            echo "| rc | $rc | $pinned_v1 |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          drifted=no
+          [ "$latest" = "$pinned_0_4x" ] && [ "$rc" = "$pinned_v1" ] || drifted=yes
+
+          # A patch move is ordinary and is reported in the summary above and nowhere else. A minor
+          # or major move on the `latest` tag is different: the majors page, the comparison page
+          # and the verification page all state what 0.4x does, and a new minor can falsify any of
+          # them. That one is worth waking somebody for, whether or not the gate goes red.
+          pinned_line=${pinned_0_4x%.*}
+          latest_line=${latest%.*}
+          if [ "$pinned_line" != "$latest_line" ]; then
+            echo "the latest tag moved off $pinned_line to $latest" >> "$GITHUB_STEP_SUMMARY"
+            echo "FAIL: drizzle-orm latest moved from $pinned_0_4x to $latest, a new minor line."
+            exit 1
+          fi
+
+          echo "latest=$latest" >> "$GITHUB_OUTPUT"
+          echo "rc=$rc" >> "$GITHUB_OUTPUT"
+          echo "pinned_0_4x=$pinned_0_4x" >> "$GITHUB_OUTPUT"
+          echo "pinned_v1=$pinned_v1" >> "$GITHUB_OUTPUT"
+          echo "drifted=$drifted" >> "$GITHUB_OUTPUT"
+
+      # The trigger in the deprecation policy, printed rather than argued. Both readings come from
+      # the registry's own per-version download counts, so nobody has to estimate the split.
+      - name: The 0.4x share, which the deprecation policy keys on
+        run: |
+          set -o pipefail
+          curl -sS --fail https://api.npmjs.org/versions/drizzle-orm/last-week > /tmp/dl.json
+          node -e "
+            const d = JSON.parse(require('fs').readFileSync('/tmp/dl.json', 'utf8')).downloads;
+            let total = 0, v1 = 0, v04 = 0, older = 0;
+            for (const [v, n] of Object.entries(d)) {
+              total += n;
+              if (v.startsWith('1.')) v1 += n;
+              else if (v.startsWith('0.4')) v04 += n;
+              else older += n;
+            }
+            const pct = (x) => (100 * x / total).toFixed(2);
+            const rows = [
+              ['drizzle-orm 1.x', v1, pct(v1)],
+              ['drizzle-orm 0.4x', v04, pct(v04)],
+              ['drizzle-orm below 0.4', older, pct(older)],
+            ];
+            const out = ['| line | last week | share |', '| --- | ---: | ---: |']
+              .concat(rows.map(([a, b, c]) => '| ' + a + ' | ' + b.toLocaleString() + ' | ' + c + '% |'))
+              .join('\n');
+            require('fs').appendFileSync(process.env.GITHUB_STEP_SUMMARY, out + '\n');
+            console.log(out);
+          "
+
+  # The gate itself, against the versions the registry serves rather than the versions it pins.
+  # Identical to the verify-packed job in ci.yml except for the two overrides and the service
+  # container being the same one, so a failure here means the new upstream release broke something
+  # this project claims.
+  gate-on-published:
+    if: github.repository == 'use-drzl/drzl'
+    needs: pins
+    runs-on: ubuntu-latest
+    services:
+      mysql:
+        image: mysql:8
+        env:
+          MYSQL_ROOT_PASSWORD: root
+          MYSQL_DATABASE: drzl
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -uroot -proot"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: 'pnpm'
+      - run: pnpm install --frozen-lockfile
+      - name: Verify the packed artefacts against the published versions
+        id: verify
+        env:
+          MYSQL_URL: mysql://root:root@127.0.0.1:3306/drzl
+          DRIZZLE_0_4X: ${{ needs.pins.outputs.latest }}
+          DRIZZLE_V1: ${{ needs.pins.outputs.rc }}
+        run: |
+          set -o pipefail
+          pnpm verify:packed 2>&1 | tee /tmp/verify-packed.log
+      - name: Name what failed
+        if: failure() && steps.verify.outcome == 'failure'
+        run: |
+          stage=$(awk '$1 == "==>" { sub(/^[[:space:]]*==>[[:space:]]*/, ""); s = $0 } END { print s }' /tmp/verify-packed.log)
+          fail=$(awk '{ t = $0; sub(/^[[:space:]]+/, "", t); if (index(t, "FAIL") == 1) s = t } END { print s }' /tmp/verify-packed.log)
+          echo "::error title=nightly gate: ${stage:-unknown stage}::${fail:-the gate exited non-zero without printing a FAIL line}"
+          {
+            echo "### the gate failed against published versions"
+            echo
+            echo "drizzle-orm 0.4x: ${DRIZZLE_0_4X}, v1: ${DRIZZLE_V1}"
+            echo
+            echo "Stage: **${stage:-unknown}**"
+            echo
+            echo "> ${fail:-no FAIL line}"
+          } >> "$GITHUB_STEP_SUMMARY"
+        env:
+          DRIZZLE_0_4X: ${{ needs.pins.outputs.latest }}
+          DRIZZLE_V1: ${{ needs.pins.outputs.rc }}
+
+  # The other half of the same trade. ci.yml pins Bun and Deno to the versions docs/guide/runtimes.md
+  # names, so the page is exactly true and an upstream runtime regression is invisible. This runs the
+  # same script on whatever each project ships today.
+  runtimes-latest:
+    if: github.repository == 'use-drzl/drzl'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: 'pnpm'
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: vx.x.x
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build:packages
+      - name: Bun and Deno, at whatever they ship today
+        run: |
+          set -o pipefail
+          bash scripts/runtime-compat.sh 2>&1 | tee /tmp/runtime-compat.log
+      - name: Record the versions this run actually measured
+        if: always()
+        run: |
+          awk '$1 == "==>" { on = ($2 == "runtimes"); next } on && NF { print "    " $0 }' \
+            /tmp/runtime-compat.log >> "$GITHUB_STEP_SUMMARY"
+
+  # A nightly that opens nothing is a cron job that turns red in a tab nobody opens. One issue,
+  # reused rather than duplicated, assigned, and closed by the run that goes green again.
+  report:
+    if: always() && github.repository == 'use-drzl/drzl'
+    needs: [pins, gate-on-published, runtimes-latest]
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - uses: actions/github-script@v8
+        with:
+          script: |
+            const TITLE = 'Nightly: upstream drizzle-orm or runtime check is failing';
+            const LABEL = 'nightly';
+            const ASSIGNEE = 'omar-dulaimi';
+            const results = {
+              pins: '${{ needs.pins.result }}',
+              'gate-on-published': '${{ needs.gate-on-published.result }}',
+              'runtimes-latest': '${{ needs.runtimes-latest.result }}',
+            };
+            const failed = Object.entries(results).filter(([, r]) => r === 'failure');
+            const run = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+
+            const { data: open } = await github.rest.issues.listForRepo({
+              ...context.repo,
+              state: 'open',
+              labels: LABEL,
+              per_page: 100,
+            });
+            const existing = open.find((i) => i.title === TITLE);
+
+            if (failed.length === 0) {
+              if (existing) {
+                await github.rest.issues.createComment({
+                  ...context.repo,
+                  issue_number: existing.number,
+                  body: `Green again on ${run}. Closing; the next failure reopens this issue.`,
+                });
+                await github.rest.issues.update({
+                  ...context.repo,
+                  issue_number: existing.number,
+                  state: 'closed',
+                });
+              }
+              return;
+            }
+
+            const body = [
+              `Failed jobs: ${failed.map(([j]) => j).join(', ')}.`,
+              '',
+              `Run: ${run}`,
+              '',
+              'What the gate pins today:',
+              `- drizzle-orm 0.4x: \`${{ needs.pins.outputs.pinned_0_4x }}\``,
+              `- drizzle-orm v1: \`${{ needs.pins.outputs.pinned_v1 }}\``,
+              '',
+              'What the registry serves today:',
+              `- \`latest\`: \`${{ needs.pins.outputs.latest }}\``,
+              `- \`rc\`: \`${{ needs.pins.outputs.rc }}\``,
+              '',
+              'The failing job summary names the stage and quotes its FAIL line.',
+            ].join('\n');
+
+            if (existing) {
+              await github.rest.issues.createComment({
+                ...context.repo,
+                issue_number: existing.number,
+                body,
+              });
+            } else {
+              await github.rest.issues.create({
+                ...context.repo,
+                title: TITLE,
+                labels: [LABEL],
+                assignees: [ASSIGNEE],
+                body,
+              });
+            }

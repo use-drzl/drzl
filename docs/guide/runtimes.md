@@ -157,3 +157,10 @@ Windows or macOS, on Bun or Deno canary, or against Deno Deploy, Cloudflare Work
 hosted runtime; a worker runtime is a different environment from the Deno CLI and this page does not
 speak for it. `drzl watch`, which is long-lived and filesystem-event driven, was not exercised under
 Bun or Deno.
+
+## Newer runtimes than these
+
+The CI job that keeps this page true pins Bun and Deno to the versions named above, so the page is
+exactly true rather than approximately true. A nightly workflow runs the same script against
+whatever each project ships that day and records the versions it actually measured, so a regression
+in a newer runtime is caught on its own schedule instead of on the next pull request.
