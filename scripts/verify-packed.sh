@@ -7141,8 +7141,9 @@ import { SchemaAnalyzer } from '@drzl/analyzer';
 
 /**
  * Columns 0.4x cannot name today. Filed, not tolerated: naming one makes its entry dead and
- * fails this check, so a fix cannot land quietly. The same three columns carry entries in the
- * DEFECTS map above, which is the relative half of the same finding.
+ * fails this check, so a fix cannot land quietly. When this map had entries, each carried one in
+ * the DEFECTS map above too, which is the relative half of the same finding. It is empty now, and
+ * the closing summary of this script no longer claims otherwise.
  */
 const KNOWN_UNNAMED: Record<string, string> = {
   // Empty, and that is a result rather than a reason to delete this check. Every Postgres class the
@@ -9566,7 +9567,7 @@ echo "    The four generators are cross-checked against each other on every dial
 echo "    checked against a real Postgres, a real SQLite and, where MYSQL_URL is set, a real"
 echo "    MySQL, with applyDefaults compared against what the database writes, and described the"
 echo "    same way by the analyzer under both drizzle-orm majors, bar the differences that stage"
-echo "    names one at a time, three of which are columns 0.4x leaves unnamed. The same column by"
+echo "    names one at a time. The same column by"
 echo "    column comparison runs a second time against the first-party validators for 0.45.2,"
 echo "    where the columns known to differ are counted and named above, each with what DRZL"
 echo "    emits, what official emits and which filing it is. Where an official validator crashes"

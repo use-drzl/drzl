@@ -37,6 +37,8 @@ export default {
           { text: 'Getting Started', link: '/guide/getting-started' },
           { text: 'Configuration', link: '/guide/configuration' },
           { text: 'Bun and Deno', link: '/guide/runtimes' },
+          { text: 'drizzle-orm 0.4x and v1', link: '/guide/drizzle-majors' },
+          { text: 'Upgrade notes', link: '/guide/upgrading' },
           { text: 'How it is verified', link: '/guide/verification' },
           { text: 'Compared with drizzle-orm', link: '/guide/comparison' },
           { text: 'Benchmarks', link: '/guide/benchmarks' },

@@ -164,3 +164,6 @@ None of the above is a claim you have to take on trust. `pnpm verify:packed` pri
 quoted here, and the ledgers that record each divergence live in `scripts/verify-packed.sh` beside
 the measurement that settled it. An entry that stops being true fails the run just as loudly as a
 difference nobody declared. See [How it is verified](/guide/verification).
+
+The rows above that name a drizzle-orm major are covered in full, with what each one emits, on
+[drizzle-orm 0.4x and v1](/guide/drizzle-majors).
