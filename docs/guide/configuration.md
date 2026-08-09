@@ -637,8 +637,52 @@ reporting them. DRZL's one refinement holds the affix rules, so:
   identifier is a comparison between sibling values, which JSON Schema cannot express.
   `drzl generate` still refuses, naming the two modes and the identifier they collide on.
 
-Unknown top-level keys are accepted by the schema because the CLI accepts them too: it ignores
-what it does not recognise rather than failing. Keys inside `columns` and `affix` are strict in
-both.
+Unknown top-level keys are accepted by the schema because the CLI accepts them too: it ignores what
+it does not recognise rather than failing, though it now says so first. Keys inside `columns` and
+`affix` are strict in both.
+
+## When the config does not load
+
+### A validation error names the key
+
+A config that does not parse is reported one problem per line, each naming the key it is about the
+way you would write it in the file:
+
+```
+drzl.config.ts is not valid (DRZL_CFG_002). 3 problems:
+  - outDir: expected string, received number (found 123)
+  - generators[0].nestedDepth: expected number, received string (found "deep")
+  - columns.users: unrecognized key "ommit". Did you mean "omit"?
+```
+
+Array entries are indexed, so `generators[1].validation.library` says which generator, and a key
+that is not an identifier is quoted, so a table pattern reads as `columns["app_*"].omit`. The
+value that was found is shown when it fits on the line. Eight problems are listed and the rest are
+counted.
+
+The exit code is `1` and nothing is written. Under `--json` the same sentence is the `message` of
+the [failure document](/cli/output#the-envelope), with `"code": "DRZL_CFG_002"`.
+
+### An unknown key is a warning
+
+Most of the config is permissive: an unrecognised key is dropped rather than refused, so a config
+carrying one still runs. Each one is now named on stderr before the run continues:
+
+```
+drzl config: unknown key "outDirr" at the top level; it is ignored. Did you mean "outDir"?
+drzl config: unknown key "typedJsn" in generators[0]; it is ignored. Did you mean "typedJson"?
+drzl config: unknown key "librari" in generators[0].validation; it is ignored. Did you mean "library"?
+```
+
+A suggestion appears when the key is a typo of a real one rather than a different word. The run
+still exits `0`, because the setting was dropped and the rest of the config was honoured, which is
+what happened before this warning existed as well. `--quiet` drops the warnings; `--json` puts them
+in the document's `warnings` array.
+
+Nothing is warned about where a key is legitimately your own: the keys of `columns` are table
+patterns, the keys of `templateOptions` belong to whichever template reads them, and `$schema` is
+declared for editors. Where the config is strict instead, `columns`, `affix`, and the object forms
+of `meta`, `constraints`, `branded` and `document`, an unknown key is a validation error rather
+than a warning, and gets the key path and the suggestion above.
 
 See package READMEs for generator‑specific options.

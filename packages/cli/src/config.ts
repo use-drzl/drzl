@@ -14,6 +14,11 @@ import * as fs from 'node:fs';
 import { createRequire } from 'node:module';
 import * as path from 'node:path';
 import { z } from 'zod';
+import {
+  ConfigValidationError,
+  formatConfigProblems,
+  unknownKeyWarnings,
+} from './config-errors.js';
 import { ambiguousPatternWarnings, matchesTable } from './patterns.js';
 
 export const NamingSchema = z
@@ -935,13 +940,55 @@ export function resolveConfig(cfg: DrzlConfig): { config: DrzlConfig; warnings: 
 }
 
 /**
- * Parse, then resolve cross-generator defaults. Both `generate` and `watch` go through
+ * `ConfigSchema` as a JSON Schema, once, for the two things that read it back.
+ *
+ * Rebuilt on every call it would cost about 0.7ms, which is nothing for `generate` and is paid on
+ * every rebuild of a `watch` that may run for a day. Held apart from `buildConfigJsonSchema`
+ * itself so the exported function keeps handing every caller a fresh object it may write to; this
+ * one is only ever read.
+ */
+let configShape: Record<string, unknown> | null = null;
+function configShapeForReading(): Record<string, unknown> {
+  return (configShape ??= buildConfigJsonSchema());
+}
+
+/**
+ * How the config file is named in a message: relative to where the command was run, unless that
+ * would be a walk back up out of it, which says less than the path itself.
+ */
+function displayConfigPath(file: string, cwd = process.cwd()): string {
+  const relative = path.relative(cwd, file);
+  return relative && !relative.startsWith('..') ? relative : file;
+}
+
+/**
+ * Parse, report, then resolve cross-generator defaults. Both `generate` and `watch` go through
  * loadConfig, so putting the resolution here is what keeps the two duplicated generator
  * dispatch blocks in cli.ts from needing the logic twice.
+ *
+ * `safeParse` rather than `parse`, because the thrown `ZodError`'s message is a formatted JSON
+ * array of issue objects and that array is what the CLI used to print (item 78). The issues
+ * themselves carry the key path; only the rendering was missing.
+ *
+ * Unknown keys are reported after the parse succeeds and not before (item 79). A config that does
+ * not parse has a failure to fix first, and listing the keys that would have been dropped from a
+ * config nobody can load yet is noise under an error.
  */
-function finalize(raw: unknown): DrzlConfig {
-  const { config, warnings } = resolveConfig(ConfigSchema.parse(raw));
-  for (const w of warnings) console.warn(w);
+function finalize(raw: unknown, file: string, onWarn: (warning: string) => void): DrzlConfig {
+  const parsed = ConfigSchema.safeParse(raw);
+  if (!parsed.success) {
+    throw new ConfigValidationError(
+      formatConfigProblems(
+        displayConfigPath(file),
+        parsed.error.issues,
+        raw,
+        configShapeForReading()
+      )
+    );
+  }
+  for (const w of unknownKeyWarnings(raw, configShapeForReading())) onWarn(w);
+  const { config, warnings } = resolveConfig(parsed.data);
+  for (const w of warnings) onWarn(w);
   return config;
 }
 
@@ -983,7 +1030,21 @@ export async function importFreshConfigModule(p: string): Promise<unknown> {
   return mod?.default ?? mod;
 }
 
-export async function loadConfig(customPath?: string): Promise<DrzlConfig | null> {
+/**
+ * The config, or `null` when there is none.
+ *
+ * `onWarn` exists so the config's warnings reach the output layer rather than the process. They
+ * went to `console.warn` until now, which is stderr with no route through `--quiet` or `--json`:
+ * `drzl generate --json` printed them beside the document it promises is the only thing on
+ * stdout's channel, and `--quiet` could not remove them. Item 79 adds a warning to exactly this
+ * path, so the path is fixed here rather than gaining a second writer that bypasses `Output`.
+ *
+ * The default keeps the old behaviour for any caller that has no output layer to hand.
+ */
+export async function loadConfig(
+  customPath?: string,
+  onWarn: (warning: string) => void = (warning) => console.warn(warning)
+): Promise<DrzlConfig | null> {
   const fsp = await import('node:fs/promises');
 
   const candidates = customPath ? [customPath] : [...CONFIG_FILE_NAMES];
@@ -995,7 +1056,7 @@ export async function loadConfig(customPath?: string): Promise<DrzlConfig | null
     } catch {
       continue;
     }
-    return finalize(await importFreshConfigModule(p));
+    return finalize(await importFreshConfigModule(p), p, onWarn);
   }
 
   return null;

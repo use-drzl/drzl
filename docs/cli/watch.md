@@ -52,3 +52,31 @@ drzl watch --json | jq -r 'select(.event == "generate_complete") | .kind'
 
 Exits `1` when there is no config, or when the schema path cannot be resolved at startup. It was
 `2` before. See [Output & exit codes](/cli/output).
+
+## A broken schema does not stop the watcher
+
+The three states that make `drzl generate` exit `1` are reported here and then waited out: a schema
+module that will not load (`DRZL_SCHEMA_001`), one that declares no tables (`DRZL_SCHEMA_002`), and
+a config whose filters remove all of them (`DRZL_SCHEMA_003`). See
+[Generate](/cli/generate#when-there-is-nothing-to-generate-from) for what each one says.
+
+This is deliberate, and it is the one place those three are not fatal. A watcher exists to be
+running while the schema is being edited, and all three are ordinary intermediate states: a file
+saved mid-expression does not parse, a file being written from scratch declares no tables yet, and
+a table filter is usually adjusted with the watcher up. Exiting would mean restarting the watcher
+to recover from a typo. So the run says what is wrong, writes nothing, and rebuilds on the next
+save, exactly as it already did for a generator that threw.
+
+Under `--json` each one is an `error` event carrying the code:
+
+```json
+{
+  "event": "error",
+  "code": "DRZL_SCHEMA_002",
+  "message": "No Drizzle tables found in src/db/schema.ts (DRZL_SCHEMA_002)."
+}
+```
+
+`--pipeline analyze` is the exception to the second one: it reports an analysis rather than
+generating, and an analysis of a schema with no tables is a true answer, so it completes normally
+just as `drzl analyze` does.

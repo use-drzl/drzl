@@ -125,6 +125,16 @@ not produce its payload at all:
 
 `code` is a stable identifier. `message` is the same sentence the human run prints.
 
+| Code              | Meaning                                                                |
+| ----------------- | ---------------------------------------------------------------------- |
+| `DRZL_CFG_001`    | There is no `drzl.config`                                              |
+| `DRZL_CFG_002`    | The config does not validate; the message names each key                |
+| `DRZL_SCHEMA_001` | The schema file is missing, or the module would not import             |
+| `DRZL_SCHEMA_002` | The schema imported cleanly and declares no Drizzle tables             |
+| `DRZL_SCHEMA_003` | The config's `include`/`exclude` filters removed every table           |
+| `DRZL_GEN_001`    | `generate` failed for any other reason                                 |
+| `DRZL_GEN_002`    | A generator threw, or is not installed                                 |
+
 ### One name, two meanings, and why
 
 `ok` is **not** part of the envelope, and that is because `doctor` published an `ok` of its own
@@ -243,11 +253,16 @@ first and shows a diff or a report on the second.
 | -------------------------------- | ------------------------- | ---------------------------------------------------------- | ------------------------------- |
 | `analyze`                        | analysed                  | schema missing or could not be imported                    | analysed, with error-level issues |
 | `doctor`                         | reported                  | schema missing or could not be imported                    | findings **and** `--strict`     |
-| `generate`                       | generated                 | no config, invalid config, a generator threw               | `--check` found drift           |
-| `generate:orpc`, `generate:trpc` | generated                 | schema missing, could not be imported, or a generator threw | not used                        |
+| `generate`                       | generated                 | no config, invalid config, nothing to generate from, a generator threw | `--check` found drift |
+| `generate:orpc`, `generate:trpc` | generated                 | nothing to generate from, or a generator threw             | not used                        |
 | `init`                           | config written            | a config already exists, or it could not be written        | not used                        |
 | `watch`                          | (runs until interrupted)  | no config, or the schema path could not be resolved        | not used                        |
 | any command                      |                           | an unknown flag or a missing argument                      |                                 |
+
+"Nothing to generate from" is a schema that would not load, a schema declaring no tables, or a
+config whose filters removed all of them. See
+[Generate](/cli/generate#when-there-is-nothing-to-generate-from). `watch` reports all three and
+keeps running rather than exiting.
 
 In CI:
 

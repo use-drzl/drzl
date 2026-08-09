@@ -19,6 +19,12 @@ export default [
       '**/.tmp-e2e/**',
       '**/.e2e-tmp/**',
       '**/.cmd-tmp/**',
+      // One pattern rather than a name per spec, for the reason `.gitignore` carries the same
+      // rule: the enumerated list works until a new spec picks a directory nobody added to it.
+      // `cli-errors.e2e.spec.ts` writes a schema that deliberately does not parse, so a run
+      // interrupted before its cleanup leaves a file that fails lint outright rather than
+      // warning, and the failure is in a fixture nobody is looking at.
+      '**/.tmp-*/**',
       '**/*.mjs',
       '**/.wrangler/**',
     ],

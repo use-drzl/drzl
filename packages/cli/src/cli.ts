@@ -28,6 +28,12 @@ import {
   loadConfig,
   tableFilterWarnings,
 } from './config.js';
+import { ConfigValidationError } from './config-errors.js';
+import {
+  nothingToGenerate,
+  schemaLoadFailure,
+  type SchemaProblem,
+} from './schema-outcome.js';
 import { filterColumns } from './column-filter.js';
 import {
   dialectMismatchWarning,
@@ -72,6 +78,33 @@ function reportGeneratorFailure(out: Output, kind: string, e: unknown): string {
  */
 function outputFor(opts: { quiet?: boolean; json?: boolean }): Output {
   return new Output({ quiet: !!opts.quiet, json: !!opts.json });
+}
+
+/**
+ * The code a thrown value reports, when it is one of ours.
+ *
+ * `instanceof`, rather than reading `e.code`, because that property is Node's own convention:
+ * `ENOENT` off a failed `readFile` would otherwise be published in the `--json` document as
+ * though it were a DRZL identifier.
+ */
+function drzlErrorCode(error: unknown, fallback: string): string {
+  return error instanceof ConfigValidationError ? error.code : fallback;
+}
+
+/**
+ * A run that has nothing to generate from, reported and stopped (items 70 and 71).
+ *
+ * `EXIT_FAILED`, not `EXIT_FINDINGS`: an empty schema is not something the command was asked to
+ * look for, it is the command being unable to do the work. The hint is a hint, so `--quiet` drops
+ * it and the failure itself survives, which is the rule every other error here follows.
+ */
+function reportSchemaProblem(out: Output, command: string, problem: SchemaProblem): never {
+  if (out.json) out.jsonData(jsonFailure(command, problem.code, problem.message));
+  else {
+    out.error(problem.message);
+    out.hint(problem.hint);
+  }
+  process.exit(EXIT_FAILED);
 }
 
 /**
@@ -170,7 +203,7 @@ withOutputFlags(
       // both files, which is strictly more useful than the generic line below.
       let target: string | string[] | undefined = schema;
       if (!target) {
-        const cfg = await loadConfig(opts.config);
+        const cfg = await loadConfig(opts.config, (w) => out.warn(w));
         if (cfg) target = (await resolveSchemaSource(cfg)).schema;
       }
       if (!target) {
@@ -223,8 +256,13 @@ withOutputFlags(
       process.exit(code);
     } catch (e: any) {
       const msg = messageOf(e);
-      if (opts.json) out.jsonData(jsonFailure('doctor', 'DRZL_CLI_DOCTOR', msg));
-      else {
+      const code = drzlErrorCode(e, 'DRZL_CLI_DOCTOR');
+      if (opts.json) out.jsonData(jsonFailure('doctor', code, msg));
+      else if (e instanceof ConfigValidationError) {
+        // Already a report naming each key, so it prints as it is. See the same branch in
+        // `generate` for why a second header over it would say less.
+        out.error(msg);
+      } else {
         out.error('Doctor failed (DRZL_CLI_DOCTOR):', msg);
         out.hint('Tip: run with --json for structured output.');
       }
@@ -254,7 +292,10 @@ withOutputFlags(
   };
   {
     try {
-      let cfg = await loadConfig(opts.config);
+      // The config's own warnings go through `warn`, so they reach the `--json` document and
+      // `--quiet` removes them, exactly like every other warning this command produces. They used
+      // to be written with `console.warn` from inside `loadConfig`, which neither flag could see.
+      let cfg = await loadConfig(opts.config, warn);
       if (!cfg) {
         const msg = 'No config found (DRZL_CFG_001). Create drzl.config.ts or pass --config.';
         // Was exit 2 until now, which the scheme reserves for a run that found something. A
@@ -295,6 +336,15 @@ withOutputFlags(
         validateConstraints: cfg.analyzer.validateConstraints,
         includeHeuristicRelations: cfg.analyzer.includeHeuristicRelations,
       });
+      // Item 70, and before the tick rather than after it: a module that never loaded has not
+      // been analysed, and "Analysis complete" over the top of it is the green tick this item was
+      // filed about. Everything below reads `analysis.tables`, which is empty here for a reason
+      // that has nothing to do with the schema's contents.
+      const loadFailure = schemaLoadFailure(analysis.issues, source.schema);
+      if (loadFailure) {
+        spinner.stop();
+        reportSchemaProblem(out, 'generate', loadFailure);
+      }
       // After the spinner rather than before it, because `filterColumns` throws on a config it
       // cannot honour and a thrown error under a live ora spinner prints into a line the spinner
       // then overwrites.
@@ -322,6 +372,15 @@ withOutputFlags(
       analysis.tables = filterTables(narrowed.tables, cfg);
       for (const w of [...narrowed.warnings, ...filterWarnings]) warn(w);
       for (const w of wideColumnWarning(analysis.issues)) warn(w);
+      // Item 71, after the filters so it can tell the two empty states apart, and before
+      // `--check` snapshots anything so a check on a schema that produces nothing fails rather
+      // than comparing an empty tree with itself and reporting it up to date.
+      const empty = nothingToGenerate({
+        schema: source.schema,
+        analyzed: narrowed.tables,
+        remaining: analysis.tables,
+      });
+      if (empty) reportSchemaProblem(out, 'generate', empty);
       // Under --check the existing output is captured before anything overwrites it, so the
       // regenerated result can be compared against it and the tree put back either way.
       const driftDirs = computeGeneratorOutputDirs(cfg);
@@ -690,8 +749,14 @@ withOutputFlags(
       }
     } catch (e: any) {
       const msg = messageOf(e);
-      if (opts.json) out.jsonData(jsonFailure('generate', 'DRZL_GEN_001', msg));
-      else {
+      const code = drzlErrorCode(e, 'DRZL_GEN_001');
+      if (opts.json) out.jsonData(jsonFailure('generate', code, msg));
+      else if (e instanceof ConfigValidationError) {
+        // Already a report about named keys, so it prints as it is: prefixing it with "Generate
+        // failed" would put a second header over a message that has one, and the generic tip
+        // below tells a reader to check the file the message is already about.
+        out.error(msg);
+      } else {
         out.error('Generate failed (DRZL_GEN_001):', msg);
         out.hint('Tip: check your drzl.config.ts and template path.');
       }
@@ -701,19 +766,27 @@ withOutputFlags(
 });
 
 /**
- * Refuse to generate from a schema that was never read.
+ * Refuse to generate from a schema that was never read, or that declares nothing.
  *
  * `generate:orpc no-such-file.ts` used to exit 0, having written a `placeholder.orpc.ts` whose
- * contents read "No tables detected in analysis". Measured on 4.22.0 and again here. That is the
- * same defect item 67 fixed in `init`, one command along: the first thing a new user runs reports
- * success having read nothing, and a CI step guarding the generated tree passes.
+ * contents read "No tables detected in analysis". Item 67 stopped the first half of that; the
+ * second half survived it, because a schema that imports cleanly and exports nothing produces the
+ * identical placeholder and the identical exit 0, measured again here. Both are `EXIT_FAILED`
+ * now, and neither writes a file.
  *
- * `NOFILE` and `IMPORT` are the analyzer's two "there is nothing to work with" codes; anything
- * else it says is a description of a schema it did read.
+ * The two are told apart by `schema-outcome.ts`, which reads the analyzer's own verdict rather
+ * than guessing from an empty table list.
  */
-function unreadableSchema(issues: Array<{ level?: string; code?: string; message?: string }>) {
-  return issues.find(
-    (i) => i.level === 'error' && (i.code === 'DRZL_ANL_NOFILE' || i.code === 'DRZL_ANL_IMPORT')
+function schemaProblemFor(
+  analysis: {
+    issues: Array<{ level?: string; code?: string; message?: string }>;
+    tables: Array<{ name: string }>;
+  },
+  schema: string
+): SchemaProblem | undefined {
+  return (
+    schemaLoadFailure(analysis.issues, schema) ??
+    nothingToGenerate({ schema, analyzed: analysis.tables, remaining: analysis.tables })
   );
 }
 
@@ -732,14 +805,8 @@ withOutputFlags(
       includeRelations: !!opts.includeRelations,
       validateConstraints: true,
     });
-    const unreadable = unreadableSchema(analysis.issues);
-    if (unreadable) {
-      const msg = unreadable.message ?? `Schema could not be read: ${schema}`;
-      if (opts.json) out.jsonData(jsonFailure('generate:orpc', 'DRZL_CLI_SCHEMA', msg));
-      else out.error('Generate orpc failed:', msg);
-      process.exit(EXIT_FAILED);
-      return;
-    }
+    const problem = schemaProblemFor(analysis, schema);
+    if (problem) reportSchemaProblem(out, 'generate:orpc', problem);
     const gen = new ORPCGenerator(analysis);
     const { files } = await gen.generate({
       outputDir: opts.outDir,
@@ -783,14 +850,8 @@ withOutputFlags(
       includeRelations: !!opts.includeRelations,
       validateConstraints: true,
     });
-    const unreadable = unreadableSchema(analysis.issues);
-    if (unreadable) {
-      const msg = unreadable.message ?? `Schema could not be read: ${schema}`;
-      if (opts.json) out.jsonData(jsonFailure('generate:trpc', 'DRZL_CLI_SCHEMA', msg));
-      else out.error('Generate trpc failed:', msg);
-      process.exit(EXIT_FAILED);
-      return;
-    }
+    const problem = schemaProblemFor(analysis, schema);
+    if (problem) reportSchemaProblem(out, 'generate:trpc', problem);
     const { TRPCGenerator } = await loadGenerator(
       '@drzl/generator-trpc',
       () => import('@drzl/generator-trpc')
@@ -846,12 +907,48 @@ program
     // prints goes to stderr, and stdout carries only the `--json` event stream, which is the one
     // thing here a program reads.
     const out = outputFor(opts);
-    let cfg = await loadConfig(opts.config);
-    if (!cfg) {
+
+    /**
+     * A schema `watch` has nothing to generate from, reported without stopping (items 70, 71).
+     *
+     * The one place in this change where the failure is not an exit code, and deliberately. A
+     * watcher exists to be running while the schema is being edited, and the states this reports
+     * are all ordinary intermediate ones: a file saved mid-expression does not parse, a file
+     * being written from scratch declares no tables yet, and a table filter is usually adjusted
+     * with the watcher up. Exiting on any of them would mean the user has to restart the watcher
+     * to recover from a typo, which is the opposite of what the command is for. So it says what is
+     * wrong, writes nothing, and waits for the next save, exactly as `run`'s own catch already
+     * does for a generator that throws.
+     */
+    const reportWatchProblem = (problem: SchemaProblem) => {
+      if (opts.json) {
+        out.jsonData({ event: 'error', code: problem.code, message: problem.message });
+        return;
+      }
+      out.error(problem.message);
+      out.hint(problem.hint);
+    };
+
+    // Wrapped, unlike the reload inside `run`, which has its own catch. A config that does not
+    // validate throws out of here, and with nothing around it the rejection escapes the action
+    // and Node prints a stack trace over the report that names each offending key.
+    let loaded: DrzlConfig | null;
+    try {
+      loaded = await loadConfig(opts.config, (w) => out.warn(w));
+    } catch (e: any) {
+      out.error(messageOf(e));
+      process.exit(EXIT_FAILED);
+      return;
+    }
+    if (!loaded) {
       out.error('No config found (DRZL_CFG_001). Create drzl.config.ts or pass --config.');
       process.exit(EXIT_FAILED);
       return;
     }
+    // Through a second binding rather than narrowing the first, so `cfg` stays non-nullable for
+    // the closures below: `run` and the watcher callbacks capture it, and a `let` a closure reads
+    // does not keep the narrowing a guard in this scope gave it.
+    let cfg: DrzlConfig = loaded;
 
     const abs = (p: string) => path.resolve(process.cwd(), p);
     const isInside = (child: string, parent: string) => {
@@ -961,7 +1058,7 @@ program
 
     const run = async () => {
       try {
-        const reloaded = await loadConfig(opts.config);
+        const reloaded = await loadConfig(opts.config, (w) => out.warn(w));
         if (!reloaded) throw new Error('Config disappeared during watch.');
         cfg = reloaded;
 
@@ -1011,6 +1108,11 @@ program
           analyzed: analysis.dialect,
         });
         if (dialectWarning) out.warn(dialectWarning);
+        const loadFailure = schemaLoadFailure(analysis.issues, source.schema);
+        if (loadFailure) {
+          reportWatchProblem(loadFailure);
+          return;
+        }
         // Same order and the same reasons as `generate`. A config edited mid-watch that names a
         // column that does not exist throws here, and `run`'s own catch reports it and keeps
         // watching, so the next save can fix it.
@@ -1030,6 +1132,21 @@ program
           } else {
             out.succeed('Analyze complete.');
           }
+          return;
+        }
+
+        // Item 71, and after the analyze pipeline rather than before it, so the two commands that
+        // report an analysis agree: `drzl analyze` on a schema with no tables exits 0 and prints
+        // an analysis with none, because that is a true answer to the question it was asked.
+        // Generating from it is a different question, and the answer to that one is that there is
+        // nothing to write.
+        const empty = nothingToGenerate({
+          schema: source.schema,
+          analyzed: narrowed.tables,
+          remaining: analysis.tables,
+        });
+        if (empty) {
+          reportWatchProblem(empty);
           return;
         }
 
