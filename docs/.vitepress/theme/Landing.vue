@@ -276,15 +276,10 @@ onBeforeUnmount(() => {
   /* Text and surfaces come from the theme so both appearances are correct without a second copy.
      The two accents below are not in the token set, so they are declared here and flipped in dark. */
   --drzl-edge: #cfcac1;
-  --drzl-code: #15803d;
   --drzl-file-bg: var(--vp-c-bg-alt);
   max-width: 1152px;
   margin: 0 auto;
   padding: 40px 24px 8px;
-}
-:global(.dark) .drzl-landing {
-  --drzl-edge: #2c3644;
-  --drzl-code: #5fd3a0;
 }
 
 .drzl-hero {
@@ -322,22 +317,32 @@ onBeforeUnmount(() => {
   text-decoration: none;
   padding: 12px 24px;
   border-radius: 8px;
-  border: 1px solid var(--vp-c-brand-1);
+  /* The two appearances need different values here and neither token is right for both. In light,
+     the theme's button token resolves to #5672cd on white, which is 4.48:1 and misses the threshold,
+     so the base is brand-1 at 7.08:1. In dark, brand-1 is a light indigo and white on it measures
+     2.02:1, so the dark rule below puts the theme's own token back, which is 5.21:1 there. The
+     override is written as `:global(.dark) X` because `:global(html:not(.dark)) X` is dropped
+     outright by the scoped-style compiler and emits no rule at all. */
+  border: 1px solid transparent;
   background: var(--vp-c-brand-1);
-  color: var(--vp-c-white);
-  transition: filter 0.15s ease;
+  color: var(--vp-button-brand-text);
+  transition:
+    background-color 0.15s ease,
+    border-color 0.15s ease;
 }
 .drzl-btn:hover {
-  filter: brightness(1.1);
+  background: var(--vp-c-brand-2);
 }
 .drzl-btn-alt {
-  background: transparent;
-  border-color: var(--vp-c-divider);
+  background: var(--vp-button-alt-bg);
+  border-color: var(--vp-button-alt-border);
+  /* The theme's own alt-button text measures 3.88:1 on that surface in the dark appearance.
+     text-1 is the same family of greys and clears the threshold in both. */
   color: var(--vp-c-text-1);
 }
 .drzl-btn-alt:hover {
-  border-color: var(--vp-c-brand-1);
-  filter: none;
+  background: var(--vp-button-alt-hover-bg);
+  border-color: var(--vp-button-alt-hover-border);
 }
 
 .drzl-rig {
@@ -358,10 +363,10 @@ onBeforeUnmount(() => {
 }
 .drzl-cap {
   font-family: var(--vp-font-family-mono);
-  font-size: 11px;
+  font-size: 11.5px;
   letter-spacing: 0.06em;
   text-transform: uppercase;
-  color: var(--vp-c-text-3);
+  color: var(--vp-c-text-2);
   margin: 0;
   padding: 10px 14px;
   border-bottom: 1px solid var(--vp-c-divider);
@@ -374,8 +379,8 @@ onBeforeUnmount(() => {
 .drzl-src code,
 .drzl-file code {
   font-family: var(--vp-font-family-mono);
-  font-size: 11.5px;
-  line-height: 1.85;
+  font-size: 12.5px;
+  line-height: 1.9;
   color: var(--vp-c-text-1);
   white-space: pre;
 }
@@ -432,6 +437,11 @@ onBeforeUnmount(() => {
 .drzl-row > summary::-webkit-details-marker {
   display: none;
 }
+.drzl-row > summary:focus-visible,
+.drzl-btn:focus-visible {
+  outline: 2px solid var(--vp-c-brand-1);
+  outline-offset: 2px;
+}
 .drzl-name {
   font-weight: 600;
   font-size: 14px;
@@ -439,7 +449,7 @@ onBeforeUnmount(() => {
 }
 .drzl-line {
   font-family: var(--vp-font-family-mono);
-  font-size: 11.5px;
+  font-size: 12px;
   color: var(--vp-c-text-2);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -447,7 +457,7 @@ onBeforeUnmount(() => {
 }
 .drzl-more {
   font-family: var(--vp-font-family-mono);
-  font-size: 10px;
+  font-size: 11px;
   letter-spacing: 0.06em;
   text-transform: uppercase;
   color: var(--vp-c-text-2);
@@ -463,8 +473,8 @@ onBeforeUnmount(() => {
 }
 .drzl-path {
   font-family: var(--vp-font-family-mono);
-  font-size: 10.5px;
-  color: var(--vp-c-text-3);
+  font-size: 11.5px;
+  color: var(--vp-c-text-2);
   margin: 0;
   padding: 9px 14px 0;
 }
@@ -510,5 +520,32 @@ onBeforeUnmount(() => {
     transition-duration: 0.001ms !important;
     animation-duration: 0.001ms !important;
   }
+}
+</style>
+
+<style>
+/*
+ * Appearance-dependent rules only.
+ *
+ * These cannot live in the scoped block above: the scoped-style compiler drops
+ * `:global(.dark) X` and `:global(html:not(.dark)) X` outright, emitting no rule at all, so a
+ * dark override written there is silently absent from the stylesheet. Every selector here is
+ * keyed on `.drzl-landing`, so an unscoped block cannot reach anything else on the site.
+ */
+.dark .drzl-landing {
+  /* The resting curves need a dark-ground grey. The light value is a warm grey that reads as a
+     mistake against the dark surface. */
+  --drzl-edge: #2c3644;
+}
+.dark .drzl-landing .drzl-btn:not(.drzl-btn-alt) {
+  /* brand-1 is a light indigo in this appearance, and the white button text on it measures
+     2.02:1, so the theme's paired button token goes back in here at 5.21:1.
+     The `:not()` matters: the secondary button carries both classes, and an unscoped three-class
+     selector outranks the scoped `.drzl-btn-alt[data-v-x]` rule, so without it the dark appearance
+     paints the secondary button with the primary background and the two stop being told apart. */
+  background: var(--vp-button-brand-bg);
+}
+.dark .drzl-landing .drzl-btn:not(.drzl-btn-alt):hover {
+  background: var(--vp-button-brand-hover-bg);
 }
 </style>
