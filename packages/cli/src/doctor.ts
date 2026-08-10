@@ -246,7 +246,7 @@ function checkFindings(table: Table): DoctorFinding[] {
     // printing the expression verbatim says nothing, and a line ending in "Expression:" reads
     // like the report itself is broken.
     const expr = raw.trim() ? raw : '(empty)';
-    const parsed = parseCheck(raw, k.name);
+    const parsed = parseCheck(raw, k.name, table.dialect);
     if (!parsed.ok) {
       out.push({
         kind: 'check-declined',

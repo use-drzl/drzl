@@ -644,7 +644,9 @@ function rowRefinements(rows: RowCheck[], cols: Column[]): string {
  * applies the same policy and reports the dropped ones with their reasons.
  */
 function parsedChecksFor(table: Table) {
-  const parsed = (table.checks ?? []).map((k) => parseCheck(k.expression, k.name));
+  // `table.dialect` decides what `length()` counts: characters on Postgres and SQLite, bytes on
+  // MySQL. See `parseCheck`.
+  const parsed = (table.checks ?? []).map((k) => parseCheck(k.expression, k.name, table.dialect));
   const { checks, sets } = applyWirePolicy(
     table.columns,
     parsed.flatMap((p) => (p.ok ? p.checks : [])),

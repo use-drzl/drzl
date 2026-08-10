@@ -198,7 +198,9 @@ export function classifyTableChecks(table: Table): ClassifiedCheck[] {
 
   for (const k of table.checks ?? []) {
     const expression = (k.expression ?? '').trim();
-    const parsed = parseCheck(k.expression, k.name);
+    // The table's engine decides what `length()` counts, so the ledger reads a check the same way
+    // the emitted schema does. Without it the two surfaces disagree about the same constraint.
+    const parsed = parseCheck(k.expression, k.name, table.dialect);
     if (!parsed.ok) {
       out.push({
         ...(k.name ? { name: k.name } : {}),

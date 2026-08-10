@@ -1129,7 +1129,9 @@ function atLengthNarrows(lengths: LengthCheck[], cols: Column[]): string {
 
 /** Every CHECK on a table that the shared parser understands, split by what it constrains. */
 function parsedChecksFor(table: Table) {
-  const parsed = (table.checks ?? []).map((k) => parseCheck(k.expression, k.name));
+  // `table.dialect` decides what `length()` counts: characters on Postgres and SQLite, bytes on
+  // MySQL. See `parseCheck`.
+  const parsed = (table.checks ?? []).map((k) => parseCheck(k.expression, k.name, table.dialect));
   // The wire policy, exactly as in the zod generator: quoted literals the database compares
   // numerically come back respelled number-kind, and clauses no exact compare can state are
   // dropped, left to the base type and reported by the constraint ledger.

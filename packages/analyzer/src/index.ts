@@ -381,6 +381,16 @@ export interface Table {
   name: string;
   tsName: string;
   /**
+   * The engine this table was declared for, repeated from the `Analysis` that holds it.
+   *
+   * Duplication on purpose, and the same kind `Column` already carries: `maxBytes`, `allowsNaN` and
+   * `format` are all dialect-derived facts stamped onto the column so nothing downstream has to
+   * know which server it is looking at. The shared check helpers take a `Table` rather than an
+   * `Analysis`, and one thing they cannot read correctly without the engine is `length()`, which
+   * counts characters on Postgres and SQLite and BYTES on MySQL.
+   */
+  dialect?: Dialect;
+  /**
    * The SQL schema the table was declared in, from `pgSchema('reporting').table(...)` and the
    * MySQL and SingleStore equivalents. Absent for a table declared with plain `pgTable`, which is
    * the only spelling of the default schema there is: Drizzle refuses `pgSchema('public')`
@@ -3198,6 +3208,12 @@ export class SchemaAnalyzer {
     if (dialect === 'sqlite') {
       for (const view of viewTables) view.readOnly = true;
     }
+
+    // Stamped onto every table for the same reason the loop above reaches for it: the shared check
+    // helpers take a `Table` and one of them cannot read `length()` without knowing the engine.
+    // Here rather than in `analyzeTable`, because the dialect is a fact about the whole schema and
+    // is not settled until every export has been seen.
+    for (const t of tables) t.dialect = dialect;
 
     // No guessing from column storage classes. That fallback asked "does any column look like a
     // SQLite type", and every unrecognised column returns dbType UNKNOWN while the `/At$/`
