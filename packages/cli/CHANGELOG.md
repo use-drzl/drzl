@@ -1,5 +1,31 @@
 # @drzl/cli
 
+## 4.24.1
+
+### Patch Changes
+
+- acef357: Fix a dead link that shipped in every one of these READMEs. They pointed at
+  `docs/sponsor.md`, and only `dist` is listed in `files`, so on npm that path resolves to nothing.
+  They now point at https://use-drzl.github.io/drzl/sponsor, which answers 200. npm publishes README
+  regardless of `files`, which is what makes this a change to the published artifact rather than a
+  repository-only edit.
+
+  The CLI README additionally listed four of its eight commands, omitting `doctor` and `explain`
+  despite both having their own documentation pages, and did not say that all fourteen generators
+  arrive with the CLI so no separate install is needed.
+
+- Updated dependencies [acef357]
+  - @drzl/analyzer@1.21.1
+  - @drzl/generator-arktype@3.17.1
+  - @drzl/generator-effect@0.5.1
+  - @drzl/generator-json-schema@0.9.1
+  - @drzl/generator-orpc@2.9.1
+  - @drzl/generator-service@2.5.1
+  - @drzl/generator-typebox@0.14.1
+  - @drzl/generator-valibot@3.20.1
+  - @drzl/generator-zod@3.21.1
+  - @drzl/validation-core@3.22.1
+
 ## 4.24.0
 
 ### Minor Changes

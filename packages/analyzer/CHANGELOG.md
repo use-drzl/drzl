@@ -1,5 +1,19 @@
 # @drzl/analyzer
 
+## 1.21.1
+
+### Patch Changes
+
+- acef357: Fix a dead link that shipped in every one of these READMEs. They pointed at
+  `docs/sponsor.md`, and only `dist` is listed in `files`, so on npm that path resolves to nothing.
+  They now point at https://use-drzl.github.io/drzl/sponsor, which answers 200. npm publishes README
+  regardless of `files`, which is what makes this a change to the published artifact rather than a
+  repository-only edit.
+
+  The CLI README additionally listed four of its eight commands, omitting `doctor` and `explain`
+  despite both having their own documentation pages, and did not say that all fourteen generators
+  arrive with the CLI so no separate install is needed.
+
 ## 1.21.0
 
 ### Minor Changes
