@@ -36,7 +36,8 @@ import {
   isIntegerColumn,
   lengthCheckLabel,
   lengthMeasure,
-  measureExpression,
+  codePointCompare,
+  measureCompare,
   moduleFileName,
   moduleSpecifier,
   nonFiniteAccepted,
@@ -357,12 +358,12 @@ function capSteps(c: Column, mode: Mode): string[] {
     // Bytes going in and characters coming back out, on the same column: a MySQL `varbinary(n)`
     // holds n bytes and hands the caller a string.
     return mode === 'select'
-      ? [filter(`${CODEPOINT_LENGTH} <= ${n}`, `at most ${n} characters`)]
+      ? [filter(codePointCompare('v', '<=', n), `at most ${n} characters`)]
       : [filter(`new TextEncoder().encode(v).length <= ${n}`, `at most ${n} bytes`)];
   }
   if (c.maxLength) {
     steps.push(
-      filter(`${CODEPOINT_LENGTH} <= ${c.maxLength}`, `at most ${c.maxLength} characters`)
+      filter(codePointCompare('v', '<=', c.maxLength), `at most ${c.maxLength} characters`)
     );
   }
   if (c.maxBytes) {
@@ -390,10 +391,7 @@ function lengthSteps(c: Column, lengths: LengthCheck[]): string[] {
       const measure = lengthMeasure(c, k);
       if (!measure) return [];
       return [
-        filter(
-          `${measureExpression(measure, 'v')} ${OPS[k.operator]} ${k.value}`,
-          lengthCheckLabel(k)
-        ),
+        filter(measureCompare(measure, 'v', k.operator, k.value), lengthCheckLabel(k)),
       ];
     });
 }

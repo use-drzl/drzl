@@ -31,7 +31,8 @@ import {
   isIntegerColumn,
   lengthCheckLabel,
   lengthMeasure,
-  measureExpression,
+  codePointCompare,
+  measureCompare,
   needsNumericCanon,
   nonFiniteAccepted,
   nonFiniteRefused,
@@ -1073,14 +1074,14 @@ function atCapNarrows(c: Column, mode: Mode): string {
     const n = c.shape.length;
     if (!n) return '';
     return mode === 'select'
-      ? atNarrow(c, (v) => `[...${v}].length <= ${n}`, `at most ${n} characters`)
+      ? atNarrow(c, (v) => codePointCompare(v, '<=', n), `at most ${n} characters`)
       : atNarrow(c, (v) => `new TextEncoder().encode(${v}).length <= ${n}`, `at most ${n} bytes`);
   }
   if (c.tsType !== 'string' || c.shape) return '';
   const out: string[] = [];
   if (c.maxLength) {
     out.push(
-      atNarrow(c, (v) => `[...${v}].length <= ${c.maxLength}`, `at most ${c.maxLength} characters`)
+      atNarrow(c, (v) => codePointCompare(v, '<=', c.maxLength!), `at most ${c.maxLength} characters`)
     );
   }
   if (c.maxBytes) {
@@ -1120,10 +1121,8 @@ function atLengthNarrows(lengths: LengthCheck[], cols: Column[]): string {
       if (!measure) return [];
       const v = `o[${JSON.stringify(k.column)}]`;
       const msg = JSON.stringify(lengthCheckLabel(k));
-      const count = measureExpression(measure, v);
-      return [
-        `.narrow((o, ctx) => ${v} == null || ${count} ${OPS[k.operator]} ${k.value} || ctx.mustBe(${msg}))`,
-      ];
+      const test = measureCompare(measure, v, k.operator, k.value);
+      return [`.narrow((o, ctx) => ${v} == null || ${test} || ctx.mustBe(${msg}))`];
     })
     .join('');
 }

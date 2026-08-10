@@ -77,7 +77,7 @@ describe('off by default', () => {
     // Quote style is prettier's to decide, and it resolves a different config depending on where
     // the file is written, so the assertion accepts either.
     expect(selectField(src, 'role')).toMatch(
-      /^z\.string\(\)\.refine\(\(v\) => \[\.\.\.v\]\.length <= 50, \{ message: ['"]at most 50 characters['"] \}\)$/
+      /^z\.string\(\)\.refine\(\(v\) => v\.length <= 50 \|\| \[\.\.\.v\]\.length <= 50, \{ message: ['"]at most 50 characters['\"],? \}\)$/
     );
   });
 });
