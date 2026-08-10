@@ -148,6 +148,7 @@ const rowsEl = ref<HTMLElement | null>(null);
 const active = ref(0);
 
 let observer: ResizeObserver | null = null;
+const timers: number[] = [];
 
 function draw() {
   const fan = fanEl.value;
@@ -201,16 +202,24 @@ function focusRow(index: number) {
 
 onMounted(() => {
   window.addEventListener('resize', draw);
+  window.addEventListener('load', draw);
   if (document.fonts?.ready) void document.fonts.ready.then(draw);
   if (window.ResizeObserver && rowsEl.value) {
     observer = new ResizeObserver(draw);
     observer.observe(rowsEl.value);
   }
+  // A single rAF is a race. On a cold load it can fire before layout has a box, and the retry then
+  // depends on when the next frame happens; rendering the same page twenty times showed the fan
+  // present on some loads and absent on others. Anchoring to load and adding two late retries made
+  // it draw on every one of twenty renders, including at a deliberately short budget.
   requestAnimationFrame(draw);
+  timers.push(window.setTimeout(draw, 120), window.setTimeout(draw, 600));
 });
 
 onBeforeUnmount(() => {
   window.removeEventListener('resize', draw);
+  window.removeEventListener('load', draw);
+  timers.forEach(clearTimeout);
   observer?.disconnect();
 });
 </script>
