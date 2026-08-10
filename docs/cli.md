@@ -35,6 +35,7 @@ Jump to commands:
 - Doctor: what DRZL cannot type or enforce → [/cli/doctor](/cli/doctor)
 - Generate: run configured generators, or one of them with `--only` → [/cli/generate](/cli/generate)
 - Generate (oRPC): deprecated, see `generate --only orpc` → [/cli/generate-orpc](/cli/generate-orpc)
+- Generate (tRPC): deprecated, see `generate --only trpc` → [/cli/generate-trpc](/cli/generate-trpc)
 - Watch: watch schema and regenerate → [/cli/watch](/cli/watch)
 - Output: streams, colour, `--json`, exit codes → [/cli/output](/cli/output)
 
@@ -48,7 +49,7 @@ Something failed? [Troubleshooting](/guide/troubleshooting) is keyed by the mess
 - colour is off on a stream that is not a terminal, and off entirely under `NO_COLOR`
 - `0` did the work, `1` could not do the work, `2` did the work and found something
 
-All four are documented in [Output & exit codes](/cli/output).
+All of these are documented in [Output & exit codes](/cli/output).
 
 ## Commands & Options
 

@@ -4,7 +4,7 @@ title: DRZL
 hero:
   # name: DRZL
   text: Developer tooling for Drizzle ORM
-  tagline: Analyze schemas. Generate services, routers (adapter-based), and validation.
+  tagline: Analyze schemas. Generate validation, services, and routers for seven stacks.
   image:
     light: /brand/logo.png
     dark: /brand/logo-dark.png

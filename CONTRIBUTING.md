@@ -22,16 +22,18 @@ Thanks for your interest in contributing! This guide explains how to set up your
     it column by column against the official `drizzle-orm` validators, and runs it against a real
     Postgres (PGlite) and a real SQLite (`node:sqlite`). Set `MYSQL_URL` to include MySQL, which
     CI provides as a service container; without it that stage skips and says so.
-  - It takes about three minutes locally (160s measured on a 16-core laptop, and it barely
-    responds to cores because it is dominated by npm installs) and it is the only thing here that
-    exercises what a consumer
-    actually gets. Everything else imports from source.
+  - It takes about three and a half minutes locally (217s measured on a 16-core laptop with no
+    `MYSQL_URL`, so the MySQL stages skipped; 304s in CI on a 4-core runner with MySQL running).
+    It barely responds to cores, because it is dominated by npm installs. It is the only thing here
+    that exercises what a consumer actually gets. Everything else imports from source.
 
 ## Repo Structure (packages/)
 
 - `analyzer`: Drizzle schema analysis
 - `cli`: drzl CLI
-- `generator-*`: code generators (oRPC, tRPC, Hono, service, zod, valibot, arktype, typebox, effect, json-schema)
+- `generator-*`: the fourteen code generators (oRPC, tRPC, Hono, Express, Fastify, NestJS, GraphQL,
+  service, zod, valibot, arktype, typebox, effect, json-schema). All fourteen are dependencies of
+  `cli`, so a consumer installing `@drzl/cli` gets every one
 - `template-*`: oRPC templates
 - `validation-core`: shared validation codegen helpers
 

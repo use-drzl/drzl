@@ -190,8 +190,7 @@ query-builder, explicit-column-list, `.existing()` and schema-qualified forms al
 here rather than as a difference: 0.4x gave every unsigned width the signed range and gave `serial`
 no range at all, while v1 dropped `uint16`, `uint24` and `uint32` into an implicit-decimal path and
 returned nothing for `uint64`. Both majors now answer with the type's own range, and the gate proves
-they agree. The fix is on `master` and has not yet been published, so a released version still has
-the old behaviour:
+they agree. Published in `@drzl/analyzer` 1.21.0, so the released behaviour is:
 
 ```ts
 int('u', { unsigned: true });

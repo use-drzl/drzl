@@ -25,7 +25,8 @@ Drizzle schema → normalized analysis for fast, reliable codegen.
 
 - Every dollar speeds up CI hardware and offsets long test runs on my aging laptop.
 - Sponsors get roadmap input and priority responses in GitHub Issues.
-- Prefer a quick overview? Check `docs/sponsor.md` for the current goals and thank-yous.
+- Prefer a quick overview? The current goals and thank-yous are at
+  https://use-drzl.github.io/drzl/sponsor.
 
 ## Use
 

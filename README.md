@@ -30,12 +30,29 @@ Zero‑friction codegen for Drizzle ORM. Analyze your schema. Generate validatio
 ## What’s Inside
 
 - Analyzer: turns Drizzle schemas into a normalized analysis model
-- Generators: Zod, Valibot, ArkType, TypeBox, Effect Schema validation; JSON Schema and OpenAPI; typed CRUD services; router templates (oRPC)
+- Generators: Zod, Valibot, ArkType, TypeBox and Effect Schema validation; JSON Schema and OpenAPI;
+  typed CRUD services; and routers for oRPC, tRPC, Hono, Express, Fastify, NestJS and GraphQL.
+  Fourteen in all, and installing `@drzl/cli` brings every one of them
 - Batteries: formatting, naming, reusable/shared schemas, relation support
-- Verified against three real databases every commit: 1400 type probes and 53 CHECK probes against
-  Postgres (PGlite), 32 against SQLite (`node:sqlite`), 37 against MySQL (a CI service container).
-  On the CHECK probes DRZL accepts 0 rows the database rejects; `drizzle-orm/zod` accepts 22
 - Monorepo: pnpm workspace, lockstep releases with Changesets
+
+### Verified against three real databases
+
+Postgres in-process via PGlite, SQLite via `node:sqlite`, and MySQL as a CI service container, on
+every commit. The run behind this README printed:
+
+```
+    1476 probes against a real Postgres (41 columns)
+    53 CHECK probes against a real Postgres (13 constrained columns)
+    rows Postgres rejects and the validator accepts: DRZL 0, drizzle-orm 22
+    32 CHECK probes against a real SQLite (10 constrained columns)
+    37 probes against a real MySQL
+```
+
+Those lines are compared against the run itself, line by line, by
+`scripts/verify/stages/35-docs-numbers.sh`, so a number here that stops being true fails the build
+rather than sitting in a README nobody rechecks. See [how it is
+verified](https://use-drzl.github.io/drzl/guide/verification).
 
 ## Install & Use
 
