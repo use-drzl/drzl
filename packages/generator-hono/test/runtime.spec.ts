@@ -233,4 +233,29 @@ describe.each([
     });
     expect(res.status).toBe(500);
   });
+
+  /**
+   * A date column over JSON, which this suite could not see until the fixture grew a Date column.
+   * A body schema typed `z.date()` refuses every JSON spelling of a date, so no valid POST touching
+   * such a column existed; 500 is this file's "the schema accepted it and the stub then threw".
+   */
+  it('accepts an ISO date string in a body, which is the only form JSON can carry', async () => {
+    const res = await app.request('/users', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ email: 'a@b.c', seenAt: '2020-01-01T00:00:00.000Z' }),
+    });
+    expect(res.status).toBe(500);
+  });
+
+  it('rejects a date that is not one, rather than reading it as a year', async () => {
+    // `new Date('1')` is the year 2001, so a lenient parse turns a typo into a row.
+    const res = await app.request('/users', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ email: 'a@b.c', seenAt: '1' }),
+    });
+    expect(res.status).toBe(400);
+    expect(JSON.stringify(await res.json())).toContain('seenAt');
+  });
 });

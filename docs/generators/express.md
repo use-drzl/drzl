@@ -118,6 +118,29 @@ row `0`. The strict form rejects `""`, `" "`, `"0x10"` and `"1e5"`, and is the o
 Zod, Valibot and ArkType agree on, so switching `validation.library` does not change which
 requests your API accepts.
 
+## A `Date` column, which JSON cannot carry
+
+`JSON.stringify(new Date())` is a string, so a request body never holds a `Date` instance. The
+body schemas therefore take the strict ISO datetime string and hand your handler a real `Date`,
+while the select shape stays a `Date` because that is what the driver produces:
+
+```ts
+// insert and update
+seenAt: z.iso.datetime().transform((s) => new Date(s)),
+// select
+seenAt: z.date(),
+```
+
+Strict, because `new Date('1')` is the year 2001: a lenient parse turns a typo into a row. This
+used to be `z.date()` on every mode, which no JSON body could satisfy, so a request carrying a date
+column could not be written at all.
+
+At the edges the three libraries differ, and the difference is in what counts as ISO rather than in
+whether the value is a date: zod's `z.iso.datetime()` is the strictest and takes the `Z`-suffixed
+form only, valibot's `isoTimestamp` also takes a numeric offset, and arktype's `string.date.iso`
+takes any ISO 8601 form including a bare `2020-01-01`. So `validation.library` does change which
+date spellings this API accepts, which the [NestJS page](/generators/nestjs) measures in full.
+
 ## The response shape
 
 ```ts

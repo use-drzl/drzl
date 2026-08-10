@@ -72,6 +72,31 @@ TypeBox is the one validator DRZL generates that cannot be used here. tRPC recog
 through Standard Schema, and `@sinclair/typebox` does not implement it. `validation.library` accepts
 `zod`, `valibot` and `arktype`.
 
+## A `Date` column, and the transformer question
+
+The base module calls `initTRPC.context<Context>().create()` with no transformer, which is tRPC's
+default and means a request body is plain JSON. `JSON.stringify(new Date())` is a string, so on that
+default a procedure never receives a `Date` instance. Adding
+[superjson](https://trpc.io/docs/server/data-transformers) to that same base is the documented tRPC
+answer for dates, and then it does.
+
+Both are legitimate configurations of the tree this generator writes, so the input takes both:
+
+```ts
+// insert and update
+seenAt: z.union([z.date(), z.iso.datetime().transform((s) => new Date(s))]),
+// select
+seenAt: z.date(),
+```
+
+The resolver receives a `Date` either way. This used to be `z.date()` alone, which the default
+configuration could not satisfy: measured against exactly the base this generator emits, an ISO
+string and an epoch number were both rejected, so no HTTP client could call a procedure touching a
+date column. An ISO-only schema would have the mirror problem, rejecting the real `Date` that a
+superjson client delivers, so neither half is dropped.
+
+The strict ISO spelling is deliberate on the string arm: `new Date('1')` is the year 2001.
+
 ## Primary keys
 
 The key is read off your schema. A `varchar` primary key called `isbn` produces

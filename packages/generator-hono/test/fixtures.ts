@@ -32,6 +32,11 @@ export const users = table('users', {
     col('id', 'number', { hasDefault: true, isGenerated: true }),
     col('email', 'string'),
     col('bio', 'string', { nullable: true }),
+    // A Date column on a writable table, which this family of fixtures lacked. Without one, the
+    // body schemas typed a date as `z.date()` for as long as this generator existed and no test
+    // could see it: a JSON body cannot carry a Date, so no valid POST touching this column
+    // existed at all. Nullable, so the cases that do not name it stay valid.
+    col('seenAt', 'Date', { nullable: true }),
   ],
   primaryKey: { columns: ['id'] },
 });

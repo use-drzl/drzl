@@ -32,6 +32,11 @@ export const users = table('users', {
     col('id', 'number', { hasDefault: true, isGenerated: true }),
     col('email', 'string'),
     col('bio', 'string', { nullable: true }),
+    // A Date column on a writable table. The runtime spec here calls procedures through
+    // `createCallerFactory`, which hands the resolver whatever JS value it is given and never
+    // crosses a transformer, so a `z.date()` input looked fine from inside while no JSON client
+    // could satisfy it. Nullable, so the cases that do not name it stay valid.
+    col('seenAt', 'Date', { nullable: true }),
   ],
   primaryKey: { columns: ['id'] },
 });
