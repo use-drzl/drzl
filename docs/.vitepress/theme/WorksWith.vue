@@ -33,7 +33,6 @@ interface Entry {
   /** The page that backs the claim. */
   link: string;
   /** Built and measured here, not on npm yet. */
-  soon?: boolean;
 }
 
 interface Group {
@@ -53,7 +52,7 @@ const groups: Group[] = [
       { name: 'Valibot', link: '/generators/valibot' },
       { name: 'ArkType', link: '/generators/arktype' },
       { name: 'TypeBox', link: '/generators/typebox' },
-      { name: 'Effect Schema', mark: 'effect', link: '/generators/effect', soon: true },
+      { name: 'Effect Schema', mark: 'effect', link: '/generators/effect' },
       { name: 'JSON Schema', mark: 'json', link: '/generators/json-schema' },
       { name: 'OpenAPI', mark: 'openapiinitiative', link: '/generators/openapi' },
     ],
@@ -64,12 +63,12 @@ const groups: Group[] = [
     note: 'One generator kind each, emitting the router or the app that framework expects.',
     entries: [
       { name: 'oRPC', link: '/generators/orpc' },
-      { name: 'tRPC', mark: 'trpc', link: '/generators/trpc', soon: true },
-      { name: 'Hono', mark: 'hono', link: '/generators/hono', soon: true },
-      { name: 'Express', mark: 'express', link: '/generators/express', soon: true },
-      { name: 'Fastify', mark: 'fastify', link: '/generators/fastify', soon: true },
-      { name: 'NestJS', mark: 'nestjs', link: '/generators/nestjs', soon: true },
-      { name: 'GraphQL', mark: 'graphql', link: '/generators/graphql', soon: true },
+      { name: 'tRPC', mark: 'trpc', link: '/generators/trpc' },
+      { name: 'Hono', mark: 'hono', link: '/generators/hono' },
+      { name: 'Express', mark: 'express', link: '/generators/express' },
+      { name: 'Fastify', mark: 'fastify', link: '/generators/fastify' },
+      { name: 'NestJS', mark: 'nestjs', link: '/generators/nestjs' },
+      { name: 'GraphQL', mark: 'graphql', link: '/generators/graphql' },
     ],
   },
   {
@@ -103,7 +102,6 @@ const groups: Group[] = [
   },
 ];
 
-const soonCount = groups.reduce((n, g) => n + g.entries.filter((e) => e.soon).length, 0);
 
 // A link written in a component does not go through the markdown transform, so neither the site
 // base nor the page extension is added for it. Both are read from the site data rather than
@@ -140,26 +138,23 @@ function href(link: string): string {
           <p class="note">{{ group.note }}</p>
           <ul class="cells">
             <li v-for="entry in group.entries" :key="entry.name">
-              <a class="cell" :class="{ 'is-soon': entry.soon }" :href="href(entry.link)">
+              <a class="cell" :href="href(entry.link)">
                 <template v-if="entry.mark">
                   <svg class="mark" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
                     <path :d="marks[entry.mark]" fill="currentColor" />
                   </svg>
                   <span class="name"
                     >{{ entry.name
-                    }}<sup v-if="entry.soon" class="soon" aria-hidden="true">*</sup></span
+                    }}</span
                   >
                 </template>
                 <template v-else>
                   <span class="mark mark-empty" aria-hidden="true"></span>
                   <span class="name"
                     >{{ entry.name
-                    }}<sup v-if="entry.soon" class="soon" aria-hidden="true">*</sup></span
+                    }}</span
                   >
                 </template>
-                <span v-if="entry.soon" class="visually-hidden"
-                  >, generator ships inside the CLI, no standalone package yet</span
-                >
               </a>
             </li>
           </ul>
@@ -172,14 +167,6 @@ function href(link: string): string {
         <a :href="href('/examples/react-hook-form')">React Hook Form</a> and
         <a :href="href('/examples/tanstack-form')">TanStack Form</a> both accept directly, so wiring
         a table's form is one line and needs no <code>@drzl/*</code> package at all.
-      </p>
-
-      <p class="footnote">
-        <span aria-hidden="true">*</span> {{ soonCount }} of these generators have no package of
-        their own on npm yet. <code>drzl generate</code> still emits them, because the generator
-        ships inside <code>@drzl/cli</code> rather than being resolved at runtime, and the code it
-        writes imports the framework itself and never a <code>@drzl/*</code> package. What the
-        missing publish blocks is importing one of them directly as a library.
       </p>
       <p class="footnote">
         Product names and marks belong to their owners, and appear here only to say which software
@@ -310,9 +297,6 @@ h2 {
 
 /* Built and measured here, not on npm yet. Dashed rather than tinted, so it reads the same to a
    reader who cannot separate the two colours. */
-.cell.is-soon {
-  border-style: dashed;
-}
 
 .mark {
   flex: none;
@@ -350,12 +334,6 @@ h2 {
 
 /* The raise comes from `sup`'s own `vertical-align: super`; `line-height: 0` stops it adding a
    row's worth of height to a cell whose name wraps. */
-.soon {
-  margin-left: 1px;
-  color: var(--vp-c-text-2);
-  font-size: 13px;
-  line-height: 0;
-}
 
 .aside {
   margin: 32px 0 0;
