@@ -34,6 +34,11 @@ export default defineConfig({
 });
 ```
 
+`generators` has a default, and it is worth knowing which one: a config that omits the key entirely
+gets `[{ kind: 'orpc' }]` and writes an oRPC router tree. That surprises anyone who came for
+validation schemas and wrote the smallest config that parses, so a run using the default says so and
+lists the choices. Name the key and the warning goes away, even if you name the same value.
+
 Two things are deliberately _not_ written twice here.
 
 `servicesDir` is derived from the `service` generator's `path`, so naming it on the router as well
