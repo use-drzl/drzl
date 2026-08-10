@@ -98,8 +98,25 @@ export class EmitPlan implements FileSink {
       after: contents,
       verdict: before === null ? 'created' : before === contents ? 'unchanged' : 'changed',
     });
-    if (this.writes) await fs.writeFile(file, contents, 'utf8');
+    if (!this.writes) return;
+    // A byte-identical write is a no-op with a side effect: it moves the file's mtime, and an mtime
+    // is what every watcher downstream keys on. A `drzl generate` over an up-to-date tree therefore
+    // restarted a dev server, re-ran a type checker and invalidated a bundler cache for a tree that
+    // had not changed. Skipping the write makes the command idempotent at the filesystem level,
+    // which is what it already claims to be in its own output when it prints `unchanged`.
+    //
+    // Compared against what is on disk *now* rather than against what was there when the run
+    // started. The two differ for a path written twice in one run, which is what happens when two
+    // generators share an output directory: the first write has already put different bytes there,
+    // so "identical to what was there before the run" stops meaning "identical to what is there".
+    const onDisk = prior ? (this.wrote.has(file) ? prior.after : prior.before) : before;
+    if (onDisk === contents) return;
+    await fs.writeFile(file, contents, 'utf8');
+    this.wrote.add(file);
   }
+
+  /** Paths this run has actually put bytes on disk for, which is not every path it recorded. */
+  private readonly wrote = new Set<string>();
 
   private async read(file: string): Promise<string | null> {
     if (this.existing) return this.existing.get(file) ?? null;
