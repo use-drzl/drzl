@@ -566,11 +566,22 @@ function tableSchema(
     // "optional" in every mode made `id` optional on a select schema, which describes a row that
     // cannot exist.
     //
-    // A nullable column is still required: null is a value, and omitting the key is not the same
-    // as sending null.
-    const suppliedOnInsert =
-      c.hasDefault || (applyDefaults && c.defaultValue !== undefined) || c.isGenerated;
-    const optional = mode === 'update' || (mode === 'insert' && suppliedOnInsert);
+    // A nullable column with no default is omissible, and this used to say the opposite: that null
+    // is a value and omitting the key is not the same as sending null. That reads well and the
+    // database disagrees. Asked directly, on a table with `rating integer` nullable and no default:
+    // `INSERT INTO users (id, email) VALUES (1, 'a@b.c')` is accepted and stores NULL in rating,
+    // while omitting the NOT NULL column is refused. So for an insert the two are the same thing,
+    // and requiring the key makes this schema stricter than the database it describes. That is the
+    // failure this project exists to avoid, pointed the other way: a validator looser than the
+    // database lets a broken row reach the server, and one stricter than it refuses a row the
+    // server would have taken.
+    //
+    // Zod, Valibot, ArkType, TypeBox, Effect and the three route generators already treat it as
+    // omissible. This was two generators out of ten disagreeing with the other eight and with
+    // Postgres.
+    const omissibleOnInsert =
+      c.nullable || c.hasDefault || (applyDefaults && c.defaultValue !== undefined) || c.isGenerated;
+    const optional = mode === 'update' || (mode === 'insert' && omissibleOnInsert);
     if (!optional) required.push(c.name);
   }
   const desc = rowDescription(parsed.rows, cols);

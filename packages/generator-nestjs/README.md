@@ -69,9 +69,9 @@ app.useGlobalPipes(new SchemaValidationPipe());
 
 ## The shape of the DTOs
 
-- `Create<T>Dto` is the insert shape: generated columns absent, defaulted columns optional, and
-  a nullable column with no default required, null spelled out. Null is a value; omitting the
-  key is not sending null.
+- `Create<T>Dto` is the insert shape: generated columns absent, and a column the database can
+  fill in optional. That means a defaulted column, and also a nullable one, because an `INSERT`
+  that omits a nullable column stores `NULL` (measured against a real Postgres).
 - `Update<T>Dto` is all-optional with the primary key columns excluded, so an `id` in a PATCH
   body is an undeclared key and is stripped.
 - `<T>ParamsDto` parses key segments strictly: `^-?\d+(\.\d+)?$` into a number, digits kept as

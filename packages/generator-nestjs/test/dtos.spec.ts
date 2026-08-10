@@ -72,18 +72,34 @@ describe('a table module', () => {
     expect(src).toContain('static readonly schema: StandardSchema<UsersEntity> = SelectusersSchema;');
   });
 
-  it('requires a nullable no-default column on insert: null is a value, absence is not', async () => {
+  it('lets a nullable no-default column be omitted on insert, as the database does', async () => {
     const { read } = await emit([users]);
     const src = await read('users.ts');
-    // In the insert schema, bio is nullable and NOT optional; role has a default and is
-    // optional. The class fields state the same contract. The negative check is scoped to the
-    // insert schema because the update schema legitimately spells the optional form.
+    // bio is nullable with no default, so it is optional at its nullable type: an INSERT that
+    // omits it stores NULL, which a real Postgres accepts. email is NOT NULL with no default and
+    // stays required, which is what makes this a rule about what the database can fill in rather
+    // than a blanket loosening. Both regions are sliced out first: a lazy match run against the
+    // whole file bridges into the select schema, where the required spelling legitimately lives,
+    // and passes whatever the insert schema says.
     const insert = src.slice(src.indexOf('InsertusersSchema'), src.indexOf('UpdateusersSchema'));
-    expect(insert).toContain('bio: z.string().nullable(),');
-    expect(insert).not.toContain('.nullable().optional()');
-    expect(src).toMatch(/role: z\.enum\(\['admin', 'member'\] as const\)\.optional\(\)/);
-    expect(src).toMatch(/class CreateUsersDto \{[\s\S]*?bio!: string \| null;/);
-    expect(src).toMatch(/class CreateUsersDto \{[\s\S]*?role\?: 'admin' \| 'member';/);
+    expect(insert).toContain('bio: z.string().nullable().optional(),');
+    expect(insert).toContain('email: z.string(),');
+    expect(insert).toMatch(/role: z\.enum\(\['admin', 'member'\] as const\)\.optional\(\)/);
+    const createDto = src.slice(src.indexOf('class CreateUsersDto'), src.indexOf('class UpdateUsersDto'));
+    expect(createDto).toContain('bio?: string | null;');
+    expect(createDto).toContain('email!: string;');
+    expect(createDto).toContain("role?: 'admin' | 'member';");
+  });
+
+  it('keeps the required spelling where it belongs: the select schema and its entity', async () => {
+    const { read } = await emit([users]);
+    const src = await read('users.ts');
+    // The counter-check for the slicing above. On select the database guarantees the column is
+    // there, so bio is nullable and NOT optional, and the entity states the same.
+    const select = src.slice(src.indexOf('SelectusersSchema'));
+    expect(select).toContain('bio: z.string().nullable(),');
+    const entity = src.slice(src.indexOf('class UsersEntity'));
+    expect(entity).toContain('bio!: string | null;');
   });
 
   it('excludes the primary key from the update DTO', async () => {
@@ -199,11 +215,12 @@ describe('the params DTO', () => {
 });
 
 describe('the other libraries', () => {
-  it('valibot: same classes, valibot spellings, nullable-not-optional on insert', async () => {
+  it('valibot: same classes, valibot spellings, omissible nullable on insert', async () => {
     const { read } = await emit([users, events], { validation: { library: 'valibot' } });
     const src = await read('users.ts');
     expect(src).toContain("import * as v from 'valibot';");
-    expect(src).toMatch(/InsertusersSchema = v\.object\(\{[\s\S]*?bio: v\.nullable\(v\.string\(\)\),/);
+    const insert = src.slice(src.indexOf('InsertusersSchema'), src.indexOf('UpdateusersSchema'));
+    expect(insert).toContain('bio: v.optional(v.nullable(v.string())),');
     expect(src).toContain('static readonly schema: StandardSchema<CreateUsersDto> = InsertusersSchema;');
     const ev = await read('events.ts');
     expect(ev).toContain('v.isoTimestamp()');
@@ -215,7 +232,8 @@ describe('the other libraries', () => {
     const src = await read('users.ts');
     expect(src).toContain("import { type } from 'arktype';");
     expect(src).toContain(".onUndeclaredKey('delete')");
-    expect(src).toMatch(/class CreateUsersDto \{[\s\S]*?bio!: string \| null;/);
+    const createDto = src.slice(src.indexOf('class CreateUsersDto'), src.indexOf('class UpdateUsersDto'));
+    expect(createDto).toContain('bio?: string | null;');
   });
 });
 

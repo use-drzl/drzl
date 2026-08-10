@@ -36,11 +36,14 @@ import {
  *     exist to refuse; without it the same DTO rejects every numeric string. A static schema
  *     carries its policy with it, and no pipe option can loosen it.
  *
- *   - DRZL's presence rule needs a workaround spelling there. `@IsOptional()` treats null AND
- *     undefined as absence (measured: `{}` accepted), where the settled rule is that null is a
- *     value and absence is not. The enforcing spelling exists and is measured
- *     (`@ValidateIf((o) => o.bio !== null)` + `@IsDefined()` + the type check), but it is three
- *     decorators of workaround per nullable column.
+ *   - DRZL's presence rule needs a workaround spelling there. `@IsOptional()` is the only
+ *     omissible spelling on offer and it treats null AND undefined as absence, so on a NOT NULL
+ *     column with a default, which is omissible but has no null among its values, it accepts an
+ *     explicit null the database would refuse (measured on 0.15.1: `{ role: null }` accepted
+ *     under `@IsOptional() @IsIn(['admin','member'])`). The enforcing spelling exists and is
+ *     measured (`@ValidateIf((o) => o.role !== undefined)` ahead of the member check refuses
+ *     null and still accepts the omission), but it is a decorator of workaround per defaulted
+ *     column, chosen per column rather than uniformly.
  *
  *   - bigint has no story: measured, `@Type(() => BigInt)` leaves the string untouched (BigInt
  *     is not newable, class-transformer silently skips it) and `@IsInt()` rejects a real
@@ -72,11 +75,16 @@ import {
  * carry no class-validator metadata (measured: the body arrives empty); with
  * `forbidNonWhitelisted: true` it rejects them outright. The docs page carries the grid.
  *
- * Presence rule, inherited from the shared builders rather than re-decided: a nullable column
- * with no default is REQUIRED on insert. Null is a value and omitting the key is not sending
- * null. This diverges from the Hono and Express generators' inline schemas, which make such a
- * column optional on insert, and matches the JSON Schema builder the Fastify generator inlines.
- * The update schemas exclude the primary key columns, from the same shared `updateColumns`.
+ * Presence rule, settled against a real database rather than by taste: on insert a column is
+ * optional exactly when the database can produce a row without it. A default can, and so can
+ * nullability, because an INSERT that omits a nullable column stores NULL. Measured on Postgres
+ * (PGlite) against a table with a nullable no-default column: omitting it is accepted and the
+ * stored row reads NULL, while omitting the NOT NULL column is refused by the server. This used
+ * to say the opposite, that null is a value and absence is not, which made the DTO stricter than
+ * the table it describes; all five generators now agree, including the Hono and Express inline
+ * schemas that were already right. An `IS NOT NULL` CHECK still makes a column required, because
+ * `insertColumns` reports it as not nullable before this code sees it. The update schemas exclude
+ * the primary key columns, from the same shared `updateColumns`.
  *
  * Path parameters arrive as strings, and Nest's own answer, `ParseIntPipe`, was measured
  * (11.1.28): it rejects `""`, `" "`, `"0x10"`, `"1e5"`, `"1.5"` and `"1abc"`, which matches the
@@ -313,14 +321,16 @@ function baseExpr(column: Column, d: LibDialect, mode: Mode): string {
 /**
  * Presence, the part the module comment calls the inherited rule: on insert a column is
  * optional only when the database can fill it in (a default; generated columns are excluded by
- * `insertColumns` before this runs). A nullable column with no default stays required, at its
- * nullable type: null is a value, absence is not. On update everything is optional.
+ * `insertColumns` before this runs). A nullable column with no default is optional at its nullable
+ * type: the database accepts an INSERT that omits it and stores NULL, so requiring the key here
+ * would make the DTO stricter than the table it describes. On update everything is optional.
  */
 function mapExpr(column: Column, lib: Lib, mode: Mode): string {
   const d = LIBS[lib];
   let expr = baseExpr(column, d, mode);
   if (column.nullable) expr = d.nullable(expr);
-  if (mode === 'update' || (mode === 'insert' && column.hasDefault)) expr = d.optional(expr);
+  if (mode === 'update' || (mode === 'insert' && (column.hasDefault || column.nullable)))
+    expr = d.optional(expr);
   return expr;
 }
 
@@ -396,7 +406,7 @@ function paramFieldType(column: Column): string {
 function classField(column: Column, mode: Mode | 'params'): string {
   const key = isIdent(column.name) ? column.name : `'${column.name.replace(/'/g, "\\'")}'`;
   if (mode === 'params') return `  ${key}!: ${paramFieldType(column)};`;
-  const optional = mode === 'update' || (mode === 'insert' && column.hasDefault);
+  const optional = mode === 'update' || (mode === 'insert' && (column.hasDefault || column.nullable));
   const type = `${fieldType(column)}${column.nullable ? ' | null' : ''}`;
   return optional ? `  ${key}?: ${type};` : `  ${key}!: ${type};`;
 }
@@ -621,7 +631,7 @@ function renderTable(table: Table, opts: GenerateOptions): string {
       dtoClass(
         createDto,
         `The insert shape of ${table.name}. Fields state what the pipe hands your controller; ` +
-          `a nullable column with no default is required, null spelled out.`,
+          `a nullable column with no default may be omitted, as the database allows.`,
         insertCols,
         'insert',
         insertName

@@ -156,19 +156,18 @@ describe('the emitted plugins, registered on a real Fastify instance', () => {
     expect(res.statusCode).toBe(500);
   });
 
-  it('requires a nullable column to be present, the inherited json-schema semantics', async () => {
-    // @drzl/generator-json-schema's published insert schemas require a nullable column without a
-    // default, because null is a value and omitting the key is not sending null (its
-    // against-ajv spec pins that). This generator runs the same builder, so it inherits the
-    // rule, where the Hono and Express generators' inline schemas make nullable columns
-    // optional on insert. Documented in src/index.ts and the docs page; pinned here.
+  it('accepts an absent nullable column, the inherited json-schema semantics', async () => {
+    // @drzl/generator-json-schema's insert schemas mark a nullable no-default column omissible,
+    // because the database accepts an INSERT that omits it and stores NULL (its against-ajv spec
+    // pins that). This generator runs the same builder, so it inherits the rule, and all five
+    // generators now agree. 500 and not 201: the schema accepted it, the stub then threw, which
+    // is this file's convention for "passed validation".
     const res = await app.inject({
       method: 'POST',
       url: '/users',
       ...json(JSON.stringify({ email: 'a@b.c' })),
     });
-    expect(res.statusCode).toBe(400);
-    expect(res.json().message).toContain('bio');
+    expect(res.statusCode).toBe(500);
   });
 
   it('rejects a body missing a required field, naming the field', async () => {

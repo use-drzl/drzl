@@ -124,10 +124,19 @@ describe('required keys', () => {
     expect(v({ b: 'x' }), 'a does not').toBe(false);
   });
 
-  it('requires a nullable column, because null is not absence', () => {
+  // Postgres decides this one, and it was asked directly: on a table with a nullable no-default
+  // column, `INSERT INTO t (id) VALUES (1)` is accepted and stores NULL, while omitting a NOT NULL
+  // column is refused. Requiring the key would make this schema stricter than the table.
+  it('lets a nullable no-default column be omitted, as the database does', () => {
     const v = compile(tableSchemas(table([col('a', { nullable: true })])).insert);
-    expect(v({ a: null })).toBe(true);
-    expect(v({})).toBe(false);
+    expect(v({ a: null }), 'explicit null still allowed').toBe(true);
+    expect(v({}), 'and so is omitting it').toBe(true);
+  });
+
+  it('still requires a column the database will not fill in', () => {
+    const v = compile(tableSchemas(table([col('a'), col('b', { nullable: true })])).insert);
+    expect(v({ b: null }), 'a is not nullable and has no default').toBe(false);
+    expect(v({ a: 'x' }), 'b may be omitted').toBe(true);
   });
 
   it('requires nothing on update', () => {

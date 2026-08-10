@@ -60,11 +60,13 @@ four behaviours a DRZL DTO cannot accept:
    and one flag on someone else's pipe resurrects it. A static schema carries its policy with
    it; no pipe option can loosen it.
 
-2. **`@IsOptional()` treats null and undefined alike**, so `{}` and `{ bio: null }` are the same
-   thing to it (measured: both accepted), where DRZL's settled rule is that null is a value and
-   absence is not. The enforcing spelling exists, and it is three decorators of workaround per
-   nullable column: `@ValidateIf((o) => o.bio !== null)` plus `@IsDefined()` plus the type
-   check, measured to give exactly "null accepted, absent rejected".
+2. **`@IsOptional()` treats null and undefined alike**, and it is the only omissible spelling on
+   offer. On a `NOT NULL` column with a default, which may be omitted but has no null among its
+   values, it accepts an explicit null the database refuses (measured on class-validator 0.15.1:
+   `{ role: null }` accepted under `@IsOptional() @IsIn(['admin','member'])`). The enforcing
+   spelling exists, and it is a decorator of workaround per defaulted column:
+   `@ValidateIf((o) => o.role !== undefined)` ahead of the member check, measured to give exactly
+   "omission accepted, null refused".
 
 3. **bigint has no story.** `@Type(() => BigInt)` silently leaves the string untouched (BigInt
    is not newable, so class-transformer skips it; measured), and `@IsInt()` rejects a real
@@ -83,7 +85,7 @@ already are: in your controllers, compiled by your app's own flags.
 ### If you want the class-validator path anyway
 
 It is a legitimate choice when your team already standardises on it. Write the DTO classes by
-hand with class-validator decorators, spell nullable-but-required columns with the
+hand with class-validator decorators, spell omissible-but-not-nullable columns with the
 `@ValidateIf` form from point 2, keep `enableImplicitConversion` off and convert path
 parameters with `ParseIntPipe` per parameter, and skip this generator: generating those classes
 would freeze the measured caveats above into your API. DRZL's zod, valibot and arktype
@@ -102,8 +104,9 @@ dependency, the params DTOs with the strict segment grid, and classes for all th
 
 Per table, at most four classes:
 
-- `Create<Table>Dto`: the insert shape. Generated columns are absent, defaulted columns
-  optional, and a nullable column with no default is **required**, null spelled out.
+- `Create<Table>Dto`: the insert shape. Generated columns are absent, and a column the database
+  can fill in is **optional**: one with a default, or a nullable one, since an `INSERT` that omits
+  a nullable column stores `NULL`.
 - `Update<Table>Dto`: every field optional, **primary key columns excluded** (a PATCH body
   cannot re-key the row; an `id` in the body is an undeclared key and is stripped).
 - `<Table>ParamsDto`: the primary key columns, parsed strictly from their string segments. A
@@ -204,11 +207,14 @@ their wire forms and the classes state the parsed result:
 
 ## Presence, the inherited rule
 
-The insert schemas require a nullable column that has no default: null is a value, and
-omitting the key is not sending null. This matches the JSON Schema builder the
-[Fastify generator](/generators/fastify) inlines, and diverges from the Hono and Express
-generators' inline schemas, which make such a column optional on insert. The runtime suite pins
-both directions: `{ "bio": null }` is accepted and `{}` is rejected naming `bio`.
+A column is optional on insert exactly when the database can produce a row without it: it has a
+default, or it is nullable, because an `INSERT` that omits a nullable column stores `NULL`. Put to
+a real Postgres, omitting such a column is accepted and the stored row reads `NULL`, while omitting
+a `NOT NULL` column with no default is refused by the server. Every generator answers this the same
+way. An `IS NOT NULL` `CHECK` still makes a column required, because the shared column reader
+reports it as not nullable before any schema is built. The runtime suite pins both directions:
+`{ "email": "a@b.c" }` is accepted with `bio` absent and no null invented for it, and a body
+missing `email` is rejected naming the field.
 
 ## Options
 

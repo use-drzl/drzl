@@ -81,13 +81,13 @@ import { formatCode, importSpecifier, selectColumns } from '@drzl/validation-cor
  * generator's whole point, and the runtime spec pins the coercion cases so a change in Fastify's
  * defaults shows up as a failing test instead of a silent policy change.
  *
- * One more inherited semantic is stated rather than hidden, because the Hono and Express
- * generators decide it the other way: `@drzl/generator-json-schema`'s insert schemas require a
- * nullable column that has no default, on the published and tested reasoning that null is a
- * value and omitting the key is not sending null. Those two generators' inline schemas make
- * such a column optional on insert. This generator runs the shared builder precisely so the two
- * JSON Schema producers cannot drift, so `POST /users` here needs `bio: null` spelled out where
- * the Express routes accept its absence; the runtime spec pins both directions.
+ * One inherited semantic is stated rather than hidden, because it used to differ here:
+ * `@drzl/generator-json-schema`'s insert schemas once required a nullable column that has no
+ * default, on the reasoning that null is a value and omitting the key is not sending null. A
+ * real Postgres refuses that reasoning, accepting the omission and storing NULL, so the builder
+ * now marks such a column omissible and this generator inherits the correction. `POST /users`
+ * here accepts `bio` absent, exactly as the Hono and Express inline schemas always did, and the
+ * runtime spec pins it alongside the NOT NULL column that is still required.
  *
  * The serializer is the part with no analogue elsewhere, and its measured behaviour (fastify
  * 5.11.2, fast-json-stringify compiled from the emitted select schemas) is why the response
