@@ -1604,6 +1604,30 @@ function unknownColumnHint(reason: 'custom' | UnnameableReason | undefined): str
   );
 }
 
+/**
+ * The project-local directory jiti should cache transpiled schema modules in, or nothing.
+ *
+ * `process.cwd()` is the project: the CLI runs there, and a programmatic caller analysing a schema
+ * is in the project that owns it. Nothing is created unless a `node_modules` is already there,
+ * since a directory tree appearing in a project that has none would be a surprise rather than a
+ * cache.
+ */
+async function jitiCacheDir(
+  fs: typeof import('node:fs/promises'),
+  path: typeof import('node:path')
+): Promise<string | undefined> {
+  try {
+    const modules = path.join(process.cwd(), 'node_modules');
+    await fs.stat(modules);
+    const dir = path.join(modules, '.cache', 'jiti');
+    await fs.mkdir(dir, { recursive: true });
+    return dir;
+  } catch {
+    // No node_modules, or nothing writable there. jiti's own default is the answer then.
+    return undefined;
+  }
+}
+
 export class SchemaAnalyzer {
   /**
    * One path or several. The plural exists for drizzle-kit interop: kit's `schema` key names
@@ -2982,7 +3006,27 @@ export class SchemaAnalyzer {
     // but `drzl watch` analyzes repeatedly in one long-lived process: it regenerated on every
     // save and always described the schema as it was at startup, so a table added after the
     // watcher began never appeared however many times the file was written.
-    const jit = (jiti as any)(import.meta.url, { moduleCache: false });
+    // Where the transpiled schema is cached, said out loud rather than left to be discovered.
+    //
+    // jiti's default is `node_modules/.cache/jiti` *if that directory already exists*, and
+    // `{TMP_DIR}/jiti` otherwise, resolved from the jiti instance's base. The base here is this
+    // module, which lives inside `node_modules/@drzl/analyzer/dist`, so which of the two a run
+    // gets depends on whether the consumer's project happens to have a `node_modules/.cache` yet.
+    // Measured in a project without one: the cache landed in `/tmp/jiti`, so clearing the project
+    // cache cleared nothing and the next run was warm while reporting itself cold.
+    //
+    // It is worth being predictable about, because the cost is real and is paid again on every
+    // edit: the cache is content-keyed, so a saved schema is always a cold transpile. Measured on
+    // a 53 KB schema of 30 tables, 293ms cold against 71ms warm, which is what `drzl watch` pays
+    // per save and what a first `generate` pays once.
+    //
+    // Only when the project has a `node_modules` to put it in. A project without one is not given
+    // a directory tree it did not ask for, and jiti's own default takes over.
+    const cacheDir = await jitiCacheDir(fs, path);
+    const jit = (jiti as any)(import.meta.url, {
+      moduleCache: false,
+      ...(cacheDir ? { fsCache: cacheDir } : {}),
+    });
 
     // Exports of every file, merged first-wins into one namespace, the way a reader of a
     // multi-file schema thinks of it. First-wins is deterministic because the caller's list
