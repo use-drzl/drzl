@@ -161,9 +161,14 @@ function ormImport(key: Column[] | null): string {
 function renderTypes(table: Table) {
   const cols = table.columns;
   const pk = table.primaryKey?.columns ?? [];
-  // Absent is allowed where the database can supply the value itself.
+  // Absent is allowed where the database can supply the value itself, which is what being a primary
+  // key does not by itself mean. A `serial` or identity key is supplied by the server and is left
+  // out; a natural key is not, and leaving it out made an insert impossible to express: a `books`
+  // stub could not carry its own `isbn`, so the one value that addresses the row had nowhere to
+  // come from. The condition is what the column says, not what the key says, so a defaulted or
+  // generated key emits exactly the bytes it did before and only a natural one moves.
   const insertFields = cols
-    .filter((c: Column) => !c.isGenerated && !pk.includes(c.name))
+    .filter((c: Column) => !c.isGenerated && !(pk.includes(c.name) && c.hasDefault))
     .map((c: Column) => `  ${c.name}${c.nullable || c.hasDefault ? '?' : ''}: ${fieldType(c)};`)
     .join('\n');
   // A patch names only the columns it changes, so every key is optional. A generated column is
