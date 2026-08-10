@@ -31,7 +31,9 @@ import { parseCheck, lengthCheckLabel, type LengthCheck } from '../src/checks';
 const lengthsOf = (expr: string, dialect?: string): LengthCheck[] => {
   const r = parseCheck(expr, 'c', dialect);
   expect(r.ok, expr).toBe(true);
-  return r.ok ? r.lengths : [];
+  const lengths = r.ok ? (r.lengths ?? []) : [];
+  expect(lengths, `${expr} produced no length check`).not.toHaveLength(0);
+  return lengths;
 };
 
 describe('what length() counts', () => {
