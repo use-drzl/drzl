@@ -10,6 +10,8 @@
  * The two dispatch chains are one list now. These are the two edges that list still has, asserted
  * rather than reviewed.
  */
+import fs from 'node:fs';
+import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
   computeGeneratorOutputDirs,
@@ -70,6 +72,38 @@ describe('where the registry says each generator writes', () => {
       // rather than an omission: it writes where the top-level `outDir` says and ignores `path`.
       expect(registry, kind).toBe(kind === 'orpc' ? './api' : './somewhere/else');
     }
+  });
+});
+
+describe('the registry against the manifest', () => {
+  /**
+   * The other half of the externalisation rule in `tsup.config.ts`.
+   *
+   * That file externalises whatever the manifest declares, so declared implies resolved from
+   * `node_modules` rather than copied into `dist`. This is the converse, and it is the direction
+   * a new generator breaks: an entry whose package no `dependencies` field names is a package
+   * esbuild is entitled to bundle, and a bundled generator cannot be absent, so it can never
+   * reach the install message and it travels with every copy of the CLI whether or not anybody
+   * runs it. Eight of the fourteen were in exactly that state, for a publishing reason that
+   * stopped applying, and nothing failed while they were.
+   */
+  const manifest = JSON.parse(
+    fs.readFileSync(path.join(import.meta.dirname, '..', 'package.json'), 'utf8')
+  ) as {
+    dependencies?: Record<string, string>;
+    optionalDependencies?: Record<string, string>;
+  };
+
+  it('declares every generator package as a dependency', () => {
+    const declared = Object.keys(manifest.dependencies ?? {});
+    expect(GENERATORS.map((e) => e.specifier).filter((s) => !declared.includes(s))).toEqual([]);
+  });
+
+  it('leaves none of them optional, which an installer may skip without saying so', () => {
+    // `npm install --omit=optional` resolves an optional dependency to nothing and exits 0, so a
+    // kind declared there is a kind whose absence is decided by a flag rather than by a choice.
+    const optional = Object.keys(manifest.optionalDependencies ?? {});
+    expect(GENERATORS.map((e) => e.specifier).filter((s) => optional.includes(s))).toEqual([]);
   });
 });
 

@@ -10,8 +10,9 @@ npm install -D @drzl/generator-fastify
 npm install fastify
 ```
 
-It is an optional dependency of `@drzl/cli`, so a normal install may or may not have brought it
-along. `drzl generate` tells you which package to install if it is missing.
+`@drzl/cli` depends on it, so installing the CLI already brought it along; the first line above is
+for using the generator on its own. `drzl generate` tells you which package to install if it is
+ever missing.
 
 ## Why this generator emits no validator
 

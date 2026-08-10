@@ -374,9 +374,10 @@ describe('the deprecated per-kind commands', () => {
 
 describe('a generator package that is not installed', () => {
   it('names the package to install when it is reached through --only', async () => {
-    // Seven of the fourteen are optional dependencies, so this is not a hypothetical: a package
-    // that has never been published cannot publish through npm's trusted-publisher flow, and a
-    // missing optional dependency is skipped by the installer rather than failing it.
+    // Not a hypothetical for any of the fourteen: every generator is a separate package resolved
+    // from `node_modules` rather than code inside the CLI, so deleting one is a state a user can
+    // put themselves in, and `generator-failures.e2e.spec.ts` puts them all in it. What this one
+    // covers is the route: reached through `--only` rather than through a config entry.
     const { dir: home, cli: exe } = await cliWithout('@drzl/generator-typebox');
     try {
       const dir = await project('absent-only');
@@ -406,14 +407,15 @@ describe('a generator package that is not installed', () => {
   }, 180_000);
 
   it('names it from the deprecated command too, which used to fail before it started', async () => {
-    // oRPC rather than tRPC, and the reason is worth writing down: tsup externalises the packages
-    // in `dependencies` and bundles everything else, and the eight optional generator packages are
-    // not in `dependencies`, so their code travels inside `dist` and cannot be absent from a built
-    // CLI at all. `@drzl/generator-orpc` is a real dependency, so removing it removes the module.
+    // oRPC because this is the oRPC command. It reached `ORPCGenerator` through a static import
+    // until now, so an absent package failed while the module was being evaluated: a stack trace
+    // before any action ran, with no sentence naming the package.
     //
-    // This command reached `ORPCGenerator` through a static import until now, so an absent package
-    // failed while the module was being evaluated: a stack trace before any action ran, with no
-    // sentence naming the package.
+    // The kind used to matter for a second reason, which no longer applies and is worth recording
+    // because the test would have looked arbitrary without it: tsup externalises `dependencies`
+    // and bundles everything else, and eight generators were `optionalDependencies`, so their
+    // code travelled inside `dist` and could not be absent from a built CLI at all. All fourteen
+    // are `dependencies` now, so any of them could stand here.
     const { dir: home, cli: exe } = await cliWithout('@drzl/generator-orpc');
     try {
       const dir = await project('absent-legacy', null);
