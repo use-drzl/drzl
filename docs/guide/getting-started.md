@@ -121,8 +121,14 @@ This writes validators to `src/validators/zod`, routers to `src/api`, and servic
 
 Notes
 
-- Router generation is adapter‑based (currently oRPC). Additional adapters (tRPC, Express, NestJS, Next.js, Prisma, etc.) can be added via templates.
-- For Zod/Valibot/ArkType/TypeBox/Effect or Service generators, install the matching package in your app (as shown above). `effect` is an optional peer, so it is never installed for you; see [Effect](/generators/effect#which-effect) for why.
+- Seven generators emit routers or an API surface, and each is its own generator rather than a
+  template: oRPC, tRPC, Hono, Express, Fastify, NestJS and GraphQL. Only oRPC takes templates, which
+  is why the step above installs one. See [Adapters](/adapters/overview) for which to reach for.
+- You do not install generators. All fourteen are dependencies of `@drzl/cli`, so the install in
+  step 1 already brought every one of them. What you may need is the **validation library itself**,
+  in your own app: `zod`, `valibot`, `arktype`, `@sinclair/typebox` or `effect`, since the generated
+  files import from it. `effect` is an optional peer and is never installed for you; see
+  [Effect](/generators/effect#which-effect) for why.
 - Config file formats supported: `drzl.config.ts`, `.mjs`, `.js`, `.json`.
 
 Next steps

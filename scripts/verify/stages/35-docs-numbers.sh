@@ -36,6 +36,10 @@ DOC_BLOCKS=(
   "docs/guide/benchmarks.md|three real databases"
   "docs/guide/verification.md|Lines from the run behind this page"
   "docs/guide/comparison.md|the run behind this page printed"
+  # The README is the npm and GitHub front page and it is the copy that actually went stale: it
+  # claimed 1400 Postgres probes for a run that had been printing 1476, because it was prose nothing
+  # compared. Quoting the run instead of paraphrasing it is what lets this stage reach it.
+  "README.md|The run behind this README printed"
 )
 # The defect table further down comparison.md is deliberately not here. It is assembled from this
 # script's own DEFECTS ledger rather than quoted from output: the run prints the counts and stays

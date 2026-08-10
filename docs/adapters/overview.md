@@ -1,6 +1,8 @@
 # Adapters (Overview)
 
-DRZL is adapter‑agnostic. Router generation is driven by adapter templates so you can target different stacks.
+DRZL is adapter agnostic: seven generators target a different stack each, and you pick per config
+entry. Only the oRPC generator is template driven, for the reason given under "How it works" below;
+the other six ship without a hook API on purpose rather than pending.
 
 Current support:
 
@@ -23,11 +25,12 @@ How it works:
 - The oRPC generator is driven by a template interface (hooks) that tells it how to name files,
   export router identifiers, inject imports and a prelude, and render procedure code. You can write
   custom templates to adapt it to your runtime or conventions.
-- The tRPC and Hono generators do not take templates, and that is deliberate rather than pending.
-  `ORPCTemplateHooks` hands back oRPC source text (`os.handler(...)`, `ORPCError`), none of which
-  is valid in either target, so a template written against that interface would emit a file that
-  does not compile. Each ships without a hook API rather than shipping one that only appears to
-  work.
+- The other six take no template module, and that is deliberate rather than pending.
+  `ORPCTemplateHooks` hands back oRPC source text (`os.handler(...)`, `ORPCError`), none of which is
+  valid in a tRPC, Hono, Express, Fastify, NestJS or GraphQL file, so a template written against
+  that interface would emit something that does not compile. Each ships without a hook API rather
+  than shipping one that only appears to work. The tRPC generator does read a `template` value, but
+  it names one of its own built-in shapes rather than a package to load.
 
 Which one to reach for:
 

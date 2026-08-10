@@ -25,14 +25,20 @@ Analyze your Drizzle schema and generate validation, services, and routers.
 
 - Every dollar speeds up CI hardware and offsets long test runs on my aging laptop.
 - Sponsors get roadmap input and priority responses in GitHub Issues.
-- Prefer a quick overview? Check `docs/sponsor.md` for the current goals and thank-yous.
+- Prefer a quick overview? The current goals and thank-yous are at
+  https://use-drzl.github.io/drzl/sponsor.
 
 ## Commands
 
 - Init: `pnpm dlx @drzl/cli init`
 - Analyze: `pnpm dlx @drzl/cli analyze <schema.ts> [--relations] [--validate]`
+- Explain: `pnpm dlx @drzl/cli explain <table>`, what DRZL understood about one table and what it did not
+- Doctor: `pnpm dlx @drzl/cli doctor`, what DRZL cannot type or enforce in your schema, and why
 - Generate: `pnpm dlx @drzl/cli generate -c drzl.config.ts`
 - Watch: `pnpm dlx @drzl/cli watch -c drzl.config.ts`
+
+All fourteen generators ship as dependencies of this package, so installing it is the only install
+you need to run any of them.
 
 ## Minimal config
 
