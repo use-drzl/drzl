@@ -106,6 +106,23 @@ interface LibDialect {
   string: string;
   boolean: string;
   date: string;
+  /**
+   * A Date on the way in, which may or may not still be a Date by the time it arrives.
+   *
+   * tRPC's builder carries the transformer, and the base module this generator emits calls
+   * `initTRPC.context<Context>().create()` with none. On that default the request is plain JSON, so
+   * `JSON.stringify(new Date())` has already made the value a string and `z.date()` refuses it:
+   * measured through the fetch adapter against exactly this configuration, both an ISO string and
+   * an epoch number were rejected, so no valid call carrying a date column existed.
+   *
+   * A union rather than the ISO-only spelling the Express, Hono and NestJS generators use, because
+   * those three serve JSON and this one might not. Adding `superjson` to the emitted base is the
+   * documented tRPC answer for Dates, and it delivers a real `Date` to the procedure; an ISO-only
+   * schema would then reject the value that transformer exists to carry. The union accepts both
+   * wires and hands the resolver a `Date` either way, which is the only shape that does not make
+   * this generator's correctness depend on a line the user is free to add.
+   */
+  dateInput: string;
   unknown: string;
   enum: (vals: string[]) => string;
   nullable: (base: string) => string;
@@ -164,6 +181,7 @@ const LIBS: Record<Lib, LibDialect> = {
     string: 'z.string()',
     boolean: 'z.boolean()',
     date: 'z.date()',
+    dateInput: 'z.union([z.date(), z.iso.datetime().transform((s) => new Date(s))])',
     unknown: 'z.unknown()',
     tuple: (n) => `z.tuple([${Array.from({ length: n }, () => 'z.number()').join(', ')}])`,
     numberObject: (fields) => `z.object({ ${fields.map((f) => `${f}: z.number()`).join(', ')} })`,
@@ -182,6 +200,8 @@ const LIBS: Record<Lib, LibDialect> = {
     string: 'v.string()',
     boolean: 'v.boolean()',
     date: 'v.date()',
+    dateInput:
+      'v.union([v.date(), v.pipe(v.string(), v.isoTimestamp(), v.transform((s) => new Date(s)))])',
     unknown: 'v.unknown()',
     tuple: (n) => `v.tuple([${Array.from({ length: n }, () => 'v.number()').join(', ')}])`,
     numberObject: (fields) => `v.object({ ${fields.map((f) => `${f}: v.number()`).join(', ')} })`,
@@ -199,6 +219,7 @@ const LIBS: Record<Lib, LibDialect> = {
     string: 'string',
     boolean: 'boolean',
     date: 'Date',
+    dateInput: 'Date | string.date.iso.parse',
     unknown: 'unknown',
     // The surrounding encode adds the quotes, so the union is built with the inner quoting
     // ArkType expects. Emitting `'${...}'` here produces `''admin' | 'user''`, which does not parse.
@@ -245,7 +266,9 @@ function mapExpr(column: Column, lib: Lib, mode: 'insert' | 'update' | 'select')
       case 'boolean':
         return d.boolean;
       case 'Date':
-        return d.date;
+        // The read side is a real Date the driver produced. The write side depends on the
+        // transformer, so it takes both; see `LibDialect.dateInput`.
+        return mode === 'select' ? d.date : d.dateInput;
       default:
         return d.unknown;
     }

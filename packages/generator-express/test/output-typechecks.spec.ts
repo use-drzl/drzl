@@ -109,12 +109,20 @@ describe('the emitted tree', () => {
 
   /**
    * The row types flow out of the barrel, at their real member types: an enum column is its
-   * members, not a bare string, or the literal below would not typecheck.
+   * members, not a bare string, or the literal below would not typecheck. A Date column is a real
+   * `Date` on the read side, which is the half a JSON body cannot carry and the write schemas
+   * therefore spell differently.
    */
   it('exports row types a consumer can build values against', async () => {
     const probe = `import type { SelectusersRow } from './index.js';
 
-const row: SelectusersRow = { id: 1, email: 'a@b.c', bio: null, role: 'admin' };
+const row: SelectusersRow = {
+  id: 1,
+  email: 'a@b.c',
+  bio: null,
+  role: 'admin',
+  seenAt: new Date(),
+};
 export const value = row;
 `;
     expect(await compile('rowtype', {}, probe)).toBe('');

@@ -116,6 +116,20 @@ interface LibDialect {
    * in this package re-measures the reject rows per library rather than trusting this comment.
    */
   coerce: (tsType: string) => string | null;
+  /**
+   * A Date crossing JSON, which is a different thing from a Date.
+   *
+   * A JSON body cannot carry a `Date`: `JSON.stringify(new Date())` is a string, and every parser
+   * on the way in hands the route a string. So `date` above, which is the read side where the value
+   * is a row the driver already mapped, is unusable on the write side, and a request carrying a
+   * date column could not be written at all. Measured through the emitted app before the fix: every
+   * JSON spelling of a date was rejected, so no valid POST existed.
+   *
+   * The strict ISO spelling, transformed into the `Date` the handler expects, which is exactly what
+   * the NestJS generator settled on for the same reason. Strict because `new Date('1')` is the year
+   * 2001, so a lenient parse turns a typo into a row.
+   */
+  dateInput: string;
   /** The type of one parsed row, from the select schema. */
   infer: (schema: string) => string;
 }
@@ -164,6 +178,7 @@ const LIBS: Record<Lib, LibDialect> = {
     string: 'z.string()',
     boolean: 'z.boolean()',
     date: 'z.date()',
+    dateInput: 'z.iso.datetime().transform((s) => new Date(s))',
     unknown: 'z.unknown()',
     enum: (vals) => `z.enum([${vals.map(q).join(', ')}] as const)`,
     nullable: (b) => `${b}.nullable()`,
@@ -186,6 +201,7 @@ const LIBS: Record<Lib, LibDialect> = {
     string: 'v.string()',
     boolean: 'v.boolean()',
     date: 'v.date()',
+    dateInput: 'v.pipe(v.string(), v.isoTimestamp(), v.transform((s) => new Date(s)))',
     unknown: 'v.unknown()',
     enum: (vals) => `v.picklist([${vals.map(q).join(', ')}] as const)`,
     nullable: (b) => `v.nullable(${b})`,
@@ -207,6 +223,7 @@ const LIBS: Record<Lib, LibDialect> = {
     string: 'string',
     boolean: 'boolean',
     date: 'Date',
+    dateInput: 'string.date.iso.parse',
     unknown: 'unknown',
     // The surrounding encode adds the quotes, so the union is built with the inner quoting
     // ArkType expects.
@@ -265,7 +282,8 @@ function mapExpr(column: Column, lib: Lib, mode: 'insert' | 'update' | 'select')
       case 'boolean':
         return d.boolean;
       case 'Date':
-        return d.date;
+        // The read side is a real Date the driver produced; the write side is a JSON string.
+        return mode === 'select' ? d.date : d.dateInput;
       default:
         return d.unknown;
     }

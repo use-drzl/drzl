@@ -26,7 +26,7 @@ const absWork = path.join(pkgRoot, workDir);
 
 /** An in-memory stand-in for what `@drzl/generator-service` writes, with the same signatures. */
 const SERVICE = `
-export interface Row { id: number; email: string; bio: string | null }
+export interface Row { id: number; email: string; bio: string | null; seenAt: Date | null }
 const rows: Row[] = [];
 let next = 1;
 
@@ -37,12 +37,17 @@ export class UserService {
   static async getById(id: number): Promise<Row | null> {
     return rows.find((r) => r.id === id) ?? null;
   }
-  static async create(input: { email: string; bio?: string | null }): Promise<Row> {
-    const row: Row = { id: next++, email: input.email, bio: input.bio ?? null };
+  static async create(input: { email: string; bio?: string | null; seenAt?: Date | null }): Promise<Row> {
+    const row: Row = {
+      id: next++,
+      email: input.email,
+      bio: input.bio ?? null,
+      seenAt: input.seenAt ?? null,
+    };
     rows.push(row);
     return row;
   }
-  static async update(id: number, data: { email?: string; bio?: string | null }): Promise<Row> {
+  static async update(id: number, data: { email?: string; bio?: string | null; seenAt?: Date | null }): Promise<Row> {
     const row = rows.find((r) => r.id === id);
     if (!row) throw new Error('no such row');
     Object.assign(row, data);
@@ -129,19 +134,49 @@ describe('a generated router, over HTTP', () => {
     expect(status).toBe(200);
     // The row carries the generated `id` the input never had, which is the whole reason a stub
     // cannot answer this by returning its input.
-    expect(body.result.data).toEqual({ id: 1, email: 'ada@example.com', bio: null });
+    expect(body.result.data).toEqual({ id: 1, email: 'ada@example.com', bio: null, seenAt: null });
   });
 
   it('reads back what the mutation wrote', async () => {
     await call('POST', 'users.create', { email: 'grace@example.com', bio: 'compiler' });
     const list = await call('GET', 'users.list');
     expect(list.body.result.data).toEqual([
-      { id: 1, email: 'ada@example.com', bio: null },
-      { id: 2, email: 'grace@example.com', bio: 'compiler' },
+      { id: 1, email: 'ada@example.com', bio: null, seenAt: null },
+      { id: 2, email: 'grace@example.com', bio: 'compiler', seenAt: null },
     ]);
 
     const one = await call('GET', 'users.byId', { id: 2 });
-    expect(one.body.result.data).toEqual({ id: 2, email: 'grace@example.com', bio: 'compiler' });
+    expect(one.body.result.data).toEqual({
+      id: 2,
+      email: 'grace@example.com',
+      bio: 'compiler',
+      seenAt: null,
+    });
+  });
+
+  /**
+   * A date column over the wire, which is the case this suite could not see. The caller-factory
+   * test below hands the resolver whatever JS value it is given and never crosses a transformer, so
+   * a `z.date()` input looked fine from in-process while no HTTP client could satisfy it: the base
+   * module this generator emits calls `initTRPC.create()` with no transformer, and on that default
+   * a body is plain JSON. Measured against exactly that configuration, `z.date()` refused an ISO
+   * string and an epoch number alike, so no valid call carrying this column existed.
+   *
+   * The input takes both spellings, which is why it is a union: this is the JSON half.
+   */
+  it('accepts an ISO date string over HTTP, where JSON cannot carry a Date', async () => {
+    const { status, body } = await call('POST', 'users.create', {
+      email: 'hedy@example.com',
+      seenAt: '2020-01-01T00:00:00.000Z',
+    });
+    expect(status).toBe(200);
+    expect(body.result.data.seenAt).toBe('2020-01-01T00:00:00.000Z');
+  });
+
+  it('refuses a date that is not one, rather than reading it as a year', async () => {
+    // `new Date('1')` is the year 2001, so the lenient parse turns a typo into a row.
+    const { status } = await call('POST', 'users.create', { email: 'x@y.z', seenAt: '1' });
+    expect(status).toBe(400);
   });
 
   it('answers byId with null for a row that is not there', async () => {
@@ -151,7 +186,12 @@ describe('a generated router, over HTTP', () => {
 
   it('applies a patch through update', async () => {
     const { body } = await call('POST', 'users.update', { id: 1, data: { bio: 'analyst' } });
-    expect(body.result.data).toEqual({ id: 1, email: 'ada@example.com', bio: 'analyst' });
+    expect(body.result.data).toEqual({
+      id: 1,
+      email: 'ada@example.com',
+      bio: 'analyst',
+      seenAt: null,
+    });
   });
 
   it('deletes, and says so', async () => {
@@ -210,5 +250,18 @@ describe('the generated module graph', () => {
     const created = await caller.users.create({ email: 'katherine@example.com' });
     expect(created.email).toBe('katherine@example.com');
     expect(await caller.users.byId({ id: created.id })).toEqual(created);
+  });
+
+  it('takes a real Date in-process, which is the other half of the input union', async () => {
+    // The transformer half. A caller that never serialises, and a client configured with
+    // superjson, both hand the procedure a real `Date`; an ISO-only input would reject the value
+    // that transformer exists to carry. The resolver receives a `Date` from either wire.
+    const barrel = pathToFileURL(path.join(absWork, 'api', 'index.ts')).href;
+    const { appRouter, createCallerFactory } = (await import(/* @vite-ignore */ barrel)) as any;
+    const caller = createCallerFactory(appRouter)({});
+    const at = new Date('2021-02-03T04:05:06.000Z');
+    const created = await caller.users.create({ email: 'joan@example.com', seenAt: at });
+    expect(created.seenAt).toBeInstanceOf(Date);
+    expect((created.seenAt as Date).toISOString()).toBe('2021-02-03T04:05:06.000Z');
   });
 });
