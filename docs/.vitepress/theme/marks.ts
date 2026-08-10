@@ -16,8 +16,11 @@
  * not a claim of endorsement, sponsorship or affiliation by any of them.
  *
  * Four names in the grid have no mark in simple-icons at all: Valibot, ArkType, TypeBox and oRPC.
- * Those render as text chips in a cell of the same size rather than as an invented or scraped
- * logo.
+ * Those render as a monogram, the initial in a box, drawn in WorksWith.vue rather than added here.
+ * That keeps this file exactly what its header claims, unaltered upstream path data, and it keeps
+ * the distinction visible: a monogram is obviously a letter in a box and cannot be mistaken for a
+ * mark belonging to anyone. Scraping the four projects' own logos would make the grid look more
+ * uniform and would put four assets of four different licences into a file documented as CC0.
  */
 export const marks: Record<string, string> = {
   // Zod "https://github.com/colinhacks/zod/blob/ff89187172ac6aa4a6264592980d1628ee785242/logo/Logo%20White.ai"

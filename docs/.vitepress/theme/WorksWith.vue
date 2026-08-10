@@ -21,6 +21,17 @@ import { computed } from 'vue';
 import { useData, withBase } from 'vitepress';
 import { marks } from './marks';
 
+/**
+ * The initial, for the four names simple-icons has no mark for.
+ *
+ * Deliberately a letterform in a box rather than a drawing: it is obviously a monogram and not a
+ * claim to be anyone's logo, which is what lets the grid be visually even without inventing or
+ * scraping a mark. All four initials differ, so one character is unambiguous here.
+ */
+function monogram(name: string): string {
+  return name.replace(/[^A-Za-z]/g, '').charAt(0).toUpperCase();
+}
+
 interface Entry {
   /** The visible, and accessible, name. */
   name: string;
@@ -144,7 +155,12 @@ function href(link: string): string {
                   >
                 </template>
                 <template v-else>
-                  <span class="mark mark-empty" aria-hidden="true"></span>
+                  <svg class="mark mark-mono" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                    <rect x="1.6" y="1.6" width="20.8" height="20.8" rx="5" fill="none"
+                      stroke="currentColor" stroke-width="1.7" />
+                    <text x="12" y="12.6" text-anchor="middle" dominant-baseline="middle"
+                      font-size="11" font-weight="700" fill="currentColor">{{ monogram(entry.name) }}</text>
+                  </svg>
                   <span class="name"
                     >{{ entry.name
                     }}</span
@@ -290,9 +306,6 @@ h2 {
   outline-offset: 2px;
 }
 
-/* Built and measured here, not on npm yet. Dashed rather than tinted, so it reads the same to a
-   reader who cannot separate the two colours. */
-
 .mark {
   flex: none;
   width: 20px;
@@ -311,24 +324,17 @@ h2 {
   overflow-wrap: anywhere;
 }
 
-/* The four names with no mark in simple-icons. Set in the code face at the same cell size, which
-   reads as a second deliberate species rather than as a logo that failed to load. */
-/* An entry with no mark still reserves the mark's width, so every label in the grid starts at the
-   same x whatever its neighbour has. Without this the four entries that have no mark anywhere
-   (Valibot, ArkType, TypeBox, oRPC) sat flush against the padding while everything else was
-   indented by the icon, and each row read as ragged rather than as a grid. The slot is aria-hidden
-   and carries no text, so it changes nothing a screen reader announces. */
-.mark-empty {
-  visibility: hidden;
+/* The monogram, for the four names simple-icons has no mark for. It sits on the same 20px box as
+   the vendored glyphs, and its stroke is tuned to read at the same weight as their solid fills
+   rather than as a lighter outline, so the row does not go ragged where one appears. */
+.mark-mono text {
+  font-family: var(--vp-font-family-base);
 }
 
 .cell:hover .name,
 .cell:focus-visible .name {
   color: inherit;
 }
-
-/* The raise comes from `sup`'s own `vertical-align: super`; `line-height: 0` stops it adding a
-   row's worth of height to a cell whose name wraps. */
 
 .aside {
   margin: 32px 0 0;
