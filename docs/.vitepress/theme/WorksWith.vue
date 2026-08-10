@@ -150,10 +150,13 @@ function href(link: string): string {
                     }}<sup v-if="entry.soon" class="soon" aria-hidden="true">*</sup></span
                   >
                 </template>
-                <span v-else class="chip"
-                  >{{ entry.name
-                  }}<sup v-if="entry.soon" class="soon" aria-hidden="true">*</sup></span
-                >
+                <template v-else>
+                  <span class="mark mark-empty" aria-hidden="true"></span>
+                  <span class="name"
+                    >{{ entry.name
+                    }}<sup v-if="entry.soon" class="soon" aria-hidden="true">*</sup></span
+                  >
+                </template>
                 <span v-if="entry.soon" class="visually-hidden">, not published to npm yet</span>
               </a>
             </li>
@@ -329,18 +332,17 @@ h2 {
 
 /* The four names with no mark in simple-icons. Set in the code face at the same cell size, which
    reads as a second deliberate species rather than as a logo that failed to load. */
-.chip {
-  min-width: 0;
-  overflow-wrap: anywhere;
-  font-family: var(--vp-font-family-mono);
-  font-size: 13px;
-  font-weight: 500;
-  letter-spacing: -0.01em;
-  color: var(--vp-c-text-1);
+/* An entry with no mark still reserves the mark's width, so every label in the grid starts at the
+   same x whatever its neighbour has. Without this the four entries that have no mark anywhere
+   (Valibot, ArkType, TypeBox, oRPC) sat flush against the padding while everything else was
+   indented by the icon, and each row read as ragged rather than as a grid. The slot is aria-hidden
+   and carries no text, so it changes nothing a screen reader announces. */
+.mark-empty {
+  visibility: hidden;
 }
 
-.cell:hover .chip,
-.cell:focus-visible .chip {
+.cell:hover .name,
+.cell:focus-visible .name {
   color: inherit;
 }
 
