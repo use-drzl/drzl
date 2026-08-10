@@ -25,39 +25,64 @@ export default {
     search: {
       provider: 'local',
     },
+    // The header carries product destinations. Roadmap, Sponsor and Request Template are project
+    // meta rather than documentation, so they move into one Project menu: before this, a reader on
+    // any page saw three links out of the product and none into it.
     nav: [
-      { text: 'Roadmap', link: '/roadmap/premium-templates' },
-      { text: 'Sponsor', link: '/sponsor' },
+      { text: 'Guide', link: '/guide/getting-started', activeMatch: '^/(guide|quickstarts)/' },
+      { text: 'CLI', link: '/cli', activeMatch: '^/cli' },
       {
-        text: 'Request Template',
-        link: 'https://x.com/omardulaimidev',
-        target: '_blank',
-        rel: 'noreferrer',
+        text: 'Generators',
+        activeMatch: '^/(generators|adapters|templates)/',
+        items: [
+          { text: 'Validators and schemas', link: '/generators/zod' },
+          { text: 'APIs and routers', link: '/generators/orpc' },
+          { text: 'Data access', link: '/generators/service' },
+        ],
+      },
+      { text: 'Recipes', link: '/examples/recipes', activeMatch: '^/examples/' },
+      {
+        text: 'Project',
+        items: [
+          { text: 'Roadmap', link: '/roadmap/premium-templates' },
+          { text: 'Sponsor', link: '/sponsor' },
+          {
+            text: 'Contributing',
+            link: 'https://github.com/use-drzl/drzl/blob/master/CONTRIBUTING.md',
+            target: '_blank',
+            rel: 'noreferrer',
+          },
+          {
+            text: 'Request a template',
+            link: 'https://x.com/omardulaimidev',
+            target: '_blank',
+            rel: 'noreferrer',
+          },
+        ],
       },
     ],
+    // Grouped by what a reader is trying to do, not by the directory a page happens to live in and
+    // not by the order the features were built. The previous shape was the latter: this file had 30
+    // commits, 155 insertions and zero deletions, while the site went from 26 pages to 58, so every
+    // page ever added was appended to whichever section already existed.
+    //
+    // Nothing moves on disk. All 56 routes are unchanged, so the three blocks the gate compares
+    // literally, the hand-written hrefs in WorksWith.vue that the dead-link checker cannot see, and
+    // every cross-link in the prose all keep working.
+    //
+    // Collapsed groups are safe: the bundled theme opens a group when the active page is inside it
+    // (`(isActiveLink || hasActiveLink) && (collapsed = false)` in its sidebar composable), so a
+    // reader never has to open a section to find where they already are.
     sidebar: [
       {
-        text: 'Guide',
+        text: 'Getting started',
         collapsed: false,
         items: [
           { text: 'Getting Started', link: '/guide/getting-started' },
           { text: 'Configuration', link: '/guide/configuration' },
-          { text: 'Bun and Deno', link: '/guide/runtimes' },
-          { text: 'drizzle-orm 0.4x and v1', link: '/guide/drizzle-majors' },
-          { text: 'Upgrade notes', link: '/guide/upgrading' },
-          { text: 'Troubleshooting', link: '/guide/troubleshooting' },
-          { text: 'How it is verified', link: '/guide/verification' },
-          { text: 'Compared with drizzle-orm', link: '/guide/comparison' },
-          { text: 'Benchmarks', link: '/guide/benchmarks' },
-        ],
-      },
-      {
-        text: 'Provider Quickstarts',
-        collapsed: false,
-        items: [
-          { text: 'Supabase and Neon', link: '/quickstarts/supabase-neon' },
+          { text: 'Supabase and Neon (Postgres)', link: '/quickstarts/supabase-neon' },
           { text: 'PlanetScale (MySQL)', link: '/quickstarts/planetscale' },
-          { text: 'Cloudflare D1', link: '/quickstarts/cloudflare-d1' },
+          { text: 'Cloudflare D1 (SQLite)', link: '/quickstarts/cloudflare-d1' },
         ],
       },
       {
@@ -65,82 +90,113 @@ export default {
         collapsed: false,
         items: [
           { text: 'Overview', link: '/cli' },
-          { text: 'Init', link: '/cli/init' },
-          { text: 'Analyze', link: '/cli/analyze' },
-          { text: 'Explain', link: '/cli/explain' },
-          { text: 'Doctor', link: '/cli/doctor' },
-          { text: 'Generate', link: '/cli/generate' },
-          { text: 'Generate (oRPC)', link: '/cli/generate-orpc' },
-          { text: 'Generate (tRPC)', link: '/cli/generate-trpc' },
-          { text: 'Watch', link: '/cli/watch' },
-          { text: 'Output & exit codes', link: '/cli/output' },
+          { text: 'init', link: '/cli/init' },
+          { text: 'generate', link: '/cli/generate' },
+          { text: 'watch', link: '/cli/watch' },
+          { text: 'analyze', link: '/cli/analyze' },
+          { text: 'explain', link: '/cli/explain' },
+          { text: 'doctor', link: '/cli/doctor' },
+          { text: 'generate:orpc', link: '/cli/generate-orpc' },
+          { text: 'generate:trpc', link: '/cli/generate-trpc' },
+          { text: 'Output and exit codes', link: '/cli/output' },
         ],
       },
       {
         text: 'Generators',
         collapsed: false,
         items: [
-          { text: 'oRPC', link: '/generators/orpc' },
-          { text: 'tRPC', link: '/generators/trpc' },
-          { text: 'Hono', link: '/generators/hono' },
-          { text: 'Express', link: '/generators/express' },
-          { text: 'Fastify', link: '/generators/fastify' },
-          { text: 'NestJS', link: '/generators/nestjs' },
-          { text: 'GraphQL', link: '/generators/graphql' },
-          { text: 'Service', link: '/generators/service' },
-          { text: 'Zod', link: '/generators/zod' },
-          { text: 'Valibot', link: '/generators/valibot' },
-          { text: 'ArkType', link: '/generators/arktype' },
-          { text: 'TypeBox', link: '/generators/typebox' },
-          { text: 'Effect', link: '/generators/effect' },
-          { text: 'JSON Schema', link: '/generators/json-schema' },
-          { text: 'OpenAPI Document', link: '/generators/openapi' },
-          { text: 'Nested Relations', link: '/generators/nested-relations' },
-          { text: 'Branded Keys', link: '/generators/branded-keys' },
-          { text: 'Constraint Data', link: '/generators/constraints' },
-          { text: 'Adapters (Overview)', link: '/adapters/overview' },
-          { text: 'Router Adapters', link: '/adapters/router' },
+          {
+            text: 'Validators and schemas',
+            collapsed: false,
+            items: [
+              { text: 'Zod', link: '/generators/zod' },
+              { text: 'Valibot', link: '/generators/valibot' },
+              { text: 'ArkType', link: '/generators/arktype' },
+              { text: 'TypeBox', link: '/generators/typebox' },
+              { text: 'Effect Schema', link: '/generators/effect' },
+              { text: 'JSON Schema', link: '/generators/json-schema' },
+              { text: 'OpenAPI Document', link: '/generators/openapi' },
+            ],
+          },
+          {
+            text: 'APIs and routers',
+            collapsed: false,
+            items: [
+              { text: 'oRPC', link: '/generators/orpc' },
+              { text: 'tRPC', link: '/generators/trpc' },
+              { text: 'Hono', link: '/generators/hono' },
+              { text: 'Express', link: '/generators/express' },
+              { text: 'Fastify', link: '/generators/fastify' },
+              { text: 'NestJS', link: '/generators/nestjs' },
+              { text: 'GraphQL', link: '/generators/graphql' },
+            ],
+          },
+          {
+            text: 'Data access',
+            collapsed: false,
+            items: [{ text: 'Service classes', link: '/generators/service' }],
+          },
+          {
+            text: 'Options that span generators',
+            collapsed: false,
+            items: [
+              { text: 'Nested Relations', link: '/generators/nested-relations' },
+              { text: 'Branded Keys', link: '/generators/branded-keys' },
+              { text: 'Constraint Data', link: '/generators/constraints' },
+            ],
+          },
         ],
       },
       {
-        text: 'Templates',
-        collapsed: false,
+        text: 'Templates and adapters',
+        collapsed: true,
         items: [
-          { text: 'oRPC + Service', link: '/templates/orpc-service' },
-          { text: 'Standard', link: '/templates/standard' },
-          { text: 'Custom', link: '/templates/custom' },
+          { text: 'Adapters overview', link: '/adapters/overview' },
+          { text: 'Standard template', link: '/templates/standard' },
+          { text: 'oRPC + Service template', link: '/templates/orpc-service' },
+          { text: 'Custom templates', link: '/templates/custom' },
+          { text: 'Router adapter hooks', link: '/adapters/router' },
         ],
       },
       {
-        text: 'Packages',
-        collapsed: false,
-        items: [
-          { text: 'Analyzer', link: '/packages/analyzer' },
-          { text: 'Validation Core', link: '/packages/validation-core' },
-        ],
-      },
-      {
-        text: 'Examples',
-        collapsed: false,
+        text: 'Recipes and integrations',
+        collapsed: true,
         items: [
           { text: 'Recipes', link: '/examples/recipes' },
           { text: 'Relations', link: '/examples/relations' },
-          { text: 'Validation Mix', link: '/examples/validation-mix' },
-          { text: 'Next.js Server Actions', link: '/examples/nextjs-server-actions' },
-          { text: 'React Hook Form', link: '/examples/react-hook-form' },
-          { text: 'TanStack Form', link: '/examples/tanstack-form' },
-          { text: 'Seeding and Bulk Inserts', link: '/examples/seed' },
+          { text: 'Validation mix', link: '/examples/validation-mix' },
+          { text: 'Seeding and bulk inserts', link: '/examples/seed' },
+          {
+            text: 'Forms and frameworks',
+            collapsed: false,
+            items: [
+              { text: 'Next.js server actions', link: '/examples/nextjs-server-actions' },
+              { text: 'React Hook Form', link: '/examples/react-hook-form' },
+              { text: 'TanStack Form', link: '/examples/tanstack-form' },
+            ],
+          },
         ],
       },
       {
-        text: 'Roadmap',
-        collapsed: false,
-        items: [{ text: 'Premium Templates', link: '/roadmap/premium-templates' }],
+        text: 'Reference',
+        collapsed: true,
+        items: [
+          { text: 'Troubleshooting', link: '/guide/troubleshooting' },
+          { text: 'Upgrade notes', link: '/guide/upgrading' },
+          { text: 'drizzle-orm 0.4x and v1', link: '/guide/drizzle-majors' },
+          { text: 'Bun and Deno', link: '/guide/runtimes' },
+          { text: 'Analyzer package', link: '/packages/analyzer' },
+          { text: 'Validation Core package', link: '/packages/validation-core' },
+        ],
       },
       {
-        text: 'Sponsor',
-        collapsed: false,
-        items: [{ text: 'Sponsor DRZL', link: '/sponsor' }],
+        text: 'How DRZL is verified',
+        collapsed: true,
+        items: [
+          { text: 'How it is verified', link: '/guide/verification' },
+          { text: 'Compared with the first-party validators', link: '/guide/comparison' },
+          { text: 'Benchmarks', link: '/guide/benchmarks' },
+        ],
       },
     ],
     socialLinks: [
