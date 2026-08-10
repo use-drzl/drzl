@@ -69,3 +69,21 @@ body {
     repeating-linear-gradient(0deg, rgba(255, 255, 255, 0.017) 0 1px, transparent 1px 3px),
     repeating-linear-gradient(90deg, rgba(255, 255, 255, 0.012) 0 1px, transparent 1px 3px);
 }
+
+/*
+ * The count on a collapsed section. Shown only while the section is closed: once it is open its
+ * pages are on screen and the number is noise. `.collapsed` is VitePress's own class, and
+ * `data-drzl-count` is set from the rendered items in theme/index.ts.
+ */
+.VPSidebarItem.level-0.collapsed > .item[data-drzl-count]::after {
+  content: attr(data-drzl-count);
+  margin-left: auto;
+  padding-left: 10px;
+  font-family: var(--vp-font-family-mono);
+  font-size: 11px;
+  /* 6.13:1 on the sidebar ground. The theme's text-3 is a hint colour and measures below 3:1. */
+  color: #93939b;
+}
+.dark .VPSidebarItem.level-0.collapsed > .item[data-drzl-count]::after {
+  color: #93939b;
+}
