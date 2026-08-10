@@ -98,6 +98,16 @@ describe('scope', () => {
     // those turned away valid input and were dropped rather than shipped. The two `bigint` keys
     // are the same rule applied twice over: each was measured against its own server, and there
     // is no third key for mssql because no SQL Server was there to measure.
-    expect(Object.keys(COLUMN_FORMATS)).toEqual(['numeric', 'pgBigint', 'mysqlBigint']);
+    //
+    // `temporalText` is what survives that on a date column: not a shape for the value, which is
+    // unreachable for the reason above, but the floor under it. A string holding nothing but
+    // whitespace is not a date on any server measured, and it is what an untouched form control
+    // submits.
+    expect(Object.keys(COLUMN_FORMATS)).toEqual([
+      'numeric',
+      'pgBigint',
+      'mysqlBigint',
+      'temporalText',
+    ]);
   });
 });

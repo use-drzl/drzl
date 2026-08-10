@@ -605,6 +605,28 @@ A check that refuses valid data is worse than no check, so those columns keep a 
 same harness runs in CI and fails the build if a check ever disagrees with Postgres where
 `drizzle-orm` does not.
 
+### The one thing a temporal column does say
+
+A shape for the value is out of reach, per the table above, but the floor under it is not. A string
+holding nothing but whitespace is not a date, a time or an interval, and `''` is exactly what an
+untouched form control submits:
+
+```ts
+// date({ mode: 'string' }), timestamp({ mode: 'string' }), time(), interval()
+at: z.string().regex(new RegExp('\\S')),
+```
+
+Unanchored, so it means "holds at least one non-whitespace character" and nothing else. Measured on
+Postgres, every temporal type refuses `''` and `' '` and accepts a valid value with surrounding
+whitespace, so this refuses exactly the set the server refuses. The date modes are unaffected: those
+columns are a `Date`, not a string.
+
+Which columns carry it is decided per engine and per type, because the servers disagree. Postgres
+marks `date`, `time`, `timetz`, `timestamp`, `timestamptz` and `interval`; MySQL marks `date`,
+`datetime` and `timestamp` but **not** `time`, which accepts `''` in `STRICT_TRANS_TABLES` and
+stores `00:00:00` with no warning at all. SQLite marks nothing, since it stores whatever text it is
+given.
+
 ## `customType` columns
 
 A `customType` column has nothing checkable at runtime, and DRZL does not pretend otherwise:
