@@ -8,15 +8,11 @@
  *   1. Every entry links to the page that backs it. A generator entry links to its generator
  *      page, a provider links to its quickstart, a runtime links to the measured table. If an
  *      entry has nowhere honest to point, it does not belong here.
- *   2. Seven entries are marked. Their generator packages are built and measured in this
- *      repository and are not on npm yet, so `drzl generate` cannot load them on a fresh install.
- *      The marker is an asterisk and a dashed border rather than a colour, so it survives
- *      greyscale, and the note under the grid says exactly what it means.
- *   3. Marks render in `currentColor` at one size. The set is mixed by necessity: some names have
+ *   2. Marks render in `currentColor` at one size. The set is mixed by necessity: some names have
  *      a mark in simple-icons and four do not, and a single ink colour is what makes that read as
  *      a deliberate house style rather than as whatever was available. It also means dark mode is
  *      correct without a second copy of anything.
- *   4. The SVGs are `aria-hidden`. Each one sits beside the visible name it depicts, so exposing
+ *   3. The SVGs are `aria-hidden`. Each one sits beside the visible name it depicts, so exposing
  *      it would make a screen reader say the name twice; the name is the accessible name, and the
  *      four entries with no mark carry their name as ordinary text instead. This is deliberate,
  *      not an oversight.
@@ -32,7 +28,6 @@ interface Entry {
   mark?: string;
   /** The page that backs the claim. */
   link: string;
-  /** Built and measured here, not on npm yet. */
 }
 
 interface Group {
