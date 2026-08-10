@@ -1,5 +1,460 @@
 # @drzl/cli
 
+## 4.23.0
+
+### Minor Changes
+
+- 3c643a1: Fail loudly when there is nothing to generate, and name the key when a config is wrong (plan items
+  70, 71, 78, 79)
+
+  **A run that produces nothing is now a failure.** Seven inputs were measured on the built 4.22.0
+  CLI, and every one of them printed a green tick, exited `0`, and wrote a single `index.ts`
+  containing three comment lines and no exports: a schema module that throws on import, one importing
+  a package that is not installed, one with a syntax error, a `schema:` naming a file that does not
+  exist, a module exporting no tables, a module exporting only helpers, and a config whose
+  `include`/`exclude` removed every table. That barrel is how the `.array()` typing bug hid: the run
+  that should have reported it reported success.
+
+  All seven exit `1` and write no files. The three causes are three messages, because the fixes have
+  nothing in common:
+
+  ```
+  Could not load the schema module src/db/schema.ts (DRZL_SCHEMA_001): Error: Cannot find module 'postgres'
+  No Drizzle tables found in src/db/schema.ts (DRZL_SCHEMA_002).
+  Every table was removed by this config's filters (DRZL_SCHEMA_003). src/db/schema.ts declares 3 tables: users, posts, comments.
+  ```
+
+  The distinction is the analyzer's own, not a guess from an empty table list: `DRZL_ANL_IMPORT` and
+  `DRZL_ANL_NOFILE` mean the module never ran, and anything else it says describes a module that did.
+  That is the same rule `drzl init` was built on. The failing module's file name is in the message,
+  which the analyzer's own wording does not carry, because a project with four schema modules and one
+  bad import needs to be told which one.
+
+  This covers `--check` as well, where it matters most: a check on a schema that would not load used
+  to compare an empty tree with itself and report it up to date, so a CI job guarding the generated
+  output passed on a schema nobody could read. `generate:orpc` and `generate:trpc` stop writing
+  `placeholder.orpc.ts`, whose contents read "No tables detected in analysis", on a schema that
+  imports cleanly and declares nothing.
+
+  **`drzl watch` reports all three and keeps watching.** The one place they are not fatal, and
+  deliberately: a watcher exists to be running while the schema is being edited, and a file saved
+  mid-expression, a file being written from scratch and a filter being adjusted are all ordinary
+  intermediate states. Exiting would mean restarting the watcher to recover from a typo.
+  `--pipeline analyze` still completes on a schema with no tables, matching `drzl analyze`, which
+  exits `0` on one because that is a true answer to the question it was asked.
+
+  **A config that does not validate names the offending key.** `ConfigSchema.parse` throws a
+  `ZodError` whose message is a formatted JSON array of issue objects, and that array was printed
+  verbatim: eleven lines in which `outDir` appeared once, inside a `path` array, three levels down.
+  Now:
+
+  ```
+  drzl.config.ts is not valid (DRZL_CFG_002). 3 problems:
+    - outDir: expected string, received number (found 123)
+    - generators[0].nestedDepth: expected number, received string (found "deep")
+    - columns.users: unrecognized key "ommit". Did you mean "omit"?
+  ```
+
+  Array entries are indexed and a key that is not an identifier is quoted, so
+  `generators[1].validation.library` and `columns["app_*"].omit` can be pasted back into the file.
+  Every problem is listed rather than the first, capped at eight. The value found there is shown
+  when it fits, through `String` rather than `JSON.stringify`, so a `NaN` is reported as `NaN` and
+  not as the four characters `null`.
+
+  **An unknown config key warns instead of vanishing.** The root object and `GeneratorSchema` are
+  both permissive, so zod dropped an unrecognised key in silence: `outDirr` at the root, `typedJsn`
+  in a generator entry and `validation: { librari: 'zod' }` in a nested object all generated normally
+  and exited `0`. Each is now named, with a suggestion when it is a typo of a real key rather than a
+  different word:
+
+  ```
+  drzl config: unknown key "typedJsn" in generators[0]; it is ignored. Did you mean "typedJson"?
+  ```
+
+  A warning rather than an error, because the run really did honour the rest of the config. Nothing
+  is warned about where the key is legitimately the user's own: `columns` is keyed by table pattern,
+  `templateOptions` by whatever a template reads, and `$schema` is declared for editors. Where the
+  config is strict, an unknown key stays the validation error it already was and gets the key path
+  and the suggestion above.
+
+  The known keys at every level are read from the JSON Schema generated from the zod config schema,
+  rather than from a list maintained beside it, so `additionalProperties: false` is what tells the
+  strict levels from the permissive ones and neither can drift as the config grows.
+
+  **Config warnings go through the output layer.** They were written with `console.warn` from inside
+  `loadConfig`, which no flag could see: `drzl generate --json` printed them beside the document that
+  is supposed to be the only thing on that channel, and `--quiet` could not remove them. They are
+  warnings like any other now, so `--quiet` drops them and `--json` puts them in the document's
+  `warnings` array.
+
+- a222570: One output layer for the whole CLI: streams, colour, `--json`, `--quiet` and exit codes (plan
+  items 72, 73, 74, 76, 77).
+
+  **`NO_COLOR` is honoured.** It was not, at all: `chalk@6.0.0` vendors a `supports-color` that
+  contains the string `NO_COLOR` zero times, so `drzl doctor` emitted the same 32 escape sequences
+  with the variable set as without it. Colour is now decided in one place from `NO_COLOR`,
+  `FORCE_COLOR`, `TERM` and whether the specific stream is a terminal. `NO_COLOR` wins over
+  `FORCE_COLOR`, which is not what chalk does and is deliberate: `NO_COLOR` is what a person puts in
+  a shell profile, `FORCE_COLOR` is what a wrapper injects.
+
+  **Colour is decided per stream.** chalk's default instance takes its level from stdout alone, so
+  `drzl generate > out.txt` with a terminal still on stderr turned the warnings on that terminal
+  colourless. Each stream now gets its own answer.
+
+  **No escape sequence reaches a pipe.** `ora`'s success symbol came from `log-symbols`, which
+  colours through `yoctocolors` and never asks whether the stream is a terminal, so on any machine
+  with `TERM` set `drzl analyze 2> log` wrote `\x1b[32m✔\x1b[39m` into the file. The symbol and the
+  spinner frame are rendered through the shared decision now.
+
+  **stdout is the answer, stderr is the narration.** The sponsor tip was written with `console.log`,
+  putting 246 bytes of advertisement into the file list a script was parsing; it is on stderr now,
+  and is shown only where an aside has a reader. `init` and `watch` print nothing to stdout at all,
+  because what they produce is a file on disk and a running process.
+
+  **`--json` and `-q, --quiet` on every command**, not three and none. `--json` writes exactly one
+  JSON document to stdout and nothing anywhere else, on success and on failure alike, so
+  `drzl <cmd> --json | jq .` parses with no filtering. Every document carries `command` and
+  `exitCode`; failures carry `ok`, `code` and `message`. `analyze` and `doctor` keep their published
+  payloads with the envelope merged in at the top level, so existing readers of `.issues` and
+  `.findings` are unaffected. `--quiet` drops narration and never drops an error or changes an exit
+  code.
+
+  **Three exit codes, documented in one place** (`docs/cli/output.md`): `0` did the work, `1` could
+  not do the work, `2` did the work and found something. Four codes moved:
+
+  - `generate` with no config was `2`, now `1`.
+  - `generate --check` with drift was `1`, now `2`.
+  - `watch` with no config or an unresolvable schema was `2`, now `1`.
+  - `analyze` on a missing or unimportable schema was `2`, now `1`; an error-level issue in a schema
+    it did read stays `2`.
+
+  And a command stopped reporting success when it had failed: `generate:orpc` and `generate:trpc`
+  given a schema that does not exist exited `0` after writing a placeholder file reading "No tables
+  detected in analysis". They exit `1` and write nothing.
+
+  **The progress bar only appears when it can say something.** It was drawn for a single table,
+  painting one frame at `0%` before being wiped. Measured: the generator loop costs about 105ms fixed
+  plus 3.6ms per table and `cli-progress` redraws at 10fps, so it is now drawn only at a terminal,
+  only without `--quiet` or `--json`, and only from 25 tables up, which is where the loop first
+  outlasts a frame. It is also started per generator rather than once for the run, which fixes a
+  config with two generators drawing nothing for the second.
+
+- 062f305: A JSON Schema for `drzl.config.json`, and a config scaffold that completes
+
+  `drzl.config.json` has been a supported config form since the loader was written, and it was the
+  one form with no completion of any kind: a `.ts` config gets the shape from `defineConfig`, a JSON
+  config got nothing. `@drzl/cli` now ships `dist/drzl.config.schema.json`, generated at build time
+  from the same zod schema that validates the config, so the two cannot describe different things.
+  Point at it with a `$schema` key (`./node_modules/@drzl/cli/dist/drzl.config.schema.json`), or map
+  `drzl.config.json` to it in VS Code's `json.schemas`. The same file is published at
+  `https://use-drzl.github.io/drzl/drzl.config.schema.json`. `$schema` is stripped by the loader, so
+  the key is safe to leave in the file.
+
+  Two properties of `z.toJSONSchema` decide whether a generated schema is worth shipping, and both
+  are now measured rather than assumed. Its `io` option defaults to `'output'`, which marks every key
+  carrying a `.default()` as `required`: `outDir`, `importExtension`, `analyzer` and `generators` are
+  all defaulted, so that schema rejects all 34 configs in the documentation and every minimal config
+  a reader writes. The generator passes `io: 'input'`, which rejects none of them. Refinements are
+  also dropped silently, and `ConfigSchema`'s single `.superRefine` is the affix rule, so the
+  generated schema would have accepted `affix: { schema: { suffix: 'my-schema' } }` and the CLI would
+  then have refused to generate from it. The character half of that rule is re-encoded as a JSON
+  Schema `pattern`, built from the same string `validateAffix` compiles its regex from, and a test
+  fuzzes the two against each other over every printable ASCII codepoint in three positions. The
+  collision half, two modes resolving to the same identifier, is a comparison between sibling values
+  that JSON Schema cannot express; it stays a CLI-only error and is documented as one. Every other
+  verdict matches the CLI, including unknown keys: permissive where `ConfigSchema` strips them,
+  `additionalProperties: false` where the zod object is `.strict()`.
+
+  `drzl watch` never reloaded a JSON config. `computeWatchTargets` carried its own copy of the config
+  filenames and the copy was missing `drzl.config.json`, so the file loaded on the initial build and
+  no later edit to it ever fired an event. Its test spelled the same four names a third time and
+  agreed with the bug. The loader, the watcher and the test now read one exported
+  `CONFIG_FILE_NAMES`.
+
+  `drzl init` scaffolded a bare `export default { ... } as const`, so the first config a new user
+  sees was the one with no type attached and no completion. It now emits
+  `import type { DrzlConfigInput } from '@drzl/cli/config'` and `satisfies DrzlConfigInput`. The
+  import is type-only on purpose: `drzl init` also runs under `npx` in a project with no local
+  `@drzl/cli` to resolve, and a type-only import is erased before the config executes, where the
+  `defineConfig` value import the docs use would have made the first `generate` fail on a missing
+  module.
+
+  `@drzl/validation-core` exports `AFFIX_PREFIX_PATTERN` and `AFFIX_SUFFIX_PATTERN`, the affix
+  character rule in JSON Schema `pattern` form, beside the regexes that enforce it.
+
+- 2c8b20b: drizzle-kit interop: the schema path can come from drizzle.config.ts, so it is written once
+
+  A drizzle-kit project already names its schema in `drizzle.config.ts`, and DRZL demanded the
+  same path again in `drzl.config.ts`; two files stating one fact is how the copies drift. Now
+  `schema` is optional: when omitted, DRZL reads kit's config instead, trying
+  `drizzle.config.ts`, `.js`, `.json` in kit's own candidate order (measured on drizzle-kit
+  0.31.10), announcing the file it read, and honouring kit's whole `schema` surface: a string, an
+  array, glob patterns, and a directory expanded one level exactly as kit expands it. The new
+  `drizzleKit` key pins it down when wanted: a path mirrors kit's `--config` flag, `true` makes a
+  missing kit config an error, `false` disables the fallback. `schema` always wins when both are
+  set, with a warning; neither yielding a schema is an error naming both files. The `dialect` the
+  kit config declares is cross-checked against what the analyzer measures and a contradiction
+  warns, since a stale dialect line usually means the config points somewhere it should not.
+  `watch` treats it all as config surface: the resolved directories are watched (glob bases
+  included, so a new file matching the pattern rebuilds), and editing `drizzle.config.ts`
+  re-resolves the schema. `SchemaAnalyzer` now takes `string | string[]` so a barrel-less
+  multi-file schema analyzes as one schema; duplicate export names are judged by what Drizzle
+  says they are (table name, SQL schema, columns), so the ordinary re-export pattern stays
+  silent and a genuine disagreement warns as `DRZL_ANL_DUP_EXPORT`, keeping the first file's
+  export deterministically.
+
+- 74def57: `drzl explain <table>`: what DRZL understood about one table
+
+  When a generated schema is wrong, nothing said where it went wrong. `drzl analyze` prints the whole
+  `Analysis` for the whole schema as JSON and points at nothing in it, and `drzl doctor` prints only
+  the findings, across every table, and is silent about a table that is fine. Neither answers "did
+  DRZL misread this column, drop this CHECK, or fail to follow this relation".
+
+  `drzl explain users` prints, for one table: the resolved TypeScript type and the declared SQL type
+  per column, with the array depth on the first (a `text[]` reads as `string[]`, not `string`);
+  nullability, the key, the unique constraints, the foreign keys and the relations; and every measured
+  fact the validation generators act on, which is the range, whether the values are whole, whether the
+  column stores `NaN` and the infinities, the declared width or byte cap, the format, the enum
+  members, the structured shape and the default.
+
+  Two sections exist for the silent half. Every declared CHECK is shown **as parsed**, with the
+  verdict a generated schema gives it and, where nothing enforces it, the shared parser's own reason.
+  And a "Not understood" section collects, in one place, every CHECK clause nothing enforces, every
+  column with no known type, and every relation the analyzer could not follow. All three produce a
+  generated file that exists, compiles and checks less than the database does, with nothing anywhere
+  saying so.
+
+  A fact the generators deliberately do not state is marked and explained rather than listed as
+  though it were enforced: a `varchar(32)` narrowed by `CHECK (label IN ('a','b'))` never reaches the
+  schema as a width, and a `defaultNow()` makes the field optional on insert without any schema
+  stating what it becomes. Those verdicts are read off `tableConstraints` in `@drzl/validation-core`,
+  which is the same function the emitted constraint ledger is built from, so the report and the
+  generated modules cannot disagree.
+
+  A table is found by its database name, its schema-qualified name (`reporting.users`, and
+  `public.users` for the default schema) or its TypeScript export name, exact first and then ignoring
+  case. A name reaching two tables is refused with both of them named rather than resolved silently.
+  A name reaching none lists the tables there are, with the near miss. A table your config's
+  `include`/`exclude` removes is still found and still explained, with a line saying the config
+  removes it, because that is the answer to "why is there no file for this table".
+
+  With no table argument it prints one line per table with a count of what `explain` would report as
+  not understood for each, which on a large schema is what says where to look.
+
+  `--json` writes one document with the envelope merged in at the top level and the same information
+  under stable keys, `--quiet` keeps the report and drops only the hints, and it exits `0` when it
+  explained the table and `1` when the name reaches no table or more than one, or when there is no
+  schema to read. It writes nothing, ever.
+
+- 85fecad: One way to run one generator: `--only <kind>` on `generate` and on `watch`, and one registry behind
+  all of it.
+
+  **`--only <kind>[,<kind>]`, on both commands that can run a generator.** It filters the config's
+  `generators` list and changes nothing else about the run, so `drzl generate --only zod --check` is a
+  drift check over one generator's output. The values it accepts are read from the same zod enum the
+  config parser and the published JSON Schema are built from, so a kind a config accepts is a kind
+  `--only` accepts, with nothing to keep in step by hand.
+
+  **`--schema <path>` on `generate`**, matching `explain -s`: it overrides the config's `schema` and
+  the drizzle-kit fallback. With `--only` and no config file present, a minimal config is built in
+  memory, which makes `drzl generate --schema src/db/schema.ts --only orpc` a complete command. It
+  emits what `drzl generate:orpc src/db/schema.ts` emits, byte for byte, and it works for all fourteen
+  kinds rather than the two that had a command of their own. Everything the config route offers comes
+  with it, including `--check`, `--dry-run` and the drift verdicts, none of which the per-kind
+  commands could reach.
+
+  **`watch --pipeline` reaches all fourteen kinds, and no longer fails silently.** It listed seven,
+  and the other seven matched no dispatch branch at all: `drzl watch --pipeline generate-zod` started,
+  printed its watch list, and regenerated nothing for as long as it ran, with no error and nothing
+  wrong with the config. The same was true of `generate-service`, `generate-valibot`,
+  `generate-arktype`, `generate-typebox`, `generate-effect` and `generate-json-schema`. It is an alias
+  for `--only` now, mapping `generate-<kind>` to `<kind>`, and `--pipeline analyze` keeps its meaning.
+  A value that is not a pipeline stops the watcher with a named error instead of leaving it running
+  and idle, and so does a `--only` value that is not a kind, or a kind this config does not configure.
+
+  **`generate:orpc` and `generate:trpc` are deprecated, and go in 5.0.** They keep working, byte for
+  byte, and print one line on stderr naming the replacement command line. That line goes through the
+  output layer, so `--quiet` and `--json` both drop it and `drzl generate:orpc --json | jq .` still
+  parses. Both commands were strictly less capable than the route replacing them: no config at all
+  meant no table or column filters, no naming, no format, no `importExtension`, no shared validation
+  schemas, no `databaseInjection`, no drizzle-kit schema resolution, and no write plan, so no
+  `--check`, no `--dry-run` and no drift verdicts. They also disagreed with each other, since only one
+  of the two had `--servicesDir`. `generate:orpc` reached its generator through a static import, so an
+  absent `@drzl/generator-orpc` took the process down with a stack trace before the command ran; it
+  now names the package to install, like every other kind.
+
+  **One registry instead of four dispatch chains.** The fourteen-way `if (g.kind === ...)` chain was
+  written out in `generate`, in `watch`, and once more in each per-kind command, and every copy
+  repeated the package name, the `import()`, the constructor, the default output directory and the
+  options builder. That arrangement has already dropped options in silence more than once: five
+  validation options never reached a watch rebuild, `servicesDir` reached one command's tRPC branch
+  and not the other's, and `watch` had no json-schema branch at all for a while. Each generator states
+  those five facts once now, and adding one is one entry. The emitted tree is byte-identical across
+  the change: 52 file pairs from a config naming all fourteen kinds, through `generate` and through
+  `watch`, and 7 more from the two deprecated commands.
+
+- 4801464: `generate` knows what it is about to write before it writes it (plan items 68, 80, 81, 75, 82)
+
+  **One mechanism, three features.** `--dry-run`, "say what changed rather than how many files", and
+  "a `--check` failure should show a diff" are the same question asked once per file: what content is
+  about to land here, and what is here now. So generators now hand their writes to a `fileSink`
+  instead of calling `node:fs/promises` themselves, and `generate` decides whether that sink writes.
+  Fourteen generator packages changed by exactly one line each, because the sink is shaped like the
+  `fs` namespace they already used, plus one option on their public type.
+
+  The tempting alternative was to leave the generators alone and patch `node:fs/promises` for the
+  duration of a run, and it was measured and rejected. Patching the CommonJS exports object is
+  visible through a later dynamic import, but a module namespace that already exists is a snapshot
+  and never changes: with `const ns = await import('node:fs/promises')` evaluated first,
+  `require('node:fs/promises').writeFile = spy` leaves `ns.writeFile` untouched, on Node 22.22. The
+  CLI links `chokidar`, which imports `node:fs/promises` at module scope, so a dry run built on that
+  would write real files whenever an unrelated dependency happened to import first.
+
+  **`drzl generate --dry-run` writes nothing at all** (item 68). Not "writes and puts it back":
+  no file, no directory, no formatter output. A dry run in a project that has never been generated
+  into leaves the directory byte-for-byte as it found it, asserted per entry and per byte rather than
+  by looking for generated files. It exits `0` whether or not anything would change, because a dry
+  run that computed its answer did what it was asked, and `2` is for a run that found what it was told
+  to look for; `--check` is the flag whose question is "is anything stale". stdout still carries one
+  absolute path per line, so `drzl generate --dry-run > files.txt` gives the list that _would_ be
+  written in the same shape as the list that was.
+
+  Because generators are separate packages that a user can install at a different version from the
+  CLI, the claim is also checked at runtime rather than only in a test. A run that promised to write
+  nothing and wrote something restores the tree, exits `1` with the new `DRZL_GEN_003`, and names the
+  generator to update.
+
+  **Every run says what it did to each file** (item 80): created, changed or unchanged, with the
+  counts and the names of the ones that are not the same as before.
+
+  ```
+  ✔ Generated (zod): 3 files (1 created, 1 changed, 1 unchanged)
+    + zod/posts.zod.ts
+    ~ zod/index.ts
+  ```
+
+  A run that rewrote twelve identical files and one real change used to say `13 files`. Unchanged
+  files are counted rather than listed: the list is what changed. That report is narration, so it is
+  on stderr, `--quiet` drops it, and **stdout is unchanged**, still one absolute path per line.
+  `--json` gains a `changes` array per generator beside the existing `files`, and a `dryRun` flag.
+
+  **`--check` prints a unified diff under each drifted file** (item 81), `a/` being what is on disk
+  and `b/` what the schema produces, so it reads like `git diff` and applies like a patch. "Changed"
+  alone cannot tell a regenerated header from somebody's hand-edit to a generated file, and those two
+  want opposite responses. Diffs are capped at the first 20 files, at 4000 lines and at 1500 line
+  edits, and every cap states itself in the output; every drifted file is still named in the list
+  above the diffs, so what is capped is the explanation and never the finding. `--quiet` keeps the
+  list and drops the diffs. The diff is written here rather than installed: `diff` (jsdiff) is only
+  resolvable in this workspace as a transitive dependency of a devDependency, and adding it as a real
+  one costs a package on every install of the CLI in exchange for about a hundred lines of a
+  published algorithm. It is checked by applying its own output: every case in its suite requires the
+  emitted patch, replayed against the "before" text, to reproduce the "after" text exactly.
+
+  **`--check` also stopped writing.** It used to snapshot the output directories, let the generators
+  overwrite them for real, compare, and restore the snapshot, so the one command documented as never
+  touching your tree was the command that rewrote every generated file on every CI run, with a window
+  in which a killed process left the tree modified. It now compares in memory. One consequence: a file
+  in an output directory that the run no longer produces is not reported, and the `removed` drift
+  status is no longer produced. Reporting every unrecognised file in an output directory would mean a
+  config whose `outDir` is `src` failed CI over every hand-written module in the project.
+
+  **`drzl watch` runs one rebuild at a time** (item 75). The debounce that was there covered the wait
+  and not the work: it collapsed changes arriving close together and then started a rebuild that took
+  as long as it took, and every change arriving during _that_ started another one on top of it,
+  writing the same output directory. Measured on a 600-table schema where one rebuild takes about
+  1.4s, six saves 700ms apart produced six rebuilds with four running at once. A save that arrives
+  during a rebuild is now remembered rather than started, and produces exactly one more rebuild when
+  the current one finishes, however many arrive; the same measurement now shows at most one in
+  flight. No save is dropped, because refusing one loses an edit, which is worse than the overlap.
+
+  `--debounce` keeps its 200ms default, now measured rather than inherited: with the write-settling
+  this watcher asks chokidar for, one editor save arrives as a single event and the widest gap inside
+  one burst was 9ms; without it, a chunked write spread to 62ms, an atomic save to 101ms and
+  format-on-save to 121ms. `--debounce 0` now works, having previously been read as absent by
+  `Number(x) || 200` and silently replaced, and a value that is not a number is refused with a warning
+  instead of quietly becoming 200.
+
+  **Clearing the screen is opt-in** (item 75). `drzl watch` cleared the terminal on every rebuild with
+  no way to stop it, throwing away the previous rebuild's errors and the banner naming the watched
+  directories. It is now `--clear`, off by default, and it writes to the stream the output is actually
+  on: the old `console.clear()` decided from stdout while every human-readable line goes to stderr, so
+  `drzl watch > events.json` at a terminal cleared nothing and aimed the escape at the stream carrying
+  the JSON.
+
+  **The analysis was already shared between generators** (item 82), and there is now a test that says
+  so. Measured on a 200-table schema: one, two, three and five generators each report exactly one
+  analysis step, at a constant 37ms, and the four extra generators cost 2468ms of generator work
+  where four extra analyses would have added about 148ms. `watch` re-analyses per rebuild, which is
+  what keeps a cached analysis from going stale when the schema changes.
+
+- 81704da: `drzl init` finds your schema, asks what to generate, and defaults to a validator
+
+  `init` wrote `schema: 'src/db/schema.ts'` whether or not that file existed. That is not an inert
+  mistake, and the measurement is the argument: in an empty directory, `drzl init` exits 0, and the
+  `drzl generate` that follows it analyzes nothing, writes `src/api/placeholder.orpc.ts` reading "No
+  tables detected in analysis", and also exits 0. The first two commands a new user runs both
+  reported success having read no schema at all.
+
+  `init` now detects the schema, drizzle-kit first. If `drizzle.config.ts` is there, DRZL reads its
+  `schema` entry through the same resolver `generate` uses, expanding globs and directories exactly
+  as drizzle-kit does, and the scaffolded config then states no `schema` of its own: the path stays
+  written in one place and DRZL reads it from drizzle-kit at generate time. Otherwise it walks
+  conventional locations, `src/db/schema.ts` first, then the same shape under `src/lib/db`, `app/db`,
+  `lib/db`, `db`, `drizzle` and the project root, as a file or an `index.ts` inside a `schema/` or
+  `schemas/` directory.
+
+  A candidate is validated by **importing it and counting Drizzle tables**, never by `existsSync`. A
+  file that imports cleanly and declares no tables is skipped and the walk continues, because a
+  `schema.ts` exporting a connection string is worse than no detection: it produces exactly the
+  silent placeholder run above. A file that cannot be imported at all, which is usually "install has
+  not been run yet", is used with a warning instead of being skipped. When nothing is found, the
+  config is still written, with `schema` left out and commented; `init` will not name a file that is
+  not on disk.
+
+  The default generator is now `zod` rather than `orpc`, and the rule behind it is narrower than
+  taste: `init` offers only generators `@drzl/cli` depends on outright, so every kind it can
+  scaffold is installed by definition beside the CLI that scaffolded it. Eight generators are
+  `optionalDependencies` instead, including every route generator except oRPC, and an installer skips
+  an optional dependency that is not on the registry, so scaffolding one would produce a config whose
+  first `drzl generate` fails on a module that was never installed. A test asserts the offered list against `package.json` so that
+  cannot drift. The choices are `zod`, `valibot`, `arktype`, `typebox` and `orpc`.
+
+  `-y, --yes` was declared and then ignored: `init` and `init --yes` were byte-identical, so the
+  flag advertised an interactive command that did not exist. The prompts are now real, and the flag
+  keeps the meaning it always advertised. Non-interactive stays the first-class path: questions are
+  asked only when stdin **and** stdout are both terminals and `CI` is unset, no readline interface is
+  constructed otherwise, and closing stdin or pressing `Ctrl+D` at a prompt takes the defaults and
+  stops rather than waiting. Two new flags, `--schema <path>` and `--generators <list>`, answer the
+  two questions from a script, so nothing `init` asks can only be answered by a human.
+
+  An existing config is still never overwritten, and now it is not shadowed either. `init` checked
+  only `drzl.config.ts`, so running it beside a `drzl.config.json` wrote the scaffold, exited 0, and
+  left the user's config in place but dead: the loader tries the five config names with `.ts` first,
+  so the next `drzl generate` ran the scaffold instead of it. All five names are checked now. The
+  message is also no longer the raw `EEXIST: file already exists, open ...` errno string, which
+  named no command and suggested nothing.
+
+### Patch Changes
+
+- Updated dependencies [cf19c30]
+- Updated dependencies [c56125f]
+- Updated dependencies [28787ff]
+- Updated dependencies [062f305]
+- Updated dependencies [2c8b20b]
+- Updated dependencies [4801464]
+- Updated dependencies [02fc84a]
+- Updated dependencies [e7e39a5]
+- Updated dependencies [2b79b1b]
+- Updated dependencies [9de799b]
+  - @drzl/analyzer@1.21.0
+  - @drzl/generator-zod@3.21.0
+  - @drzl/generator-valibot@3.20.0
+  - @drzl/generator-arktype@3.17.0
+  - @drzl/generator-typebox@0.14.0
+  - @drzl/validation-core@3.22.0
+  - @drzl/generator-orpc@2.9.0
+  - @drzl/generator-service@2.5.0
+
 ## 4.22.0
 
 ### Minor Changes
