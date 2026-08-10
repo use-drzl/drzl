@@ -666,7 +666,9 @@ function vRowChecks(rows: RowCheck[], cols: Column[]): string[] {
  * are dropped, left to the base schema and reported by the constraint ledger.
  */
 function parsedChecksFor(table: Table) {
-  const parsed = (table.checks ?? []).map((k) => parseCheck(k.expression, k.name));
+  // `table.dialect` decides what `length()` counts: characters on Postgres and SQLite, bytes on
+  // MySQL. See `parseCheck`.
+  const parsed = (table.checks ?? []).map((k) => parseCheck(k.expression, k.name, table.dialect));
   const { checks, sets } = applyWirePolicy(
     table.columns,
     parsed.flatMap((p) => (p.ok ? p.checks : [])),

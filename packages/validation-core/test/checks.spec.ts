@@ -251,14 +251,21 @@ describe('row-level comparisons', () => {
 describe('character-count constraints', () => {
   // Counted in code points by the generators, since Postgres counts characters and `.length`
   // counts UTF-16 units. `octet_length` is the byte-count sibling and has its own file.
-  it('reads length() and char_length() alike', () => {
-    for (const e of ['length(name) > 3', 'char_length(name) > 3', 'LENGTH(name) > 3']) {
+  it('reads length() and char_length() alike, and remembers which was written', () => {
+    // Both count characters here, and the two spellings are the same function in Postgres. Which
+    // one the user wrote is carried anyway, because the label the constraint ledger matches on has
+    // to be their constraint and not a rewrite of it: on MySQL these two stop agreeing.
+    for (const [e, fn] of [
+      ['length(name) > 3', 'length'],
+      ['char_length(name) > 3', 'char_length'],
+      ['LENGTH(name) > 3', 'length'],
+    ] as const) {
       const r = parseCheck(e, 'min_name');
       expect(r.ok, e).toBe(true);
       if (!r.ok) continue;
       expect(r.checks, 'not a value comparison').toHaveLength(0);
       expect(r.lengths).toEqual([
-        { column: 'name', operator: '>', value: '3', unit: 'characters', name: 'min_name' },
+        { column: 'name', operator: '>', value: '3', unit: 'characters', fn, name: 'min_name' },
       ]);
     }
   });

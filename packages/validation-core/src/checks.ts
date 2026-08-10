@@ -97,6 +97,15 @@ export interface LengthCheck {
    * a given column.
    */
   unit?: 'characters' | 'bytes';
+  /**
+   * The function as written, before the engine decided what it counts.
+   *
+   * `unit` used to imply this, because the two were the same question: `octet_length` meant bytes
+   * and everything else meant characters. On MySQL `length()` also means bytes, so deriving the
+   * name back from the unit relabelled a user's `length(name) <= 5` as `octet_length(name) <= 5`,
+   * which is a constraint they did not write. The label the ledger matches on has to be theirs.
+   */
+  fn?: 'length' | 'char_length' | 'octet_length';
   name?: string;
 }
 
@@ -246,7 +255,17 @@ export function measureExpression(measure: LengthMeasure, variable: string): str
  * the two are the same function in Postgres.
  */
 export function lengthCheckLabel(check: LengthCheck): string {
-  const fn = check.unit === 'bytes' ? 'octet_length' : 'length';
+  // The function as written, normalised only where two spellings are the same function:
+  // `char_length` has always been printed as `length`, since Postgres treats them as one. The unit
+  // cannot stand in for this any more, because MySQL's `length()` counts bytes and labelling it
+  // `octet_length` would put a constraint in the message that nobody wrote.
+  const fn = check.fn
+    ? check.fn === 'char_length'
+      ? 'length'
+      : check.fn
+    : check.unit === 'bytes'
+      ? 'octet_length'
+      : 'length';
   const rule = `${fn}(${check.column}) ${check.operator} ${check.value}`;
   return check.name ? `${check.name}: ${rule}` : rule;
 }
@@ -667,7 +686,45 @@ function foldDisjunctionToSet(branches: string[], name?: string): ParsedCheck {
  * swallow the second predicate. `OR` is split before `AND` because SQL binds `AND` tighter, and
  * no SQL operator spells an `OR` inside itself the way `BETWEEN` spells an `AND`.
  */
-export function parseCheck(expression: string | undefined, name?: string): ParsedCheck {
+/**
+ * Which measurement a length function names, which is not the same question on every server.
+ *
+ *              length()      char_length()   octet_length()
+ *   Postgres   characters    characters      bytes
+ *   SQLite     characters    characters      bytes
+ *   MySQL      BYTES         characters      bytes
+ *
+ * Measured on MySQL 8.4.11, utf8mb4, with the client charset set (without it the client counts the
+ * bytes it sent and every answer looks like a byte count, which is its own trap):
+ * `LENGTH('一二三')` is 9 and `CHAR_LENGTH('一二三')` is 3. And through a real constraint,
+ * `CHECK (LENGTH(name) <= 5)` on a `varchar(50)`: `'abcde'` accepted, `'abcdef'` refused, `'一'`
+ * accepted at 3 bytes, `'一二'` REFUSED at 6 bytes and 2 characters.
+ *
+ * That last row is the defect this exists to fix. Read as a five-character cap, a two-character
+ * string passes the schema and the server refuses the row. The error was in the safe direction,
+ * since five bytes can never be more than five characters, so nothing valid was turned away; it
+ * under-enforced, which is the half a validator is for.
+ *
+ * SingleStore is MySQL wire-compatible and is not claimed here, for the reason the analyzer gives
+ * everywhere else: no server of its own was measured.
+ */
+function lengthUnit(fn: string, dialect?: string): 'characters' | 'bytes' {
+  const name = fn.toLowerCase();
+  if (name === 'octet_length') return 'bytes';
+  if (name === 'char_length') return 'characters';
+  return dialect === 'mysql' ? 'bytes' : 'characters';
+}
+
+/**
+ * `dialect` decides what `length()` counts, and nothing else in this parser. Optional, and absent
+ * means the Postgres reading, which is what every caller got before it existed: a caller that does
+ * not know its dialect keeps the answer it already had rather than being given a new one.
+ */
+export function parseCheck(
+  expression: string | undefined,
+  name?: string,
+  dialect?: string
+): ParsedCheck {
   const expr = unwrap((expression ?? '').trim());
   if (!expr) return { ok: false, reason: 'empty expression' };
   if (expr.includes('?')) return { ok: false, reason: 'expression contains an unresolved value' };
@@ -775,11 +832,12 @@ export function parseCheck(expression: string | undefined, name?: string): Parse
   const lengthOf = expr.match(LENGTH_OF);
   if (lengthOf) {
     const op = lengthOf[3] === '!=' ? '<>' : (lengthOf[3] as ColumnCheck['operator']);
-    const unit = lengthOf[1]!.toLowerCase() === 'octet_length' ? 'bytes' : 'characters';
+    const fn = lengthOf[1]!.toLowerCase() as 'length' | 'char_length' | 'octet_length';
+    const unit = lengthUnit(fn, dialect);
     return {
       ok: true,
       checks: [],
-      lengths: [{ column: lengthOf[2], operator: op, value: lengthOf[4], unit, name }],
+      lengths: [{ column: lengthOf[2], operator: op, value: lengthOf[4], unit, fn, name }],
     };
   }
 
