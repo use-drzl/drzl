@@ -65,17 +65,10 @@ async function dbAccepts(col: string, value: unknown): Promise<boolean> {
   }
 }
 
-const ok = (schema: any, v: unknown) => {
-  try {
-    return schema.safeParse(v).success;
-  } catch {
-    return false;
-  }
-};
-
 // The whole object is parsed, not the field alone: a row-level check lives on the object, so a
 // per-field parse could never see it. Every other key is left out, which is what the database
-// does too when one column is inserted.
+// does too when one column is inserted. A bare-value helper stood here until it was read: these
+// are object schemas, so it answered false for every probe and could never have been wired in.
 const parses = (schema: any, col: string, v: unknown) => {
   try {
     return schema.safeParse({ [col]: v }).success;
