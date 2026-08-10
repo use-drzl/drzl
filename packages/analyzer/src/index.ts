@@ -166,11 +166,34 @@ export interface Column {
    * `declaredDecimalRange` reads both numbers now, the two are distinguishable, and each says what
    * its own server does.
    *
-   * Postgres and Gel. MySQL refuses all three on a `float`/`double`, and on a `decimal` refuses
-   * them outright rather than storing `0.00`: measured on MySQL 8.4.11 in `STRICT_TRANS_TABLES`,
-   * all three answer `Incorrect decimal value`. SQLite returns both infinities and silently turns
-   * `NaN` into NULL, which is real and is filed on its own: a column needs both halves of that
-   * answer or none.
+   * Postgres and Gel. MySQL is a `false` on every one of these, and the reason is worth writing
+   * down carefully, because the two client paths give different answers and only one of them is
+   * the path a driver takes.
+   *
+   * Measured on MySQL 8.4.11 in `STRICT_TRANS_TABLES`, through mysql2's `execute()`, which is the
+   * binary prepared path drizzle uses:
+   *
+   *   float, double     all three refused, `Out of range value`
+   *   decimal(10,2)     all three STORED AS 0.00, silently, `SHOW WARNINGS` empty
+   *   int               `NaN` stored as 0 silently; both infinities refused
+   *   bigint            `NaN` stored as the int64 minimum silently; both infinities refused
+   *
+   * A control rules out ordinary overflow as the explanation: a finite `1e308` into the same
+   * `decimal(10,2)` is refused. So on three of those five, the server takes the row and stores a
+   * number nobody sent. This comment used to say a decimal "refuses them outright", which is the
+   * *text* path's answer: through the `mysql` CLI the same value answers `Incorrect decimal value`.
+   * Both statements are true of their own path, and only one of them describes what a validator
+   * sits in front of.
+   *
+   * The flag stays `false` on all of them, so the emitted schemas refuse all three. That is
+   * deliberately not the "never be stricter than the server" rule the range work follows: the
+   * server is not accepting the value here, it is accepting the row and storing a different value,
+   * and a validator whose whole job is to say what the database will do with a write cannot call
+   * that acceptance. Nothing is lost either way, since every generator's plain number type already
+   * refuses the three.
+   *
+   * SQLite returns both infinities and silently turns `NaN` into NULL, which is real and is filed
+   * on its own: a column needs both halves of that answer or none.
    *
    * Gel joined on a measurement of its own rather than on being Postgres-backed: a live Gel 7.1
    * stored `nan`, `inf` and `-inf` in both `std::float32` and `std::float64` and handed all three

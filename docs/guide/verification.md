@@ -276,3 +276,22 @@ indistinguishable from one that passes.
   official JSON Schema module to compare against at all, and `drizzle-orm/effect-schema` exists on
   1.0.0-rc.4 but is not yet compared. Both are covered by their own package tests and, for JSON
   Schema, by ajv and by the Postgres ground-truth stage.
+- **On MySQL, "the insert succeeded" means less than it looks like.** The MySQL truth stage asks the
+  server through the text path, and the binary prepared path that `mysql2`'s `execute()` uses, which
+  is what an application hits, answers differently on the non-finite doubles. Measured on 8.4.11 in
+  `STRICT_TRANS_TABLES`, through `execute()`:
+
+  ```
+  float, double     NaN and both infinities refused, "Out of range value"
+  decimal(10,2)     all three stored as 0.00, silently, SHOW WARNINGS empty
+  int               NaN stored as 0 silently; both infinities refused
+  bigint            NaN stored as the int64 minimum silently; both infinities refused
+  ```
+
+  A control rules out ordinary overflow: a finite `1e308` into the same `decimal(10,2)` is refused.
+  Relaxing `sql_mode` does not help and is worth knowing before anyone tries: with `sql_mode = ''` a
+  `double` clamps infinity to `DBL_MAX`, `NaN` becomes NULL and every string literal becomes `0`, all
+  without warnings, which turns the refusals into a fourth set of silent corruptions. None of this is
+  a DRZL defect and none of it is fixable in a validator, but a test that writes to MySQL and checks
+  only that the write succeeded is weaker than the same test against Postgres. The emitted schemas
+  refuse all three regardless, which is why this is a caveat about tests rather than about rows.
