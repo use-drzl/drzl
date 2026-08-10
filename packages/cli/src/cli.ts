@@ -1,6 +1,5 @@
 #!/usr/bin/env node
 import { qualifiedTableName, SchemaAnalyzer } from '@drzl/analyzer';
-import { ORPCGenerator } from '@drzl/generator-orpc';
 import chokidar from 'chokidar';
 import { Command } from 'commander';
 import * as path from 'node:path';
@@ -12,22 +11,32 @@ import {
   jsonFailure,
   Output,
 } from './output.js';
-import { jsonSchemaOptions } from './json-schema-options.js';
-import { trpcOptions } from './trpc-options.js';
-import { honoOptions } from './hono-options.js';
-import { expressOptions } from './express-options.js';
-import { fastifyOptions } from './fastify-options.js';
-import { nestjsOptions } from './nestjs-options.js';
-import { graphqlOptions } from './graphql-options.js';
-import { validationOptions } from './validation-options';
 import {
   computeGeneratorOutputDirs,
   computeWatchTargets,
+  configFromKinds,
   DrzlConfig,
   filterTables,
   loadConfig,
   tableFilterWarnings,
+  type GeneratorKind,
 } from './config.js';
+import {
+  entryFor,
+  GENERATOR_BY_KIND,
+  resolveServicesDir,
+  runGenerator,
+  runGeneratorWithOptions,
+} from './generator-registry.js';
+import {
+  emptySelectionMessage,
+  KindSelectionError,
+  kindList,
+  parseOnly,
+  resolveWatchSelection,
+  selectGenerators,
+  type WatchSelection,
+} from './kind-selection.js';
 import { ConfigValidationError } from './config-errors.js';
 import {
   describeSchemaTarget,
@@ -65,7 +74,7 @@ import {
 } from './emit-plan.js';
 import { unifiedDiff } from './unified-diff.js';
 import { createRebuildScheduler, resolveDebounce } from './watch-loop.js';
-import { GeneratorNotInstalledError, loadGenerator } from './generator-loader.js';
+import { GeneratorNotInstalledError } from './generator-loader.js';
 import { detectSchema, INIT_GENERATOR_CHOICES, runInit } from './init.js';
 import { maybeShowSponsorMessage } from './sponsor.js';
 import { CLI_VERSION } from './version.js';
@@ -516,6 +525,11 @@ withOutputFlags(
     .command('generate')
     .description('Run configured generators (drzl.config.*)')
     .option('-c, --config <path>', 'path to drzl.config')
+    .option('-s, --schema <path>', 'path to the schema, overriding the config')
+    .option(
+      '--only <kinds>',
+      `run only these generator kinds, comma separated: ${kindList()}`
+    )
     .option(
       '--check',
       'regenerate and fail if the result differs from what is on disk, without changing it'
@@ -547,16 +561,52 @@ withOutputFlags(
   };
   {
     try {
+      // Read before the config, so an unknown kind is refused by name before anything is loaded
+      // rather than being applied to a config as a filter that matches nothing.
+      const only = parseOnly(opts.only);
       // The config's own warnings go through `warn`, so they reach the `--json` document and
       // `--quiet` removes them, exactly like every other warning this command produces. They used
       // to be written with `console.warn` from inside `loadConfig`, which neither flag could see.
       let cfg = await loadConfig(opts.config, warn);
+      if (!cfg && only) {
+        // The config route with the config inlined, which is what replaces `generate:orpc` and
+        // `generate:trpc`: `drzl generate --schema src/db/schema.ts --only orpc` is those commands
+        // for all fourteen kinds, and every config feature still applies because there is a real
+        // config here. `--schema` may be omitted, in which case the drizzle-kit config answers for
+        // it exactly as it does for a config file with no `schema` key.
+        cfg = configFromKinds([...only], opts.schema, warn);
+      }
       if (!cfg) {
         const msg = 'No config found (DRZL_CFG_001). Create drzl.config.ts or pass --config.';
         // Was exit 2 until now, which the scheme reserves for a run that found something. A
         // config that is not there is a run that could not start.
         if (opts.json) out.jsonData(jsonFailure('generate', 'DRZL_CFG_001', msg));
-        else out.error(msg);
+        else {
+          out.error(msg);
+          // The one-command route, named here because this is where somebody who has no config
+          // finds out they need one. `--only` on its own is enough to run without a file.
+          out.hint('Or run one generator with no config: drzl generate --schema <path> --only <kind>.');
+        }
+        process.exit(EXIT_FAILED);
+        return;
+      }
+      // `--schema` beats both the config's `schema` and the drizzle-kit fallback, which is what
+      // the flag says and is how `explain -s` already behaves. `drizzleKit` is dropped with it so
+      // a config that sets both does not draw the "schema wins, remove one of the two" warning
+      // about a key the caller did not write.
+      if (opts.schema) {
+        const { drizzleKit: _fromConfig, ...rest } = cfg;
+        cfg = { ...rest, schema: opts.schema };
+      }
+      // Refused before the schema is read, because it is a mistake in the command line rather than
+      // anything about the project: the kinds are real and this config has none of them.
+      const nothingSelected = emptySelectionMessage(only, cfg.generators);
+      if (nothingSelected) {
+        if (opts.json) out.jsonData(jsonFailure('generate', 'DRZL_CLI_ONLY', nothingSelected));
+        else {
+          out.error(nothingSelected);
+          out.hint('Add it to "generators" in your config, or name a kind that is already there.');
+        }
         process.exit(EXIT_FAILED);
         return;
       }
@@ -724,296 +774,30 @@ withOutputFlags(
         process.exit(EXIT_FAILED);
       };
       // Where the service generator is actually writing, so a router template that imports
-      // services spells a path that exists. Templates default this to 'src/services', and with
-      // nothing passed that default was used no matter where the services really went, emitting
-      // an import of a module that was never created. Must match the `g.path ?? 'src/services'`
-      // used by the service branch below.
-      const servicesDir =
-        cfg.generators.find((x: { kind: string }) => x.kind === 'service')?.path ?? 'src/services';
-      for (const g of cfg.generators) {
+      // services spells a path that exists. The templates default it to `src/services`, and with
+      // nothing passed that default was used no matter where the services really went, emitting an
+      // import of a module that was never created. One function, shared with `watch`, so the two
+      // commands cannot arrive at different answers.
+      const servicesDir = resolveServicesDir(cfg);
+      for (const g of selectGenerators(cfg.generators, only)) {
         // Per generator rather than once outside the loop. The bar used to be started before the
         // loop and stopped by whichever branch ran first, so in a config with two generators the
         // second updated a bar that was already stopped and drew nothing at all.
         progress.start();
-        if (g.kind === 'orpc') {
-          const gen = new ORPCGenerator(analysis);
-          const { files } = await gen.generate({
-            outputDir: cfg.outDir,
-            template: g.template,
-            includeRelations: g.includeRelations,
-            naming: g.naming,
-            outputHeader: g.outputHeader,
-            format: g.format,
-            templateOptions: g.templateOptions,
-            importExtension: g.importExtension,
-            validation: g.validation,
-            // Documented on this generator since it was added and never reachable from a config
-            // file, because the config schema had no such key and zod stripped it in silence.
-            databaseInjection: g.databaseInjection,
+        // The registry, not a fourteen-way `if`. The four copies of that chain are what let an
+        // option reach one command and not the other; see `generator-registry.ts`.
+        const entry = GENERATOR_BY_KIND.get(g.kind);
+        if (!entry) continue;
+        try {
+          const files = await runGenerator(entry, g, cfg, {
+            analysis,
             servicesDir,
             fileSink: plan,
             onProgress: ({ index }) => progress.update(index),
           });
           generated(g.kind, files);
-        } else if (g.kind === 'trpc') {
-          try {
-            // An optional dependency, like the json-schema generator and unlike oRPC. A package
-            // that has never been published cannot publish through npm's trusted-publisher OIDC
-            // flow, so its first version has to go out by hand; naming it as a hard dependency of
-            // the CLI in the same release breaks `npm i @drzl/cli` for everyone until it exists.
-            // A missing optional dependency is skipped by the installer rather than failing it,
-            // which is why this one really can be absent on an ordinary install.
-            const { TRPCGenerator } = await loadGenerator(
-              '@drzl/generator-trpc',
-              () => import('@drzl/generator-trpc')
-            );
-            const gen = new TRPCGenerator(analysis);
-            const { files } = await gen.generate({
-              ...trpcOptions(g, cfg, servicesDir),
-              fileSink: plan,
-              onProgress: ({ index }: { index: number }) => progress.update(index),
-            });
-            generated('trpc', files);
-          } catch (e: any) {
-            failGenerator(g.kind, e);
-          }
-        } else if (g.kind === 'hono') {
-          try {
-            // Optional for the same reason tRPC is: a package that has never been published
-            // cannot publish through npm's trusted-publisher OIDC flow, so its first version goes
-            // out by hand, and naming it as a hard dependency of the CLI in the same release
-            // breaks `npm i @drzl/cli` for everyone until it exists.
-            const { HonoGenerator } = await loadGenerator(
-              '@drzl/generator-hono',
-              () => import('@drzl/generator-hono')
-            );
-            const gen = new HonoGenerator(analysis);
-            const { files } = await gen.generate({
-              ...honoOptions(g, cfg),
-              fileSink: plan,
-              onProgress: ({ index }: { index: number }) => progress.update(index),
-            });
-            generated('hono', files);
-          } catch (e: any) {
-            failGenerator(g.kind, e);
-          }
-        } else if (g.kind === 'express') {
-          try {
-            // Optional for the same reason tRPC and Hono are: a package that has never been
-            // published cannot publish through npm's trusted-publisher OIDC flow, so its first
-            // version goes out by hand, and naming it as a hard dependency of the CLI in the same
-            // release breaks `npm i @drzl/cli` for everyone until it exists.
-            const { ExpressGenerator } = await loadGenerator(
-              '@drzl/generator-express',
-              () => import('@drzl/generator-express')
-            );
-            const gen = new ExpressGenerator(analysis);
-            const { files } = await gen.generate({
-              ...expressOptions(g, cfg),
-              fileSink: plan,
-              onProgress: ({ index }: { index: number }) => progress.update(index),
-            });
-            generated('express', files);
-          } catch (e: any) {
-            failGenerator(g.kind, e);
-          }
-        } else if (g.kind === 'fastify') {
-          try {
-            // Optional for the same reason tRPC, Hono and Express are: a package that has never
-            // been published cannot publish through npm's trusted-publisher OIDC flow, so its
-            // first version goes out by hand, and naming it as a hard dependency of the CLI in
-            // the same release breaks `npm i @drzl/cli` for everyone until it exists.
-            const { FastifyGenerator } = await loadGenerator(
-              '@drzl/generator-fastify',
-              () => import('@drzl/generator-fastify')
-            );
-            const gen = new FastifyGenerator(analysis);
-            const { files } = await gen.generate({
-              ...fastifyOptions(g, cfg),
-              fileSink: plan,
-              onProgress: ({ index }: { index: number }) => progress.update(index),
-            });
-            generated('fastify', files);
-          } catch (e: any) {
-            failGenerator(g.kind, e);
-          }
-        } else if (g.kind === 'nestjs') {
-          try {
-            // Optional for the same reason tRPC, Hono, Express and Fastify are: a package that
-            // has never been published cannot publish through npm's trusted-publisher OIDC flow,
-            // so its first version goes out by hand, and naming it as a hard dependency of the
-            // CLI in the same release breaks `npm i @drzl/cli` for everyone until it exists.
-            const { NestJSGenerator } = await loadGenerator(
-              '@drzl/generator-nestjs',
-              () => import('@drzl/generator-nestjs')
-            );
-            const gen = new NestJSGenerator(analysis);
-            const { files } = await gen.generate({
-              ...nestjsOptions(g, cfg),
-              fileSink: plan,
-              onProgress: ({ index }: { index: number }) => progress.update(index),
-            });
-            generated('nestjs', files);
-          } catch (e: any) {
-            failGenerator(g.kind, e);
-          }
-        } else if (g.kind === 'graphql') {
-          try {
-            // Optional for the same reason tRPC, Hono, Express, Fastify and NestJS are: a
-            // package that has never been published cannot publish through npm's
-            // trusted-publisher OIDC flow, so its first version goes out by hand, and naming it
-            // as a hard dependency of the CLI in the same release breaks `npm i @drzl/cli` for
-            // everyone until it exists.
-            const { GraphQLGenerator } = await loadGenerator(
-              '@drzl/generator-graphql',
-              () => import('@drzl/generator-graphql')
-            );
-            const gen = new GraphQLGenerator(analysis);
-            const { files } = await gen.generate({
-              ...graphqlOptions(g, cfg),
-              fileSink: plan,
-              onProgress: ({ index }: { index: number }) => progress.update(index),
-            });
-            generated('graphql', files);
-          } catch (e: any) {
-            failGenerator(g.kind, e);
-          }
-        } else if (g.kind === 'service') {
-          try {
-            const { ServiceGenerator } = await loadGenerator(
-              '@drzl/generator-service',
-              () => import('@drzl/generator-service')
-            );
-            const gen = new ServiceGenerator(analysis);
-            const target = g.path ?? 'src/services';
-            const files = await gen.generate({
-              outDir: target,
-              outputHeader: g.outputHeader,
-              format: g.format,
-              dataAccess: g.dataAccess,
-              dbImportPath: g.dbImportPath,
-              schemaImportPath: g.schemaImportPath,
-              importExtension: g.importExtension,
-              // The other half of `databaseInjection`. A router generator in injection mode
-              // emits `Service.getById(ctx.db, id)`, and only a service generated in the same
-              // mode has a `db` parameter to receive it. This branch never passed the option, so
-              // the two halves of one generated project disagreed about the signature.
-              databaseInjection: g.databaseInjection,
-              fileSink: plan,
-            });
-            generated('service', files);
-          } catch (e: any) {
-            failGenerator(g.kind, e);
-          }
-        } else if (g.kind === 'zod') {
-          try {
-            const { ZodGenerator } = await loadGenerator(
-              '@drzl/generator-zod',
-              () => import('@drzl/generator-zod')
-            );
-            const gen = new ZodGenerator(analysis);
-            const target = g.path ?? 'src/validators/zod';
-            // `meta` is zod-only; see `GeneratorCapabilities.meta` for why it is not passed to the
-            // other four rather than being passed and ignored.
-            const files = await gen.generate({
-              ...validationOptions(g, cfg, target, {
-                schemaTypes: true,
-                meta: true,
-                constraints: true,
-              }),
-              fileSink: plan,
-            } as never);
-            generated('zod', files);
-          } catch (e: any) {
-            failGenerator(g.kind, e);
-          }
-        } else if (g.kind === 'valibot') {
-          try {
-            const { ValibotGenerator } = await loadGenerator(
-              '@drzl/generator-valibot',
-              () => import('@drzl/generator-valibot')
-            );
-            const gen = new ValibotGenerator(analysis);
-            const target = g.path ?? 'src/validators/valibot';
-            const files = await gen.generate({
-              ...validationOptions(g, cfg, target, { schemaTypes: true, constraints: true }),
-              fileSink: plan,
-            } as never);
-            generated('valibot', files);
-          } catch (e: any) {
-            failGenerator(g.kind, e);
-          }
-        } else if (g.kind === 'arktype') {
-          try {
-            const { ArkTypeGenerator } = await loadGenerator(
-              '@drzl/generator-arktype',
-              () => import('@drzl/generator-arktype')
-            );
-            const gen = new ArkTypeGenerator(analysis);
-            const target = g.path ?? 'src/validators/arktype';
-            const files = await gen.generate({
-              ...validationOptions(g, cfg, target, { schemaTypes: false }),
-              fileSink: plan,
-            } as never);
-            generated('arktype', files);
-          } catch (e: any) {
-            failGenerator(g.kind, e);
-          }
-        } else if (g.kind === 'json-schema') {
-          try {
-            // An optional dependency, unlike the other generators, until its npm trusted publisher
-            // exists. A missing optional dependency is skipped rather than failing the install,
-            // which is what keeps `npm i @drzl/cli` working meanwhile, and is why this one really
-            // can be absent on a normal install.
-            const { JsonSchemaGenerator } = await loadGenerator(
-              '@drzl/generator-json-schema',
-              () => import('@drzl/generator-json-schema')
-            );
-            const gen = new JsonSchemaGenerator(analysis);
-            const target = g.path ?? 'src/validators/json-schema';
-            const files = await gen.generate({
-              ...jsonSchemaOptions(g, cfg, target),
-              fileSink: plan,
-            } as never);
-            generated('json-schema', files);
-          } catch (e: any) {
-            failGenerator(g.kind, e);
-          }
-        } else if (g.kind === 'typebox') {
-          try {
-            const { TypeBoxGenerator } = await loadGenerator(
-              '@drzl/generator-typebox',
-              () => import('@drzl/generator-typebox')
-            );
-            const gen = new TypeBoxGenerator(analysis);
-            const target = g.path ?? 'src/validators/typebox';
-            const files = await gen.generate({
-              ...validationOptions(g, cfg, target, {
-                schemaTypes: true,
-                standardSchema: true,
-              }),
-              fileSink: plan,
-            } as never);
-            generated('typebox', files);
-          } catch (e: any) {
-            failGenerator(g.kind, e);
-          }
-        } else if (g.kind === 'effect') {
-          try {
-            const { EffectGenerator } = await loadGenerator(
-              '@drzl/generator-effect',
-              () => import('@drzl/generator-effect')
-            );
-            const gen = new EffectGenerator(analysis);
-            const target = g.path ?? 'src/validators/effect';
-            const files = await gen.generate({
-              ...validationOptions(g, cfg, target, { schemaTypes: true }),
-              fileSink: plan,
-            } as never);
-            generated('effect', files);
-          } catch (e: any) {
-            failGenerator(g.kind, e);
-          }
+        } catch (e: any) {
+          failGenerator(g.kind, e);
         }
       }
       /**
@@ -1139,6 +923,16 @@ withOutputFlags(
     } catch (e: any) {
       const msg = messageOf(e);
       const code = drzlErrorCode(e, 'DRZL_GEN_001');
+      // A `--only` value that is not a kind is a mistake in the command line, so it is reported as
+      // itself rather than under "Generate failed", whose tip points at the config file.
+      if (e instanceof KindSelectionError) {
+        if (opts.json) out.jsonData(jsonFailure('generate', e.code, msg));
+        else {
+          out.error(msg);
+          if (e.hint) out.hint(e.hint);
+        }
+        process.exit(EXIT_FAILED);
+      }
       if (opts.json) out.jsonData(jsonFailure('generate', code, msg));
       else if (e instanceof ConfigValidationError) {
         // Already a report about named keys, so it prints as it is: prefixing it with "Generate
@@ -1179,15 +973,63 @@ function schemaProblemFor(
   );
 }
 
+/**
+ * The one line a per-kind command prints before it does the work.
+ *
+ * `generate:orpc` shipped when oRPC was the only generator and `generate:trpc` arrived with the
+ * tRPC generator; the twelve generators added since added no command, so the split is chronological
+ * rather than principled. Both are also strictly less capable than the route they are being
+ * replaced by: no config at all means no table or column filters, no naming, no format, no
+ * `importExtension`, no shared validation, no `databaseInjection`, no drizzle-kit schema
+ * resolution, and, because they bypass the write plan, no `--check`, no `--dry-run` and no drift
+ * verdicts.
+ *
+ * Deprecated rather than deleted: they keep working, byte for byte, and 5.0 is where they go. The
+ * line names the replacement command line verbatim so the fix is a copy and a paste, and it goes
+ * through `Output.warn`, which means `--quiet` and `--json` both drop it. That matters more than it
+ * looks: `--json` promises one document on stdout and nothing at all on stderr, so a notice written
+ * to a stream directly would break the contract a script is relying on for the sake of a sentence
+ * no script can read.
+ *
+ * Options with no flag on `generate` are named as config keys rather than silently omitted, and
+ * only when the caller actually passed them, which `getOptionValueSource` answers exactly rather
+ * than by comparing against a default the caller may have typed on purpose.
+ */
+function deprecationNotice(
+  command: 'generate:orpc' | 'generate:trpc',
+  kind: GeneratorKind,
+  schema: string,
+  cmd: Command
+): string {
+  const replacement = `drzl generate --schema ${schema} --only ${kind}`;
+  const CONFIG_KEYS: Record<string, string> = {
+    outDir: 'outDir',
+    template: 'template',
+    includeRelations: 'includeRelations',
+    servicesDir: "the service generator's path",
+  };
+  const moved = Object.keys(CONFIG_KEYS).filter(
+    (name) => cmd.getOptionValueSource(name) === 'cli'
+  );
+  const tail = moved.length
+    ? ` (${moved.map((name) => CONFIG_KEYS[name]).join(', ')} ${
+        moved.length === 1 ? 'moves' : 'move'
+      } into drzl.config.ts)`
+    : '';
+  return `${command} is deprecated and will be removed in 5.0. Run this instead: ${replacement}${tail}`;
+}
+
 withOutputFlags(
   program
     .command('generate:orpc')
+    .description('Deprecated. Use `drzl generate --schema <path> --only orpc`')
     .argument('<schema>', 'path to drizzle schema (TS)')
     .option('-o, --outDir <dir>', 'output directory', 'src/api')
     .option('--template <name>', 'template name', 'standard')
     .option('--includeRelations', 'include relation endpoints')
-).action(async (schema: string, opts: any) => {
+).action(async (schema: string, opts: any, cmd: Command) => {
   const out = outputFor(opts);
+  out.warn(deprecationNotice('generate:orpc', 'orpc', schema, cmd));
   try {
     const analyzer = new SchemaAnalyzer(schema);
     const analysis = await analyzer.analyze({
@@ -1196,8 +1038,9 @@ withOutputFlags(
     });
     const problem = schemaProblemFor(analysis, schema);
     if (problem) reportSchemaProblem(out, 'generate:orpc', problem);
-    const gen = new ORPCGenerator(analysis);
-    const { files } = await gen.generate({
+    // The registry loads it and normalises what it hands back; the options are this command's own,
+    // unchanged, which is what keeps its output identical to the release before this one.
+    const files = await runGeneratorWithOptions(entryFor('orpc'), analysis, {
       outputDir: opts.outDir,
       template: opts.template,
       includeRelations: !!opts.includeRelations,
@@ -1216,9 +1059,19 @@ withOutputFlags(
     }
     maybeShowSponsorMessage({ reason: 'generate:orpc', out });
   } catch (e: any) {
-    const msg = messageOf(e);
-    if (opts.json) out.jsonData(jsonFailure('generate:orpc', 'DRZL_CLI_ORPC', msg));
-    else out.error('Generate orpc failed:', msg);
+    // An absent generator package goes through the same reporter both dispatch loops use, so it
+    // names itself and the install line. This command reached the generator through a static
+    // import until now, which meant an absent package took the process down before the action ran
+    // at all, with a stack trace and no sentence. Everything else keeps the wording this command
+    // has always printed, which covers the analyzer as much as the generator.
+    let message: string;
+    if (e instanceof GeneratorNotInstalledError) {
+      message = reportGeneratorFailure(out, 'orpc', e);
+    } else {
+      message = messageOf(e);
+      out.error('Generate orpc failed:', message);
+    }
+    if (opts.json) out.jsonData(jsonFailure('generate:orpc', 'DRZL_CLI_ORPC', message));
     process.exit(EXIT_FAILED);
   }
 });
@@ -1226,13 +1079,15 @@ withOutputFlags(
 withOutputFlags(
   program
     .command('generate:trpc')
+    .description('Deprecated. Use `drzl generate --schema <path> --only trpc`')
     .argument('<schema>', 'path to drizzle schema (TS)')
     .option('-o, --outDir <dir>', 'output directory', 'src/api')
     .option('--template <name>', 'standard | service', 'standard')
     .option('--includeRelations', 'include relation endpoints')
     .option('--servicesDir <dir>', 'where the service generator writes', 'src/services')
-).action(async (schema: string, opts: any) => {
+).action(async (schema: string, opts: any, cmd: Command) => {
   const out = outputFor(opts);
+  out.warn(deprecationNotice('generate:trpc', 'trpc', schema, cmd));
   try {
     const analyzer = new SchemaAnalyzer(schema);
     const analysis = await analyzer.analyze({
@@ -1241,12 +1096,7 @@ withOutputFlags(
     });
     const problem = schemaProblemFor(analysis, schema);
     if (problem) reportSchemaProblem(out, 'generate:trpc', problem);
-    const { TRPCGenerator } = await loadGenerator(
-      '@drzl/generator-trpc',
-      () => import('@drzl/generator-trpc')
-    );
-    const gen = new TRPCGenerator(analysis);
-    const { files } = await gen.generate({
+    const files = await runGeneratorWithOptions(entryFor('trpc'), analysis, {
       outputDir: opts.outDir,
       template: opts.template,
       includeRelations: !!opts.includeRelations,
@@ -1283,8 +1133,12 @@ program
   .description('Watch schema and regenerate on changes')
   .option('-c, --config <path>', 'path to drzl.config')
   .option(
+    '--only <kinds>',
+    `rebuild only these generator kinds, comma separated: ${kindList()}`
+  )
+  .option(
     '--pipeline <name>',
-    'all | analyze | generate-orpc | generate-trpc | generate-hono | generate-express | generate-fastify | generate-nestjs | generate-graphql',
+    'all | analyze | generate-<kind>, the older spelling of --only',
     'all'
   )
   .option('--debounce <ms>', 'wait this long after the last change before rebuilding', '200')
@@ -1297,6 +1151,32 @@ program
     // prints goes to stderr, and stdout carries only the `--json` event stream, which is the one
     // thing here a program reads.
     const out = outputFor(opts);
+
+    /**
+     * Which kinds this watcher rebuilds, from `--only` or from the `--pipeline` spelling it
+     * replaces.
+     *
+     * Read before the watcher exists, and fatal, unlike everything else this command refuses.
+     * A schema that will not parse is an ordinary intermediate state and the watcher waits it out;
+     * a flag value that is not a generator kind cannot become one however many times the schema is
+     * saved, so reporting it and then watching would be a process that never does anything and
+     * never says why. `--pipeline generate-zod` was exactly that until now: it named no branch, so
+     * the watcher started, printed its watch list, and regenerated nothing for as long as it ran.
+     */
+    let selection: WatchSelection;
+    try {
+      selection = resolveWatchSelection(opts);
+    } catch (e: any) {
+      if (e instanceof KindSelectionError) {
+        if (opts.json) out.jsonData(jsonFailure('watch', e.code, e.message));
+        else {
+          out.error(e.message);
+          if (e.hint) out.hint(e.hint);
+        }
+      } else out.error(messageOf(e));
+      process.exit(EXIT_FAILED);
+      return;
+    }
 
     /**
      * A schema `watch` has nothing to generate from, reported without stopping (items 70, 71).
@@ -1460,7 +1340,7 @@ program
     let lastFiles: string[] = [];
 
     /**
-     * One generator finishing a watch rebuild, reported the same way from all thirteen branches.
+     * One generator finishing a watch rebuild, reported the same way for every kind.
      *
      * The event keys are the ones `--json` has always emitted, because a watch feeding a script is
      * the only reader that shape has. The human form is narration, so it goes to stderr with
@@ -1543,7 +1423,7 @@ program
         for (const w of [...narrowed.warnings, ...filterWarnings]) out.warn(w);
         for (const w of wideColumnWarning(analysis.issues)) out.warn(w);
 
-        if (opts.pipeline === 'analyze') {
+        if (selection.analyzeOnly) {
           if (opts.json) {
             out.jsonData({
               event: 'analyze_complete',
@@ -1573,302 +1453,37 @@ program
 
         const newFiles: string[] = [];
 
-        // Must match the `g.path ?? 'src/services'` the service branch below uses, or a router
-        // template that imports services spells a path nothing ever wrote. `generate` has always
-        // computed this; `watch` did not, so a rebuild silently emitted the default.
-        const servicesDir =
-          cfg.generators.find((x: { kind: string }) => x.kind === 'service')?.path ??
-          'src/services';
+        // Where the service generator is really writing, so a router template that imports
+        // services spells a path that exists. `generate` has always computed this; `watch` did
+        // not, so a rebuild silently emitted the default. One function now, shared by both.
+        const servicesDir = resolveServicesDir(cfg);
 
-        const PIPELINE_KINDS: Record<string, string> = {
-          'generate-orpc': 'orpc',
-          'generate-trpc': 'trpc',
-          'generate-hono': 'hono',
-          'generate-express': 'express',
-          'generate-fastify': 'fastify',
-          'generate-nestjs': 'nestjs',
-          'generate-graphql': 'graphql',
-        };
-
-        for (const g of cfg.generators) {
-          if (opts.pipeline !== 'all' && PIPELINE_KINDS[opts.pipeline] !== g.kind) {
-            continue;
+        // A selection that names a kind this config does not is reported and waited out rather
+        // than fatal, unlike an unknown kind on the command line: the config is reloaded on every
+        // rebuild, so adding the generator to it is a save away.
+        const unmatched = emptySelectionMessage(selection.kinds, cfg.generators);
+        if (unmatched) {
+          if (opts.json) out.jsonData({ event: 'error', code: 'DRZL_CLI_ONLY', message: unmatched });
+          else {
+            out.error(unmatched);
+            out.hint('Add it to "generators" in your config, or name a kind that is already there.');
           }
+          return;
+        }
 
-          if (g.kind === 'orpc') {
-            const gen = new ORPCGenerator(analysis);
-            const { files } = await gen.generate({
-              outputDir: cfg.outDir,
-              template: g.template,
-              includeRelations: g.includeRelations,
-              naming: g.naming,
-              outputHeader: g.outputHeader,
-              format: g.format,
-              templateOptions: g.templateOptions,
-              importExtension: g.importExtension,
-              validation: g.validation,
-              databaseInjection: g.databaseInjection,
-              servicesDir,
-            });
+        for (const g of selectGenerators(cfg.generators, selection.kinds)) {
+          // The registry, the same list `generate` dispatches over. Two hand-written copies of
+          // this chain are what let five validation options reach one command and not the other,
+          // and what left `watch` with no json-schema branch at all for a while.
+          const entry = GENERATOR_BY_KIND.get(g.kind);
+          if (!entry) continue;
+          try {
+            const files = await runGenerator(entry, g, cfg, { analysis, servicesDir });
             watchGenerated(g.kind, files);
             newFiles.push(...files);
-          } else if (g.kind === 'trpc') {
-            try {
-              const { TRPCGenerator } = await loadGenerator(
-                '@drzl/generator-trpc',
-                () => import('@drzl/generator-trpc')
-              );
-              const gen = new TRPCGenerator(analysis);
-              // The same builder `generate` uses, so the two dispatch loops cannot disagree
-              // about what this generator is given.
-              const { files } = await gen.generate(trpcOptions(g, cfg, servicesDir));
-              watchGenerated(g.kind, files);
-              newFiles.push(...files);
-            } catch (e: any) {
-              reportGeneratorFailure(out, g.kind, e);
-              return;
-            }
-          } else if (g.kind === 'hono') {
-            try {
-              const { HonoGenerator } = await loadGenerator(
-                '@drzl/generator-hono',
-                () => import('@drzl/generator-hono')
-              );
-              const gen = new HonoGenerator(analysis);
-              // The same builder `generate` uses, so the two dispatch loops cannot disagree
-              // about what this generator is given.
-              const { files } = await gen.generate(honoOptions(g, cfg));
-              watchGenerated(g.kind, files);
-              newFiles.push(...files);
-            } catch (e: any) {
-              reportGeneratorFailure(out, g.kind, e);
-              return;
-            }
-          } else if (g.kind === 'express') {
-            try {
-              const { ExpressGenerator } = await loadGenerator(
-                '@drzl/generator-express',
-                () => import('@drzl/generator-express')
-              );
-              const gen = new ExpressGenerator(analysis);
-              // The same builder `generate` uses, so the two dispatch loops cannot disagree
-              // about what this generator is given.
-              const { files } = await gen.generate(expressOptions(g, cfg));
-              watchGenerated(g.kind, files);
-              newFiles.push(...files);
-            } catch (e: any) {
-              reportGeneratorFailure(out, g.kind, e);
-              return;
-            }
-          } else if (g.kind === 'fastify') {
-            try {
-              const { FastifyGenerator } = await loadGenerator(
-                '@drzl/generator-fastify',
-                () => import('@drzl/generator-fastify')
-              );
-              const gen = new FastifyGenerator(analysis);
-              // The same builder `generate` uses, so the two dispatch loops cannot disagree
-              // about what this generator is given.
-              const { files } = await gen.generate(fastifyOptions(g, cfg));
-              watchGenerated(g.kind, files);
-              newFiles.push(...files);
-            } catch (e: any) {
-              reportGeneratorFailure(out, g.kind, e);
-              return;
-            }
-          } else if (g.kind === 'nestjs') {
-            try {
-              const { NestJSGenerator } = await loadGenerator(
-                '@drzl/generator-nestjs',
-                () => import('@drzl/generator-nestjs')
-              );
-              const gen = new NestJSGenerator(analysis);
-              // The same builder `generate` uses, so the two dispatch loops cannot disagree
-              // about what this generator is given.
-              const { files } = await gen.generate(nestjsOptions(g, cfg));
-              watchGenerated(g.kind, files);
-              newFiles.push(...files);
-            } catch (e: any) {
-              reportGeneratorFailure(out, g.kind, e);
-              return;
-            }
-          } else if (g.kind === 'graphql') {
-            try {
-              const { GraphQLGenerator } = await loadGenerator(
-                '@drzl/generator-graphql',
-                () => import('@drzl/generator-graphql')
-              );
-              const gen = new GraphQLGenerator(analysis);
-              // The same builder `generate` uses, so the two dispatch loops cannot disagree
-              // about what this generator is given.
-              const { files } = await gen.generate(graphqlOptions(g, cfg));
-              watchGenerated(g.kind, files);
-              newFiles.push(...files);
-            } catch (e: any) {
-              reportGeneratorFailure(out, g.kind, e);
-              return;
-            }
-          } else if (g.kind === 'service') {
-            try {
-              const { ServiceGenerator } = await loadGenerator(
-                '@drzl/generator-service',
-                () => import('@drzl/generator-service')
-              );
-              const gen = new ServiceGenerator(analysis);
-              const target = g.path ?? 'src/services';
-              const files = await gen.generate({
-                outDir: target,
-                outputHeader: g.outputHeader,
-                format: g.format,
-                dataAccess: g.dataAccess,
-                dbImportPath: g.dbImportPath,
-                schemaImportPath: g.schemaImportPath,
-                importExtension: g.importExtension,
-                databaseInjection: g.databaseInjection,
-              });
-              watchGenerated(g.kind, files);
-              newFiles.push(...files);
-            } catch (e: any) {
-              reportGeneratorFailure(out, g.kind, e);
-              return;
-            }
-          } else if (g.kind === 'zod') {
-            try {
-              const { ZodGenerator } = await loadGenerator(
-                '@drzl/generator-zod',
-                () => import('@drzl/generator-zod')
-              );
-              const gen = new ZodGenerator(analysis);
-              const target = g.path ?? 'src/validators/zod';
-              // `meta` is zod-only; see `GeneratorCapabilities.meta` for why it is not passed to
-              // the other four rather than being passed and ignored.
-              // The same builder `generate` uses. Assembled by hand here until now, and every
-              // option added since the builder existed was therefore absent from a watch rebuild:
-              // `coerceDates`, `applyDefaults`, `typedJson`, `typedColumns` and `duplicateFinder`
-              // were all dropped, so the first save after starting `drzl watch` silently replaced
-              // correct output with output generated from defaults.
-              const files = await gen.generate(
-                validationOptions(g, cfg, target, {
-                  schemaTypes: true,
-                  meta: true,
-                  constraints: true,
-                }) as never
-              );
-              watchGenerated(g.kind, files);
-              newFiles.push(...files);
-            } catch (e: any) {
-              reportGeneratorFailure(out, g.kind, e);
-              return;
-            }
-          } else if (g.kind === 'valibot') {
-            try {
-              const { ValibotGenerator } = await loadGenerator(
-                '@drzl/generator-valibot',
-                () => import('@drzl/generator-valibot')
-              );
-              const gen = new ValibotGenerator(analysis);
-              const target = g.path ?? 'src/validators/valibot';
-              // The same builder `generate` uses. Assembled by hand here until now, and every
-              // option added since the builder existed was therefore absent from a watch rebuild:
-              // `coerceDates`, `applyDefaults`, `typedJson`, `typedColumns` and `duplicateFinder`
-              // were all dropped, so the first save after starting `drzl watch` silently replaced
-              // correct output with output generated from defaults.
-              const files = await gen.generate(
-                validationOptions(g, cfg, target, {
-                  schemaTypes: true,
-                  constraints: true,
-                }) as never
-              );
-              watchGenerated(g.kind, files);
-              newFiles.push(...files);
-            } catch (e: any) {
-              reportGeneratorFailure(out, g.kind, e);
-              return;
-            }
-          } else if (g.kind === 'arktype') {
-            try {
-              const { ArkTypeGenerator } = await loadGenerator(
-                '@drzl/generator-arktype',
-                () => import('@drzl/generator-arktype')
-              );
-              const gen = new ArkTypeGenerator(analysis);
-              const target = g.path ?? 'src/validators/arktype';
-              // The same builder `generate` uses. Assembled by hand here until now, and every
-              // option added since the builder existed was therefore absent from a watch rebuild:
-              // `coerceDates`, `applyDefaults`, `typedJson`, `typedColumns` and `duplicateFinder`
-              // were all dropped, so the first save after starting `drzl watch` silently replaced
-              // correct output with output generated from defaults.
-              const files = await gen.generate(
-                validationOptions(g, cfg, target, { schemaTypes: false }) as never
-              );
-              watchGenerated(g.kind, files);
-              newFiles.push(...files);
-            } catch (e: any) {
-              reportGeneratorFailure(out, g.kind, e);
-              return;
-            }
-          } else if (g.kind === 'typebox') {
-            try {
-              const { TypeBoxGenerator } = await loadGenerator(
-                '@drzl/generator-typebox',
-                () => import('@drzl/generator-typebox')
-              );
-              const gen = new TypeBoxGenerator(analysis);
-              const target = g.path ?? 'src/validators/typebox';
-              // The same builder `generate` uses. Assembled by hand here until now, and every
-              // option added since the builder existed was therefore absent from a watch rebuild:
-              // `coerceDates`, `applyDefaults`, `typedJson`, `typedColumns` and `duplicateFinder`
-              // were all dropped, so the first save after starting `drzl watch` silently replaced
-              // correct output with output generated from defaults.
-              const files = await gen.generate(
-                validationOptions(g, cfg, target, {
-                  schemaTypes: true,
-                  standardSchema: true,
-                }) as never
-              );
-              watchGenerated(g.kind, files);
-              newFiles.push(...files);
-            } catch (e: any) {
-              reportGeneratorFailure(out, g.kind, e);
-              return;
-            }
-          } else if (g.kind === 'effect') {
-            try {
-              const { EffectGenerator } = await loadGenerator(
-                '@drzl/generator-effect',
-                () => import('@drzl/generator-effect')
-              );
-              const gen = new EffectGenerator(analysis);
-              const target = g.path ?? 'src/validators/effect';
-              // The same builder `generate` uses, and the same default path, which is also the one
-              // `computeGeneratorOutputDirs` has to spell: a watcher that does not ignore this
-              // directory regenerates on its own output forever.
-              const files = await gen.generate(
-                validationOptions(g, cfg, target, { schemaTypes: true }) as never
-              );
-              watchGenerated(g.kind, files);
-              newFiles.push(...files);
-            } catch (e: any) {
-              reportGeneratorFailure(out, g.kind, e);
-              return;
-            }
-          } else if (g.kind === 'json-schema') {
-            try {
-              const { JsonSchemaGenerator } = await loadGenerator(
-                '@drzl/generator-json-schema',
-                () => import('@drzl/generator-json-schema')
-              );
-              const gen = new JsonSchemaGenerator(analysis);
-              const target = g.path ?? 'src/validators/json-schema';
-              // The same builder `generate` uses, so the two dispatch loops cannot disagree about
-              // what this generator is given.
-              const files = await gen.generate(jsonSchemaOptions(g, cfg, target) as never);
-              watchGenerated(g.kind, files);
-              newFiles.push(...files);
-            } catch (e: any) {
-              reportGeneratorFailure(out, g.kind, e);
-              return;
-            }
+          } catch (e: any) {
+            reportGeneratorFailure(out, g.kind, e);
+            return;
           }
         }
 
@@ -1881,8 +1496,9 @@ program
           if (removed.length) out.warn(`Removed: ${removed.join(', ')}`);
         }
         if (newFiles.length) {
-          const reason =
-            opts.pipeline && opts.pipeline !== 'all' ? `watch:${opts.pipeline}` : 'watch';
+          // The kinds this rebuild ran, however they were named. `--pipeline generate-trpc` and
+          // `--only trpc` are the same run and now report the same reason.
+          const reason = selection.kinds ? `watch:${[...selection.kinds].join(',')}` : 'watch';
           maybeShowSponsorMessage({ reason, out });
         }
         lastFiles = newFiles;

@@ -12,19 +12,19 @@ Usage:
 ::: code-group
 
 ```bash [pnpm]
-pnpm dlx @drzl/cli watch -c drzl.config.ts --pipeline all --debounce 200 [--clear] [--json]
+pnpm dlx @drzl/cli watch -c drzl.config.ts [--only zod] --debounce 200 [--clear] [--json]
 ```
 
 ```bash [npm]
-npx @drzl/cli watch -c drzl.config.ts --pipeline all --debounce 200 [--clear] [--json]
+npx @drzl/cli watch -c drzl.config.ts [--only zod] --debounce 200 [--clear] [--json]
 ```
 
 ```bash [yarn]
-yarn dlx @drzl/cli watch -c drzl.config.ts --pipeline all --debounce 200 [--clear] [--json]
+yarn dlx @drzl/cli watch -c drzl.config.ts [--only zod] --debounce 200 [--clear] [--json]
 ```
 
 ```bash [bun]
-bunx @drzl/cli watch -c drzl.config.ts --pipeline all --debounce 200 [--clear] [--json]
+bunx @drzl/cli watch -c drzl.config.ts [--only zod] --debounce 200 [--clear] [--json]
 ```
 
 :::
@@ -32,13 +32,43 @@ bunx @drzl/cli watch -c drzl.config.ts --pipeline all --debounce 200 [--clear] [
 Options:
 
 - `-c, --config <path>`
-- `--pipeline <name>`: `all | analyze | generate-orpc | generate-trpc | generate-hono | generate-express | generate-fastify | generate-nestjs | generate-graphql` (default `all`)
-  Anything other than `all` or `analyze` runs exactly one generator kind and skips the rest.
+- `--only <kinds>`: rebuild only these generator kinds, comma separated
+- `--pipeline <name>`: `all | analyze | generate-<kind>` (default `all`), the older spelling of
+  `--only`
 - `--debounce <ms>`: wait this long after the last change before rebuilding (default `200`)
 - `--clear`: clear the terminal before each rebuild, off by default
 - `--json`: emit structured JSON logs on stdout, one object per line
 - `-q, --quiet`: drop the narration; errors still print
 - `--poll`: force polling, which helps on WSL, Docker and network mounts
+
+## `--only`: rebuild one generator
+
+```bash
+npx @drzl/cli watch --only zod
+npx @drzl/cli watch --only zod,trpc
+```
+
+Filters `generators[]` the same way [`generate --only`](/cli/generate) does, with the same values:
+the kinds a config uses, read from the list the config parser itself is built from. An unknown kind
+is refused by name and the watcher does not start, because a typo in a flag cannot be fixed by
+saving the schema again, unlike everything else this command declines to do.
+
+A kind that is real but absent from the config is reported on each rebuild and the watcher keeps
+running, because the config is reloaded every time and adding the generator to it is one save away.
+
+### `--pipeline` is the older spelling
+
+`--pipeline generate-<kind>` still works and now reaches **all fourteen kinds**. It used to list
+seven, and the other seven matched nothing at all: `drzl watch --pipeline generate-zod` started,
+printed its watch list, and then regenerated nothing for as long as it ran, with no error and
+nothing wrong with the config. That was true for `service`, `zod`, `valibot`, `arktype`, `typebox`,
+`effect` and `json-schema`.
+
+A `--pipeline` value that is not a pipeline is now an error rather than a silent no-op, so a typo
+stops the watcher instead of leaving it running and idle.
+
+`--pipeline analyze` is unchanged: it reports the analysis and runs no generator. Passing both
+`--pipeline` and `--only` is refused, because they say the same thing.
 
 ## One rebuild at a time
 

@@ -1,5 +1,22 @@
 # Generate (tRPC)
 
+::: warning Deprecated, and removed in 5.0
+Use [`drzl generate`](/cli/generate) instead:
+
+```bash
+drzl generate --schema src/db/schema.ts --only trpc
+```
+
+That emits the same files and can reach everything this command cannot: table and column filters,
+naming, formatting, `importExtension`, shared validation schemas, database injection, a schema path
+read from your drizzle-kit config, and, because it goes through the write plan, `--check`,
+`--dry-run` and per-file drift verdicts. `--template` and `--servicesDir` become the `template` key
+on the generator entry and the `path` on your `service` generator.
+
+This command keeps working until 5.0 and prints one line on stderr naming the replacement. The line
+goes through the output layer, so `--quiet` and `--json` both drop it.
+:::
+
 Quickly generate tRPC v11 routers without a config.
 
 Usage:

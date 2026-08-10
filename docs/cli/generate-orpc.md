@@ -1,5 +1,25 @@
 # Generate (oRPC)
 
+::: warning Deprecated, and removed in 5.0
+Use [`drzl generate`](/cli/generate) instead:
+
+```bash
+drzl generate --schema src/db/schema.ts --only orpc
+```
+
+That emits the same files, byte for byte, and it can reach everything this command cannot: table
+and column filters, naming, formatting, `importExtension`, shared validation schemas, database
+injection, a schema path read from your drizzle-kit config, and, because it goes through the write
+plan, `--check`, `--dry-run` and per-file drift verdicts.
+
+This command keeps working until 5.0 and prints one line on stderr naming the replacement. The line
+goes through the output layer, so `--quiet` and `--json` both drop it.
+
+The split it comes from was chronological rather than principled: `generate:orpc` shipped when oRPC
+was the only generator, `generate:trpc` arrived with the tRPC generator, and the twelve generators
+added since added no command at all. `--only` names all fourteen.
+:::
+
 Quickly generate oRPC routers without a config.
 
 Usage:

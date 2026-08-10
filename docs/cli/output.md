@@ -82,6 +82,10 @@ It does not remove:
 For `generate`, `generate:orpc`, `generate:trpc` and `init`, what the command produces is files on
 disk, so all of their text is a report about the work, and `--quiet` leaves them silent on success.
 
+The deprecation notice `generate:orpc` and `generate:trpc` print is narration too, so `--quiet` and
+`--json` both drop it. That is what keeps `drzl generate:orpc --json | jq .` parsing: a notice
+written straight to the stream would land beside the one document `--json` promises.
+
 ```bash
 drzl generate --quiet          # prints nothing, exits 0
 drzl generate --quiet          # prints the error to stderr, exits 1, when the config is missing
@@ -139,6 +143,7 @@ not produce its payload at all:
 | `DRZL_GEN_003`     | A generator wrote to disk during `--dry-run` or `--check`; see below |
 | `DRZL_EXPLAIN_001` | `explain` was given a table name no table answers to                 |
 | `DRZL_EXPLAIN_002` | `explain` was given a name that reaches more than one table          |
+| `DRZL_CLI_ONLY`    | `--only` or `--pipeline` named something that is not a generator kind, or a kind this config does not configure |
 
 `DRZL_GEN_003` means an installed `@drzl/generator-*` package is older than the CLI and does not
 know how to report a file instead of writing it. Anything it wrote has been put back, and the fix
@@ -312,11 +317,11 @@ first and shows a diff or a report on the second.
 | `analyze`                        | analysed                     | schema missing or could not be imported                                | analysed, with error-level issues |
 | `explain`                        | explained                    | no such table, an ambiguous name, or no schema to read                 | not used                          |
 | `doctor`                         | reported                     | schema missing or could not be imported                                | findings **and** `--strict`       |
-| `generate`                       | generated                    | no config, invalid config, nothing to generate from, a generator threw | `--check` found drift             |
+| `generate`                       | generated                    | no config, invalid config, nothing to generate from, a generator threw, `--only` named nothing this config runs | `--check` found drift             |
 | `generate --dry-run`             | reported what it would write | as `generate`                                                          | not used                          |
 | `generate:orpc`, `generate:trpc` | generated                    | nothing to generate from, or a generator threw                         | not used                          |
 | `init`                           | config written               | a config already exists, or it could not be written                    | not used                          |
-| `watch`                          | (runs until interrupted)     | no config, or the schema path could not be resolved                    | not used                          |
+| `watch`                          | (runs until interrupted)     | no config, the schema path could not be resolved, or `--only`/`--pipeline` named something that is not a kind | not used                          |
 | any command                      |                              | an unknown flag or a missing argument                                  |                                   |
 
 "Nothing to generate from" is a schema that would not load, a schema declaring no tables, or a

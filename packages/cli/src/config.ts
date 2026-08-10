@@ -86,23 +86,40 @@ export const AffixSchema = z
  */
 export const ImportExtensionSchema = z.enum(IMPORT_EXTENSIONS);
 
+/**
+ * Every generator DRZL can run, named once.
+ *
+ * Extracted from `GeneratorSchema.kind` rather than restated beside it, because three surfaces
+ * have to agree about this list and two of them used to spell it themselves: the config parser,
+ * the JSON Schema editors validate a `drzl.config.json` against, and the CLI's `--only`. A kind
+ * added here is accepted by all three at once, which is the property `--only` needs to be able to
+ * refuse an unknown value by name instead of matching nothing in silence.
+ */
+export const GeneratorKindSchema = z.enum([
+  'orpc',
+  'trpc',
+  'hono',
+  'express',
+  'fastify',
+  'nestjs',
+  'graphql',
+  'service',
+  'zod',
+  'valibot',
+  'arktype',
+  'typebox',
+  'effect',
+  'json-schema',
+]);
+
+/** One generator kind, as the config spells it. */
+export type GeneratorKind = z.infer<typeof GeneratorKindSchema>;
+
+/** The kinds in declaration order, for a message that has to list them. */
+export const GENERATOR_KINDS: readonly GeneratorKind[] = GeneratorKindSchema.options;
+
 export const GeneratorSchema = z.object({
-  kind: z.enum([
-    'orpc',
-    'trpc',
-    'hono',
-    'express',
-    'fastify',
-    'nestjs',
-    'graphql',
-    'service',
-    'zod',
-    'valibot',
-    'arktype',
-    'typebox',
-    'effect',
-    'json-schema',
-  ]),
+  kind: GeneratorKindSchema,
   /**
    * Which of Hono's two official validator middlewares the emitted routes carry, and therefore
    * which package they import. `hono` only.
@@ -1060,6 +1077,37 @@ export async function loadConfig(
   }
 
   return null;
+}
+
+/**
+ * A config nobody wrote to a file, built from what the command line said.
+ *
+ * `drzl generate --schema src/db/schema.ts --only orpc` is the config route with the config
+ * inlined, and it is what replaces the two per-kind commands: those took a schema path and a kind
+ * and could reach none of the config's features, because they had no config at all. This produces
+ * a real one, so everything downstream, the filters, the naming, the write plan, `--check`, is the
+ * same code reading the same shape whether the config came from disk or from two flags.
+ *
+ * Through `ConfigSchema` and `resolveConfig` rather than by hand, and that is the whole point: the
+ * defaults a config file gets are applied here too, `importExtension` is pushed down onto each
+ * generator exactly as it is for a file, and a hand-built object that skipped either would emit
+ * different bytes from the equivalent config for no reason a user could see.
+ *
+ * `schema` may be omitted, in which case the drizzle-kit config answers for it, exactly as it does
+ * for a `drzl.config.ts` with no `schema` key.
+ */
+export function configFromKinds(
+  kinds: readonly GeneratorKind[],
+  schema?: string,
+  onWarn: (warning: string) => void = () => {}
+): DrzlConfig {
+  const parsed = ConfigSchema.parse({
+    ...(schema ? { schema } : {}),
+    generators: kinds.map((kind) => ({ kind })),
+  });
+  const { config, warnings } = resolveConfig(parsed);
+  for (const w of warnings) onWarn(w);
+  return config;
 }
 
 /** Absolute output dirs for all generators (to ignore in watcher). */
