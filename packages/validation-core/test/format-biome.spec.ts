@@ -156,7 +156,7 @@ describe('formatCode with engine: biome', () => {
     // location, so a consumer's install is reachable without @biomejs/biome being declared as a
     // peer of anything. This temp directory has no relationship to this workspace at all, which is
     // what makes that a demonstration rather than an assertion.
-    const { dir, filePath } = await project('format');
+    const { dir } = await project('format');
     expect(dir.startsWith(os.tmpdir())).toBe(true);
     const deeper = path.join(dir, 'src', 'generated', 'nested', 'deep', 'users.ts');
     await fs.mkdir(path.dirname(deeper), { recursive: true });

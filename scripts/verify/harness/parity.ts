@@ -47,7 +47,6 @@ import {
   askPresence,
   type DbProbe,
   type Lib,
-  type Presence,
   type Verdict,
 } from './pool.js';
 
