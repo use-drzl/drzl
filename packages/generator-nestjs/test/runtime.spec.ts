@@ -225,10 +225,13 @@ describe('the zod app, the full policy grid', () => {
     expect(res.json).toEqual({ got: { email: 'a@b.c', bio: null } });
   });
 
-  it('requires a nullable no-default column to be present: {} is not sending null', async () => {
+  it('accepts an insert that omits a nullable no-default column, and invents no null for it', async () => {
     const res = await req(lib, 'POST', '/users', { email: 'a@b.c' });
-    expect(res.status).toBe(400);
-    expect(res.text).toContain('bio');
+    expect(res.status).toBe(201);
+    // Absent stays absent. The schema must not fill in a null on the way through, because an
+    // explicit NULL and an omitted column stop being the same INSERT the moment the column
+    // grows a default.
+    expect(res.json).toEqual({ got: { email: 'a@b.c' } });
   });
 
   it('rejects a body missing a required field, naming the field', async () => {
@@ -370,10 +373,10 @@ describe.each(['valibot', 'arktype'] as const)('the %s app, the shared policy ro
     expect(res.json).toEqual({ got: { email: 'a@b.c', bio: null } });
   });
 
-  it('requires the nullable no-default column to be present', async () => {
+  it('accepts an insert that omits the nullable no-default column', async () => {
     const res = await req(lib, 'POST', '/users', { email: 'a@b.c' });
-    expect(res.status).toBe(400);
-    expect(res.text).toContain('bio');
+    expect(res.status).toBe(201);
+    expect(res.json).toEqual({ got: { email: 'a@b.c' } });
   });
 
   it('rejects an enum outsider and accepts a member', async () => {

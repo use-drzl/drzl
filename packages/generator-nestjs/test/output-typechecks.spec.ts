@@ -184,14 +184,25 @@ export const row: UsersEntity = { id: 1, email: 'a@b.c', bio: null, role: 'boss'
     expect(out).toMatch(/probe\.ts/);
   });
 
-  it('rejects an absent nullable field on the create DTO, the presence rule at the type level', async () => {
-    const probe = `import type { CreateUsersDto } from './index.js';
+  it('accepts an absent nullable field on the create DTO, and still demands the NOT NULL one', async () => {
+    // The presence rule at the type level, both directions in one place. bio is nullable with no
+    // default, so omitting it is a valid CreateUsersDto: the database accepts that INSERT and
+    // stores NULL. email is NOT NULL with no default, so omitting it has to be an error, which is
+    // what proves the clean compile above is the checker agreeing rather than the checker not
+    // having run.
+    const omitsNullable = `import type { CreateUsersDto } from './index.js';
 
 export const create: CreateUsersDto = { email: 'a@b.c' };
 `;
-    const out = await compile('presence-canary', {}, probe);
+    expect(await compile('presence-canary', {}, omitsNullable)).toBe('');
+
+    const omitsRequired = `import type { CreateUsersDto } from './index.js';
+
+export const create: CreateUsersDto = { bio: null };
+`;
+    const out = await compile('presence-canary-required', {}, omitsRequired);
     expect(out).not.toBe('');
-    expect(out).toMatch(/bio/);
+    expect(out).toMatch(/email/);
   });
 });
 

@@ -215,12 +215,13 @@ handler is a crash rather than a field error. So guard before converting:
 - A checkbox registered with no options submits a real boolean and passes `boolean` columns.
   A `"true"` string (from a select) fails them, all three libraries.
 
-## Null is a value, absence is allowed here
+## Absence and null are both allowed
 
 These three generators emit a nullable column as optional **and** nullable on insert:
-`{ bio: null }`, `{ bio: "text" }` and `{}` are all valid (measured). This is the documented
-divergence from the [Fastify](/generators/fastify) and [NestJS](/generators/nestjs) generators,
-whose schemas require nullable-without-default columns to spell the null out.
+`{ bio: null }`, `{ bio: "text" }` and `{}` are all valid (measured). Every DRZL generator now
+answers this the same way, including [Fastify](/generators/fastify) and
+[NestJS](/generators/nestjs), because a database accepts an `INSERT` that omits a nullable column
+and stores `NULL` for it.
 
 The form-side wrinkle is that an untouched text input submits `""`, not null, and `""` is a
 valid string for the column: your bio column quietly stores an empty string. If you want

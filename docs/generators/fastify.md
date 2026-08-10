@@ -145,12 +145,14 @@ That is how every hand-written Fastify app behaves, so it is documented and pinn
 package's tests rather than fought. If you want the strict cross-library policy on bodies, the
 Hono and Express generators enforce it.
 
-Two more semantics are inherited from the shared builder, both deliberate there and stated here
-because the Hono and Express generators decide them the other way:
+Two more semantics are inherited from the shared builder and stated here because they decide what
+a body may leave out:
 
-- **A nullable column without a default is required on insert**, spelled `bio: null` when there
-  is no value. Null is a value, and omitting the key is not sending null; the JSON Schema
-  generator's own test suite pins that reasoning.
+- **A nullable column without a default may be omitted on insert**, and so may a defaulted one:
+  the rule is that a column is optional exactly when the database can produce a row without it,
+  and an `INSERT` that omits a nullable column stores `NULL`. This used to be decided the other
+  way here, until a real Postgres was asked; the JSON Schema generator's own test suite pins the
+  answer, and every generator now gives it.
 - **The update schema excludes the primary key columns.** The key of the row being patched comes
   from the path, and a body that could rename it would be a different operation.
 

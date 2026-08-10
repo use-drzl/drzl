@@ -42,8 +42,9 @@ import {
  *
  * Inputs lean on GraphQL's native absent-vs-null distinction: create inputs mark
  * required-no-default columns Type!, update inputs are all-optional with the primary key
- * excluded via the shared updateColumns. The DTO generators' required-but-nullable presence
- * rule is inexpressible in GraphQL, documented rather than approximated. The barrel owns
+ * excluded via the shared updateColumns. That is the same presence rule the DTO generators
+ * settled on: GraphQL has no required-but-nullable field, and a database has no use for one.
+ * The barrel owns
  * Query and Mutation (a schema without a Query type fails assertValidSchema); keyless tables
  * get a list field and create only, composite keys become multi-argument byId fields, and a
  * read-only table gets no mutations and no input types.

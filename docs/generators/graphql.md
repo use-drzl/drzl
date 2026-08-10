@@ -156,12 +156,11 @@ with the key present and `null`, `{}` reaches it with no key at all.
 - Update inputs make every field optional and exclude the primary key columns (the shared
   `updateColumns` rule), so there is no `id` field to smuggle a re-key through.
 
-One divergence is documented rather than papered over: the DTO generators' presence rule
-("a nullable column with no default is required on insert, null spelled out") is
-**inexpressible** in GraphQL. An input field is either non-null-and-required or omittable;
-there is no required-but-nullable. The same limit runs the other way on updates: explicit null
-on a non-nullable column cannot be refused by the schema and is left to the database, which
-refuses it anyway.
+This is the same presence rule the DTO generators settled on, arrived at from the other end: an
+input field is either non-null-and-required or omittable, and GraphQL has no required-but-nullable,
+which is exactly the shape a database has no use for either. One limit is still worth stating:
+explicit null on a non-nullable column cannot be refused by the schema and is left to the
+database, which refuses it anyway.
 
 ## A column name GraphQL cannot spell
 
