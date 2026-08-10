@@ -74,9 +74,17 @@ export default {
     // (`(isActiveLink || hasActiveLink) && (collapsed = false)` in its sidebar composable), so a
     // reader never has to open a section to find where they already are.
     sidebar: [
+      // Progressive: every group is collapsed, and VitePress opens the one holding the current
+      // page. The sidebar is therefore the length of one section plus nine headers, whatever the
+      // site grows to, and nothing has to be closed by hand.
+      //
+      // One level only. The previous shape nested four sub-groups inside Generators and expanded
+      // them all, which put fifty-four links on screen at once and made the deepest thing on the
+      // page a group inside a group. Those four are promoted here, and the one that held a single
+      // page is a plain link, because a group of one is a heading pretending to be structure.
       {
         text: 'Getting started',
-        collapsed: false,
+        collapsed: true,
         items: [
           { text: 'Getting Started', link: '/guide/getting-started' },
           { text: 'Configuration', link: '/guide/configuration' },
@@ -87,7 +95,7 @@ export default {
       },
       {
         text: 'CLI',
-        collapsed: false,
+        collapsed: true,
         items: [
           { text: 'Overview', link: '/cli' },
           { text: 'init', link: '/cli/init' },
@@ -102,49 +110,39 @@ export default {
         ],
       },
       {
-        text: 'Generators',
-        collapsed: false,
+        text: 'Validators and schemas',
+        collapsed: true,
         items: [
-          {
-            text: 'Validators and schemas',
-            collapsed: false,
-            items: [
-              { text: 'Zod', link: '/generators/zod' },
-              { text: 'Valibot', link: '/generators/valibot' },
-              { text: 'ArkType', link: '/generators/arktype' },
-              { text: 'TypeBox', link: '/generators/typebox' },
-              { text: 'Effect Schema', link: '/generators/effect' },
-              { text: 'JSON Schema', link: '/generators/json-schema' },
-              { text: 'OpenAPI Document', link: '/generators/openapi' },
-            ],
-          },
-          {
-            text: 'APIs and routers',
-            collapsed: false,
-            items: [
-              { text: 'oRPC', link: '/generators/orpc' },
-              { text: 'tRPC', link: '/generators/trpc' },
-              { text: 'Hono', link: '/generators/hono' },
-              { text: 'Express', link: '/generators/express' },
-              { text: 'Fastify', link: '/generators/fastify' },
-              { text: 'NestJS', link: '/generators/nestjs' },
-              { text: 'GraphQL', link: '/generators/graphql' },
-            ],
-          },
-          {
-            text: 'Data access',
-            collapsed: false,
-            items: [{ text: 'Service classes', link: '/generators/service' }],
-          },
-          {
-            text: 'Options that span generators',
-            collapsed: false,
-            items: [
-              { text: 'Nested Relations', link: '/generators/nested-relations' },
-              { text: 'Branded Keys', link: '/generators/branded-keys' },
-              { text: 'Constraint Data', link: '/generators/constraints' },
-            ],
-          },
+          { text: 'Zod', link: '/generators/zod' },
+          { text: 'Valibot', link: '/generators/valibot' },
+          { text: 'ArkType', link: '/generators/arktype' },
+          { text: 'TypeBox', link: '/generators/typebox' },
+          { text: 'Effect Schema', link: '/generators/effect' },
+          { text: 'JSON Schema', link: '/generators/json-schema' },
+          { text: 'OpenAPI Document', link: '/generators/openapi' },
+        ],
+      },
+      {
+        text: 'APIs and routers',
+        collapsed: true,
+        items: [
+          { text: 'oRPC', link: '/generators/orpc' },
+          { text: 'tRPC', link: '/generators/trpc' },
+          { text: 'Hono', link: '/generators/hono' },
+          { text: 'Express', link: '/generators/express' },
+          { text: 'Fastify', link: '/generators/fastify' },
+          { text: 'NestJS', link: '/generators/nestjs' },
+          { text: 'GraphQL', link: '/generators/graphql' },
+        ],
+      },
+      { text: 'Service classes', link: '/generators/service' },
+      {
+        text: 'Across generators',
+        collapsed: true,
+        items: [
+          { text: 'Nested Relations', link: '/generators/nested-relations' },
+          { text: 'Branded Keys', link: '/generators/branded-keys' },
+          { text: 'Constraint Data', link: '/generators/constraints' },
         ],
       },
       {
@@ -166,15 +164,9 @@ export default {
           { text: 'Relations', link: '/examples/relations' },
           { text: 'Validation mix', link: '/examples/validation-mix' },
           { text: 'Seeding and bulk inserts', link: '/examples/seed' },
-          {
-            text: 'Forms and frameworks',
-            collapsed: false,
-            items: [
-              { text: 'Next.js server actions', link: '/examples/nextjs-server-actions' },
-              { text: 'React Hook Form', link: '/examples/react-hook-form' },
-              { text: 'TanStack Form', link: '/examples/tanstack-form' },
-            ],
-          },
+          { text: 'Next.js server actions', link: '/examples/nextjs-server-actions' },
+          { text: 'React Hook Form', link: '/examples/react-hook-form' },
+          { text: 'TanStack Form', link: '/examples/tanstack-form' },
         ],
       },
       {
