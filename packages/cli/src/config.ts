@@ -1004,6 +1004,24 @@ function finalize(raw: unknown, file: string, onWarn: (warning: string) => void)
     );
   }
   for (const w of unknownKeyWarnings(raw, configShapeForReading())) onWarn(w);
+  // A config with no `generators` key gets oRPC routers, which is a whole API surface arriving
+  // from a default nobody typed. Someone who came for validators and wrote the smallest config
+  // that parses gets a router tree and no hint of where it came from.
+  //
+  // Said rather than changed. Both ways of removing the surprise, requiring the key or defaulting
+  // to zod, change what an existing config does, and that belongs with a major rather than with a
+  // patch. What does not have to wait is the silence: the default is now named where it applies,
+  // with the choices beside it. Read off `raw`, because the parsed config cannot tell a key that
+  // was absent from one that was written out.
+  if (raw && typeof raw === 'object' && !('generators' in (raw as Record<string, unknown>))) {
+    onWarn(
+      `drzl config: no "generators" key, so this run uses the default, [{ kind: 'orpc' }], and ` +
+        `writes an oRPC router tree. Name the key to choose: "zod", "valibot", "arktype", ` +
+        `"typebox", "effect" and "json-schema" emit validation schemas, "orpc", "trpc", "hono", ` +
+        `"express", "fastify", "nestjs" and "graphql" emit an API surface, and "service" emits ` +
+        `typed data-access stubs.`
+    );
+  }
   const { config, warnings } = resolveConfig(parsed.data);
   for (const w of warnings) onWarn(w);
   return config;
