@@ -1,6 +1,6 @@
 {
   "name": "@drzl/generator-zod",
-  "version": "3.21.1",
+  "version": "3.21.2",
   "private": false,
   "license": "Apache-2.0",
   "type": "module",
