@@ -82,8 +82,8 @@ scale.
 ## Where DRZL is looser, and the database still agrees
 
 Most of the recorded divergences run this way, which is why "at least as strict as the first-party
-module" is not the claim. From the run behind this page: 30 of 55 documented divergences on
-1.0.0-rc.4, and 27 of 49 on 0.45.2, have DRZL accepting something the first-party module refuses.
+module" is not the claim. From the run behind this page: 30 of 60 documented divergences on
+1.0.0-rc.4, and 27 of 54 on 0.45.2, have DRZL accepting something the first-party module refuses.
 
 **Float ranges.** The first-party modules bound a `real` at +/-8388607. Postgres stores 8388608, 9000000, 1e9
 and 2147483648 in that column and returns every one unchanged, so that bound refuses rows the column

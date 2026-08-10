@@ -196,7 +196,7 @@ export interface Column {
    * `'1_000'` included, and by MySQL as a decimal number it then rounds, so `'12.5'` is a row on
    * one server and an error on the other.
    */
-  format?: 'uuid' | 'numeric' | 'pgBigint' | 'mysqlBigint';
+  format?: 'uuid' | 'numeric' | 'pgBigint' | 'mysqlBigint' | 'temporalText';
 
   /**
    * The column's default, when it is a literal a schema can reproduce.
@@ -434,6 +434,43 @@ export interface AnalyzeOptions {
  * readable rather than escaped for execution. Strings are single quoted with the SQL doubling
  * convention so an apostrophe cannot break the rendering.
  */
+/**
+ * Whether a temporal column carried as text is on a server that refuses a blank string.
+ *
+ * The one thing that can be said about these columns. A pattern for the value itself is out of
+ * reach and deliberately so: Postgres reads `'today'`, `'January 8, 1999'`, `'01/08/1999'` and
+ * `'20200101'` as dates, so any date-shaped regex turns away rows the server takes, which is why
+ * `format` carries no date entry. What survives that is the floor. A string with nothing in it but
+ * whitespace is not a date, a time or an interval on any server measured here, and a schema that
+ * accepts one admits a write the database refuses. It is the value an untouched form control
+ * submits, which is how it gets there.
+ *
+ * Measured, per server and per type, because they do not agree:
+ *
+ *   Postgres 17 (PGlite)   date, time, timetz, timestamp, timestamptz, interval
+ *                          all refuse `''` and `' '`, and all accept a valid value with
+ *                          surrounding whitespace, so the floor is exactly `\S` and not an anchor.
+ *   MySQL 8.4.11, STRICT   date, datetime, timestamp refuse both. `time` ACCEPTS both and stores
+ *                          `00:00:00`, silently, with `SHOW WARNINGS` empty. So a MySQL `time`
+ *                          column is left unmarked: refusing there would be stricter than the
+ *                          server, whatever one thinks of what it stored.
+ *
+ * Claimed for the two engines that were asked and no others. SQLite stores whatever text it is
+ * given in any column, so it is excluded for the same reason it is excluded from `numeric`;
+ * SingleStore, mssql and Cockroach were not measured, and inheriting an answer from the engine
+ * they resemble is what this file avoids elsewhere.
+ */
+function temporalTextFormat(
+  entityKind: string,
+  kind: 'stamp' | 'time' | 'interval'
+): 'temporalText' | undefined {
+  const pg = entityKind.startsWith('Pg');
+  const mysql = entityKind.startsWith('MySql');
+  if (kind === 'stamp') return pg || mysql ? 'temporalText' : undefined;
+  // `time` on MySQL takes a blank and stores 00:00:00; `interval` is Postgres's alone here.
+  return pg ? 'temporalText' : undefined;
+}
+
 function renderSqlLiteral(v: unknown): string {
   if (v === null || v === undefined) return 'NULL';
   if (typeof v === 'number' || typeof v === 'bigint') return String(v);
@@ -985,6 +1022,7 @@ export function describeV1Column(column: any): Partial<Column> | null {
       // `date`/`timestamp` in `{ mode: 'string' }` report a js type of string.
       out.tsType = js === 'string' ? 'string' : 'Date';
       out.dbType = codec?.startsWith('timestamp') ? 'TIMESTAMP' : 'DATE';
+      if (out.tsType === 'string') out.format = temporalTextFormat(entityKind, 'stamp');
       break;
     case 'timestamp':
     // `datetime` is the same fact under MySQL's name for it, and it had no arm, so every column
@@ -999,14 +1037,17 @@ export function describeV1Column(column: any): Partial<Column> | null {
     case 'datetime':
       out.tsType = js === 'string' ? 'string' : 'Date';
       out.dbType = 'TIMESTAMP';
+      if (out.tsType === 'string') out.format = temporalTextFormat(entityKind, 'stamp');
       break;
     case 'time':
       out.tsType = 'string';
       out.dbType = 'TIME';
+      out.format = temporalTextFormat(entityKind, 'time');
       break;
     case 'interval':
       out.tsType = 'string';
       out.dbType = 'INTERVAL';
+      out.format = temporalTextFormat(entityKind, 'interval');
       break;
     case 'inet':
     case 'cidr':
@@ -2104,6 +2145,18 @@ export class SchemaAnalyzer {
     }
 
     if (/^(Pg)?UUID$/i.test(ctor) || /Uuid$/i.test(ctor)) out.format = 'uuid';
+
+    // The blank floor on a temporal column carried as text, the same answer the v1 path gives the
+    // same column through `temporalTextFormat`, which carries the measurements. Both majors have
+    // to describe a column the same way, and the cross-major diff is what checks that they do.
+    //
+    // Class names rather than a codec, because that is all this path has. `PgTime` and `PgInterval`
+    // are the string modes outright; the `*String` classes are the string modes of the stamps. A
+    // MySQL `time` is excluded on purpose: that server takes a blank and stores 00:00:00.
+    if (/^Pg(TimestampString|DateString|Time|Interval)$/.test(ctor)) out.format = 'temporalText';
+    if (/^MySql(TimestampString|DateTimeString|DateString)$/.test(ctor)) {
+      out.format = 'temporalText';
+    }
 
     return out;
   }

@@ -299,6 +299,18 @@ export const COLUMN_FORMATS: Record<string, string> = {
   // Over 3319 probes against each of a signed and an unsigned column: zero values the server takes
   // and this refuses.
   mysqlBigint: '^\\s*[+-]?(\\d+(\\.\\d*)?|\\.\\d+)([eE][+-]?\\d*)?\\s*$',
+
+  // A temporal column carried as text, and the only thing that can be said about one: it is not
+  // blank. Unanchored on purpose, so it means "holds at least one non-whitespace character".
+  //
+  // Everything stronger was refused for the reason the analyzer's `format` comment gives: Postgres
+  // reads 'today', 'January 8, 1999', '01/08/1999' and '20200101' as dates, so a date-shaped
+  // pattern turns away rows the server stores. This one turns away nothing: measured on Postgres,
+  // every temporal type accepts a valid value with surrounding whitespace and refuses '' and ' '
+  // alike, so the set this refuses and the set the server refuses are the same set. The analyzer
+  // decides which columns carry it, per engine and per type, since MySQL's `time` takes a blank
+  // and silently stores 00:00:00.
+  temporalText: '\\S',
 };
 
 /**
