@@ -95,11 +95,11 @@ describe('drzl init: the config it writes', () => {
     await run(process.execPath, [CLI, 'init'], { cwd: dir });
     const config = await fs.readFile(path.join(dir, 'drzl.config.ts'), 'utf8');
 
-    // Not a style preference. `@drzl/generator-zod` is a hard dependency of `@drzl/cli`, so it
-    // is installed by definition next to the CLI that scaffolded this; six of the seven route
-    // generators are `optionalDependencies`, and five of those are still at 0.1.0. Both READMEs
-    // lead their minimal config with zod, all three quickstarts put a validator first, and the
-    // only example app in the repository configures zod and nothing else.
+    // Not a style preference. Both READMEs lead their minimal config with zod, all three
+    // quickstarts put a validator first, and the only example app in the repository configures
+    // zod and nothing else. It was also the one generator guaranteed to be installed, back when
+    // six of the seven route generators were `optionalDependencies`; that half of the reason
+    // retired when all fourteen became hard dependencies, and the rest of it did not.
     expect(config).toContain("kind: 'zod'");
   }, 60_000);
 

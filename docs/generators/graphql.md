@@ -10,9 +10,9 @@ configs for `DateTime`, `BigInt` and `JSON`. A barrel joins everything into one
 npm install -D @drzl/generator-graphql
 ```
 
-It is an optional dependency of `@drzl/cli`, so a normal install may or may not have brought it
-along. `drzl generate` tells you which package to install if it is missing. The generated code
-imports **nothing**: serving the schema takes any builder that accepts
+`@drzl/cli` depends on it, so installing the CLI already brought it along; the line above is for
+using the generator on its own. `drzl generate` tells you which package to install if it is ever
+missing. The generated code imports **nothing**: serving the schema takes any builder that accepts
 `{ typeDefs, resolvers }`.
 
 ## SDL text and plain objects, not GraphQLSchema instances

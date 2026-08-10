@@ -73,10 +73,9 @@ the 3.0 translation table; this page is about getting one served and keeping it 
 
 ### 1. The config
 
-The generator ships with `@drzl/cli` as an optional dependency, so an ordinary install already has
-it. `drzl init` will not offer it, by design: `init` only scaffolds kinds that are hard
-dependencies of the CLI, so the entry is one you add by hand. If your installer is set to skip
-optional dependencies, add `@drzl/generator-json-schema` to your own dev dependencies.
+`@drzl/cli` depends on `@drzl/generator-json-schema`, so an ordinary install already has it.
+`drzl init` will not offer it, by design: `init` scaffolds the five kinds whose config entry it
+knows how to write, so this one is an entry you add by hand.
 
 ```ts
 import { defineConfig } from '@drzl/cli/config';

@@ -109,12 +109,36 @@ importers:
       '@drzl/generator-arktype':
         specifier: workspace:^
         version: link:../generator-arktype
+      '@drzl/generator-effect':
+        specifier: workspace:^
+        version: link:../generator-effect
+      '@drzl/generator-express':
+        specifier: workspace:^
+        version: link:../generator-express
+      '@drzl/generator-fastify':
+        specifier: workspace:^
+        version: link:../generator-fastify
+      '@drzl/generator-graphql':
+        specifier: workspace:^
+        version: link:../generator-graphql
+      '@drzl/generator-hono':
+        specifier: workspace:^
+        version: link:../generator-hono
+      '@drzl/generator-json-schema':
+        specifier: workspace:^
+        version: link:../generator-json-schema
+      '@drzl/generator-nestjs':
+        specifier: workspace:^
+        version: link:../generator-nestjs
       '@drzl/generator-orpc':
         specifier: workspace:^
         version: link:../generator-orpc
       '@drzl/generator-service':
         specifier: workspace:^
         version: link:../generator-service
+      '@drzl/generator-trpc':
+        specifier: workspace:^
+        version: link:../generator-trpc
       '@drzl/generator-typebox':
         specifier: workspace:^
         version: link:../generator-typebox
@@ -164,31 +188,6 @@ importers:
       typescript:
         specifier: ^5.9.3
         version: 5.9.3
-    optionalDependencies:
-      '@drzl/generator-effect':
-        specifier: workspace:^
-        version: link:../generator-effect
-      '@drzl/generator-express':
-        specifier: workspace:^
-        version: link:../generator-express
-      '@drzl/generator-fastify':
-        specifier: workspace:^
-        version: link:../generator-fastify
-      '@drzl/generator-graphql':
-        specifier: workspace:^
-        version: link:../generator-graphql
-      '@drzl/generator-hono':
-        specifier: workspace:^
-        version: link:../generator-hono
-      '@drzl/generator-json-schema':
-        specifier: workspace:^
-        version: link:../generator-json-schema
-      '@drzl/generator-nestjs':
-        specifier: workspace:^
-        version: link:../generator-nestjs
-      '@drzl/generator-trpc':
-        specifier: workspace:^
-        version: link:../generator-trpc
 
   packages/generator-arktype:
     dependencies:

@@ -1,7 +1,49 @@
+import { readFileSync } from 'node:fs';
+import * as path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { defineConfig } from 'tsup';
 
 /**
- * Entry points, formats and flags stay in the `build` script; this file exists for the one thing
+ * Every package this one declares, whichever field declares it.
+ *
+ * tsup decides externals from `dependencies` and `peerDependencies` and from nothing else. That
+ * is read out of its own build rather than assumed: `getProductionDeps` in
+ * `tsup/dist/chunk-VGC3FXLU.js` is `new Set([...Object.keys(data.dependencies || {}),
+ * ...Object.keys(data.peerDependencies || {})])`, and `runEsbuild` turns exactly that set into
+ * the `^name($|/|\\)` patterns the external plugin matches on.
+ *
+ * `optionalDependencies` is not in it, so a package declared there is bundled: its code is copied
+ * into `dist` and the declaration describes an install that has nothing to do with what runs.
+ * Eight generator packages sat in that field for publishing reasons that no longer hold, and the
+ * effect was that half the generators were resolved from `node_modules` and half travelled inside
+ * the CLI, from one list nobody had written down.
+ *
+ * The rule is the manifest, not a list: everything the manifest declares is resolved at runtime,
+ * and nothing declared is copied in. There is no array here for the next generator to be missing
+ * from, because adding a generator to this package means adding it to `dependencies`, and that is
+ * the same edit.
+ *
+ * Read from beside this file rather than from `process.cwd()`. tsup loads a config through
+ * bundle-require, whose `injectFileScopePlugin` defines `import.meta.url` as the file URL of the
+ * config's own source path, so this resolves to `packages/cli/package.json` however the build was
+ * invoked.
+ */
+const manifest = JSON.parse(
+  readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), 'package.json'), 'utf8')
+) as {
+  dependencies?: Record<string, string>;
+  optionalDependencies?: Record<string, string>;
+  peerDependencies?: Record<string, string>;
+};
+
+const declaredDependencies = Object.keys({
+  ...manifest.dependencies,
+  ...manifest.optionalDependencies,
+  ...manifest.peerDependencies,
+});
+
+/**
+ * Entry points, formats and flags stay in the `build` script; this file exists for the two things
  * a tsup CLI flag cannot express.
  *
  * `src/version.ts` reads `import.meta.url` to find the manifest sitting beside the build. esbuild
@@ -24,6 +66,7 @@ import { defineConfig } from 'tsup';
  * `#!/usr/bin/env node`.
  */
 export default defineConfig({
+  external: declaredDependencies,
   esbuildOptions(options, context) {
     if (context.format !== 'cjs') return;
     options.banner = {

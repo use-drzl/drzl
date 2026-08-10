@@ -81,11 +81,10 @@ It will not write a `schema` naming a file that is not on disk.
 
 ## What it scaffolds
 
-The default is **Zod validators**, and the rule behind the choice is that `init` only offers
-generators `@drzl/cli` depends on outright. The five in the list are installed by definition
-alongside the CLI that scaffolded the config. The route generators other than oRPC are optional
-dependencies, so a config naming one may fail its first `drzl generate` on a package that was never
-installed; add them yourself once you have installed them.
+The default is **Zod validators**. Every generator `@drzl/cli` depends on is installed by
+definition alongside the CLI that scaffolded the config, and that is all fourteen of them; the five
+in the list are the ones whose config entry `init` knows how to write. The other nine work exactly
+as well, and you add their entry by hand from the page documenting each.
 
 ```ts
 import type { DrzlConfigInput } from '@drzl/cli/config';

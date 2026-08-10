@@ -131,12 +131,18 @@ export const GENERATORS: readonly GeneratorEntry[] = [
   },
   {
     kind: 'trpc',
-    // An optional dependency, like seven others below. A package that has never been published
-    // cannot publish through npm's trusted-publisher OIDC flow, so its first version has to go out
-    // by hand, and naming it as a hard dependency of the CLI in the same release breaks
-    // `npm i @drzl/cli` for everyone until it exists. A missing optional dependency is skipped by
-    // the installer rather than failing it, which is why these really can be absent on an ordinary
-    // install, and why `loadGenerator` tells absence apart from failure.
+    // This one and seven others were `optionalDependencies` until every one of them had been
+    // published: a package that has never existed cannot publish through npm's trusted-publisher
+    // OIDC flow, so its first version goes out by hand, and naming it as a hard dependency in the
+    // same release breaks `npm i @drzl/cli` for everyone until it does exist. An optional
+    // dependency is skipped by the installer instead, which made that release safe.
+    //
+    // The side effect was invisible and lasted longer than the reason: tsup externalises
+    // `dependencies` and `peerDependencies` and bundles everything else, so those eight travelled
+    // inside `dist` while the other six were resolved from `node_modules`. All fourteen are on the
+    // registry now and all fourteen are `dependencies`, which is what makes every one of them a
+    // package that can genuinely be absent, and `loadGenerator` tell absence apart from failure
+    // for every kind rather than for six of them.
     specifier: '@drzl/generator-trpc',
     load: () => import('@drzl/generator-trpc'),
     construct: (m, analysis) => new m.TRPCGenerator(analysis),

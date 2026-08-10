@@ -64,12 +64,13 @@ afterAll(async () => {
 
 describe('the generators init offers (66)', () => {
   it('offers only kinds @drzl/cli depends on outright', async () => {
-    // The rule that keeps an unpublishable generator out of the scaffold. `optionalDependencies`
-    // are skipped by the installer when they are not on the registry, which is the state eight
-    // of the generators are in, including every route generator except oRPC; a config naming one
-    // would fail its first `generate` on a module that was never installed. Asserted against
-    // package.json rather than restated, so moving a generator between the two lists moves this
-    // test with it.
+    // The floor under the scaffold: a config `init` writes never names a package the CLI does
+    // not bring with it. It used to be the filter as well, when eight generators sat in
+    // `optionalDependencies` an installer skips and a config naming one would fail its first
+    // `generate` on a module that was never installed. All fourteen are hard dependencies now, so
+    // every kind clears this and what keeps the list at five is `renderInitConfig`, which knows
+    // two entry shapes. Asserted against package.json rather than restated, so moving a generator
+    // between the two lists moves this test with it.
     const pkg = JSON.parse(
       await fs.readFile(path.join(__dirname, '..', 'package.json'), 'utf8')
     ) as {

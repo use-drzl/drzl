@@ -54,8 +54,8 @@ This command takes no config file, so it cannot reuse generated validation schem
 database injection. For those, use [`drzl generate`](/cli/generate) with a `{ kind: 'trpc' }` entry.
 See the [tRPC generator](/generators/trpc) for the full option set.
 
-The generator ships as `@drzl/generator-trpc`, an optional dependency of the CLI. If it is not
-installed, this command says so and names the package to install.
+The generator ships as `@drzl/generator-trpc`, a dependency of the CLI rather than code inside it.
+If it is not installed, this command says so and names the package to install.
 
 ## What lands on disk
 

@@ -26,12 +26,13 @@
  * import it" is usually "you have not run install yet", and the file is still obviously the
  * schema the user meant.
  *
- * **The default generator was a router (66).** Decided from what is installed rather than from
- * taste: `@drzl/generator-zod` is a hard dependency of `@drzl/cli`, so it is on disk beside the
- * CLI that scaffolds this config, while six of the seven route generators are
- * `optionalDependencies` and may not be installed at all. `INIT_GENERATOR_CHOICES` therefore
- * offers only kinds `@drzl/cli` depends on outright, and a test asserts that against
- * `package.json` so nothing unpublishable can be added to the list.
+ * **The default generator was a router (66).** `@drzl/generator-zod` is a hard dependency of
+ * `@drzl/cli`, so it is on disk beside the CLI that scaffolds this config. That used to be the
+ * whole rule, because six of the seven route generators were `optionalDependencies` an installer
+ * skips when they are missing; all fourteen are hard dependencies now, so being installed no
+ * longer tells one kind from another. What `INIT_GENERATOR_CHOICES` still offers is the set this
+ * file knows how to write a config for, and a test asserts every entry against `package.json` so
+ * a kind the CLI does not depend on cannot be added to the list.
  *
  * **`--yes` did nothing (65).** The flag was declared and the action ignored its options object,
  * so `init` and `init --yes` were byte-identical. The flag is kept and given the meaning it
@@ -59,12 +60,17 @@ export interface InitGeneratorChoice {
 /**
  * What `init` offers, in the order the prompt lists it. The first entry is the default.
  *
- * Every kind here is a `dependencies` entry of `@drzl/cli`, never an `optionalDependencies`
- * one. That is the whole rule, and `init.spec.ts` enforces it against `package.json`: an
- * optional generator is skipped by the installer when it does not exist on the registry, so
- * scaffolding one produces a config whose first `drzl generate` fails on a missing module. The
- * six route generators that are not oRPC are exactly that case, and so are `effect` and
- * `json-schema`.
+ * Every kind here is a `dependencies` entry of `@drzl/cli`, enforced against `package.json` by
+ * `init.spec.ts`, so a config this command writes never names a package the CLI does not bring
+ * with it. That used to exclude eight kinds on its own, when they were `optionalDependencies` an
+ * installer skips; every kind clears it now, and it stays as the floor rather than as the filter.
+ *
+ * What the list is short for is this file: `generatorLine` writes two shapes, an oRPC entry and a
+ * validator entry with a `path`, and `ROUTER_KINDS` is the one kind the scaffold adds an `outDir`
+ * for. The six other route generators each resolve their output directory their own way
+ * (`trpcOutDir`, `honoOutDir` and the rest in `config.ts`), and none of those rules is written
+ * here. Offering them would scaffold a config this command does not know the shape of, which is a
+ * different job from installing one.
  */
 export const INIT_GENERATOR_CHOICES: readonly InitGeneratorChoice[] = [
   { kind: 'zod', packageName: '@drzl/generator-zod', label: 'Zod validators' },
@@ -497,8 +503,8 @@ export function normalizeGenerators(kinds: string[] | undefined): string[] | und
     if (!known.has(k)) {
       throw new Error(
         `drzl init: "${k}" is not a generator init can scaffold. Choose from ` +
-          `${[...known].join(', ')}. Every other kind is documented in drzl.config; the route ` +
-          `generators are optional dependencies and may not be installed.`
+          `${[...known].join(', ')}. Every other kind is installed and works; add it to ` +
+          `drzl.config by hand, following the entry for it in the docs.`
       );
     }
   }

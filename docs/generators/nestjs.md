@@ -8,10 +8,10 @@ plus a small validation pipe that runs it. They drop into controllers you write 
 npm install -D @drzl/generator-nestjs
 ```
 
-It is an optional dependency of `@drzl/cli`, so a normal install may or may not have brought it
-along. `drzl generate` tells you which package to install if it is missing. The generated code
-imports `@nestjs/common`, which a Nest app has by definition, and the validation library you
-chose (`zod` by default).
+`@drzl/cli` depends on it, so installing the CLI already brought it along; the line above is for
+using the generator on its own. `drzl generate` tells you which package to install if it is ever
+missing. The generated code imports `@nestjs/common`, which a Nest app has by definition, and the
+validation library you chose (`zod` by default).
 
 ## DTOs, not controllers
 
