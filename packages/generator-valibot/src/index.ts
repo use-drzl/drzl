@@ -28,7 +28,8 @@ import {
   isIntegerColumn,
   lengthCheckLabel,
   lengthMeasure,
-  measureExpression,
+  codePointCompare,
+  measureCompare,
   nestedArmNotes,
   nestedNodeColumns,
   nestedSchemaName,
@@ -351,7 +352,7 @@ function vShapeExpr(c: Column, mode: Mode): string | undefined {
       if (!s.length) return 'v.string()';
       const check =
         mode === 'select'
-          ? `v.check((val) => [...val].length <= ${s.length}, 'at most ${s.length} characters')`
+          ? `v.check((val) => ${codePointCompare('val', '<=', s.length)}, 'at most ${s.length} characters')`
           : `v.check((val) => new TextEncoder().encode(val).length <= ${s.length}, 'at most ${s.length} bytes')`;
       return `v.pipe(v.string(), ${check})`;
     }
@@ -381,8 +382,8 @@ function vLengthChecks(c: Column, lengths: LengthCheck[]): string[] {
       const measure = lengthMeasure(c, k);
       if (!measure) return [];
       const msg = JSON.stringify(lengthCheckLabel(k));
-      const count = measureExpression(measure, 'val');
-      return [`v.check((val) => ${count} ${OPS[k.operator]} ${k.value}, ${msg})`];
+      const test = measureCompare(measure, 'val', k.operator, k.value);
+      return [`v.check((val) => ${test}, ${msg})`];
     });
 }
 
@@ -479,7 +480,7 @@ function vExprForColumn(
       const caps: string[] = [];
       if (c.maxLength) {
         caps.push(
-          `v.check((val) => [...val].length <= ${c.maxLength}, 'at most ${c.maxLength} characters')`
+          `v.check((val) => ${codePointCompare('val', '<=', c.maxLength!)}, 'at most ${c.maxLength} characters')`
         );
       }
       if (c.maxBytes) {

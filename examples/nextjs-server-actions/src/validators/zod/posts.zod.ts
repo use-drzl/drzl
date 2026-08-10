@@ -7,7 +7,9 @@ import { z } from 'zod';
 export const InsertPostsSchema = z.object({
   id: z.number().int().gte(-2147483648).lte(2147483647).optional(),
   authorId: z.number().int().gte(-2147483648).lte(2147483647),
-  title: z.string().refine((v) => [...v].length <= 80, { message: 'at most 80 characters' }),
+  title: z
+    .string()
+    .refine((v) => v.length <= 80 || [...v].length <= 80, { message: 'at most 80 characters' }),
   status: z.enum(['draft', 'live'] as const),
 });
 
@@ -15,7 +17,7 @@ export const UpdatePostsSchema = z.object({
   authorId: z.number().int().gte(-2147483648).lte(2147483647).optional(),
   title: z
     .string()
-    .refine((v) => [...v].length <= 80, { message: 'at most 80 characters' })
+    .refine((v) => v.length <= 80 || [...v].length <= 80, { message: 'at most 80 characters' })
     .optional(),
   status: z.enum(['draft', 'live'] as const).optional(),
 });
@@ -23,7 +25,9 @@ export const UpdatePostsSchema = z.object({
 export const SelectPostsSchema = z.object({
   id: z.number().int().gte(-2147483648).lte(2147483647),
   authorId: z.number().int().gte(-2147483648).lte(2147483647),
-  title: z.string().refine((v) => [...v].length <= 80, { message: 'at most 80 characters' }),
+  title: z
+    .string()
+    .refine((v) => v.length <= 80 || [...v].length <= 80, { message: 'at most 80 characters' }),
   status: z.enum(['draft', 'live'] as const),
 });
 
@@ -34,15 +38,19 @@ export type SelectPostsOutput = z.output<typeof SelectPostsSchema>;
 export const NestedSelectPostsSchema = z.object({
   id: z.number().int().gte(-2147483648).lte(2147483647),
   authorId: z.number().int().gte(-2147483648).lte(2147483647),
-  title: z.string().refine((v) => [...v].length <= 80, { message: 'at most 80 characters' }),
+  title: z
+    .string()
+    .refine((v) => v.length <= 80 || [...v].length <= 80, { message: 'at most 80 characters' }),
   status: z.enum(['draft', 'live'] as const),
   authors: z
     .object({
       id: z.number().int().gte(-2147483648).lte(2147483647),
       handle: z
         .string()
-        .refine((v) => [...v].length <= 20, { message: 'at most 20 characters' })
-        .refine((v) => [...v].length >= 3, { message: 'handle_len: length(handle) >= 3' }),
+        .refine((v) => v.length <= 20 || [...v].length <= 20, { message: 'at most 20 characters' })
+        .refine((v) => v.length >= 3 && [...v].length >= 3, {
+          message: 'handle_len: length(handle) >= 3',
+        }),
       email: z.string(),
       age: z.number().int().gte(18).lte(2147483647),
     })

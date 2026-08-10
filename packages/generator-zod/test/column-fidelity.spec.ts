@@ -81,7 +81,7 @@ describe('string length', () => {
     // is n *characters*, and `.max` counts `.length`. Measured against Postgres for
     // `varchar(10)`: the database accepts eight emoji and `.max(10)` refuses them.
     expect(await exprFor({ tsType: 'string', maxLength: 255 })).toMatch(
-      /^z\.string\(\)\.refine\(\(v\) => \[\.\.\.v\]\.length <= 255, \{ message: ['"]at most 255 characters['"] \}\)$/
+      /^z\.string\(\)\.refine\(\(v\) => v\.length <= 255 \|\| \[\.\.\.v\]\.length <= 255, \{ message: ['"]at most 255 characters['\"],? \}\)$/
     );
   });
 
@@ -147,7 +147,7 @@ describe('composition with the rest of the schema', () => {
   it('applies nullability after the constraint', async () => {
     const e = await exprFor({ tsType: 'string', maxLength: 10, nullable: true });
     expect(e).toMatch(
-      /^z\.string\(\)\.refine\(\(v\) => \[\.\.\.v\]\.length <= 10, \{ message: ['"]at most 10 characters['"] \}\)\.nullable\(\)$/
+      /^z\.string\(\)\.refine\(\(v\) => v\.length <= 10 \|\| \[\.\.\.v\]\.length <= 10, \{ message: ['"]at most 10 characters['\"],? \}\)\.nullable\(\)$/
     );
   });
 

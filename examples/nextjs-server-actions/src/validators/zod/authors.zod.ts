@@ -8,8 +8,10 @@ export const InsertAuthorsSchema = z.object({
   id: z.number().int().gte(-2147483648).lte(2147483647).optional(),
   handle: z
     .string()
-    .refine((v) => [...v].length <= 20, { message: 'at most 20 characters' })
-    .refine((v) => [...v].length >= 3, { message: 'handle_len: length(handle) >= 3' }),
+    .refine((v) => v.length <= 20 || [...v].length <= 20, { message: 'at most 20 characters' })
+    .refine((v) => v.length >= 3 && [...v].length >= 3, {
+      message: 'handle_len: length(handle) >= 3',
+    }),
   email: z.string(),
   age: z.number().int().gte(18).lte(2147483647),
 });
@@ -17,8 +19,10 @@ export const InsertAuthorsSchema = z.object({
 export const UpdateAuthorsSchema = z.object({
   handle: z
     .string()
-    .refine((v) => [...v].length <= 20, { message: 'at most 20 characters' })
-    .refine((v) => [...v].length >= 3, { message: 'handle_len: length(handle) >= 3' })
+    .refine((v) => v.length <= 20 || [...v].length <= 20, { message: 'at most 20 characters' })
+    .refine((v) => v.length >= 3 && [...v].length >= 3, {
+      message: 'handle_len: length(handle) >= 3',
+    })
     .optional(),
   email: z.string().optional(),
   age: z.number().int().gte(18).lte(2147483647).optional(),
@@ -28,8 +32,10 @@ export const SelectAuthorsSchema = z.object({
   id: z.number().int().gte(-2147483648).lte(2147483647),
   handle: z
     .string()
-    .refine((v) => [...v].length <= 20, { message: 'at most 20 characters' })
-    .refine((v) => [...v].length >= 3, { message: 'handle_len: length(handle) >= 3' }),
+    .refine((v) => v.length <= 20 || [...v].length <= 20, { message: 'at most 20 characters' })
+    .refine((v) => v.length >= 3 && [...v].length >= 3, {
+      message: 'handle_len: length(handle) >= 3',
+    }),
   email: z.string(),
   age: z.number().int().gte(18).lte(2147483647),
 });
@@ -42,15 +48,21 @@ export const NestedInsertAuthorsSchema = z.object({
   id: z.number().int().gte(-2147483648).lte(2147483647).optional(),
   handle: z
     .string()
-    .refine((v) => [...v].length <= 20, { message: 'at most 20 characters' })
-    .refine((v) => [...v].length >= 3, { message: 'handle_len: length(handle) >= 3' }),
+    .refine((v) => v.length <= 20 || [...v].length <= 20, { message: 'at most 20 characters' })
+    .refine((v) => v.length >= 3 && [...v].length >= 3, {
+      message: 'handle_len: length(handle) >= 3',
+    }),
   email: z.string(),
   age: z.number().int().gte(18).lte(2147483647),
   posts: z
     .array(
       z.object({
         id: z.number().int().gte(-2147483648).lte(2147483647).optional(),
-        title: z.string().refine((v) => [...v].length <= 80, { message: 'at most 80 characters' }),
+        title: z
+          .string()
+          .refine((v) => v.length <= 80 || [...v].length <= 80, {
+            message: 'at most 80 characters',
+          }),
         status: z.enum(['draft', 'live'] as const),
       })
     )
@@ -63,8 +75,10 @@ export const NestedSelectAuthorsSchema = z.object({
   id: z.number().int().gte(-2147483648).lte(2147483647),
   handle: z
     .string()
-    .refine((v) => [...v].length <= 20, { message: 'at most 20 characters' })
-    .refine((v) => [...v].length >= 3, { message: 'handle_len: length(handle) >= 3' }),
+    .refine((v) => v.length <= 20 || [...v].length <= 20, { message: 'at most 20 characters' })
+    .refine((v) => v.length >= 3 && [...v].length >= 3, {
+      message: 'handle_len: length(handle) >= 3',
+    }),
   email: z.string(),
   age: z.number().int().gte(18).lte(2147483647),
   posts: z
@@ -72,7 +86,11 @@ export const NestedSelectAuthorsSchema = z.object({
       z.object({
         id: z.number().int().gte(-2147483648).lte(2147483647),
         authorId: z.number().int().gte(-2147483648).lte(2147483647),
-        title: z.string().refine((v) => [...v].length <= 80, { message: 'at most 80 characters' }),
+        title: z
+          .string()
+          .refine((v) => v.length <= 80 || [...v].length <= 80, {
+            message: 'at most 80 characters',
+          }),
         status: z.enum(['draft', 'live'] as const),
       })
     )

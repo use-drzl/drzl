@@ -35,7 +35,8 @@ import {
   isIntegerColumn,
   lengthCheckLabel,
   lengthMeasure,
-  measureExpression,
+  codePointCompare,
+  measureCompare,
   moduleFileName,
   moduleSpecifier,
   needsNumericCanon,
@@ -1411,13 +1412,13 @@ function tbCapExpr(c: Column, base: string, mode: Mode): string {
     const n = c.shape.length!;
     out.push(
       mode === 'select'
-        ? branch(`at most ${n} characters`, `[...v].length <= ${n}`)
+        ? branch(`at most ${n} characters`, codePointCompare('v', '<=', n))
         : branch(`at most ${n} bytes`, `new TextEncoder().encode(v).length <= ${n}`)
     );
     return `Type.Intersect([${base}, ${out.join(', ')}])`;
   }
   if (c.maxLength)
-    out.push(branch(`at most ${c.maxLength} characters`, `[...v].length <= ${c.maxLength}`));
+    out.push(branch(`at most ${c.maxLength} characters`, codePointCompare('v', '<=', c.maxLength)));
   if (c.maxBytes) {
     out.push(
       branch(`at most ${c.maxBytes} bytes`, `new TextEncoder().encode(v).length <= ${c.maxBytes}`)
@@ -1464,12 +1465,12 @@ function tbLengthBranches(lengths: LengthCheck[], cols: Column[]): string[] {
     if (!measure) return [];
     const v = `o[${JSON.stringify(k.column)}]`;
     const msg = JSON.stringify(lengthCheckLabel(k));
-    const count = measureExpression(measure, v);
+    const test = measureCompare(measure, v, k.operator, k.value);
     return [
       `Type.Unsafe<unknown>({
     [Kind]: 'DrzlRowCheck',
     description: ${msg},
-    assert: (o: any) => o == null || ${v} == null || ${count} ${OPS[k.operator]} ${k.value},
+    assert: (o: any) => o == null || ${v} == null || ${test},
   })`,
     ];
   });

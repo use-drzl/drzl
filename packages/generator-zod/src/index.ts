@@ -42,7 +42,8 @@ import {
   isIntegerColumn,
   lengthCheckLabel,
   lengthMeasure,
-  measureExpression,
+  codePointCompare,
+  measureCompare,
   moduleFileName,
   moduleSpecifier,
   nestedArmNotes,
@@ -202,8 +203,8 @@ function lengthRefinements(c: Column, lengths: LengthCheck[]): string {
       const measure = lengthMeasure(c, k);
       if (!measure) return '';
       const msg = JSON.stringify(lengthCheckLabel(k));
-      const count = measureExpression(measure, 'v');
-      return `.refine((v) => ${count} ${OPS[k.operator]} ${k.value}, { message: ${msg} })`;
+      const test = measureCompare(measure, 'v', k.operator, k.value);
+      return `.refine((v) => ${test}, { message: ${msg} })`;
     })
     .join('');
 }
@@ -358,7 +359,7 @@ function shapeExpr(c: Column, mode: Mode, typedJsonRef?: string): string | undef
       // not. Neither `.length` nor `.max` is either measurement: both count UTF-16 units.
       if (!s.length) return 'z.string()';
       return mode === 'select'
-        ? `z.string().refine((v) => [...v].length <= ${s.length}, { message: 'at most ${s.length} characters' })`
+        ? `z.string().refine((v) => ${codePointCompare('v', '<=', s.length)}, { message: 'at most ${s.length} characters' })`
         : `z.string().refine((v) => new TextEncoder().encode(v).length <= ${s.length}, { message: 'at most ${s.length} bytes' })`;
   }
 }
@@ -424,7 +425,7 @@ function zodExprForColumn(
       // takes 255 ascii characters and only 63 thumbs-up ones. Both verified against the servers.
       let str = 'z.string()';
       if (c.maxLength) {
-        str += `.refine((v) => [...v].length <= ${c.maxLength}, { message: 'at most ${c.maxLength} characters' })`;
+        str += `.refine((v) => ${codePointCompare('v', '<=', c.maxLength)}, { message: 'at most ${c.maxLength} characters' })`;
       }
       if (c.maxBytes) {
         str += `.refine((v) => new TextEncoder().encode(v).length <= ${c.maxBytes}, { message: 'at most ${c.maxBytes} bytes' })`;
