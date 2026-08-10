@@ -7,7 +7,18 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 on:
+  # master only. A branch push and its pull request are two different events on the same commit,
+  # and both used to start this workflow, so every code branch ran the whole gate twice: eight
+  # check runs where four would do. The concurrency group above cannot collapse them and should
+  # not try, because a push is refs/heads/x while its pull request is refs/pull/N/merge, and
+  # giving them one group would cancel one of the two. A cancelled check is precisely what the
+  # ship loop treats as a failure, by a rule written after an Actions outage waved cancelled runs
+  # through as clean.
+  #
+  # Nothing loses coverage: every branch here reaches master through a pull request, which still
+  # runs, and this keeps a post-merge run on master as the safety net.
   push:
+    branches: [master]
     paths-ignore:
       - 'docs/**'
   pull_request:
