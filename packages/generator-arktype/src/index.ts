@@ -1106,14 +1106,6 @@ function atCapNarrows(c: Column, mode: Mode): string {
  */
 function atLengthNarrows(lengths: LengthCheck[], cols: Column[]): string {
   const byName = new Map(cols.map((c) => [c.name, c]));
-  const OPS: Record<LengthCheck['operator'], string> = {
-    '>=': '>=',
-    '>': '>',
-    '<=': '<=',
-    '<': '<',
-    '=': '===',
-    '<>': '!==',
-  };
   return lengths
     .flatMap((k) => {
       const col = byName.get(k.column);

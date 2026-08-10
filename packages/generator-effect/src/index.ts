@@ -27,7 +27,6 @@ import {
   comparisonWire,
   describeSet,
   needsNumericCanon,
-  CODEPOINT_LENGTH,
   COERCIBLE_DATE_STRING,
   COLUMN_FORMATS,
   NUMERIC_CANON_NAME,

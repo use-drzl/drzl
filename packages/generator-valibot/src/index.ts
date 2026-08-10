@@ -368,14 +368,6 @@ function vShapeExpr(c: Column, mode: Mode): string | undefined {
  * and `lengthMeasure` for the one place that choice is made.
  */
 function vLengthChecks(c: Column, lengths: LengthCheck[]): string[] {
-  const OPS: Record<LengthCheck['operator'], string> = {
-    '>=': '>=',
-    '>': '>',
-    '<=': '<=',
-    '<': '<',
-    '=': '===',
-    '<>': '!==',
-  };
   return lengths
     .filter((k) => k.column === c.name)
     .flatMap((k) => {
