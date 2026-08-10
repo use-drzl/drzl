@@ -18,6 +18,54 @@ permissions:
 jobs:
   # Cheap, always runs, and it is the only job that answers "did upstream move at all". It stays
   # useful even on a day when the two expensive jobs below cannot run.
+  # A version bump that reached master and never published. The release PR is authored by
+  # github-actions[bot], so squash-merging it produces a bot-authored commit, and GitHub's
+  # recursion guard means no workflow fires: the versions land on master, nothing reaches the
+  # registry, and the only symptom is silence. That happened on 2026-08-10 and went unnoticed for
+  # forty minutes, during which npm install of the CLI was broken for an unrelated reason nobody
+  # could see past.
+  #
+  # Cheap to detect: master's package versions against what the registry serves. If master is
+  # ahead and no release run exists for that commit, the release never ran and a workflow_dispatch
+  # is the recovery.
+  unpublished-master:
+    if: github.repository == 'use-drzl/drzl'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      - name: Every version on master exists on the registry
+        run: |
+          set -o pipefail
+          behind=0
+          for pkg in packages/*/package.json; do
+            private=$(node -p "require('./$pkg').private === true")
+            [ "$private" = "true" ] && continue
+            name=$(node -p "require('./$pkg').name")
+            want=$(node -p "require('./$pkg').version")
+            have=$(npm view "$name" version 2>/dev/null || echo "")
+            if [ "$want" != "$have" ]; then
+              echo "    $name: master has $want, the registry serves ${have:-nothing}"
+              behind=1
+            fi
+          done
+          if [ "$behind" = 1 ]; then
+            echo "::error title=release never published::master carries versions the registry does not have. A squash-merged release PR is bot-authored, so no workflow fires. Recover with: gh workflow run release.yml --ref master -f dry_run=false"
+            {
+              echo "### A release landed on master and never published"
+              echo
+              echo "The versions above are on master and not on npm. The usual cause is a release"
+              echo "pull request merged by squash: the commit is authored by github-actions[bot],"
+              echo "so no workflow runs."
+              echo
+              echo "Recover with a manual dispatch of release.yml, dry_run false."
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          echo "    every published package on master matches the registry"
+
   pins:
     if: github.repository == 'use-drzl/drzl'
     runs-on: ubuntu-latest
@@ -188,7 +236,7 @@ jobs:
   # reused rather than duplicated, assigned, and closed by the run that goes green again.
   report:
     if: always() && github.repository == 'use-drzl/drzl'
-    needs: [pins, gate-on-published, runtimes-latest]
+    needs: [pins, gate-on-published, runtimes-latest, unpublished-master]
     runs-on: ubuntu-latest
     permissions:
       issues: write
@@ -203,6 +251,7 @@ jobs:
               pins: '${{ needs.pins.result }}',
               'gate-on-published': '${{ needs.gate-on-published.result }}',
               'runtimes-latest': '${{ needs.runtimes-latest.result }}',
+              'unpublished-master': '${{ needs.unpublished-master.result }}',
             };
             const failed = Object.entries(results).filter(([, r]) => r === 'failure');
             const run = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
