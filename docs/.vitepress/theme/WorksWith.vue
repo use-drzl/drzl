@@ -157,7 +157,9 @@ function href(link: string): string {
                     }}<sup v-if="entry.soon" class="soon" aria-hidden="true">*</sup></span
                   >
                 </template>
-                <span v-if="entry.soon" class="visually-hidden">, not published to npm yet</span>
+                <span v-if="entry.soon" class="visually-hidden"
+                  >, generator ships inside the CLI, no standalone package yet</span
+                >
               </a>
             </li>
           </ul>
@@ -173,11 +175,11 @@ function href(link: string): string {
       </p>
 
       <p class="footnote">
-        <span aria-hidden="true">*</span> {{ soonCount }} of these are built, documented and
-        measured in this repository but are not published to npm yet. They are optional dependencies
-        of <code>@drzl/cli</code> awaiting a first manual publish, so
-        <code>drzl generate</code> cannot load them on a fresh install today. Everything else in
-        this grid installs and runs now.
+        <span aria-hidden="true">*</span> {{ soonCount }} of these generators have no package of
+        their own on npm yet. <code>drzl generate</code> still emits them, because the generator
+        ships inside <code>@drzl/cli</code> rather than being resolved at runtime, and the code it
+        writes imports the framework itself and never a <code>@drzl/*</code> package. What the
+        missing publish blocks is importing one of them directly as a library.
       </p>
       <p class="footnote">
         Product names and marks belong to their owners, and appear here only to say which software
