@@ -241,7 +241,7 @@ Nothing else here is affected by a documentation change.
     all 36 documented configs generate and typecheck
     drizzle-orm 1.0.0-rc.4, with its own zod, valibot, arktype and typebox-legacy modules
     1548 column comparisons
-    55 documented divergence(s), 30 of them with DRZL accepting something official refuses, 0 stated as a rejection count and a complement
+    60 documented divergence(s), 30 of them with DRZL accepting something official refuses, 0 stated as a rejection count and a complement
     1476 probes against a real Postgres (41 columns)
     agree with the database: DRZL 1099, drizzle-orm 1041
     DRZL closer than drizzle-orm on 58, further on 0
@@ -255,7 +255,7 @@ Nothing else here is affected by a documentation change.
     119 columns and 11 tables compared, drizzle-orm 0.45.2 against 1.0.0-rc.4
     drizzle-orm 0.45.2 against drizzle-zod 0.8.3, drizzle-valibot 0.4.2, drizzle-arktype 0.1.3, drizzle-typebox 0.3.3
     1500 column comparisons across 72 pairings
-    49 documented divergence(s), 27 of them with DRZL accepting something official refuses; 6 known-defect column(s), 0 already filed and 6 first seen by this stage
+    54 documented divergence(s), 27 of them with DRZL accepting something official refuses; 6 known-defect column(s), 0 already filed and 6 first seen by this stage
 ```
 
 ## What it does not cover

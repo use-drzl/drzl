@@ -325,6 +325,23 @@ const pairingMatches = (decl: string, pairing: string) => {
  * load-bearing the day someone adds a column without one.
  */
 const ALLOWED: Record<string, Waiver> = {
+  // A temporal column carried as text refuses a string with nothing in it but whitespace, and the
+  // official validators take one. The database is the arbiter and it was asked: through PGlite,
+  // Postgres refuses `''` and `' '` for date, time, timetz, timestamp, timestamptz and interval
+  // alike, and accepts a valid value with surrounding whitespace, so the check refuses exactly the
+  // set the server refuses. This is the reverse of the direction that is a hole: official accepts a
+  // value the column cannot hold, and `''` is what an untouched form control submits.
+  //
+  // Nothing stronger is claimed and nothing stronger can be: Postgres reads 'today',
+  // 'January 8, 1999' and '20200101' as dates, which is why no date pattern is emitted at all.
+  'pg/c_date_s': { libs: LIB_NAMES, modes: MODE_NAMES, why: "a blank string is not a date, and Postgres refuses it", divergence: { '*/*': `L:  | T: ""` } },
+  'pg/c_ts_s': { libs: LIB_NAMES, modes: MODE_NAMES, why: 'as pg/c_date_s', divergence: { '*/*': `L:  | T: ""` } },
+  'pg/c_time': { libs: LIB_NAMES, modes: MODE_NAMES, why: 'as pg/c_date_s', divergence: { '*/*': `L:  | T: ""` } },
+  'pg/c_interval': { libs: LIB_NAMES, modes: MODE_NAMES, why: 'as pg/c_date_s', divergence: { '*/*': `L:  | T: ""` } },
+  // The same on MySQL, measured on 8.4.11 in STRICT_TRANS_TABLES: date, datetime and timestamp all
+  // refuse a blank. Its `time` is deliberately absent from this list and from the marker, because
+  // that column accepts `''` and stores 00:00:00 with no warning.
+  'mysql/m_date_s': { libs: LIB_NAMES, modes: MODE_NAMES, why: 'as pg/c_date_s, measured on MySQL', divergence: { '*/*': `L:  | T: ""` } },
   // Binary payloads are typed as Uint8Array rather than Buffer. A Buffer is a Uint8Array, so
   // nothing official accepts is turned away. The wider check needs no `@types/node`, survives a
   // runtime where `Buffer` is undefined, and makes bytea and blob validate the same way.

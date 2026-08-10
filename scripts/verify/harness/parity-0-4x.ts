@@ -210,6 +210,17 @@ const WRITE = ['insert', 'update'];
  * in its own ALLOWED map, except where noted on `c_char`.
  */
 const ALLOWED: Record<string, Entry> = {
+  // A temporal column carried as text refuses a string with nothing in it but whitespace, and the
+  // official validators take one. The v1 copy of this entry carries the measurement: through
+  // PGlite, Postgres refuses `''` and `' '` for every temporal type and accepts a valid value with
+  // surrounding whitespace, so the check refuses exactly the set the server refuses. The marker is
+  // set on both majors on purpose, which is why it shows up in both ledgers.
+  'pg/c_date_s': { libs: LIB_NAMES, modes: MODE_NAMES, divergence: { '*/*': `L:  | T: ""` }, drzl: 'refuses a blank string, which no temporal type accepts', official: 'accepts any string at all', filed: 'not a defect: the database refuses the value' },
+  'pg/c_ts_s': { libs: LIB_NAMES, modes: MODE_NAMES, divergence: { '*/*': `L:  | T: ""` }, drzl: 'as pg/c_date_s', official: 'as pg/c_date_s', filed: 'as pg/c_date_s' },
+  'pg/c_time': { libs: LIB_NAMES, modes: MODE_NAMES, divergence: { '*/*': `L:  | T: ""` }, drzl: 'as pg/c_date_s', official: 'as pg/c_date_s', filed: 'as pg/c_date_s' },
+  'pg/c_interval': { libs: LIB_NAMES, modes: MODE_NAMES, divergence: { '*/*': `L:  | T: ""` }, drzl: 'as pg/c_date_s', official: 'as pg/c_date_s', filed: 'as pg/c_date_s' },
+  // MySQL's `time` is deliberately not here and not marked: it accepts a blank and stores 00:00:00.
+  'mysql/m_date_s': { libs: LIB_NAMES, modes: MODE_NAMES, divergence: { '*/*': `L:  | T: ""` }, drzl: 'as pg/c_date_s, measured on MySQL 8.4.11', official: 'as pg/c_date_s', filed: 'as pg/c_date_s' },
   // ---- five columns that stopped being defects when the class-name path learned their names ----
   // Each of these was `unknown, which accepts every value in the pool`. `SQLiteBlobBuffer` and the
   // millisecond timestamp mode now have arms, so what is left is the ordinary divergence the rest
