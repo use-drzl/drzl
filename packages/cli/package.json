@@ -1,6 +1,6 @@
 {
   "name": "@drzl/cli",
-  "version": "4.24.1",
+  "version": "4.24.2",
   "private": false,
   "license": "Apache-2.0",
   "type": "module",

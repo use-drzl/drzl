@@ -1,6 +1,6 @@
 {
   "name": "@drzl/generator-valibot",
-  "version": "3.20.2",
+  "version": "3.20.3",
   "private": false,
   "license": "Apache-2.0",
   "type": "module",

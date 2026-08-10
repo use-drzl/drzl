@@ -1,6 +1,6 @@
 {
   "name": "@drzl/validation-core",
-  "version": "3.22.3",
+  "version": "3.22.4",
   "private": false,
   "license": "Apache-2.0",
   "type": "module",
