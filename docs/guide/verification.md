@@ -247,8 +247,8 @@ Nothing else here is affected by a documentation change.
     DRZL closer than drizzle-orm on 58, further on 0
     403 rows read back through the driver (41 columns)
     rejected by DRZL: 66, of which drizzle-orm also rejects: 66
-    53 CHECK probes against a real Postgres (13 constrained columns)
-    rows Postgres rejects and the validator accepts: DRZL 0, drizzle-orm 22
+    59 CHECK probes against a real Postgres (15 constrained columns)
+    rows Postgres rejects and the validator accepts: DRZL 0, drizzle-orm 24
     32 CHECK probes against a real SQLite (10 constrained columns)
     37 probes against a real MySQL
     9 defaulted columns, 9 reproduced by applyDefaults

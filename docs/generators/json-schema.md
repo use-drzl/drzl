@@ -116,6 +116,20 @@ nothing pretends to enforce it:
 The four validation generators do enforce these. See
 [the ArkType generator](/generators/arktype) or [the valibot generator](/generators/valibot).
 
+A column-level inequality is a different matter, and this format can state it. `CHECK
+(tier <> 'banned')` emits `not` beside the type:
+
+```json
+{ "type": "string", "not": { "const": "banned" } }
+```
+
+On the OpenAPI 3.0 target the same statement is spelled `"not": { "enum": ["banned"] }`, since that
+dialect has no `const`. On a numeric string wire it becomes `"not": { "type": "string", "pattern":
+... }`, because the driver spells one stored value many ways and excluding a single spelling would
+enforce almost nothing. The inner `"type": "string"` there is load bearing: `pattern` says nothing
+about a value that is not a string, so a bare `not` around it is false for `null` and would quietly
+make a nullable column non-nullable.
+
 ### A byte budget
 
 MySQL's TEXT family is capped by the type in **bytes**, not by a declared length in characters:

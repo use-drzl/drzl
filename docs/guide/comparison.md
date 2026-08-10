@@ -52,11 +52,11 @@ the measurement that settled it.
 
 ## Where DRZL is stricter, and the database agrees
 
-**`CHECK` constraints.** This is the row the project exists for. Against a real Postgres, over 53
-probes on 13 constrained columns, the run behind this page printed:
+**`CHECK` constraints.** This is the row the project exists for. Against a real Postgres, over 59
+probes on 15 constrained columns, the run behind this page printed:
 
 ```
-    rows Postgres rejects and the validator accepts: DRZL 0, drizzle-orm 22
+    rows Postgres rejects and the validator accepts: DRZL 0, drizzle-orm 24
 ```
 
 The same question asked of SQLite over 32 probes on 10 constrained columns, and of MySQL over 37

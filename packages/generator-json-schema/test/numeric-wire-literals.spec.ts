@@ -112,13 +112,20 @@ describe('equality on the numeric string wire', () => {
     expect(v({ n: '2.00' })).toBe(false);
   });
 
-  it('CHECK (n <> 1) stays unenforced here, leniency pinned', () => {
-    // This generator has never stated an inequality in any wire; the format pattern is all
-    // that holds, so both spellings pass and the constraint ledger reports the clause.
+  it('CHECK (n <> 1) refuses every spelling of the excluded value, not just one', () => {
+    // This generator stated no inequality in any wire until the CHECK fixture grew one and the
+    // gate caught it. On this wire a literal exclusion would enforce almost nothing, because the
+    // driver spells a stored 1 by declared scale: excluding "1" would still admit "1.00". So the
+    // exclusion is a `not: { pattern }` over the canonical spellings, which is the same shape the
+    // `IN` branch above uses and refuses all of them.
     const s = tableSchemas(table([numS2()], [{ expression: 'n <> 1' }]));
     const v = compile(s.select);
-    expect(v({ n: '1.00' })).toBe(true);
-    expect(v({ n: '2.00' })).toBe(true);
+    expect(v({ n: '1' }), "'1'").toBe(false);
+    expect(v({ n: '1.00' }), "'1.00'").toBe(false);
+    expect(v({ n: '1.000000' }), "'1.000000'").toBe(false);
+    expect(v({ n: '2.00' }), "'2.00'").toBe(true);
+    // Null is untouched: SQL never applied the comparison, so neither does this.
+    expect(v({ n: null }), 'null').toBe(true);
   });
 });
 

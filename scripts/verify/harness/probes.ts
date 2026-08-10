@@ -54,6 +54,11 @@ export const CHECK_PROBES: Record<string, unknown[]> = {
   k_len: ['ab', 'abc', 'abcd', '', '\u{1F44D}\u{1F44D}\u{1F44D}'],
   k_len_max: ['abcde', 'abcdef', '', '\u{1F44D}\u{1F44D}\u{1F44D}\u{1F44D}\u{1F44D}'],
   k_card: [[], ['a'], ['a', 'b'], ['a', 'b', 'c']],
+  // The inequality form, which nothing here probed until two generators were caught dropping it
+  // silently. `<>` is the one comparison whose absence looks exactly like a column with no CHECK,
+  // so a fixture without it cannot tell an enforcing generator from an ignoring one.
+  k_ne_s: ['ok', 'banned', ''],
+  k_ne_n: [6, 7, 8],
   // One side of a row-level comparison, with the other NULL. SQL leaves the CHECK satisfied, so
   // an emitted schema that rejects here would turn away rows the database takes.
   k_pair_a: [1, 100, -1],

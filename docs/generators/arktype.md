@@ -66,6 +66,19 @@ An equality on a string becomes a literal type. Because a constraint is folded i
 nullable column reads `(0 <= number.integer <= 100 | null)`, which lets `null` through exactly as
 SQL does.
 
+An **inequality** takes a narrow, on the field, because the DSL has no negation. Both spellings
+that look like they should work were measured on 2.2.3 and neither does: `string & !'banned'` is a
+parse error, and `Exclude<string, 'banned'>` parses and then accepts `'banned'`.
+
+```ts
+tier: type("string").narrow(
+  (v, ctx) => v == null || v !== "banned" || ctx.mustBe("tier_not_banned: tier <> 'banned'")
+),                                       // check(sql`${t.tier} <> 'banned'`)
+```
+
+Null passes, as it does everywhere here, because `NULL <> 'banned'` is NULL in SQL and a CHECK
+passes on NULL.
+
 ### What goes on the object
 
 Two constraints cannot live in a field's type, and both go on the object as a `.narrow`:

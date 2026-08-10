@@ -423,8 +423,8 @@ const ALLOWED: Record<string, Entry> = {
   'pg/n_point': { libs: ['valibot'], modes: MODE_NAMES, divergence: { '*/*': `L:  | T: [1,2,3]` }, drzl: 'as pg/c_point', official: 'as pg/c_point', filed: 'as pg/c_point' },
   'pg/n_ts': { libs: LIB_NAMES, modes: WRITE, divergence: { '*/*': `L: 0, 1, 1.5, -1, 200, 40000, 9000000, 2147483648, 1900, 2000, 2500, '2020-01-01', '2020-01-01T00:00:00Z', 17, 18, 50, 100, 101, 4294967295, 4294967296 | T: `, }, drzl: 'as pg/c_date_d', official: 'as pg/c_date_d', filed: 'as pg/c_date_d' },
   // The database has already answered this one in this same script: the CHECK ground-truth stage
-  // runs 53 probes over the `checked` table against a real Postgres and reports rows Postgres
-  // rejects and the validator accepts as DRZL 0, drizzle-orm 22, and `k_between BETWEEN 5 AND 15`
+  // runs 59 probes over the `checked` table against a real Postgres and reports rows Postgres
+  // rejects and the validator accepts as DRZL 0, drizzle-orm 24, and `k_between BETWEEN 5 AND 15`
   // there is this column's own CHECK form. The v1 copy of this entry carries the rest of the
   // reasoning, including why the bound is two-sided.
   'pg/n_check': { libs: LIB_NAMES, modes: MODE_NAMES, divergence: { '*/*': `L:  | T: 0, 1, -1, 200, 40000, 9000000, 1900, 2000, 2500, 17, 101` }, drzl: 'the column CHECK, as a bound', official: 'no CHECK at all: no first-party module reads one', filed: 'not a defect: this is what DRZL is for' },

@@ -99,6 +99,55 @@ function canonicalSetPattern(values: string[], integerOnly: boolean): string {
 }
 
 /**
+ * `CHECK (col <> 'banned')` as an exclusion on whatever the column's schema is.
+ *
+ * This format can state it, and until now this generator was the one that said nothing at all: a
+ * `<>` produced no keyword, so the document described a column that accepts the one value the
+ * database refuses. `not` sits beside `type` in the same schema object rather than under an
+ * `allOf`, which is the same statement with one level less, and every dialect here has the
+ * keyword, OpenAPI 3.0 included.
+ *
+ * The excluded value follows the column's wire, the same rule the `=` branch applies: on a bigint
+ * column a serialised row carries digits in a string, and on a numeric string wire the driver
+ * spells one value many ways, so there the exclusion is a `pattern` that no spelling of the value
+ * can match rather than a literal that only one spelling would.
+ *
+ * Null is unaffected in every spelling, which is what SQL does: `NULL <> 'banned'` is NULL and the
+ * CHECK passes, and null is not equal to the excluded value so `not` admits it.
+ */
+function withExclusions(
+  c: Column,
+  target: JsonSchemaTarget,
+  checks: ColumnCheck[],
+  s: Schema
+): Schema {
+  if (c.arrayDimensions) return s;
+  const excluded = checks.filter((k) => k.column === c.name && k.operator === '<>');
+  if (!excluded.length) return s;
+  if (comparisonWire(c) === 'numeric-string') {
+    // `type: 'string'` inside the `not` is load bearing, and its absence is a trap this format
+    // sets: `pattern` says nothing about a value that is not a string, so a bare
+    // `not: { pattern }` is false for null and the exclusion silently made the column
+    // non-nullable. Scoped to strings, null fails the inner schema and the `not` admits it, which
+    // is what SQL does with `NULL <> 1`.
+    return {
+      ...s,
+      not: {
+        type: 'string',
+        pattern: canonicalSetPattern(excluded.map((k) => k.value), c.dbType === 'BIGINT'),
+      },
+    };
+  }
+  const values = excluded.map((k) =>
+    k.kind === 'string' || c.tsType === 'bigint' ? k.value : Number(k.value)
+  );
+  // OpenAPI 3.0 has no `const`, and its Schema Object is closed, so the one-value form is spelled
+  // as a one-member `enum` there for the same reason the `=` branch spells it that way.
+  const one = values.length === 1 && target !== 'openapi-3.0';
+  return { ...s, not: one ? { const: values[0] } : { enum: values } };
+}
+
+/**
  * The JSON Schema for one column, before nullability and defaults are applied.
  *
  * Every branch answers the same question: what does this value look like once it has been through
@@ -106,6 +155,23 @@ function canonicalSetPattern(values: string[], integerOnly: boolean): string {
  * serialised at all, so it travels as a string; a `Buffer` travels as base64.
  */
 function baseSchema(
+  c: Column,
+  mode: Mode,
+  target: JsonSchemaTarget,
+  checks: ColumnCheck[],
+  sets: ColumnSet[],
+  lengths: LengthCheck[],
+  enumRef?: EnumRefResolver
+): Schema {
+  return withExclusions(
+    c,
+    target,
+    checks,
+    unexcludedSchema(c, mode, target, checks, sets, lengths, enumRef)
+  );
+}
+
+function unexcludedSchema(
   c: Column,
   mode: Mode,
   target: JsonSchemaTarget,

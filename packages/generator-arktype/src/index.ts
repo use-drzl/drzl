@@ -627,6 +627,7 @@ function renderObjectShape(
         atCapNarrows(c, mode) +
         atBigintNarrow(c, checks) +
         atNumericCanonNarrows(c, checks, sets) +
+        atInequalityNarrows(c, checks) +
         atNonFiniteNarrow(c, checks) +
         // Mutually exclusive with the one above it: that one is reached only where the column
         // admits `NaN` and this one only where the server refuses one of the three.
@@ -756,6 +757,39 @@ function atNarrow(c: Column, predicate: (v: string) => string, message: string):
 }
 
 /**
+ * `CHECK (col <> 'banned')` as a narrow, because ArkType's DSL cannot state a negation.
+ *
+ * Both spellings that look like they would work were measured on 2.2.3 and neither does:
+ * `string & !'banned'` is a parse error ("'!'banned'' is unresolvable"), and
+ * `Exclude<string, 'banned'>` parses and then accepts `'banned'`. A narrow is the only form that
+ * enforces anything, and it is the same escape hatch the character caps and the bigint bound
+ * already use. Until this existed the constraint was emitted as a bare `string`, so a parsed CHECK
+ * that zod, valibot and effect all enforced was silently enforced by nothing here.
+ *
+ * Null passes, reproducing SQL: `NULL <> 'banned'` is NULL and a CHECK passes on NULL. `atNarrow`
+ * supplies that guard, and the array walk with it.
+ *
+ * The numeric string wire is excluded because `atNumericCanonNarrows` states `<>` there already,
+ * over the canonical spelling that is the only comparison that meets that driver. An array column
+ * is excluded because a scalar comparison describes an element rather than the column, which is
+ * the same reason the TypeBox generator drops parsed checks on one.
+ */
+function atInequalityNarrows(c: Column, checks: ColumnCheck[]): string {
+  if (comparisonWire(c) === 'numeric-string' || c.arrayDimensions) return '';
+  return checks
+    .filter((k) => k.column === c.name && k.operator === '<>')
+    .map((k) => {
+      // Spelled in the column's wire type, for the reason the zod generator records: `v !== 1` is
+      // true of every `1n` a bigint-mode column returns, so the check would enforce nothing.
+      const rhs = k.kind === 'string' ? JSON.stringify(k.value) : wireNumberLiteral(c, k.value);
+      const shown = k.kind === 'string' ? `'${k.value}'` : k.value;
+      const label = `${k.name ? `${k.name}: ` : ''}${c.name} <> ${shown}`;
+      return atNarrow(c, (v) => `${v} !== ${rhs}`, label);
+    })
+    .join('');
+}
+
+/**
  * The equality class on a numeric string wire, as narrows over the canonical spelling.
  *
  * The driver spells one admitted value many ways by declared scale ('1', '1.00', measured), and
@@ -764,9 +798,9 @@ function atNarrow(c: Column, predicate: (v: string) => string, message: string):
  * emits; `needsNumericCanon` in validation-core is the shared condition that keeps the two in
  * step, for the reason the TypeBox generator records on `tbNeedsCapKind`.
  *
- * `<>` rides here too, though the number wires leave it unstated: on those the declarative forms
- * have no spelling for it, while on this wire every form is a narrow anyway and the predicate is
- * exact. Ranges stay with the base pattern, unstated, as they always were here.
+ * `<>` rides here too. It is stated on the other wires as well, by `atInequalityNarrows`; here it
+ * has to go through the canonical spelling, because on this wire a literal comparison never meets
+ * the driver. Ranges stay with the base pattern, unstated, as they always were here.
  */
 function atNumericCanonNarrows(c: Column, checks: ColumnCheck[], sets: ColumnSet[]): string {
   if (comparisonWire(c) !== 'numeric-string') return '';
