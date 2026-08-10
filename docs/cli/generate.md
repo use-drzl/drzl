@@ -27,6 +27,8 @@ bunx @drzl/cli generate -c drzl.config.ts
 Options:
 
 - `-c, --config <path>`: path to the config
+- `-s, --schema <path>`: path to the schema, overriding the config
+- `--only <kinds>`: run only these generator kinds, comma separated
 - `--check`: regenerate and report drift, with a diff, without writing anything
 - `--dry-run`: report what would be written, and write nothing
 - `--json`: one JSON document on stdout, described in [Output](/cli/output#generate-json)
@@ -46,6 +48,56 @@ When the config has no `schema` key, the path is read from your drizzle-kit conf
 (`drizzle.config.ts`, then `.js`, then `.json`), and the run says so:
 `Schema from drizzle.config.ts (3 files)`. See
 [Reading the schema path from drizzle-kit](/guide/configuration#reading-the-schema-path-from-drizzle-kit).
+
+## `--only`: run one generator from a config that names several
+
+```bash
+npx @drzl/cli generate --only zod
+npx @drzl/cli generate --only zod,trpc
+```
+
+Filters `generators[]` down to the kinds you name and leaves everything else about the run alone:
+the same schema, the same filters, the same write plan, so `--only zod --check` is a drift check
+over one generator's output.
+
+The values are the kinds a config uses, and they are read from the same list the config parser and
+the published [JSON Schema](/guide/configuration) are built from, so a kind that a config accepts is
+a kind `--only` accepts. **A kind that does not exist is refused by name**, and so is a real kind
+this config does not configure:
+
+```
+--only zodd: there is no generator kind "zodd".
+Valid kinds are: orpc, trpc, hono, express, fastify, nestjs, graphql, service, zod, valibot, arktype, typebox, effect, json-schema.
+```
+
+```
+--only trpc matched no generator in this config, which names: orpc, zod.
+Add it to "generators" in your config, or name a kind that is already there.
+```
+
+Both exit `1`, because the run could not do what it was asked. A flag that silently matched nothing
+would look exactly like a generator that had nothing to write.
+
+## `--schema`: generate with no config at all
+
+```bash
+npx @drzl/cli generate --schema src/db/schema.ts --only orpc
+```
+
+`--schema` names the schema module, overriding the config's `schema` and the drizzle-kit fallback,
+exactly as `-s` does for [`explain`](/cli/explain). With `--only` and **no config file present**, a
+minimal config is built in memory instead, which is what makes the line above a complete command:
+it emits what `drzl generate:orpc src/db/schema.ts` emits, byte for byte, and it works for all
+fourteen kinds rather than the two that had a command of their own.
+
+Everything the config route offers is still there, because there is a real config underneath: it is
+the same run, so `--check`, `--dry-run` and the drift verdicts all apply. Output goes where the
+config defaults put it: `src/api` for the router kinds, which is also `generate:orpc`'s default,
+`src/services` for `service`, and `src/validators/<kind>` for the validator kinds. Anything else, an
+output directory, a template, relation endpoints, belongs in a `drzl.config.ts`.
+
+`--schema` on its own, with no config and no `--only`, is still "no config found": DRZL will not
+guess which generators you meant.
 
 ## What changed, not how many files
 

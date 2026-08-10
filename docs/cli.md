@@ -33,8 +33,8 @@ Jump to commands:
 - Analyze: inspect a schema → [/cli/analyze](/cli/analyze)
 - Explain: what DRZL understood about one table → [/cli/explain](/cli/explain)
 - Doctor: what DRZL cannot type or enforce → [/cli/doctor](/cli/doctor)
-- Generate: run configured generators → [/cli/generate](/cli/generate)
-- Generate (oRPC): quick oRPC without config → [/cli/generate-orpc](/cli/generate-orpc)
+- Generate: run configured generators, or one of them with `--only` → [/cli/generate](/cli/generate)
+- Generate (oRPC): deprecated, see `generate --only orpc` → [/cli/generate-orpc](/cli/generate-orpc)
 - Watch: watch schema and regenerate → [/cli/watch](/cli/watch)
 - Output: streams, colour, `--json`, exit codes → [/cli/output](/cli/output)
 
@@ -193,6 +193,8 @@ bunx @drzl/cli generate -c drzl.config.ts
 Options:
 
 - `-c, --config <path>`: path to config file
+- `-s, --schema <path>`: path to the schema, overriding the config
+- `--only <kinds>`: run only these generator kinds, comma separated
 - `--check`: regenerate and report drift, with a diff, without writing anything
 - `--dry-run`: report what would be written, and write nothing
 - `--json`, `-q, --quiet`
@@ -206,7 +208,22 @@ Behavior:
 - Warnings, the spinner and the progress bar go to stderr, so `drzl generate > files.txt` holds
   only the paths that were written
 
+`--only` takes the kinds a config uses, read from the same list the config parser is built from, so
+an unknown one is refused by name rather than matching nothing. With `--schema` and no config file
+present, a minimal config is built in memory, which is how one generator runs with no config at
+all:
+
+```bash
+npx @drzl/cli generate --schema src/db/schema.ts --only orpc
+```
+
+See [Generate](/cli/generate).
+
 ### generate:orpc
+
+**Deprecated, and removed in 5.0.** Use
+`drzl generate --schema <schema> --only orpc`, which does the same thing and can reach every config
+feature this command cannot.
 
 Quickly generate oRPC routers without a config.
 
@@ -243,6 +260,10 @@ Exits `1` when the schema is missing or cannot be imported. It used to exit `0` 
 placeholder file that read "No tables detected in analysis".
 
 ### generate:trpc
+
+**Deprecated, and removed in 5.0.** Use
+`drzl generate --schema <schema> --only trpc`, which does the same thing and can reach every config
+feature this command cannot.
 
 Quickly generate tRPC v11 routers without a config.
 
@@ -287,19 +308,19 @@ Usage:
 ::: code-group
 
 ```bash [pnpm]
-pnpm dlx @drzl/cli watch -c drzl.config.ts --pipeline all --debounce 200 [--json]
+pnpm dlx @drzl/cli watch -c drzl.config.ts [--only zod] --debounce 200 [--json]
 ```
 
 ```bash [npm]
-npx @drzl/cli watch -c drzl.config.ts --pipeline all --debounce 200 [--json]
+npx @drzl/cli watch -c drzl.config.ts [--only zod] --debounce 200 [--json]
 ```
 
 ```bash [yarn]
-yarn dlx @drzl/cli watch -c drzl.config.ts --pipeline all --debounce 200 [--json]
+yarn dlx @drzl/cli watch -c drzl.config.ts [--only zod] --debounce 200 [--json]
 ```
 
 ```bash [bun]
-bunx @drzl/cli watch -c drzl.config.ts --pipeline all --debounce 200 [--json]
+bunx @drzl/cli watch -c drzl.config.ts [--only zod] --debounce 200 [--json]
 ```
 
 :::
@@ -307,7 +328,9 @@ bunx @drzl/cli watch -c drzl.config.ts --pipeline all --debounce 200 [--json]
 Options:
 
 - `-c, --config <path>`
-- `--pipeline <name>`: `all | analyze | generate-orpc | generate-trpc | generate-hono | generate-express | generate-fastify | generate-nestjs | generate-graphql` (default `all`)
+- `--only <kinds>`: rebuild only these generator kinds, comma separated
+- `--pipeline <name>`: `all | analyze | generate-<kind>` (default `all`), the older spelling of
+  `--only`
 - `--debounce <ms>`: wait this long after the last change before rebuilding (default `200`)
 - `--clear`: clear the terminal before each rebuild, off by default
 - `--json`: emit structured JSON logs on stdout, one object per line
@@ -315,7 +338,12 @@ Options:
 - `--poll`: force polling, which helps on WSL, Docker and network mounts
 
 A watch has no answer to give, so everything human it prints goes to stderr. Exits `1` when there
-is no config or the schema path cannot be resolved.
+is no config, when the schema path cannot be resolved, or when `--only` or `--pipeline` names
+something that is not a generator kind.
+
+`--pipeline` reaches all fourteen kinds now. It listed seven, and the other seven matched nothing
+at all, so `drzl watch --pipeline generate-zod` ran and regenerated nothing. See
+[Watch](/cli/watch).
 
 ### init
 
