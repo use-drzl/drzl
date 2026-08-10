@@ -182,6 +182,8 @@ export const checked = pgTable('checked', {
   k_pair_a: integer(),
   k_pair_b: integer(),
   k_bigint_s: bigint({ mode: 'string' }),
+  k_ne_s: text(),
+  k_ne_n: integer(),
 }, (t) => [
   check('k_min_c', sql`${t.k_min} >= 18`),
   check('k_max_c', sql`${t.k_max} <= 100`),
@@ -196,4 +198,6 @@ export const checked = pgTable('checked', {
   check('k_card_c', sql`cardinality(${t.k_card}) >= 2`),
   check('k_pair_c', sql`${t.k_pair_a} < ${t.k_pair_b}`),
   check('k_bigint_s_c', sql`${t.k_bigint_s} IN (1, 2)`),
+  check('k_ne_s_c', sql`${t.k_ne_s} <> 'banned'`),
+  check('k_ne_n_c', sql`${t.k_ne_n} <> 7`),
 ]);

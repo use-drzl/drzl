@@ -43,8 +43,8 @@ every commit. The run behind this README printed:
 
 ```
     1476 probes against a real Postgres (41 columns)
-    53 CHECK probes against a real Postgres (13 constrained columns)
-    rows Postgres rejects and the validator accepts: DRZL 0, drizzle-orm 22
+    59 CHECK probes against a real Postgres (15 constrained columns)
+    rows Postgres rejects and the validator accepts: DRZL 0, drizzle-orm 24
     32 CHECK probes against a real SQLite (10 constrained columns)
     37 probes against a real MySQL
 ```

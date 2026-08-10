@@ -91,11 +91,17 @@ declaratively:
 | `CHECK (n > 0)`                   | `exclusiveMinimum: 0`       |
 | `CHECK (score BETWEEN 0 AND 100)` | `minimum: 0, maximum: 100`  |
 | `CHECK (tier = 'gold')`           | `Type.Literal("gold")`      |
+| `CHECK (tier <> 'banned')`        | `Type.Intersect([base, Type.Not(Type.Literal("banned"))])` |
 | `CHECK (cardinality(tags) >= 2)`  | `minItems: 2`               |
 | `CHECK (status IN ('a', 'b'))`    | `Type.Union([...literals])` |
 
 A bound **replaces** the end of the declared range it narrows rather than sitting beside it: a
 CHECK can only narrow, never widen, since the range is the column's type.
+
+The intersect around an exclusion is load bearing rather than decorative. `Type.Not` on its own
+accepts a value of any other type, measured on 0.34.52, so without the base beside it the column
+would take anything that is not the excluded value. Both the interpreted and the compiled path
+enforce the pair, which matters because the compiled path is the one this generator exists for.
 
 ### What goes on the object
 

@@ -79,6 +79,8 @@ CREATE TABLE checked (
   k_pair_a integer,
   k_pair_b integer,
   k_bigint_s bigint CHECK (k_bigint_s IN (1, 2)),
+  k_ne_s text CHECK (k_ne_s <> 'banned'),
+  k_ne_n integer CHECK (k_ne_n <> 7),
   CONSTRAINT k_pair_c CHECK (k_pair_a < k_pair_b)
 );
 `;

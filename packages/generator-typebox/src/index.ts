@@ -621,6 +621,37 @@ function tbCardinalityOptions(
   return [...out];
 }
 
+/**
+ * `CHECK (col <> 'banned')` as an exclusion around whatever base type the column has.
+ *
+ * TypeBox can say this declaratively, which is why it is spelled this way rather than as another
+ * registered-kind predicate: `Type.Not(Type.Literal(x))` serialises to `{ not: { const: x } }`, so
+ * the constraint survives into the document the same way the `=` literal beside it does. The
+ * intersect is load-bearing rather than decorative, measured on 0.34.52: `Type.Not` alone accepts
+ * a value of any other type, so `Value.Check(Type.Not(Type.Literal('banned')), 5)` is true and the
+ * column would stop being a string. Intersected with the base, both the interpreted and the
+ * compiled path accept everything else and refuse the excluded value, which matters because the
+ * compiled path is the one this generator exists for.
+ *
+ * Until this existed the constraint emitted a bare `Type.String()`, so a parsed CHECK that zod,
+ * valibot and effect all enforced was enforced by nothing here.
+ *
+ * Not reached on the bigint or numeric string wires, which return earlier from a registered kind
+ * that already states `<>` in the only comparison meeting those drivers. Not applied to an array
+ * column, where a scalar comparison describes an element rather than the column.
+ */
+function tbExcludedExpr(c: Column, checks: ColumnCheck[], expr: string): string {
+  if (c.arrayDimensions) return expr;
+  const excluded = checks.filter((k) => k.column === c.name && k.operator === '<>');
+  if (!excluded.length) return expr;
+  const lits = excluded.map((k) =>
+    k.kind === 'string'
+      ? `Type.Not(Type.Literal(${JSON.stringify(k.value)}))`
+      : `Type.Not(Type.Literal(${wireNumberLiteral(c, k.value)}))`
+  );
+  return `Type.Intersect([${expr}, ${lits.join(', ')}])`;
+}
+
 function tbExprForColumn(
   c: Column,
   mode: Mode,
@@ -639,6 +670,17 @@ function tbExprForColumn(
   // scale-spelled strings: see `tbNumericCanonTarget`.
   const numericCanon = tbNumericCanonTarget(c, checks, sets);
   if (numericCanon) return tbNumericCanonExpr(c, numericCanon);
+  return tbExcludedExpr(c, checks, tbBaseExprForColumn(c, mode, coerceDates, checks, typedJsonRef, sets));
+}
+
+function tbBaseExprForColumn(
+  c: Column,
+  mode: Mode,
+  coerceDates: NonNullable<ValidationGenerateOptions['coerceDates']>,
+  checks: ColumnCheck[] = [],
+  typedJsonRef?: string,
+  sets: ColumnSet[] = []
+): string {
   // `CHECK (status IN ('a', 'b'))` is a union of literals. `Type.Literal` is the only form
   // TypeBox enforces: a `const` option parses and then accepts anything.
   const set = sets.find((x) => x.column === c.name);

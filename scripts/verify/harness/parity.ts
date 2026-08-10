@@ -603,8 +603,8 @@ const ALLOWED: Record<string, Waiver> = {
   // first-party module reads one at all, so official accepts values the column cannot hold.
   //
   // The database is the arbiter and it has already answered, in this same script: the CHECK
-  // ground-truth stage runs 53 probes against a real Postgres over the `checked` table and reports
-  // rows Postgres rejects and the validator accepts as DRZL 0, drizzle-orm 22.
+  // ground-truth stage runs 59 probes against a real Postgres over the `checked` table and reports
+  // rows Postgres rejects and the validator accepts as DRZL 0, drizzle-orm 24.
   //
   // `BETWEEN 18 AND 100` rather than a one-sided bound, and the reason is the ledger rather than
   // the coverage: on SQLite a one-sided `>= 18` leaves the column's own upper bound in place, and
