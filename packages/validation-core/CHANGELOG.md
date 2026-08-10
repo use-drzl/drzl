@@ -1,5 +1,306 @@
 # @drzl/validation-core
 
+## 3.22.0
+
+### Minor Changes
+
+- 062f305: A JSON Schema for `drzl.config.json`, and a config scaffold that completes
+
+  `drzl.config.json` has been a supported config form since the loader was written, and it was the
+  one form with no completion of any kind: a `.ts` config gets the shape from `defineConfig`, a JSON
+  config got nothing. `@drzl/cli` now ships `dist/drzl.config.schema.json`, generated at build time
+  from the same zod schema that validates the config, so the two cannot describe different things.
+  Point at it with a `$schema` key (`./node_modules/@drzl/cli/dist/drzl.config.schema.json`), or map
+  `drzl.config.json` to it in VS Code's `json.schemas`. The same file is published at
+  `https://use-drzl.github.io/drzl/drzl.config.schema.json`. `$schema` is stripped by the loader, so
+  the key is safe to leave in the file.
+
+  Two properties of `z.toJSONSchema` decide whether a generated schema is worth shipping, and both
+  are now measured rather than assumed. Its `io` option defaults to `'output'`, which marks every key
+  carrying a `.default()` as `required`: `outDir`, `importExtension`, `analyzer` and `generators` are
+  all defaulted, so that schema rejects all 34 configs in the documentation and every minimal config
+  a reader writes. The generator passes `io: 'input'`, which rejects none of them. Refinements are
+  also dropped silently, and `ConfigSchema`'s single `.superRefine` is the affix rule, so the
+  generated schema would have accepted `affix: { schema: { suffix: 'my-schema' } }` and the CLI would
+  then have refused to generate from it. The character half of that rule is re-encoded as a JSON
+  Schema `pattern`, built from the same string `validateAffix` compiles its regex from, and a test
+  fuzzes the two against each other over every printable ASCII codepoint in three positions. The
+  collision half, two modes resolving to the same identifier, is a comparison between sibling values
+  that JSON Schema cannot express; it stays a CLI-only error and is documented as one. Every other
+  verdict matches the CLI, including unknown keys: permissive where `ConfigSchema` strips them,
+  `additionalProperties: false` where the zod object is `.strict()`.
+
+  `drzl watch` never reloaded a JSON config. `computeWatchTargets` carried its own copy of the config
+  filenames and the copy was missing `drzl.config.json`, so the file loaded on the initial build and
+  no later edit to it ever fired an event. Its test spelled the same four names a third time and
+  agreed with the bug. The loader, the watcher and the test now read one exported
+  `CONFIG_FILE_NAMES`.
+
+  `drzl init` scaffolded a bare `export default { ... } as const`, so the first config a new user
+  sees was the one with no type attached and no completion. It now emits
+  `import type { DrzlConfigInput } from '@drzl/cli/config'` and `satisfies DrzlConfigInput`. The
+  import is type-only on purpose: `drzl init` also runs under `npx` in a project with no local
+  `@drzl/cli` to resolve, and a type-only import is erased before the config executes, where the
+  `defineConfig` value import the docs use would have made the first `generate` fail on a missing
+  module.
+
+  `@drzl/validation-core` exports `AFFIX_PREFIX_PATTERN` and `AFFIX_SUFFIX_PATTERN`, the affix
+  character rule in JSON Schema `pattern` form, beside the regexes that enforce it.
+
+- 4801464: `generate` knows what it is about to write before it writes it (plan items 68, 80, 81, 75, 82)
+
+  **One mechanism, three features.** `--dry-run`, "say what changed rather than how many files", and
+  "a `--check` failure should show a diff" are the same question asked once per file: what content is
+  about to land here, and what is here now. So generators now hand their writes to a `fileSink`
+  instead of calling `node:fs/promises` themselves, and `generate` decides whether that sink writes.
+  Fourteen generator packages changed by exactly one line each, because the sink is shaped like the
+  `fs` namespace they already used, plus one option on their public type.
+
+  The tempting alternative was to leave the generators alone and patch `node:fs/promises` for the
+  duration of a run, and it was measured and rejected. Patching the CommonJS exports object is
+  visible through a later dynamic import, but a module namespace that already exists is a snapshot
+  and never changes: with `const ns = await import('node:fs/promises')` evaluated first,
+  `require('node:fs/promises').writeFile = spy` leaves `ns.writeFile` untouched, on Node 22.22. The
+  CLI links `chokidar`, which imports `node:fs/promises` at module scope, so a dry run built on that
+  would write real files whenever an unrelated dependency happened to import first.
+
+  **`drzl generate --dry-run` writes nothing at all** (item 68). Not "writes and puts it back":
+  no file, no directory, no formatter output. A dry run in a project that has never been generated
+  into leaves the directory byte-for-byte as it found it, asserted per entry and per byte rather than
+  by looking for generated files. It exits `0` whether or not anything would change, because a dry
+  run that computed its answer did what it was asked, and `2` is for a run that found what it was told
+  to look for; `--check` is the flag whose question is "is anything stale". stdout still carries one
+  absolute path per line, so `drzl generate --dry-run > files.txt` gives the list that _would_ be
+  written in the same shape as the list that was.
+
+  Because generators are separate packages that a user can install at a different version from the
+  CLI, the claim is also checked at runtime rather than only in a test. A run that promised to write
+  nothing and wrote something restores the tree, exits `1` with the new `DRZL_GEN_003`, and names the
+  generator to update.
+
+  **Every run says what it did to each file** (item 80): created, changed or unchanged, with the
+  counts and the names of the ones that are not the same as before.
+
+  ```
+  ✔ Generated (zod): 3 files (1 created, 1 changed, 1 unchanged)
+    + zod/posts.zod.ts
+    ~ zod/index.ts
+  ```
+
+  A run that rewrote twelve identical files and one real change used to say `13 files`. Unchanged
+  files are counted rather than listed: the list is what changed. That report is narration, so it is
+  on stderr, `--quiet` drops it, and **stdout is unchanged**, still one absolute path per line.
+  `--json` gains a `changes` array per generator beside the existing `files`, and a `dryRun` flag.
+
+  **`--check` prints a unified diff under each drifted file** (item 81), `a/` being what is on disk
+  and `b/` what the schema produces, so it reads like `git diff` and applies like a patch. "Changed"
+  alone cannot tell a regenerated header from somebody's hand-edit to a generated file, and those two
+  want opposite responses. Diffs are capped at the first 20 files, at 4000 lines and at 1500 line
+  edits, and every cap states itself in the output; every drifted file is still named in the list
+  above the diffs, so what is capped is the explanation and never the finding. `--quiet` keeps the
+  list and drops the diffs. The diff is written here rather than installed: `diff` (jsdiff) is only
+  resolvable in this workspace as a transitive dependency of a devDependency, and adding it as a real
+  one costs a package on every install of the CLI in exchange for about a hundred lines of a
+  published algorithm. It is checked by applying its own output: every case in its suite requires the
+  emitted patch, replayed against the "before" text, to reproduce the "after" text exactly.
+
+  **`--check` also stopped writing.** It used to snapshot the output directories, let the generators
+  overwrite them for real, compare, and restore the snapshot, so the one command documented as never
+  touching your tree was the command that rewrote every generated file on every CI run, with a window
+  in which a killed process left the tree modified. It now compares in memory. One consequence: a file
+  in an output directory that the run no longer produces is not reported, and the `removed` drift
+  status is no longer produced. Reporting every unrecognised file in an output directory would mean a
+  config whose `outDir` is `src` failed CI over every hand-written module in the project.
+
+  **`drzl watch` runs one rebuild at a time** (item 75). The debounce that was there covered the wait
+  and not the work: it collapsed changes arriving close together and then started a rebuild that took
+  as long as it took, and every change arriving during _that_ started another one on top of it,
+  writing the same output directory. Measured on a 600-table schema where one rebuild takes about
+  1.4s, six saves 700ms apart produced six rebuilds with four running at once. A save that arrives
+  during a rebuild is now remembered rather than started, and produces exactly one more rebuild when
+  the current one finishes, however many arrive; the same measurement now shows at most one in
+  flight. No save is dropped, because refusing one loses an edit, which is worse than the overlap.
+
+  `--debounce` keeps its 200ms default, now measured rather than inherited: with the write-settling
+  this watcher asks chokidar for, one editor save arrives as a single event and the widest gap inside
+  one burst was 9ms; without it, a chunked write spread to 62ms, an atomic save to 101ms and
+  format-on-save to 121ms. `--debounce 0` now works, having previously been read as absent by
+  `Number(x) || 200` and silently replaced, and a value that is not a number is refused with a warning
+  instead of quietly becoming 200.
+
+  **Clearing the screen is opt-in** (item 75). `drzl watch` cleared the terminal on every rebuild with
+  no way to stop it, throwing away the previous rebuild's errors and the banner naming the watched
+  directories. It is now `--clear`, off by default, and it writes to the stream the output is actually
+  on: the old `console.clear()` decided from stdout while every human-readable line goes to stderr, so
+  `drzl watch > events.json` at a terminal cleared nothing and aimed the escape at the stream carrying
+  the JSON.
+
+  **The analysis was already shared between generators** (item 82), and there is now a test that says
+  so. Measured on a 200-table schema: one, two, three and five generators each report exactly one
+  analysis step, at a constant 37ms, and the four extra generators cost 2468ms of generator work
+  where four extra analyses would have added about 148ms. `watch` re-analyses per rebuild, which is
+  what keeps a cached analysis from going stale when the schema changes.
+
+### Patch Changes
+
+- c56125f: Bound a `bigint({ mode: 'string' })` column by the input syntax its own server parses, per dialect
+
+  The arm that typed this column a string (addendum BK) stated nothing else, so every generator
+  emitted a bare string. Graded against a real Postgres through PGlite with the parity gate's own
+  36-value probe pool, that schema disagreed with the server on **14** of them, and on every one
+  of the 14 `drizzle-orm`'s own validator agreed with the server: `''`, `'hello'`, a 300-character
+  run, three and five emoji, `'12.5'`, a uuid, `'not-a-uuid'`, `'happy'`, `'zzz'`, `'2020-01-01'`,
+  `'12:00:00'`, `'10.0.0.1'` and `'999.999.999.999'` all validated and then failed at the INSERT,
+  which is the outcome an insert schema exists to prevent.
+
+  The column now carries a `format`, which is the vehicle all six validation generators already
+  route through `COLUMN_FORMATS`, so nothing in any generator changed. There are **two** patterns,
+  because the two servers disagree in both directions, measured on PGlite and on a live MySQL
+  8.4.11: Postgres stores `'0x1f'` as 31 and `'1_000'` as 1000 and refuses `'12.5'`, while MySQL
+  refuses the first two as "Data truncated" and stores `'12.5'` as 13, rounded. A single pattern
+  would have to be their union, which readmits `'12.5'` on Postgres and leaves the defect standing,
+  or their intersection, which turns away rows each server really stores. So Postgres gets an
+  integer-literal grammar (sign, surrounding whitespace, underscore separators, decimal or
+  `0x`/`0o`/`0b`, leading zeros, and the `_` Postgres allows directly after a base prefix) and
+  MySQL gets a decimal-number grammar with an optional fraction and exponent. SingleStore takes
+  MySQL's, as every other MySQL-shaped answer in the analyzer does; SQL Server takes neither,
+  because no SQL Server was measured for its conversion rules, and Cockroach never reaches the arm
+  at all.
+
+  Verified against the servers rather than reasoned about. Postgres: 16160 probes, boundary sweeps
+  in all four bases and random shapes, **zero** values the server takes and the pattern refuses.
+  MySQL: 3319 probes against each of a signed and an unsigned column, **zero** again. The read path
+  is covered too, since the `bigint:string` codec casts to text and registers no normalize, so a row
+  written `'0x1f'` reads back `'31'`: every value either server hands back validates.
+
+  Neither pattern states the magnitude, and that is deliberate. On MySQL it is not expressible: the
+  range applies to the **rounded** value, so `'9223372036854775807.4'` is a row and
+  `'9223372036854775807.6'` is not, and `'92233720368547758070e-1'` is the int64 maximum. On
+  Postgres it is expressible, and the exact ladder was built and agreed with the server 16160/16160,
+  but leading zeros and separators make it a per-digit ladder of about 1200 characters, and the
+  ArkType generator states a format as a regex literal inside the type expression: the emitted
+  module then fails to compile with TS2589, measured on the real emitted output, where the 101
+  character pattern that ships compiles clean. Emitting a module that does not typecheck is a worse
+  failure than the bound it buys, and every value the pattern admits that Postgres refuses is
+  exactly an out-of-range magnitude, so the syntax half is complete on its own. The tests assert
+  that remainder in both directions, so stating it later reports itself.
+
+  The unsigned spelling shares the MySQL pattern, and that is what makes it agree with the database:
+  `drizzle-orm` at 1.0.0-rc.4 caps `bigint({ mode: 'string', unsigned: true })` at the signed int64
+  maximum and so refuses `'18446744073709551615'`, which MySQL 8.4.11 stores in a `bigint unsigned`
+  and hands straight back. DRZL accepts it.
+
+  Every other column shape is untouched, proved rather than asserted: master's dists and this
+  branch's were run side by side over the parity gate's three fixtures, and all 90 emitted files are
+  byte identical. With a mode-string bigint column added to the Postgres and MySQL fixtures, 78 of
+  90 stay identical and the 12 that differ are exactly the two `matrix` modules in each of the six
+  generators, each diverging first at the new column's own line.
+
+- 28787ff: Biome formatting is refused unless Biome is actually installed in the project, which makes generated
+  output byte-identical under Bun and Node again
+
+  Under Bun, `drzl generate` emitted differently formatted files from Node over the same schema and the
+  same config, and reached the network to do it. Measured on a packed install of `@drzl/cli` 4.22.0
+  against Bun 1.3.14, Node 22.22.0 and Deno 2.9.5, in a project whose package.json had never mentioned
+  Biome: Node emitted the generator's own two-space output, and Bun emitted tab-indented Biome output,
+  after downloading `@biomejs/biome` 2.5.7 and a multi-megabyte platform binary mid-generate. Running
+  `drzl generate --check` under Node against the Bun-generated tree then reported every file out of
+  date, which is a CI failure produced entirely by the choice of runtime.
+
+  **The mechanism is that resolving a package is not the same question as having it installed, on one
+  runtime.** `formatCode`'s `auto` engine tries prettier, then Biome. The Biome branch locates the
+  binary with `createRequire(...).resolve('@biomejs/biome/package.json')`, because the package declares
+  only `bin` and cannot be imported. Node and Deno answer a missing package with MODULE_NOT_FOUND,
+  which `formatCode` catches, leaving the code unformatted. Bun answers it by auto-installing from npm
+  and resolving into its own global cache:
+
+  ```
+  node -> MODULE_NOT_FOUND
+  deno -> MODULE_NOT_FOUND
+  bun  -> ~/.bun/install/cache/@biomejs/biome@2.5.7@@@1/package.json
+  ```
+
+  It was not even stable within Bun. Whether the auto-install fired depended on the state of that
+  cache, so the same command on the same tree emitted different bytes at different times: with the
+  cache cold it installed and formatted, with the package present it formatted, and with the package
+  deleted but the manifest cache warm it did not.
+
+  **A second, independent Bun difference sat behind it.** Resolution was one `createRequire` with
+  `resolve(spec, { paths: [outputDir, process.cwd()] })`. Node honours that list; Bun does not. With
+  Biome genuinely installed and an absolute `outDir` pointing outside the project, which is the exact
+  case `paths` was added for, Node fell back to the working directory and found the real install while
+  Bun never tried the second entry and auto-installed instead. Fixing only the first half would have
+  left a Bun user who really had installed Biome with no formatting at all.
+
+  **What changes.** `isProjectInstallPath` is exported and gates the resolution: a manifest reached
+  through a `node_modules` path segment is a project install, and anything else is refused. That
+  discriminator is exact rather than a heuristic, since npm, pnpm's `.pnpm` store and Yarn PnP's zip
+  and unplugged paths all reach a package through one, and Bun's auto-install cache is the only shape
+  that does not. Resolution now anchors a separate `createRequire` at each candidate directory in turn,
+  output directory first and working directory second, preserving the order of the `paths` array it
+  replaces. Under Node and Deno the guard can never fire, because their resolvers have no other kind of
+  path to return, so neither runtime changes at all.
+
+  **Measured after the fix**, on packed tarballs installed with npm, with an absolute `outDir` outside
+  the project: with no Biome installed, Node and Bun emit byte-identical unformatted output and Bun no
+  longer spawns anything; with Biome installed, Node and Bun emit byte-identical Biome-formatted
+  output. With the output directory inside the project, Node, Bun and Deno agree byte for byte in both
+  cases. Red-first: the guard's spec fails against the previous code, and the working-directory
+  fallback has a must-fire test that fails when that anchor is removed.
+
+- 02fc84a: The valibot and ArkType generators refuse `Infinity` and `-Infinity` on a MySQL or SingleStore
+  `float`, `double` and `real`, which the server refuses too.
+
+  An infinity is a value the schema has to answer for per dialect rather than once, and until now the
+  analyzer only ever said yes. Postgres genuinely stores both in a `real` and a `double precision` and
+  hands them back on SELECT, so all four generators accept them there and that does not change. A real
+  MySQL 8.4.11 in `STRICT_TRANS_TABLES` stores neither, in any of the three columns: measured on the
+  binary prepared path, which is the one that puts the real IEEE double on the wire, `float`, `double`
+  and `real` all answer `ER_WARN_DATA_OUT_OF_RANGE` for `Infinity`, `-Infinity` and `NaN` alike, while
+  `double` and `real` take 1e300 and 3.4028235e38 unchanged. The column carried no flag at all for
+  that, and an absent flag reads the same as an unmeasured one.
+
+  **The mechanism is the magnitude bound, doing this by accident.** Measured on the installed
+  libraries: `z.number()` and `Type.Number()` refuse a non-finite number with no bound at all, so zod
+  and TypeBox were never affected. `v.number()` and ArkType's `number` take both infinities, and only
+  a range holds them back, one end each, so `v.maxValue(n)` refuses `+Infinity` whatever `n` is and
+  `number >= 0` still accepts it. MySQL's `float` carries the float32 range and was therefore already
+  right; its `double` and `real` carry no finite bound, because every finite JS number fits in an
+  8 byte float and no finite bound on one is truthful, and those are what leaked. Unlike the `NaN`
+  leak this repeats, no union arm was needed: a bare `number` takes an infinity wherever it stands, so
+  the two libraries leaked in `select`, `insert` and `update`, on the object and through a field
+  pulled out of the schema.
+
+  **What changes.** `@drzl/analyzer` now states the refusal outright, as `allowsNaN: false` and
+  `allowsInfinity: false` on the MySQL and SingleStore `float`, `double` and `real` columns, on both
+  the drizzle 0.4x class-name path and the v1 codec path. That is a third state rather than the
+  absence of the first, and `@drzl/validation-core` gains `nonFiniteRefused` to read it: `true` is
+  stored and returned, `false` is offered and refused, absent is unstated. The valibot generator emits
+  `v.check((val) => Number.isFinite(val), 'a finite number')` and the ArkType generator a `.narrow`
+  with the same predicate, in both cases only where no bound already refuses both ends. On ArkType
+  that replaces the narrower `NaN` narrow on the same columns rather than joining it, since
+  `Number.isFinite` is false for `NaN` too.
+
+  **Postgres does not move, and neither does SQLite.** A Postgres `real` and `double precision` still
+  accept `NaN` and both infinities in every mode, nullable or not. SQLite is deliberately untouched
+  and is a third answer rather than MySQL's: a real SQLite 3.53.4 stores both infinities in a `real`
+  and hands them back, and silently turns `NaN` into NULL, so its column still states neither flag and
+  its emitted output is unchanged. MySQL's `decimal` is untouched for a similar reason: on the same
+  prepared path the server silently stored `0.00` for all three where the text path answers `Incorrect
+decimal value`, and "refuses" is only half true of a column that accepted the row.
+
+  The zod, TypeBox, Effect and JSON Schema generators do not change. The first two already refused
+  both infinities everywhere, Effect builds on `Schema.Finite` unconditionally, and JSON has neither
+  value to express. Generated output is byte identical everywhere else: master's analyzer and
+  generators run beside these over the same schemas produced 80 emitted file pairs, of which the 8
+  that differ are exactly valibot and ArkType on MySQL and SingleStore, on both drizzle majors.
+
+- Updated dependencies [cf19c30]
+- Updated dependencies [c56125f]
+- Updated dependencies [2c8b20b]
+- Updated dependencies [02fc84a]
+  - @drzl/analyzer@1.21.0
+
 ## 3.21.1
 
 ### Patch Changes

@@ -1,5 +1,167 @@
 # @drzl/analyzer
 
+## 1.21.0
+
+### Minor Changes
+
+- 2c8b20b: drizzle-kit interop: the schema path can come from drizzle.config.ts, so it is written once
+
+  A drizzle-kit project already names its schema in `drizzle.config.ts`, and DRZL demanded the
+  same path again in `drzl.config.ts`; two files stating one fact is how the copies drift. Now
+  `schema` is optional: when omitted, DRZL reads kit's config instead, trying
+  `drizzle.config.ts`, `.js`, `.json` in kit's own candidate order (measured on drizzle-kit
+  0.31.10), announcing the file it read, and honouring kit's whole `schema` surface: a string, an
+  array, glob patterns, and a directory expanded one level exactly as kit expands it. The new
+  `drizzleKit` key pins it down when wanted: a path mirrors kit's `--config` flag, `true` makes a
+  missing kit config an error, `false` disables the fallback. `schema` always wins when both are
+  set, with a warning; neither yielding a schema is an error naming both files. The `dialect` the
+  kit config declares is cross-checked against what the analyzer measures and a contradiction
+  warns, since a stale dialect line usually means the config points somewhere it should not.
+  `watch` treats it all as config surface: the resolved directories are watched (glob bases
+  included, so a new file matching the pattern rebuilds), and editing `drizzle.config.ts`
+  re-resolves the schema. `SchemaAnalyzer` now takes `string | string[]` so a barrel-less
+  multi-file schema analyzes as one schema; duplicate export names are judged by what Drizzle
+  says they are (table name, SQL schema, columns), so the ordinary re-export pattern stays
+  silent and a genuine disagreement warns as `DRZL_ANL_DUP_EXPORT`, keeping the first file's
+  export deterministically.
+
+### Patch Changes
+
+- cf19c30: Unsigned integer columns get the range they actually hold
+
+  `int('x', { unsigned: true })` emitted the signed range, `gte(-2147483648).lte(2147483647)`,
+  so the select schema refused every stored value in [2^31, 2^32-1] on a column shape MySQL
+  users reach for constantly. The whole family had the same defect, differently per major. On
+  drizzle-orm 0.4x the flag lives only in `config.unsigned` and no range table read it, so every
+  width kept its signed bounds and `serial`, unsigned by its own definition, had no bounds at
+  all: an auto-increment column accepted -1. On drizzle v1 the `uint16`/`uint24`/`uint32`
+  semantics had no arm and fell to the implicit-decimal path, `integer: false` with
+  +/-9999999999, and `uint64` fell back to the class table's signed int64 range, so
+  `bigint({ mode: 'bigint', unsigned: true })` refused 18446744073709551615n, a value the driver
+  really returns.
+
+  The analyzer now answers every unsigned width on both majors with the type's own range:
+  tinyint [0, 255], smallint [0, 65535], mediumint [0, 16777215], int [0, 4294967295], bigint in
+  number mode [0, 9007199254740991], the safe-integer ceiling the number wire imposes, and
+  bigint in bigint mode [0, 18446744073709551615], representable because the value is a bigint,
+  which is how 18446744073709551615n lands in emitted literals. `serial` takes the number-mode
+  answer with a BIGINT label on both majors. `bigint({ mode: 'string', unsigned: true })` stays
+  the string the driver returns: v1 spells it `string uint64` and the string-mode arm keyed on
+  `int64` alone. SingleStore ships the same builders and takes the same table, which also closes
+  a signed gap: its tinyint and mediumint carried no range on 0.4x while v1 stated `int8` and
+  `int24` for the same columns. Postgres and SQLite have no unsigned spelling and are untouched,
+  asserted by test.
+
+  Measured against a live MySQL 8.4.11 in STRICT_TRANS_TABLES: every ceiling stores and comes
+  back, value for value, through mysql2 under both majors, and -1 and each ceiling plus one are
+  refused with ER_WARN_DATA_OUT_OF_RANGE. A CHECK on an unsigned column still folds into the
+  bound in its wire's spelling: `.gte(10).lte(4294967295)` on the number wire, `.gte(10n)` on
+  the bigint wire. Official drizzle-zod, drizzle-valibot, drizzle-arktype and drizzle-typebox
+  answer the same probes identically on both majors, so the fixed schemas agree with first-party
+  behavior on every unsigned width, including the safe-integer ceiling for number mode and for
+  serial. The JSON Schema generator also narrows its bigint pattern on unsigned columns, from
+  `^-?\d+$` to `^\d+$`: the sign is the one half of the range a pattern can state exactly.
+
+- c56125f: Bound a `bigint({ mode: 'string' })` column by the input syntax its own server parses, per dialect
+
+  The arm that typed this column a string (addendum BK) stated nothing else, so every generator
+  emitted a bare string. Graded against a real Postgres through PGlite with the parity gate's own
+  36-value probe pool, that schema disagreed with the server on **14** of them, and on every one
+  of the 14 `drizzle-orm`'s own validator agreed with the server: `''`, `'hello'`, a 300-character
+  run, three and five emoji, `'12.5'`, a uuid, `'not-a-uuid'`, `'happy'`, `'zzz'`, `'2020-01-01'`,
+  `'12:00:00'`, `'10.0.0.1'` and `'999.999.999.999'` all validated and then failed at the INSERT,
+  which is the outcome an insert schema exists to prevent.
+
+  The column now carries a `format`, which is the vehicle all six validation generators already
+  route through `COLUMN_FORMATS`, so nothing in any generator changed. There are **two** patterns,
+  because the two servers disagree in both directions, measured on PGlite and on a live MySQL
+  8.4.11: Postgres stores `'0x1f'` as 31 and `'1_000'` as 1000 and refuses `'12.5'`, while MySQL
+  refuses the first two as "Data truncated" and stores `'12.5'` as 13, rounded. A single pattern
+  would have to be their union, which readmits `'12.5'` on Postgres and leaves the defect standing,
+  or their intersection, which turns away rows each server really stores. So Postgres gets an
+  integer-literal grammar (sign, surrounding whitespace, underscore separators, decimal or
+  `0x`/`0o`/`0b`, leading zeros, and the `_` Postgres allows directly after a base prefix) and
+  MySQL gets a decimal-number grammar with an optional fraction and exponent. SingleStore takes
+  MySQL's, as every other MySQL-shaped answer in the analyzer does; SQL Server takes neither,
+  because no SQL Server was measured for its conversion rules, and Cockroach never reaches the arm
+  at all.
+
+  Verified against the servers rather than reasoned about. Postgres: 16160 probes, boundary sweeps
+  in all four bases and random shapes, **zero** values the server takes and the pattern refuses.
+  MySQL: 3319 probes against each of a signed and an unsigned column, **zero** again. The read path
+  is covered too, since the `bigint:string` codec casts to text and registers no normalize, so a row
+  written `'0x1f'` reads back `'31'`: every value either server hands back validates.
+
+  Neither pattern states the magnitude, and that is deliberate. On MySQL it is not expressible: the
+  range applies to the **rounded** value, so `'9223372036854775807.4'` is a row and
+  `'9223372036854775807.6'` is not, and `'92233720368547758070e-1'` is the int64 maximum. On
+  Postgres it is expressible, and the exact ladder was built and agreed with the server 16160/16160,
+  but leading zeros and separators make it a per-digit ladder of about 1200 characters, and the
+  ArkType generator states a format as a regex literal inside the type expression: the emitted
+  module then fails to compile with TS2589, measured on the real emitted output, where the 101
+  character pattern that ships compiles clean. Emitting a module that does not typecheck is a worse
+  failure than the bound it buys, and every value the pattern admits that Postgres refuses is
+  exactly an out-of-range magnitude, so the syntax half is complete on its own. The tests assert
+  that remainder in both directions, so stating it later reports itself.
+
+  The unsigned spelling shares the MySQL pattern, and that is what makes it agree with the database:
+  `drizzle-orm` at 1.0.0-rc.4 caps `bigint({ mode: 'string', unsigned: true })` at the signed int64
+  maximum and so refuses `'18446744073709551615'`, which MySQL 8.4.11 stores in a `bigint unsigned`
+  and hands straight back. DRZL accepts it.
+
+  Every other column shape is untouched, proved rather than asserted: master's dists and this
+  branch's were run side by side over the parity gate's three fixtures, and all 90 emitted files are
+  byte identical. With a mode-string bigint column added to the Postgres and MySQL fixtures, 78 of
+  90 stay identical and the 12 that differ are exactly the two `matrix` modules in each of the six
+  generators, each diverging first at the new column's own line.
+
+- 02fc84a: The valibot and ArkType generators refuse `Infinity` and `-Infinity` on a MySQL or SingleStore
+  `float`, `double` and `real`, which the server refuses too.
+
+  An infinity is a value the schema has to answer for per dialect rather than once, and until now the
+  analyzer only ever said yes. Postgres genuinely stores both in a `real` and a `double precision` and
+  hands them back on SELECT, so all four generators accept them there and that does not change. A real
+  MySQL 8.4.11 in `STRICT_TRANS_TABLES` stores neither, in any of the three columns: measured on the
+  binary prepared path, which is the one that puts the real IEEE double on the wire, `float`, `double`
+  and `real` all answer `ER_WARN_DATA_OUT_OF_RANGE` for `Infinity`, `-Infinity` and `NaN` alike, while
+  `double` and `real` take 1e300 and 3.4028235e38 unchanged. The column carried no flag at all for
+  that, and an absent flag reads the same as an unmeasured one.
+
+  **The mechanism is the magnitude bound, doing this by accident.** Measured on the installed
+  libraries: `z.number()` and `Type.Number()` refuse a non-finite number with no bound at all, so zod
+  and TypeBox were never affected. `v.number()` and ArkType's `number` take both infinities, and only
+  a range holds them back, one end each, so `v.maxValue(n)` refuses `+Infinity` whatever `n` is and
+  `number >= 0` still accepts it. MySQL's `float` carries the float32 range and was therefore already
+  right; its `double` and `real` carry no finite bound, because every finite JS number fits in an
+  8 byte float and no finite bound on one is truthful, and those are what leaked. Unlike the `NaN`
+  leak this repeats, no union arm was needed: a bare `number` takes an infinity wherever it stands, so
+  the two libraries leaked in `select`, `insert` and `update`, on the object and through a field
+  pulled out of the schema.
+
+  **What changes.** `@drzl/analyzer` now states the refusal outright, as `allowsNaN: false` and
+  `allowsInfinity: false` on the MySQL and SingleStore `float`, `double` and `real` columns, on both
+  the drizzle 0.4x class-name path and the v1 codec path. That is a third state rather than the
+  absence of the first, and `@drzl/validation-core` gains `nonFiniteRefused` to read it: `true` is
+  stored and returned, `false` is offered and refused, absent is unstated. The valibot generator emits
+  `v.check((val) => Number.isFinite(val), 'a finite number')` and the ArkType generator a `.narrow`
+  with the same predicate, in both cases only where no bound already refuses both ends. On ArkType
+  that replaces the narrower `NaN` narrow on the same columns rather than joining it, since
+  `Number.isFinite` is false for `NaN` too.
+
+  **Postgres does not move, and neither does SQLite.** A Postgres `real` and `double precision` still
+  accept `NaN` and both infinities in every mode, nullable or not. SQLite is deliberately untouched
+  and is a third answer rather than MySQL's: a real SQLite 3.53.4 stores both infinities in a `real`
+  and hands them back, and silently turns `NaN` into NULL, so its column still states neither flag and
+  its emitted output is unchanged. MySQL's `decimal` is untouched for a similar reason: on the same
+  prepared path the server silently stored `0.00` for all three where the text path answers `Incorrect
+decimal value`, and "refuses" is only half true of a column that accepted the row.
+
+  The zod, TypeBox, Effect and JSON Schema generators do not change. The first two already refused
+  both infinities everywhere, Effect builds on `Schema.Finite` unconditionally, and JSON has neither
+  value to express. Generated output is byte identical everywhere else: master's analyzer and
+  generators run beside these over the same schemas produced 80 emitted file pairs, of which the 8
+  that differ are exactly valibot and ArkType on MySQL and SingleStore, on both drizzle majors.
+
 ## 1.20.1
 
 ### Patch Changes
