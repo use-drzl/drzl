@@ -1,6 +1,6 @@
 {
   "name": "@drzl/generator-arktype",
-  "version": "3.17.1",
+  "version": "3.17.2",
   "private": false,
   "license": "Apache-2.0",
   "type": "module",
