@@ -11,6 +11,7 @@
  * `home-features-after` carries the "works with" grid, below it.
  */
 import DefaultTheme from 'vitepress/theme';
+import './theme.css';
 import { h } from 'vue';
 import type { Theme } from 'vitepress';
 import Landing from './Landing.vue';

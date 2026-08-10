@@ -284,7 +284,7 @@ onBeforeUnmount(() => {
 .drzl-landing {
   /* Text and surfaces come from the theme so both appearances are correct without a second copy.
      The two accents below are not in the token set, so they are declared here and flipped in dark. */
-  --drzl-edge: #cfcac1;
+  --drzl-edge: #cbcbc3;
   --drzl-file-bg: var(--vp-c-bg-alt);
   max-width: 1152px;
   margin: 0 auto;
@@ -326,21 +326,18 @@ onBeforeUnmount(() => {
   text-decoration: none;
   padding: 12px 24px;
   border-radius: 8px;
-  /* The two appearances need different values here and neither token is right for both. In light,
-     the theme's button token resolves to #5672cd on white, which is 4.48:1 and misses the threshold,
-     so the base is brand-1 at 7.08:1. In dark, brand-1 is a light indigo and white on it measures
-     2.02:1, so the dark rule below puts the theme's own token back, which is 5.21:1 there. The
-     override is written as `:global(.dark) X` because `:global(html:not(.dark)) X` is dropped
-     outright by the scoped-style compiler and emits no rule at all. */
+  /* One pairing works in both appearances now that the theme defines them: the lime ground with
+     an ink label, 14.27:1. It deliberately does not follow --vp-c-brand-1, which is the lime in the
+     dark appearance but a deep olive in the light one, and an ink label on that olive is 2.78:1. */
   border: 1px solid transparent;
-  background: var(--vp-c-brand-1);
+  background: var(--vp-button-brand-bg);
   color: var(--vp-button-brand-text);
   transition:
     background-color 0.15s ease,
     border-color 0.15s ease;
 }
 .drzl-btn:hover {
-  background: var(--vp-c-brand-2);
+  background: var(--vp-button-brand-hover-bg);
 }
 .drzl-btn-alt {
   background: var(--vp-button-alt-bg);
@@ -544,17 +541,6 @@ onBeforeUnmount(() => {
 .dark .drzl-landing {
   /* The resting curves need a dark-ground grey. The light value is a warm grey that reads as a
      mistake against the dark surface. */
-  --drzl-edge: #2c3644;
-}
-.dark .drzl-landing .drzl-btn:not(.drzl-btn-alt) {
-  /* brand-1 is a light indigo in this appearance, and the white button text on it measures
-     2.02:1, so the theme's paired button token goes back in here at 5.21:1.
-     The `:not()` matters: the secondary button carries both classes, and an unscoped three-class
-     selector outranks the scoped `.drzl-btn-alt[data-v-x]` rule, so without it the dark appearance
-     paints the secondary button with the primary background and the two stop being told apart. */
-  background: var(--vp-button-brand-bg);
-}
-.dark .drzl-landing .drzl-btn:not(.drzl-btn-alt):hover {
-  background: var(--vp-button-brand-hover-bg);
+  --drzl-edge: #2f2f34;
 }
 </style>
