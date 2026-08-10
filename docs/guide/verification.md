@@ -252,7 +252,7 @@ Nothing else here is affected by a documentation change.
     32 CHECK probes against a real SQLite (10 constrained columns)
     37 probes against a real MySQL
     9 defaulted columns, 9 reproduced by applyDefaults
-    117 columns and 11 tables compared, drizzle-orm 0.45.2 against 1.0.0-rc.4
+    119 columns and 11 tables compared, drizzle-orm 0.45.2 against 1.0.0-rc.4
     drizzle-orm 0.45.2 against drizzle-zod 0.8.3, drizzle-valibot 0.4.2, drizzle-arktype 0.1.3, drizzle-typebox 0.3.3
     1500 column comparisons across 72 pairings
     49 documented divergence(s), 27 of them with DRZL accepting something official refuses; 6 known-defect column(s), 0 already filed and 6 first seen by this stage
