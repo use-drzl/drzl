@@ -1,6 +1,6 @@
 {
   "name": "@drzl/generator-graphql",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "private": false,
   "license": "Apache-2.0",
   "description": "Generate a GraphQL schema from a Drizzle schema: SDL typeDefs per table, resolver stubs that throw until you wire them, enum value maps and dependency-free scalar configs, consumable by any GraphQL server.",
