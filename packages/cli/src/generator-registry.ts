@@ -199,12 +199,12 @@ export const GENERATORS: readonly GeneratorEntry[] = [
   },
   {
     kind: 'mcp',
-    // The one `optionalDependency` in this package's manifest, and temporarily so. A package that
-    // has never existed cannot publish through npm's trusted-publisher OIDC flow, so naming it as
-    // a hard dependency in the release that introduces it breaks `npm i @drzl/cli` for everyone
-    // until the first publish lands. `scripts/verify/stages/33-registry-deps.sh` gates that rule.
-    // It moves into `dependencies` beside the other fourteen once it is on the registry; tsup
-    // externalises all three dependency fields, so nothing about what runs changes when it does.
+    // This one and the three below spent one release each in `optionalDependencies`, because a
+    // package that has never existed cannot publish through npm's trusted-publisher OIDC flow and
+    // naming it as a hard dependency in the release that introduces it breaks `npm i @drzl/cli`
+    // for everyone until the first publish lands. All four are on the registry now, so all four
+    // are ordinary dependencies. `scripts/verify/stages/33-registry-deps.sh` gates both halves of
+    // that rule and is what reported the promotion was due.
     specifier: '@drzl/generator-mcp',
     load: () => import('@drzl/generator-mcp'),
     construct: (m, analysis) => new m.MCPGenerator(analysis),
@@ -213,7 +213,6 @@ export const GENERATORS: readonly GeneratorEntry[] = [
   },
   {
     kind: 'next',
-    // Optional for the same reason as `mcp` above, and for the same one release only.
     specifier: '@drzl/generator-next',
     load: () => import('@drzl/generator-next'),
     construct: (m, analysis) => new m.NextGenerator(analysis),
@@ -222,7 +221,6 @@ export const GENERATORS: readonly GeneratorEntry[] = [
   },
   {
     kind: 'ai',
-    // Optional for the same reason as `mcp` and `next` above, and for the same one release only.
     specifier: '@drzl/generator-ai',
     load: () => import('@drzl/generator-ai'),
     construct: (m, analysis) => new m.AIGenerator(analysis),
@@ -231,7 +229,6 @@ export const GENERATORS: readonly GeneratorEntry[] = [
   },
   {
     kind: 'tanstack-start',
-    // Optional for the same reason as the three above, and for the same one release only.
     specifier: '@drzl/generator-tanstack-start',
     load: () => import('@drzl/generator-tanstack-start'),
     construct: (m, analysis) => new m.TanStackStartGenerator(analysis),
