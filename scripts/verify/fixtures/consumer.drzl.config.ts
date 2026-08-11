@@ -49,6 +49,10 @@ export default {
     // Seed rows, which read the CHECK constraints directly and import from no validation
     // generator at all: this is the one generator whose output depends on nothing but the analysis.
     { kind: 'seed', path: './src/generated/seed' },
+    // fast-check arbitraries, from the same constraint reading as the seed entry above. This is
+    // the entry that puts `noNaN` through a real install: fast-check is a peer of the emitted
+    // modules, not of the generator, so nothing here resolves it except a consumer's own install.
+    { kind: 'fast-check', path: './src/generated/arbitraries' },
     // Elysia on the zod schemas, with the import path derived from the zod entry above rather
     // than spelled out, which is wiring only `elysiaOptions` does.
     //

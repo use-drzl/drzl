@@ -123,6 +123,7 @@
               "tanstack-start",
               "ts-rest",
               "seed",
+              "fast-check",
               "service",
               "zod",
               "valibot",

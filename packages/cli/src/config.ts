@@ -121,6 +121,7 @@ export const GeneratorKindSchema = z.enum([
   'tanstack-start',
   'ts-rest',
   'seed',
+  'fast-check',
   'service',
   'zod',
   'valibot',
@@ -905,6 +906,16 @@ export function seedOutDir(g: { path?: string }, cfg: { outDir: string }): strin
   return g.path ?? cfg.outDir;
 }
 
+/**
+ * Where the fast-check generator writes.
+ *
+ * The same rule as the routers, and for the same reason: it writes an `index.ts` barrel of its own.
+ * Its own function rather than a call to one of the others, for the reason `honoOutDir` records.
+ */
+export function fastCheckOutDir(g: { path?: string }, cfg: { outDir: string }): string {
+  return g.path ?? cfg.outDir;
+}
+
 function sharedSchemaNames(opts: { affix?: AffixOptions; schemaSuffix?: string }): string[] {
   const resolved = resolveAffix(opts);
   return NAME_MODES.map((mode) => schemaName(mode, AFFIX_PROBE_TABLE, resolved));
@@ -1529,6 +1540,7 @@ export function computeGeneratorOutputDirs(cfg: DrzlConfig, cwd = process.cwd())
     if (g.kind === 'ts-rest') dirs.add(abs(tsRestOutDir(g, cfg)));
     if (g.kind === 'elysia') dirs.add(abs(elysiaOutDir(g, cfg)));
     if (g.kind === 'seed') dirs.add(abs(seedOutDir(g, cfg)));
+    if (g.kind === 'fast-check') dirs.add(abs(fastCheckOutDir(g, cfg)));
     if (g.kind === 'service') dirs.add(abs(g.path ?? 'src/services'));
     if (g.kind === 'zod') dirs.add(abs(g.path ?? 'src/validators/zod'));
     if (g.kind === 'valibot') dirs.add(abs(g.path ?? 'src/validators/valibot'));

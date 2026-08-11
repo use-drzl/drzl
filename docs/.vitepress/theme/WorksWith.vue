@@ -89,6 +89,7 @@ const groups: Group[] = [
       { name: 'ts-rest', link: '/generators/ts-rest' },
       { name: 'Elysia', link: '/generators/elysia' },
       { name: 'Seed data', link: '/generators/seed' },
+      { name: 'fast-check', link: '/generators/fast-check' },
     ],
   },
   {
