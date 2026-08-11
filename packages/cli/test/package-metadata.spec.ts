@@ -95,6 +95,7 @@ it('found every publishable package', () => {
     'generator-graphql',
     'generator-hono',
     'generator-json-schema',
+    'generator-mcp',
     'generator-nestjs',
     'generator-orpc',
     'generator-service',

@@ -25,6 +25,7 @@ import {
   fastifyOutDir,
   graphqlOutDir,
   honoOutDir,
+  mcpOutDir,
   nestjsOutDir,
   trpcOutDir,
   type DrzlConfig,
@@ -36,6 +37,7 @@ import { loadGenerator } from './generator-loader.js';
 import { graphqlOptions } from './graphql-options.js';
 import { honoOptions } from './hono-options.js';
 import { jsonSchemaOptions } from './json-schema-options.js';
+import { mcpOptions } from './mcp-options.js';
 import { nestjsOptions } from './nestjs-options.js';
 import { orpcOptions } from './orpc-options.js';
 import { serviceOptions } from './service-options.js';
@@ -188,6 +190,20 @@ export const GENERATORS: readonly GeneratorEntry[] = [
     construct: (m, analysis) => new m.GraphQLGenerator(analysis),
     outputDir: (g, cfg) => graphqlOutDir(g, cfg),
     options: (g, cfg) => graphqlOptions(g, cfg),
+  },
+  {
+    kind: 'mcp',
+    // The one `optionalDependency` in this package's manifest, and temporarily so. A package that
+    // has never existed cannot publish through npm's trusted-publisher OIDC flow, so naming it as
+    // a hard dependency in the release that introduces it breaks `npm i @drzl/cli` for everyone
+    // until the first publish lands. `scripts/verify/stages/33-registry-deps.sh` gates that rule.
+    // It moves into `dependencies` beside the other fourteen once it is on the registry; tsup
+    // externalises all three dependency fields, so nothing about what runs changes when it does.
+    specifier: '@drzl/generator-mcp',
+    load: () => import('@drzl/generator-mcp'),
+    construct: (m, analysis) => new m.MCPGenerator(analysis),
+    outputDir: (g, cfg) => mcpOutDir(g, cfg),
+    options: (g, cfg) => mcpOptions(g, cfg),
   },
   {
     kind: 'service',

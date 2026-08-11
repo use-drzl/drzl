@@ -94,16 +94,51 @@ describe('the registry against the manifest', () => {
     optionalDependencies?: Record<string, string>;
   };
 
+  /**
+   * The one exemption from both rules below, and a ledger entry rather than a permission.
+   *
+   * A package name that has never existed on npm cannot publish through trusted publishing, so a
+   * release that introduces a generator *and* names it as a hard dependency ships a `@drzl/cli`
+   * nobody can install: measured on 4.13.0, where `npm i @drzl/cli` returned a 404 for everyone
+   * until the next release. An unresolvable *optional* dependency is skipped instead, which is
+   * what makes the introducing release safe.
+   *
+   * Every name here has to leave, and leaving is one edit in two files: promote it in the manifest
+   * and delete it here. `scripts/verify/stages/33-registry-deps.sh` is the half that reports when
+   * that edit is due, because it can ask the registry and this cannot.
+   */
+  const AWAITING_FIRST_PUBLISH = ['@drzl/generator-mcp'];
+
   it('declares every generator package as a dependency', () => {
     const declared = Object.keys(manifest.dependencies ?? {});
-    expect(GENERATORS.map((e) => e.specifier).filter((s) => !declared.includes(s))).toEqual([]);
+    expect(
+      GENERATORS.map((e) => e.specifier).filter(
+        (s) => !declared.includes(s) && !AWAITING_FIRST_PUBLISH.includes(s)
+      )
+    ).toEqual([]);
   });
 
   it('leaves none of them optional, which an installer may skip without saying so', () => {
     // `npm install --omit=optional` resolves an optional dependency to nothing and exits 0, so a
     // kind declared there is a kind whose absence is decided by a flag rather than by a choice.
     const optional = Object.keys(manifest.optionalDependencies ?? {});
-    expect(GENERATORS.map((e) => e.specifier).filter((s) => optional.includes(s))).toEqual([]);
+    expect(
+      GENERATORS.map((e) => e.specifier).filter(
+        (s) => optional.includes(s) && !AWAITING_FIRST_PUBLISH.includes(s)
+      )
+    ).toEqual([]);
+  });
+
+  it('keeps the exemption honest in both directions', () => {
+    // An entry that has been promoted but not deleted here would silently re-open the hole for
+    // the next package, and one listed here that is not actually optional is not exempt from
+    // anything. Both are the same edit going wrong halfway.
+    const optional = Object.keys(manifest.optionalDependencies ?? {});
+    const declared = Object.keys(manifest.dependencies ?? {});
+    for (const name of AWAITING_FIRST_PUBLISH) {
+      expect(optional, `${name} is exempted but not optional`).toContain(name);
+      expect(declared, `${name} is exempted and also a hard dependency`).not.toContain(name);
+    }
   });
 });
 

@@ -75,6 +75,7 @@ const groups: Group[] = [
       { name: 'Fastify', mark: 'fastify', link: '/generators/fastify' },
       { name: 'NestJS', mark: 'nestjs', link: '/generators/nestjs' },
       { name: 'GraphQL', mark: 'graphql', link: '/generators/graphql' },
+      { name: 'MCP', mark: 'modelcontextprotocol', link: '/generators/mcp' },
     ],
   },
   {

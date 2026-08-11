@@ -36,8 +36,11 @@ node -e "
 # something bundled into it, and npm does not install optional peers. Naming it is what a
 # consumer who wants formatted output does, and it makes this run cover the peer resolving from
 # a real install. The stage further down removes it again to cover the other case.
+#
+# @modelcontextprotocol/server and @valibot/to-json-schema are the MCP generator's half of the
+# same rule: the emitted server imports the first and, under valibot, the second.
 npm install --no-audit --no-fund --loglevel=error \
-  "$TARS"/*.tgz drizzle-orm zod valibot arktype effect @orpc/server @trpc/server hono @hono/standard-validator express @types/express fastify @nestjs/common typescript tsx prettier >/dev/null
+  "$TARS"/*.tgz drizzle-orm zod valibot arktype effect @orpc/server @trpc/server hono @hono/standard-validator express @types/express fastify @nestjs/common @modelcontextprotocol/server @valibot/to-json-schema typescript tsx prettier >/dev/null
 
 if [ ! -e node_modules/.bin/drzl ]; then
   echo "FAIL: the drzl bin did not resolve after a real install." >&2

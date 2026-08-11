@@ -31,5 +31,20 @@ export default {
       includeRelations: true,
       validation: { useShared: true },
     },
+    // The MCP server, on the shared schemas, which is the combination the constraint story
+    // depends on: the bounds a model reads come from the zod generator's output above, and this
+    // entry is what proves that import resolves in a real install rather than only in this
+    // repository's workspace.
+    {
+      kind: 'mcp',
+      path: './src/generated/mcp',
+      // `src/generated/zod`, not `./src/generated/zod`. A path written with a leading `./` is
+      // resolved against the *output* directory rather than the project root, which is the
+      // documented rule for every generator that takes this option, so the dotted spelling here
+      // emitted `./src/generated/zod/index.js` from inside `src/generated/mcp/` and resolved to
+      // nothing. Caught by the specifier sweep below, which is the only stage that compiles these
+      // imports the way a consumer's compiler does.
+      validation: { useShared: true, importPath: 'src/generated/zod' },
+    },
   ],
 };
