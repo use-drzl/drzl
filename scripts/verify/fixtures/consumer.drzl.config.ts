@@ -46,6 +46,9 @@ export default {
     { kind: 'h3', path: './src/generated/h3' },
     // Effect HttpApi, on the effect schemas the config already generates above.
     { kind: 'effect-http', path: './src/generated/effect-http' },
+    // Seed rows, which read the CHECK constraints directly and import from no validation
+    // generator at all: this is the one generator whose output depends on nothing but the analysis.
+    { kind: 'seed', path: './src/generated/seed' },
     // Elysia on the zod schemas, with the import path derived from the zod entry above rather
     // than spelled out, which is wiring only `elysiaOptions` does.
     //

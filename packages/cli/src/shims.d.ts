@@ -62,3 +62,6 @@ declare module '@drzl/generator-ts-rest' {
 declare module '@drzl/generator-elysia' {
   export const ElysiaGenerator: any;
 }
+declare module '@drzl/generator-seed' {
+  export const SeedGenerator: any;
+}

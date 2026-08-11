@@ -1,0 +1,67 @@
+{
+  "name": "@drzl/generator-seed",
+  "version": "0.1.0",
+  "private": false,
+  "license": "Apache-2.0",
+  "description": "Generate constraint-satisfying seed rows from a Drizzle schema, built to satisfy every CHECK the analyzer parsed rather than found by retrying.",
+  "keywords": [
+    "drizzle",
+    "drizzle-orm",
+    "seed",
+    "fixtures",
+    "test-data",
+    "codegen",
+    "constraints"
+  ],
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "sideEffects": false,
+  "scripts": {
+    "build": "tsup src/index.ts --dts --format esm,cjs --external prettier --clean",
+    "lint": "eslint . --ext .ts",
+    "test": "vitest run --testTimeout=20000"
+  },
+  "dependencies": {
+    "@drzl/analyzer": "workspace:^",
+    "@drzl/validation-core": "workspace:^"
+  },
+  "devDependencies": {
+    "tsup": "^8.5.1",
+    "typescript": "^5.9.3",
+    "zod": "^4.4.3"
+  },
+  "engines": {
+    "node": ">=18.17.0"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/",
+    "provenance": true
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/use-drzl/drzl",
+    "directory": "packages/generator-seed"
+  },
+  "funding": {
+    "type": "github",
+    "url": "https://github.com/sponsors/omar-dulaimi"
+  }
+}
