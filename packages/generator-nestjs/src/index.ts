@@ -1,4 +1,6 @@
 import {
+  JSON_VALUE_TS_CONST,
+  JSON_VALUE_TS_SOURCE,
   VALIBOT_JSON_CONST,
   VALIBOT_JSON_SOURCE,
   fileWriter,
@@ -224,15 +226,9 @@ const LIB_IMPORTS: Record<Lib, string> = {
   arktype: "import { type } from 'arktype';",
 };
 
-/** The json value space for zod, whose `z.json()` output is mutually assignable with it. */
-const JSON_TYPE_ALIAS = `type DrzlJsonValue =
-  | string
-  | number
-  | boolean
-  | null
-  | DrzlJsonValue[]
-  | { [key: string]: DrzlJsonValue };
-`;
+/** The json value space, shared so the four generators that emit types cannot drift. */
+const JSON_TYPE_ALIAS = JSON_VALUE_TS_SOURCE;
+
 
 const LIBS: Record<Lib, LibDialect> = {
   zod: {
@@ -244,7 +240,7 @@ const LIBS: Record<Lib, LibDialect> = {
     bigint: `z.string().regex(${BIGINT_DIGITS})`,
     unknown: 'z.unknown()',
     json: 'z.json()',
-    jsonType: 'DrzlJsonValue',
+    jsonType: JSON_VALUE_TS_CONST,
     jsonPreamble: JSON_TYPE_ALIAS,
     binaryWire: 'z.base64().transform((s) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0)))',
     binaryRead: 'z.instanceof(Uint8Array)',

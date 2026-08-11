@@ -73,8 +73,8 @@ const analysis: Analysis = {
           isGenerated: false,
           shape: { kind: 'numberObject', fields: ['a', 'b', 'c'] },
         },
-        // The control. A column with no shape still falls to `unknown`, so this is not a blanket
-        // pass-through of whatever `tsType` happens to say.
+        // Bytes, which the driver hands back as a `Uint8Array` and which this used to call
+        // `unknown` while the validators beside it said what it is.
         {
           name: 'blob',
           tsType: 'Buffer',
@@ -83,6 +83,17 @@ const analysis: Analysis = {
           hasDefault: false,
           isGenerated: false,
           shape: { kind: 'buffer' },
+        },
+        // The control, and it has to be a column nothing can type rather than one that merely was
+        // not typed yet: a `customType` with no `$type<T>()`, which the analyzer reports as
+        // `unknown`. `blob` used to stand for this and stopped being an example of it.
+        {
+          name: 'opaque',
+          tsType: 'unknown',
+          dbType: 'UNKNOWN',
+          nullable: false,
+          hasDefault: false,
+          isGenerated: false,
         },
       ],
       primaryKey: { columns: ['id'] },
@@ -109,8 +120,13 @@ describe('a tuple column in the generated types', () => {
     expect(src).not.toContain('at: unknown');
   });
 
-  it('leaves a shape it cannot spell as unknown', async () => {
-    expect(await emitted()).toContain('blob: unknown');
+  it('spells a binary column as the bytes the driver hands back', async () => {
+    expect(await emitted()).toContain('blob: Uint8Array');
+  });
+
+  it('leaves a column it cannot type at all as unknown', async () => {
+    // The control, so this is not a blanket pass-through of whatever `tsType` happens to say.
+    expect(await emitted()).toContain('opaque: unknown');
   });
 
   it('is an object of the named number fields for the object modes', async () => {

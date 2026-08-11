@@ -431,6 +431,31 @@ export const CODEPOINT_LENGTH = '[...v].length';
  */
 export const BIGINT_DIGITS_PATTERN = String.raw`/^-?\d+$/`;
 
+/** The name of the TypeScript alias a module declares for the json value space. */
+export const JSON_VALUE_TS_CONST = 'DrzlJsonValue';
+
+/**
+ * The json value space as a TypeScript type, for the generators that emit types rather than
+ * schemas: the service classes, the Fastify row types, the GraphQL resolver types and the NestJS
+ * DTO fields.
+ *
+ * They all used to say `unknown` for a json column, or `any` in one case, while every validator
+ * generator described the same column properly. A row type that says `unknown` makes the caller
+ * cast to read a value the database guarantees is json, and one that says `any` is worse: it turns
+ * the check off silently.
+ *
+ * Verified mutually assignable with zod's own `z.json()` output type, so a DTO field declared with
+ * this satisfies a `StandardSchema<Dto>` static built from that schema.
+ */
+export const JSON_VALUE_TS_SOURCE = `type ${JSON_VALUE_TS_CONST} =
+  | string
+  | number
+  | boolean
+  | null
+  | ${JSON_VALUE_TS_CONST}[]
+  | { [key: string]: ${JSON_VALUE_TS_CONST} };
+`;
+
 /** The name of the recursive JSON schema a valibot module defines when it has a json column. */
 export const VALIBOT_JSON_CONST = 'DrzlJsonValue';
 
