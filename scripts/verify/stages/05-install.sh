@@ -41,7 +41,7 @@ node -e "
 # of the same rule: the emitted server imports the first, the emitted tools the second, and both
 # reach for the third under valibot.
 npm install --no-audit --no-fund --loglevel=error \
-  "$TARS"/*.tgz drizzle-orm zod valibot arktype effect @orpc/server @trpc/server hono @hono/standard-validator express @types/express fastify @nestjs/common @modelcontextprotocol/server @valibot/to-json-schema ai @tanstack/react-start typescript tsx prettier >/dev/null
+  "$TARS"/*.tgz drizzle-orm zod valibot arktype effect @orpc/server @trpc/server hono @hono/standard-validator express @types/express fastify @nestjs/common @modelcontextprotocol/server @valibot/to-json-schema ai @tanstack/react-start h3@^1.15.11 typescript tsx prettier >/dev/null
 
 if [ ! -e node_modules/.bin/drzl ]; then
   echo "FAIL: the drzl bin did not resolve after a real install." >&2

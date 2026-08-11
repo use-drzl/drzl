@@ -115,6 +115,7 @@
               "nestjs",
               "graphql",
               "ai",
+              "h3",
               "mcp",
               "next",
               "tanstack-start",
@@ -135,6 +136,13 @@
             ]
           },
           "sdk": {
+            "type": "string",
+            "enum": [
+              "v1",
+              "v2"
+            ]
+          },
+          "h3": {
             "type": "string",
             "enum": [
               "v1",

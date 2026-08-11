@@ -79,6 +79,7 @@ const groups: Group[] = [
       { name: 'Next.js', mark: 'nextdotjs', link: '/generators/next' },
       { name: 'AI SDK', mark: 'vercel', link: '/generators/ai' },
       { name: 'TanStack Start', link: '/generators/tanstack-start' },
+      { name: 'h3 and Nitro', mark: 'nuxt', link: '/generators/h3' },
     ],
   },
   {

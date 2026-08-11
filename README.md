@@ -103,7 +103,7 @@ Runtime
 - `packages/generator-express`: Express 5 router generator
 - `packages/generator-fastify`: Fastify 5 plugin generator
 - `packages/generator-nestjs`: NestJS DTO and entity class generator
-- `packages/generator-graphql`: GraphQL SDL and resolver-stub generator
+- `packages/generator-graphql`: GraphQL SDL and resolver-stub generator\n- `packages/generator-h3`: h3 and Nitro route handler generator
 - `packages/generator-ai`: AI SDK tool generator\n- `packages/generator-mcp`: Model Context Protocol tool generator\n- `packages/generator-next`: Next.js server action generator\n- `packages/generator-tanstack-start`: TanStack Start server function generator
 - `packages/generator-service`: typed service generator
 - `packages/generator-zod`: Zod generator
