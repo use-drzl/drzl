@@ -229,6 +229,7 @@ export default {
       },
       { text: 'Service classes', link: '/generators/service' },
       { text: 'Seed data', link: '/generators/seed' },
+      { text: 'fast-check arbitraries', link: '/generators/fast-check' },
       {
         text: 'Across generators',
         collapsed: true,

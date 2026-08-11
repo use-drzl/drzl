@@ -65,3 +65,6 @@ declare module '@drzl/generator-elysia' {
 declare module '@drzl/generator-seed' {
   export const SeedGenerator: any;
 }
+declare module '@drzl/generator-fast-check' {
+  export const FastCheckGenerator: any;
+}
