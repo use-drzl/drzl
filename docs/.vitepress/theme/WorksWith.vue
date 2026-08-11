@@ -78,6 +78,7 @@ const groups: Group[] = [
       { name: 'MCP', mark: 'modelcontextprotocol', link: '/generators/mcp' },
       { name: 'Next.js', mark: 'nextdotjs', link: '/generators/next' },
       { name: 'AI SDK', mark: 'vercel', link: '/generators/ai' },
+      { name: 'TanStack Start', link: '/generators/tanstack-start' },
     ],
   },
   {

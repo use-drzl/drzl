@@ -115,6 +115,7 @@ export const GeneratorKindSchema = z.enum([
   'ai',
   'mcp',
   'next',
+  'tanstack-start',
   'service',
   'zod',
   'valibot',
@@ -632,7 +633,16 @@ type GeneratorConfig = DrzlConfig['generators'][number];
 
 /** The generators that emit an RPC router, and so share `outDir` and `validation`. */
 /** The generators that import the validation generators' exports by name. */
-const ROUTER_KINDS = new Set(['orpc', 'trpc', 'hono', 'express', 'mcp', 'next', 'ai']);
+const ROUTER_KINDS = new Set([
+  'orpc',
+  'trpc',
+  'hono',
+  'express',
+  'mcp',
+  'next',
+  'ai',
+  'tanstack-start',
+]);
 
 /**
  * The routers that can reach a database through the request context.
@@ -778,6 +788,16 @@ export function nextOutDir(g: { path?: string }, cfg: { outDir: string }): strin
  * Its own function rather than a call to one of the others, for the reason `honoOutDir` records.
  */
 export function aiOutDir(g: { path?: string }, cfg: { outDir: string }): string {
+  return g.path ?? cfg.outDir;
+}
+
+/**
+ * Where the TanStack Start generator writes.
+ *
+ * The same rule as the routers, and for the same reason: it writes an `index.ts` barrel of its own.
+ * Its own function rather than a call to one of the others, for the reason `honoOutDir` records.
+ */
+export function tanstackStartOutDir(g: { path?: string }, cfg: { outDir: string }): string {
   return g.path ?? cfg.outDir;
 }
 
@@ -930,6 +950,29 @@ export function resolveConfig(cfg: DrzlConfig): { config: DrzlConfig; warnings: 
      * constraint bounds its tools advertise come from, so it goes on to the router reconciliation
      * below like every other kind that imports a sibling generator's exports.
      */
+    /**
+     * The TanStack Start generator, which has the same single mode as `next`: it emits no schemas
+     * of its own, so `tanstackStartOptions` turns `useShared` on and derives the import path.
+     */
+    if (g.kind === 'tanstack-start') {
+      if (g.includeRelations) {
+        warnings.push(
+          `drzl config: the "tanstack-start" generator sets includeRelations, which it does not ` +
+            `read. Relation lookups are routes, and this generator emits server functions. ` +
+            `Remove the flag.`
+        );
+      }
+      const library = g.validation?.library ?? 'zod';
+      if (!g.validation?.importPath && !generators.some((s) => s.kind === library)) {
+        warnings.push(
+          `drzl config: the "tanstack-start" generator validates with the schemas a validation ` +
+            `generator writes, and this config has no "${library}" generator for it to import ` +
+            `from. Add { kind: "${library}" }, or set validation.importPath to wherever those ` +
+            `schemas live.`
+        );
+      }
+    }
+
     if (g.kind === 'ai' && g.includeRelations) {
       warnings.push(
         `drzl config: the "ai" generator sets includeRelations, which it does not read. ` +
@@ -1267,6 +1310,7 @@ export function computeGeneratorOutputDirs(cfg: DrzlConfig, cwd = process.cwd())
     if (g.kind === 'mcp') dirs.add(abs(mcpOutDir(g, cfg)));
     if (g.kind === 'next') dirs.add(abs(nextOutDir(g, cfg)));
     if (g.kind === 'ai') dirs.add(abs(aiOutDir(g, cfg)));
+    if (g.kind === 'tanstack-start') dirs.add(abs(tanstackStartOutDir(g, cfg)));
     if (g.kind === 'service') dirs.add(abs(g.path ?? 'src/services'));
     if (g.kind === 'zod') dirs.add(abs(g.path ?? 'src/validators/zod'));
     if (g.kind === 'valibot') dirs.add(abs(g.path ?? 'src/validators/valibot'));

@@ -47,3 +47,6 @@ declare module '@drzl/generator-next' {
 declare module '@drzl/generator-ai' {
   export const AIGenerator: any;
 }
+declare module '@drzl/generator-tanstack-start' {
+  export const TanStackStartGenerator: any;
+}

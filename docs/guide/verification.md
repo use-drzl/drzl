@@ -228,19 +228,20 @@ Lines from the run behind this page, verbatim: commit `74def57`, Node 22.22.0, `
 local MySQL 8.4.11 on utf8mb4 in strict mode.
 
 Two lines have moved since that run, both because generators were added. The packed count is a count
-of publishable packages, so it went from 19 to 22 as [MCP](/generators/mcp),
-[Next.js](/generators/next) and the [AI SDK](/generators/ai) arrived; the documented-config count is a count of runnable blocks in
-these docs rather than a measurement of the code, and it went from 36 to 39 as those three pages added
+of publishable packages, so it went from 19 to 23 as [MCP](/generators/mcp),
+[Next.js](/generators/next), the [AI SDK](/generators/ai) and
+[TanStack Start](/generators/tanstack-start) arrived; the documented-config count is a count of runnable blocks in
+these docs rather than a measurement of the code, and it went from 36 to 40 as those four pages added
 one each. Both are updated in place rather than left stale, because this block is one of the three
 the gate compares against every run and a stale line fails it. Nothing else here is affected by
 adding a generator.
 
 ```
-    packed 22 package(s)
+    packed 23 package(s)
     bundler ok
     node16 ok
     nodenext ok
-    all 39 documented configs generate and typecheck
+    all 40 documented configs generate and typecheck
     drizzle-orm 1.0.0-rc.4, with its own zod, valibot, arktype and typebox-legacy modules
     1548 column comparisons
     60 documented divergence(s), 30 of them with DRZL accepting something official refuses, 0 stated as a rejection count and a complement

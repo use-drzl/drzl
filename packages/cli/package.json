@@ -55,7 +55,8 @@
   "optionalDependencies": {
     "@drzl/generator-ai": "workspace:^",
     "@drzl/generator-mcp": "workspace:^",
-    "@drzl/generator-next": "workspace:^"
+    "@drzl/generator-next": "workspace:^",
+    "@drzl/generator-tanstack-start": "workspace:^"
   },
   "devDependencies": {
     "ajv": "^8.17.1",
