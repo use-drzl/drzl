@@ -106,6 +106,9 @@ importers:
       '@drzl/analyzer':
         specifier: workspace:^
         version: link:../analyzer
+      '@drzl/generator-ai':
+        specifier: workspace:^
+        version: link:../generator-ai
       '@drzl/generator-arktype':
         specifier: workspace:^
         version: link:../generator-arktype
@@ -127,15 +130,24 @@ importers:
       '@drzl/generator-json-schema':
         specifier: workspace:^
         version: link:../generator-json-schema
+      '@drzl/generator-mcp':
+        specifier: workspace:^
+        version: link:../generator-mcp
       '@drzl/generator-nestjs':
         specifier: workspace:^
         version: link:../generator-nestjs
+      '@drzl/generator-next':
+        specifier: workspace:^
+        version: link:../generator-next
       '@drzl/generator-orpc':
         specifier: workspace:^
         version: link:../generator-orpc
       '@drzl/generator-service':
         specifier: workspace:^
         version: link:../generator-service
+      '@drzl/generator-tanstack-start':
+        specifier: workspace:^
+        version: link:../generator-tanstack-start
       '@drzl/generator-trpc':
         specifier: workspace:^
         version: link:../generator-trpc
@@ -188,19 +200,6 @@ importers:
       typescript:
         specifier: ^5.9.3
         version: 5.9.3
-    optionalDependencies:
-      '@drzl/generator-ai':
-        specifier: workspace:^
-        version: link:../generator-ai
-      '@drzl/generator-mcp':
-        specifier: workspace:^
-        version: link:../generator-mcp
-      '@drzl/generator-next':
-        specifier: workspace:^
-        version: link:../generator-next
-      '@drzl/generator-tanstack-start':
-        specifier: workspace:^
-        version: link:../generator-tanstack-start
 
   packages/generator-ai:
     dependencies:

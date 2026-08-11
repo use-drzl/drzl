@@ -29,6 +29,7 @@
   },
   "dependencies": {
     "@drzl/analyzer": "workspace:^",
+    "@drzl/generator-ai": "workspace:^",
     "@drzl/generator-arktype": "workspace:^",
     "@drzl/generator-effect": "workspace:^",
     "@drzl/generator-express": "workspace:^",
@@ -36,9 +37,12 @@
     "@drzl/generator-graphql": "workspace:^",
     "@drzl/generator-hono": "workspace:^",
     "@drzl/generator-json-schema": "workspace:^",
+    "@drzl/generator-mcp": "workspace:^",
     "@drzl/generator-nestjs": "workspace:^",
+    "@drzl/generator-next": "workspace:^",
     "@drzl/generator-orpc": "workspace:^",
     "@drzl/generator-service": "workspace:^",
+    "@drzl/generator-tanstack-start": "workspace:^",
     "@drzl/generator-trpc": "workspace:^",
     "@drzl/generator-typebox": "workspace:^",
     "@drzl/generator-valibot": "workspace:^",
@@ -51,12 +55,6 @@
     "jiti": "^2.7.0",
     "ora": "^9.4.1",
     "zod": "^4.4.3"
-  },
-  "optionalDependencies": {
-    "@drzl/generator-ai": "workspace:^",
-    "@drzl/generator-mcp": "workspace:^",
-    "@drzl/generator-next": "workspace:^",
-    "@drzl/generator-tanstack-start": "workspace:^"
   },
   "devDependencies": {
     "ajv": "^8.17.1",
