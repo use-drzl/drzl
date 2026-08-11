@@ -31,7 +31,8 @@ Zero‑friction codegen for Drizzle ORM. Analyze your schema. Generate validatio
 
 - Analyzer: turns Drizzle schemas into a normalized analysis model
 - Generators: Zod, Valibot, ArkType, TypeBox and Effect Schema validation; JSON Schema and OpenAPI;
-  typed CRUD services; and routers for oRPC, tRPC, Hono, Express, Fastify, NestJS and GraphQL.
+  typed CRUD services; routers for oRPC, tRPC, Hono, Express, Fastify, NestJS and GraphQL; and an
+  MCP server whose tools carry the table's CHECK constraints into what a model is allowed to write.
   Fourteen in all, and installing `@drzl/cli` brings every one of them
 - Batteries: formatting, naming, reusable/shared schemas, relation support
 - Monorepo: pnpm workspace, lockstep releases with Changesets
@@ -103,6 +104,7 @@ Runtime
 - `packages/generator-fastify`: Fastify 5 plugin generator
 - `packages/generator-nestjs`: NestJS DTO and entity class generator
 - `packages/generator-graphql`: GraphQL SDL and resolver-stub generator
+- `packages/generator-mcp`: Model Context Protocol tool generator
 - `packages/generator-service`: typed service generator
 - `packages/generator-zod`: Zod generator
 - `packages/generator-valibot`: Valibot generator

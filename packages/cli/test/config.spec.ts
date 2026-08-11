@@ -6,6 +6,7 @@ import {
   expressOutDir,
   fastifyOutDir,
   graphqlOutDir,
+  mcpOutDir,
   loadConfig,
   nestjsOutDir,
   resolveConfig,
@@ -654,6 +655,95 @@ describe('@drzl/cli config: the graphql generator', () => {
 
   it('does not warn on a plain graphql generator', () => {
     const { warnings } = resolveConfig(ConfigSchema.parse(base([{ kind: 'graphql' }])));
+    expect(warnings).toEqual([]);
+  });
+});
+
+describe('@drzl/cli config: the mcp generator', () => {
+  const base = (generators: any[]) => ({ schema: 'src/db/schema.ts', generators });
+
+  it('is a kind the schema accepts', () => {
+    expect(() => ConfigSchema.parse(base([{ kind: 'mcp' }]))).not.toThrow();
+  });
+
+  it('writes to outDir by default and to path when given one', () => {
+    const cfg = ConfigSchema.parse({ ...base([{ kind: 'mcp' }]), outDir: 'src/api' });
+    expect(mcpOutDir(cfg.generators[0], cfg)).toBe('src/api');
+    const withPath = ConfigSchema.parse({
+      ...base([{ kind: 'mcp', path: 'src/mcp' }]),
+      outDir: 'src/api',
+    });
+    expect(mcpOutDir(withPath.generators[0], withPath)).toBe('src/mcp');
+  });
+
+  it('is watched-around, so a rebuild does not retrigger itself', () => {
+    const cfg = ConfigSchema.parse({
+      ...base([{ kind: 'mcp', path: 'src/mcp' }]),
+      outDir: 'src/api',
+    });
+    const dirs = computeGeneratorOutputDirs(cfg, '/proj');
+    expect(dirs).toContain(path.join('/proj', 'src/mcp'));
+  });
+
+  it('keeps the four options only this kind takes', () => {
+    // Every one of these is a silent default if the schema drops it: `sdk` decides which package
+    // the emitted server imports, and `stdio` decides whether a runnable entry point exists.
+    const cfg = ConfigSchema.parse(
+      base([
+        {
+          kind: 'mcp',
+          sdk: 'v1',
+          serverName: 'shop',
+          serverVersion: '2.0.0',
+          stdio: false,
+          naming: { toolPrefix: 'db.' },
+        },
+      ])
+    );
+    const g = cfg.generators[0] as Record<string, unknown>;
+    expect(g.sdk).toBe('v1');
+    expect(g.serverName).toBe('shop');
+    expect(g.serverVersion).toBe('2.0.0');
+    expect(g.stdio).toBe(false);
+    expect((g.naming as { toolPrefix?: string }).toolPrefix).toBe('db.');
+  });
+
+  it('refuses an sdk value that is neither generation', () => {
+    expect(() => ConfigSchema.parse(base([{ kind: 'mcp', sdk: 'v3' }]))).toThrow();
+  });
+
+  it('refuses databaseInjection with a warning, because the handlers are stubs', () => {
+    const { warnings } = resolveConfig(
+      ConfigSchema.parse(base([{ kind: 'mcp', databaseInjection: { enabled: true } }]))
+    );
+    expect(warnings.join('\n')).toMatch(/"mcp" generator sets databaseInjection/);
+    expect(warnings.join('\n')).toMatch(/does not support/);
+  });
+
+  it('refuses includeRelations with a warning, because relation lookups are routes', () => {
+    const { warnings } = resolveConfig(
+      ConfigSchema.parse(base([{ kind: 'mcp', includeRelations: true }]))
+    );
+    expect(warnings.join('\n')).toMatch(/"mcp" generator sets includeRelations/);
+    expect(warnings.join('\n')).toMatch(/does not read/);
+  });
+
+  it('reads a validation block, unlike nestjs and graphql, so it does not warn on one', () => {
+    // The constraint bounds this generator's tools advertise come from a sibling validation
+    // generator's output, so `useShared` and `importPath` are read rather than reported.
+    const { warnings } = resolveConfig(
+      ConfigSchema.parse(
+        base([
+          { kind: 'zod', path: 'src/validators/zod' },
+          { kind: 'mcp', validation: { useShared: true, importPath: 'src/validators/zod' } },
+        ])
+      )
+    );
+    expect(warnings.filter((w) => w.includes('"mcp"'))).toEqual([]);
+  });
+
+  it('does not warn on a plain mcp generator', () => {
+    const { warnings } = resolveConfig(ConfigSchema.parse(base([{ kind: 'mcp' }])));
     expect(warnings).toEqual([]);
   });
 });

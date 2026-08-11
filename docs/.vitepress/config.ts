@@ -217,6 +217,7 @@ export default {
           { text: 'Fastify', link: '/generators/fastify' },
           { text: 'NestJS', link: '/generators/nestjs' },
           { text: 'GraphQL', link: '/generators/graphql' },
+          { text: 'MCP', link: '/generators/mcp' },
         ],
       },
       { text: 'Service classes', link: '/generators/service' },

@@ -45,5 +45,26 @@ for pkg in packages/*/package.json; do
     fi
   done
 done
+
+# The other direction, which is what makes the optional-dependency rule expire rather than settle.
+#
+# A generator is optional for exactly one reason: it has never been published, so a hard
+# dependency on it would break `npm i` for everyone. The moment it *is* on the registry that
+# reason is gone, and an entry left behind is a generator an installer may silently skip
+# (`npm install --omit=optional` resolves it to nothing and exits 0). Nothing else would ever
+# report that the promotion is due, because every local check passes either way.
+for pkg in packages/*/package.json; do
+  owner=$(node -p "require('./$pkg').name")
+  opt=$(node -p "Object.keys(require('./$pkg').optionalDependencies||{}).filter(d=>d.startsWith('@drzl/')).join(' ')")
+  for dep in $opt; do
+    if npm view "$dep" version >/dev/null 2>&1; then
+      echo "    FAIL: $owner lists $dep as an optionalDependency, but it is on the registry now." >&2
+      echo "          Promote it to dependencies and drop it from AWAITING_FIRST_PUBLISH in" >&2
+      echo "          packages/cli/test/generator-registry.spec.ts." >&2
+      missing=1
+    fi
+  done
+done
+
 [ "$missing" = 0 ] || exit 1
 echo "    every @drzl dependency resolves on npm and installs from it"

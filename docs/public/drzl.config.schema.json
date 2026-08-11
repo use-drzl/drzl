@@ -114,6 +114,7 @@
               "fastify",
               "nestjs",
               "graphql",
+              "mcp",
               "service",
               "zod",
               "valibot",
@@ -129,6 +130,22 @@
               "standard",
               "zod"
             ]
+          },
+          "sdk": {
+            "type": "string",
+            "enum": [
+              "v1",
+              "v2"
+            ]
+          },
+          "serverName": {
+            "type": "string"
+          },
+          "serverVersion": {
+            "type": "string"
+          },
+          "stdio": {
+            "type": "boolean"
           },
           "importExtension": {
             "type": "string",
@@ -253,6 +270,9 @@
                   "kebab",
                   "snake"
                 ]
+              },
+              "toolPrefix": {
+                "type": "string"
               }
             }
           },

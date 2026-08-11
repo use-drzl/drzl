@@ -227,18 +227,19 @@ the pinned versions, which is what every number on this site was measured agains
 Lines from the run behind this page, verbatim: commit `74def57`, Node 22.22.0, `MYSQL_URL` set to a
 local MySQL 8.4.11 on utf8mb4 in strict mode.
 
-One line has moved since that run: the documented-config count is a count of runnable blocks in
-these docs rather than a measurement of the code, and it went from 35 to 36 when the
-[Recipes](/examples/recipes) page added one. It is updated in place rather than left stale, because
-this block is one of the three the gate compares against every run and a stale line fails it.
-Nothing else here is affected by a documentation change.
+Two lines have moved since that run, both because `@drzl/generator-mcp` was added. The packed count
+is a count of publishable packages, so it went from 19 to 20; the documented-config count is a count
+of runnable blocks in these docs rather than a measurement of the code, and it went from 36 to 37
+when the [MCP](/generators/mcp) page added one. Both are updated in place rather than left stale,
+because this block is one of the three the gate compares against every run and a stale line fails
+it. Nothing else here is affected by adding a generator.
 
 ```
-    packed 19 package(s)
+    packed 20 package(s)
     bundler ok
     node16 ok
     nodenext ok
-    all 36 documented configs generate and typecheck
+    all 37 documented configs generate and typecheck
     drizzle-orm 1.0.0-rc.4, with its own zod, valibot, arktype and typebox-legacy modules
     1548 column comparisons
     60 documented divergence(s), 30 of them with DRZL accepting something official refuses, 0 stated as a rejection count and a complement

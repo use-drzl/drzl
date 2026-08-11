@@ -38,3 +38,6 @@ declare module '@drzl/generator-nestjs' {
 declare module '@drzl/generator-graphql' {
   export const GraphQLGenerator: any;
 }
+declare module '@drzl/generator-mcp' {
+  export const MCPGenerator: any;
+}

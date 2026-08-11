@@ -25,6 +25,15 @@ export const NamingSchema = z
   .object({
     routerSuffix: z.string().default('Router'),
     procedureCase: z.enum(['camel', 'kebab', 'snake']).default('camel'),
+    /**
+     * Placed in front of every generated MCP tool name, so one server can carry two schemas
+     * without collision: `db.users_list` rather than `users_list`. `mcp` only.
+     *
+     * There is no equivalent for the other kinds because there is nothing to collide: a router's
+     * procedures are separated by the URL tree or the router key they are mounted under, and MCP
+     * tool names are one flat namespace per server.
+     */
+    toolPrefix: z.string(),
   })
   .partial();
 
@@ -103,6 +112,7 @@ export const GeneratorKindSchema = z.enum([
   'fastify',
   'nestjs',
   'graphql',
+  'mcp',
   'service',
   'zod',
   'valibot',
@@ -129,6 +139,23 @@ export const GeneratorSchema = z.object({
    * `@hono/zod-validator`, which is zod-specific.
    */
   validator: z.enum(['standard', 'zod']).optional(),
+  /**
+   * Which generation of the MCP TypeScript SDK the emitted server is written against. `mcp` only.
+   *
+   * `v2` is `@modelcontextprotocol/server`, which takes any Standard Schema and so works with
+   * every library `validation.library` can name. `v1` is `@modelcontextprotocol/sdk`, which is
+   * zod-only: handed an arktype or valibot schema it throws at registration, so the generator
+   * refuses that combination rather than emitting a server that dies on startup.
+   */
+  sdk: z.enum(['v1', 'v2']).optional(),
+  /** The name and version the emitted MCP server reports at initialize. `mcp` only. */
+  serverName: z.string().optional(),
+  serverVersion: z.string().optional(),
+  /**
+   * Also emit `stdio.ts`, a runnable entry point an MCP client's `command` can point at.
+   * `mcp` only, on by default.
+   */
+  stdio: z.boolean().optional(),
   /**
    * Overrides the top-level `importExtension` for this generator alone, for a project whose
    * generated directories are compiled by different tsconfigs.
@@ -603,7 +630,7 @@ type GeneratorConfig = DrzlConfig['generators'][number];
 
 /** The generators that emit an RPC router, and so share `outDir` and `validation`. */
 /** The generators that import the validation generators' exports by name. */
-const ROUTER_KINDS = new Set(['orpc', 'trpc', 'hono', 'express']);
+const ROUTER_KINDS = new Set(['orpc', 'trpc', 'hono', 'express', 'mcp']);
 
 /**
  * The routers that can reach a database through the request context.
@@ -705,6 +732,22 @@ export function nestjsOutDir(g: { path?: string }, cfg: { outDir: string }): str
  * authoritative for which.
  */
 export function graphqlOutDir(g: { path?: string }, cfg: { outDir: string }): string {
+  return g.path ?? cfg.outDir;
+}
+
+/**
+ * Where the MCP generator writes.
+ *
+ * The same rule as the routers, and for the same reason: it writes an `index.ts` barrel and a
+ * `stdio.ts` of its own, so a config that runs it beside a router generator has to give at least
+ * one of them a `path`.
+ *
+ * Its own function rather than a call to one of the others, for the reason `honoOutDir` records:
+ * these are separate decisions that happen to agree today, and a reader following
+ * `computeGeneratorOutputDirs` should not have to work out which kind's function is
+ * authoritative for which.
+ */
+export function mcpOutDir(g: { path?: string }, cfg: { outDir: string }): string {
   return g.path ?? cfg.outDir;
 }
 
@@ -846,6 +889,23 @@ export function resolveConfig(cfg: DrzlConfig): { config: DrzlConfig; warnings: 
         );
       }
       continue;
+    }
+
+    /**
+     * The MCP generator, whose one unread option is `includeRelations`.
+     *
+     * Reported rather than parsed and dropped, which is the shape of dead option this config has
+     * already shipped twice. Unlike NestJS and GraphQL above this kind does *not* `continue`: it
+     * reads `validation` whole, including `useShared` and `importPath`, which is where the
+     * constraint bounds its tools advertise come from, so it goes on to the router reconciliation
+     * below like every other kind that imports a sibling generator's exports.
+     */
+    if (g.kind === 'mcp' && g.includeRelations) {
+      warnings.push(
+        `drzl config: the "mcp" generator sets includeRelations, which it does not read. ` +
+          `Relation lookups are routes, and this generator emits MCP tools rather than routes. ` +
+          `Remove the flag.`
+      );
     }
 
     // Both router generators import the validation generators' exports by name, so both have to
@@ -1140,6 +1200,7 @@ export function computeGeneratorOutputDirs(cfg: DrzlConfig, cwd = process.cwd())
     if (g.kind === 'fastify') dirs.add(abs(fastifyOutDir(g, cfg)));
     if (g.kind === 'nestjs') dirs.add(abs(nestjsOutDir(g, cfg)));
     if (g.kind === 'graphql') dirs.add(abs(graphqlOutDir(g, cfg)));
+    if (g.kind === 'mcp') dirs.add(abs(mcpOutDir(g, cfg)));
     if (g.kind === 'service') dirs.add(abs(g.path ?? 'src/services'));
     if (g.kind === 'zod') dirs.add(abs(g.path ?? 'src/validators/zod'));
     if (g.kind === 'valibot') dirs.add(abs(g.path ?? 'src/validators/valibot'));
