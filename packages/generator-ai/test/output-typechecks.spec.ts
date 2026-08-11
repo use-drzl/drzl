@@ -31,6 +31,9 @@ const pkgRoot = path.resolve(import.meta.dirname, '..');
 const workRoot = path.join(pkgRoot, 'test', 'tmp', 'typecheck');
 const tsc = path.join(pkgRoot, 'node_modules', '.bin', 'tsc');
 
+/** See the comment on the per-library cases below. */
+const TSC_TIMEOUT = 180_000;
+
 /** Every table shape this generator has a branch for, compiled together. */
 const tables = [
   users,
@@ -101,17 +104,29 @@ describe('the emitted tree', () => {
     expect(existsSync(tsc), `no tsc at ${tsc}; run pnpm install`).toBe(true);
   });
 
+  /**
+   * A real `tsc` against the AI SDK's type surface, which is large.
+   *
+   * The per-case timeout is not decoration: the package script sets 20s and the zod case took
+   * 22.3s on a CI runner while passing in 14s locally, so the suite failed on a machine rather
+   * than on the output. The number is generous on purpose, because the thing being measured is a
+   * compiler's speed on whatever hardware the run landed on.
+   */
   for (const library of ['zod', 'valibot', 'arktype'] as const) {
-    it(`compiles under strict nodenext with ${library}`, async () => {
-      expect(await compile(library, { validation: { library } })).toBe('');
-    });
+    it(
+      `compiles under strict nodenext with ${library}`,
+      async () => {
+        expect(await compile(library, { validation: { library } })).toBe('');
+      },
+      TSC_TIMEOUT
+    );
   }
 
   it('compiles with a tool prefix and a module suffix', async () => {
     expect(await compile('naming', { naming: { toolPrefix: 'db_', routerSuffix: 'Tools' } })).toBe(
       ''
     );
-  });
+  }, TSC_TIMEOUT);
 
   /**
    * The row type is the contract a filled-in handler is held to, so it is asked to prove it
@@ -129,7 +144,7 @@ export const seen: Date | null = row.seenAt;
 export const names = Object.keys(allTools);
 `;
     expect(await compile('rowtype', {}, probe)).toBe('');
-  });
+  }, TSC_TIMEOUT);
 
   it('would have said so if the tree did not compile', async () => {
     // Every case above passes by producing no output, which a compiler that never ran also does.
@@ -143,5 +158,5 @@ export const id = row.id;
     const out = await compile('canary', {}, probe);
     expect(out).not.toBe('');
     expect(out).toMatch(/probe\.ts/);
-  });
+  }, TSC_TIMEOUT);
 });
