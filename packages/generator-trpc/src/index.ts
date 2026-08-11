@@ -1,4 +1,10 @@
-import { fileWriter, type FileSink } from '@drzl/validation-core';
+import {
+  BIGINT_DIGITS_PATTERN as BIGINT_DIGITS,
+  VALIBOT_JSON_CONST,
+  VALIBOT_JSON_SOURCE,
+  fileWriter,
+  type FileSink,
+} from '@drzl/validation-core';
 import type { Analysis, Column, Table } from '@drzl/analyzer';
 import type { AffixOptions, ImportExtension } from '@drzl/validation-core';
 import {
@@ -124,6 +130,33 @@ interface LibDialect {
    */
   dateInput: string;
   unknown: string;
+  /**
+   * A json column, which a request body carries natively.
+   *
+   * These three used to fall to `unknown`, which is the widest thing a schema can say and was not
+   * true of any of them: the same column is typed by every standalone validator generator, so DRZL
+   * gave one column three answers depending on which generator wrote it. What each needs is its
+   * *wire* form, which is the same rule the Date entry above follows.
+   *
+   * A body has been through `JSON.parse`, so a json column's value is a json value by
+   * construction. Stating that gives the handler a typed value rather than `unknown`.
+   */
+  json: string;
+  /**
+   * A bigint crossing JSON, which it cannot do as a number: `JSON.stringify(1n)` throws on the way
+   * out and a `number` loses precision past 2^53. So it travels as its decimal digits and stays a
+   * string on both sides, which is what the NestJS generator settled on and pins with a test.
+   */
+  bigintWire: string;
+  /**
+   * A binary column on the way in. `JSON.stringify(new Uint8Array([1,2]))` is `{"0":1,"1":2}`, not
+   * bytes, so the wire form is base64 and the write side decodes it to the `Uint8Array` the driver
+   * wants. The read side stays a real `Uint8Array`, which is what the handler returns, exactly as
+   * the Date entry keeps a real Date there.
+   */
+  binaryWire: string;
+  /** A binary column on the read side, which is a real Uint8Array. */
+  binaryRead: string;
   enum: (vals: string[]) => string;
   nullable: (base: string) => string;
   optional: (base: string) => string;
@@ -183,6 +216,10 @@ const LIBS: Record<Lib, LibDialect> = {
     date: 'z.date()',
     dateInput: 'z.union([z.date(), z.iso.datetime().transform((s) => new Date(s))])',
     unknown: 'z.unknown()',
+    json: 'z.json()',
+    bigintWire: `z.string().regex(${BIGINT_DIGITS})`,
+    binaryWire: 'z.base64().transform((s) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0)))',
+    binaryRead: 'z.instanceof(Uint8Array)',
     tuple: (n) => `z.tuple([${Array.from({ length: n }, () => 'z.number()').join(', ')}])`,
     numberObject: (fields) => `z.object({ ${fields.map((f) => `${f}: z.number()`).join(', ')} })`,
     enum: (vals) => `z.enum([${vals.map(q).join(', ')}] as const)`,
@@ -203,6 +240,11 @@ const LIBS: Record<Lib, LibDialect> = {
     dateInput:
       'v.union([v.date(), v.pipe(v.string(), v.isoTimestamp(), v.transform((s) => new Date(s)))])',
     unknown: 'v.unknown()',
+    json: VALIBOT_JSON_CONST,
+    bigintWire: `v.pipe(v.string(), v.regex(${BIGINT_DIGITS}))`,
+    binaryWire:
+      'v.pipe(v.string(), v.base64(), v.transform((s) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0))))',
+    binaryRead: 'v.instance(Uint8Array)',
     tuple: (n) => `v.tuple([${Array.from({ length: n }, () => 'v.number()').join(', ')}])`,
     numberObject: (fields) => `v.object({ ${fields.map((f) => `${f}: v.number()`).join(', ')} })`,
     enum: (vals) => `v.picklist([${vals.map(q).join(', ')}] as const)`,
@@ -221,6 +263,10 @@ const LIBS: Record<Lib, LibDialect> = {
     date: 'Date',
     dateInput: 'Date | string.date.iso.parse',
     unknown: 'unknown',
+    json: 'number | object | string | boolean | null',
+    bigintWire: BIGINT_DIGITS,
+    binaryWire: 'string.base64',
+    binaryRead: 'TypedArray.Uint8',
     // The surrounding encode adds the quotes, so the union is built with the inner quoting
     // ArkType expects. Emitting `'${...}'` here produces `''admin' | 'user''`, which does not parse.
     enum: (vals) => vals.map((x) => `'${x.replace(/'/g, "\\'")}'`).join(' | '),
@@ -247,7 +293,11 @@ const LIBS: Record<Lib, LibDialect> = {
 function isWide(column: Column): boolean {
   if (column.enumValues && column.enumValues.length) return false;
   if (column.shape?.kind === 'tuple' || column.shape?.kind === 'numberObject') return false;
-  return !['number', 'string', 'boolean', 'Date'].includes(column.tsType);
+  // A json or binary column is not wide any more: each states its wire form. What is left here is
+  // a column the analyzer could not type at all, which is a `customType` without `$type<T>()`.
+  if (column.shape?.kind === 'json' || column.shape?.kind === 'buffer') return false;
+  if (column.tsType === 'Uint8Array') return false;
+  return !['number', 'string', 'boolean', 'Date', 'bigint'].includes(column.tsType);
 }
 
 function mapExpr(column: Column, lib: Lib, mode: 'insert' | 'update' | 'select'): string {
@@ -269,7 +319,15 @@ function mapExpr(column: Column, lib: Lib, mode: 'insert' | 'update' | 'select')
         // The read side is a real Date the driver produced. The write side depends on the
         // transformer, so it takes both; see `LibDialect.dateInput`.
         return mode === 'select' ? d.date : d.dateInput;
+      case 'bigint':
+        return d.bigintWire;
       default:
+        // Shape before type: the analyzer states `json` and `buffer` as shapes, and the tsType
+        // beside them is `any` or `Uint8Array`, neither of which says what crosses the wire.
+        if (column.shape?.kind === 'json') return d.json;
+        if (column.shape?.kind === 'buffer' || column.tsType === 'Uint8Array') {
+          return mode === 'select' ? d.binaryRead : d.binaryWire;
+        }
         return d.unknown;
     }
   })();
@@ -725,6 +783,11 @@ function renderRouter(table: Table, opts: GenerateOptions, ctx: RenderContext): 
   // survived into it.
   if (LIB_USAGE[lib].test(decided)) imports.unshift(LIB_IMPORTS[lib]);
 
+  // The valibot json value space, emitted once into any module that references it. Decided against
+  // the finished text rather than from the column list, which is the same rule the imports above
+  // follow: a module that mentions the name defines it, and one that does not stays as it was.
+  const jsonPreamble = decided.includes(VALIBOT_JSON_CONST) ? `\n${VALIBOT_JSON_SOURCE}` : '';
+
   const wide = table.columns.filter(isWide).map((c) => c.name);
   const wideNote = wide.length
     ? `// No validated type for ${wide.length === 1 ? 'this column' : 'these columns'}: ${wide.join(', ')}.\n` +
@@ -734,7 +797,7 @@ function renderRouter(table: Table, opts: GenerateOptions, ctx: RenderContext): 
   return `// Generated by @drzl/generator-trpc
 // Router for table: ${table.name}
 ${wideNote}${imports.join('\n')}
-
+${jsonPreamble}
 ${decided}`;
 }
 

@@ -50,6 +50,18 @@ const ledgers = {
   primaryKey: { columns: ['seq'] },
 } as never;
 
+/**
+ * A key the analyzer really cannot type: a `customType` with no `$type<T>()`, which it reports as
+ * `unknown`. `ledgers` used to stand for this case, on the strength of `bigint` having no JSON
+ * transport, and stopped being an example of it when bigint gained one.
+ */
+const opaque = {
+  name: 'opaque',
+  tsName: 'opaque',
+  columns: [col('handle', 'unknown'), col('label', 'string')],
+  primaryKey: { columns: ['handle'] },
+} as never;
+
 const codeOf = (table: never, name: string, injection = false) => {
   const procs = hooks.procedures(
     table,
@@ -116,19 +128,40 @@ describe('a table with no primary key', () => {
   });
 });
 
+describe('a bigint key, which crosses as digits', () => {
+  it('is wired, because the wire form converts back exactly', () => {
+    // This table used to stand for "DRZL cannot type this key". It does not any more: a bigint
+    // travels as its decimal digits, the input schema pins them, and `BigInt()` on a string the
+    // pattern admitted is total. The service parameter is a real bigint, so the call is written.
+    const get = codeOf(ledgers, 'get');
+    expect(get).toContain(String.raw`.input(z.object({ seq: z.string().regex(/^-?\d+$/) }))`);
+    expect(get).toContain('return await LedgerService.getById(BigInt(input.seq));');
+    expect(get).not.toContain('Not implemented');
+  });
+
+  it('converts on update and delete too, not only on the read', () => {
+    expect(codeOf(ledgers, 'update')).toContain(
+      'return await LedgerService.update(BigInt(input.seq), input.data);'
+    );
+    expect(codeOf(ledgers, 'delete')).toContain(
+      'return await LedgerService.delete(BigInt(input.seq));'
+    );
+  });
+});
+
 describe('a key column DRZL cannot type', () => {
   it('stubs the addressing procedures and says why', () => {
-    const get = codeOf(ledgers, 'get');
-    expect(get).toContain('.input(z.object({ seq: z.unknown() }))');
-    expect(get).not.toContain('LedgerService.getById');
-    expect(get).toContain('DRZL cannot type its column seq');
-    expect(get).toMatch(/throw new Error\('Not implemented: get ledgers\.'\)/);
-    expect(codeOf(ledgers, 'update')).not.toContain('LedgerService.update');
-    expect(codeOf(ledgers, 'delete')).not.toContain('LedgerService.delete');
+    const get = codeOf(opaque, 'get');
+    expect(get).toContain('.input(z.object({ handle: z.unknown() }))');
+    expect(get).not.toContain('OpaqueService.getById');
+    expect(get).toContain('DRZL cannot type its column handle');
+    expect(get).toMatch(/throw new Error\('Not implemented: get opaque\.'\)/);
+    expect(codeOf(opaque, 'update')).not.toContain('OpaqueService.update');
+    expect(codeOf(opaque, 'delete')).not.toContain('OpaqueService.delete');
   });
 
   it('keeps list and create wired: only the key was untypeable', () => {
-    expect(codeOf(ledgers, 'list')).toContain('return await LedgerService.getAll();');
-    expect(codeOf(ledgers, 'create')).toContain('return await LedgerService.create(input);');
+    expect(codeOf(opaque, 'list')).toContain('return await OpaqueService.getAll();');
+    expect(codeOf(opaque, 'create')).toContain('return await OpaqueService.create(input);');
   });
 });
