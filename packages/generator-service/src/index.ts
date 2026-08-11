@@ -1,4 +1,9 @@
-import { fileWriter, type FileSink } from '@drzl/validation-core';
+import {
+  JSON_VALUE_TS_CONST,
+  JSON_VALUE_TS_SOURCE,
+  fileWriter,
+  type FileSink,
+} from '@drzl/validation-core';
 import type { Analysis, Table, Column } from '@drzl/analyzer';
 import type { ImportExtension } from '@drzl/validation-core';
 import { formatCode, importSpecifier, resolveConfiguredImport } from '@drzl/validation-core';
@@ -65,13 +70,17 @@ function tsTypeOf(c: Column): string {
   if (c.shape?.kind === 'numberObject') {
     return `{ ${c.shape.fields.map((f) => `${f}: number`).join('; ')} }`;
   }
+  // A json column, which the validators all describe and this used to call `any`. `any` is worse
+  // than the `unknown` beside it: it turns checking off rather than admitting there is none.
+  if (c.shape?.kind === 'json') return JSON_VALUE_TS_CONST;
+  // Bytes, which the driver hands back as a `Uint8Array` and this used to call `unknown`.
+  if (c.shape?.kind === 'buffer' || c.tsType === 'Uint8Array') return 'Uint8Array';
   switch (c.tsType) {
     case 'number':
     case 'string':
     case 'boolean':
     case 'Date':
     case 'bigint':
-    case 'any':
       return c.tsType;
     default:
       return 'unknown';
@@ -184,7 +193,10 @@ function renderTypes(table: Table) {
   // only thing nullability changes here is whether the value may be null.
   const selectFields = cols.map((c: Column) => `  ${c.name}: ${fieldType(c)};`).join('\n');
   const T = table.tsName;
-  return `export interface Insert${T} {\n${insertFields}\n}\nexport interface Update${T} {\n${updateFields}\n}\nexport interface Select${T} {\n${selectFields}\n}`;
+  const body = `export interface Insert${T} {\n${insertFields}\n}\nexport interface Update${T} {\n${updateFields}\n}\nexport interface Select${T} {\n${selectFields}\n}`;
+  // The json value alias, declared once ahead of the interfaces that name it. Decided against the
+  // finished text, so a table with no json column is byte for byte what it was.
+  return body.includes(JSON_VALUE_TS_CONST) ? `${JSON_VALUE_TS_SOURCE}\n${body}` : body;
 }
 
 /**
