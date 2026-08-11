@@ -63,7 +63,7 @@ c_real: Type.Union([
     [Kind]: 'DrzlRowCheck',
     type: 'number',
     description: 'NaN, Infinity or -Infinity, which this column stores',
-    assert: (v: any) => typeof v === 'number' && !Number.isFinite(v),
+    assert: (v: unknown) => typeof v === 'number' && !Number.isFinite(v),
   }),
 ]),
 ```
@@ -213,7 +213,7 @@ export const InsertusersSchema = toStandardSchema(
       Type.Unsafe<unknown>({
         [Kind]: 'DrzlRowCheck',
         description: 'at most 254 characters',
-        assert: (v: any) => typeof v !== 'string' || [...v].length <= 254,
+        assert: (v: unknown) => typeof v !== 'string' || [...v].length <= 254,
       }),
     ]),
   })
@@ -316,7 +316,7 @@ name: Type.Intersect([
   Type.Unsafe<unknown>({
     [Kind]: 'DrzlRowCheck',
     description: 'at most 255 characters',
-    assert: (v: any) => v == null || [...v].length <= 255,
+    assert: (v: unknown) => v == null || [...v].length <= 255,
   }),
 ]),
 ```

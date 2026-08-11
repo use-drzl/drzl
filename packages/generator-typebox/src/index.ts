@@ -288,14 +288,14 @@ function tbDateType(
     `Type.Unsafe<unknown>({
     [Kind]: 'DrzlRowCheck',
     description: 'a date the runtime can parse',
-    assert: (v: any) => typeof v === 'string' && ${parsesToADate('new Date(v)')},
+    assert: (v: unknown) => typeof v === 'string' && ${parsesToADate('new Date(v)')},
   })])`;
   const fromNumber =
     `Type.Intersect([Type.Number(), ` +
     `Type.Unsafe<unknown>({
     [Kind]: 'DrzlRowCheck',
     description: 'a date the runtime can parse',
-    assert: (v: any) => typeof v === 'number' && ${parsesToADate('new Date(v)')},
+    assert: (v: unknown) => typeof v === 'number' && ${parsesToADate('new Date(v)')},
   })])`;
   const union = `Type.Union([Type.Date(), ${coercible}, ${fromNumber}])`;
   if (coerceDates === 'all') return union;
@@ -427,7 +427,7 @@ function tbNumericCanonExpr(
     `Type.Unsafe<string>({
     [Kind]: 'DrzlRowCheck',
     description: ${JSON.stringify(description)},
-    assert: (v: any) => typeof v === 'string' && (${test}),
+    assert: (v: unknown) => typeof v === 'string' && (${test}),
   })`;
   const branches: string[] = [];
   if (target.set) {
@@ -472,7 +472,7 @@ function tbBigintKindExpr(c: Column, target: { set: ColumnSet } | { eq: ColumnCh
   return `Type.Intersect([Type.BigInt(), Type.Unsafe<${statics.length ? statics.join(' | ') : 'never'}>({
     [Kind]: 'DrzlRowCheck',
     description: ${JSON.stringify(description)},
-    assert: (v: any) => typeof v === 'bigint' && (${members.map((m) => `v === ${m}`).join(' || ')}),
+    assert: (v: unknown) => typeof v === 'bigint' && (${members.map((m) => `v === ${m}`).join(' || ')}),
   })])`;
 }
 
@@ -1284,8 +1284,8 @@ ${brandCode}${nestedCode}${duplicates}`;
  * up at validation time, honoured by both `Value.Check` and `TypeCompiler`. Registering is
  * idempotent, so several generated modules in one process are fine.
  */
-const ROW_PREAMBLE = `TypeRegistry.Set('DrzlRowCheck', (schema: any, value: any) =>
-  schema.assert(value)
+const ROW_PREAMBLE = `TypeRegistry.Set('DrzlRowCheck', (schema, value) =>
+  (schema as { assert(v: unknown): boolean }).assert(value)
 );
 `;
 
@@ -1385,7 +1385,7 @@ function tbNonFiniteUnion(c: Column, base: string): string {
     [Kind]: 'DrzlRowCheck',
     type: 'number',
     description: ${JSON.stringify(desc)},
-    assert: (v: any) => typeof v === 'number' && ${expr},
+    assert: (v: unknown) => typeof v === 'number' && ${expr},
   })])`;
 }
 
@@ -1407,7 +1407,7 @@ function tbCapExpr(c: Column, base: string, mode: Mode): string {
   const branch = (desc: string, expr: string) => `Type.Unsafe<unknown>({
     [Kind]: 'DrzlRowCheck',
     description: ${JSON.stringify(desc)},
-    assert: (v: any) => typeof v !== 'string' || ${expr},
+    assert: (v: unknown) => typeof v !== 'string' || ${expr},
   })`;
   const out: string[] = [];
   if (c.shape?.kind === 'byteString') {
@@ -1451,6 +1451,23 @@ function tbHasLengthBranch(lengths: LengthCheck[], sets: Column[][]): boolean {
   return sets.some((cols) => tbLengthBranches(lengths, cols).length > 0);
 }
 
+/**
+ * Why the row predicates take `any` where the scalar ones take `unknown`.
+ *
+ * A predicate over one value narrows itself: `typeof v === 'string' && ...` is the check and the
+ * narrowing at once, so `unknown` costs nothing there and every one of them uses it.
+ *
+ * A predicate over the row indexes it, and what comes out is whatever that column holds. The count
+ * expressions are spelled per measurement (code points, UTF-8 bytes, a Uint8Array's own length), and
+ * a row comparison puts two of those side by side with `<`, where the operands may be numbers,
+ * strings or dates and TypeScript has no type for "comparable". Narrowing each case would mean
+ * emitting a different guard per measurement to restate what the object arm of the intersection has
+ * already checked, and those guards would be bytes in every generated file on every column.
+ *
+ * The comment stays here rather than in the emitted output for that last reason: it explains a
+ * trade this generator made, not something the reader of a generated module has to know, and the
+ * output-size budget is what said so out loud when it was tried the other way.
+ */
 function tbLengthBranches(lengths: LengthCheck[], cols: Column[]): string[] {
   const byName = new Map(cols.map((c) => [c.name, c]));
   return lengths.flatMap((k) => {
