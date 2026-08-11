@@ -112,6 +112,7 @@ export const GeneratorKindSchema = z.enum([
   'fastify',
   'nestjs',
   'graphql',
+  'ai',
   'mcp',
   'next',
   'service',
@@ -631,7 +632,7 @@ type GeneratorConfig = DrzlConfig['generators'][number];
 
 /** The generators that emit an RPC router, and so share `outDir` and `validation`. */
 /** The generators that import the validation generators' exports by name. */
-const ROUTER_KINDS = new Set(['orpc', 'trpc', 'hono', 'express', 'mcp', 'next']);
+const ROUTER_KINDS = new Set(['orpc', 'trpc', 'hono', 'express', 'mcp', 'next', 'ai']);
 
 /**
  * The routers that can reach a database through the request context.
@@ -765,6 +766,18 @@ export function mcpOutDir(g: { path?: string }, cfg: { outDir: string }): string
  * for which.
  */
 export function nextOutDir(g: { path?: string }, cfg: { outDir: string }): string {
+  return g.path ?? cfg.outDir;
+}
+
+/**
+ * Where the AI SDK generator writes.
+ *
+ * The same rule as the routers, and for the same reason: it writes an `index.ts` barrel of its own,
+ * so a config that runs it beside a router generator has to give at least one of them a `path`.
+ *
+ * Its own function rather than a call to one of the others, for the reason `honoOutDir` records.
+ */
+export function aiOutDir(g: { path?: string }, cfg: { outDir: string }): string {
   return g.path ?? cfg.outDir;
 }
 
@@ -917,6 +930,14 @@ export function resolveConfig(cfg: DrzlConfig): { config: DrzlConfig; warnings: 
      * constraint bounds its tools advertise come from, so it goes on to the router reconciliation
      * below like every other kind that imports a sibling generator's exports.
      */
+    if (g.kind === 'ai' && g.includeRelations) {
+      warnings.push(
+        `drzl config: the "ai" generator sets includeRelations, which it does not read. ` +
+          `Relation lookups are routes, and this generator emits AI SDK tools rather than routes. ` +
+          `Remove the flag.`
+      );
+    }
+
     if (g.kind === 'mcp' && g.includeRelations) {
       warnings.push(
         `drzl config: the "mcp" generator sets includeRelations, which it does not read. ` +
@@ -1245,6 +1266,7 @@ export function computeGeneratorOutputDirs(cfg: DrzlConfig, cwd = process.cwd())
     if (g.kind === 'graphql') dirs.add(abs(graphqlOutDir(g, cfg)));
     if (g.kind === 'mcp') dirs.add(abs(mcpOutDir(g, cfg)));
     if (g.kind === 'next') dirs.add(abs(nextOutDir(g, cfg)));
+    if (g.kind === 'ai') dirs.add(abs(aiOutDir(g, cfg)));
     if (g.kind === 'service') dirs.add(abs(g.path ?? 'src/services'));
     if (g.kind === 'zod') dirs.add(abs(g.path ?? 'src/validators/zod'));
     if (g.kind === 'valibot') dirs.add(abs(g.path ?? 'src/validators/valibot'));

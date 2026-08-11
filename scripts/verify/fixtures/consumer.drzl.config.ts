@@ -39,6 +39,13 @@ export default {
     // purpose: deriving it from the zod entry above is wiring only `nextOptions` does, and a
     // fixture that spelled it out would never exercise that.
     { kind: 'next', path: './src/generated/next' },
+    // The AI SDK tools, on the shared schemas, and on valibot rather than zod on purpose: valibot
+    // is the library whose tools carry the emitted adapter, so this is the entry that compiles it.
+    {
+      kind: 'ai',
+      path: './src/generated/ai',
+      validation: { useShared: true, library: 'valibot', importPath: 'src/generated/valibot' },
+    },
     {
       kind: 'mcp',
       path: './src/generated/mcp',

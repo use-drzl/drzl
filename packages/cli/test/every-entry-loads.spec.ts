@@ -236,6 +236,7 @@ it('found every publishable package', () => {
   expect(publishable.map((p) => p.dir).sort()).toEqual([
     'analyzer',
     'cli',
+    'generator-ai',
     'generator-arktype',
     'generator-effect',
     'generator-express',
@@ -376,6 +377,7 @@ const ON_THE_ADVERTISED_ENGINE_FLOOR: Record<string, 'loads' | 'ERR_REQUIRE_ESM'
   // chalk@6 is ESM only. Every other entry here is CommonJS all the way down.
   'cli .': 'ERR_REQUIRE_ESM',
   'cli ./config': 'loads',
+  'generator-ai .': 'loads',
   'generator-arktype .': 'loads',
   'generator-effect .': 'loads',
   'generator-express .': 'loads',

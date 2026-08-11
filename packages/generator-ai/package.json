@@ -1,16 +1,16 @@
 {
-  "name": "@drzl/generator-mcp",
-  "version": "0.1.0",
+  "name": "@drzl/generator-ai",
+  "version": "0.0.0",
   "private": false,
   "license": "Apache-2.0",
-  "description": "Generate Model Context Protocol tools from a Drizzle schema, one module per table, so a language model is told each column's real bounds before it writes a row rather than after the database refuses one.",
+  "description": "Generate AI SDK tools from a Drizzle schema, one module per table, so a language model is told each column's real bounds before it writes a row rather than after the database refuses one.",
   "keywords": [
     "drizzle",
     "drizzle-orm",
-    "mcp",
-    "modelcontextprotocol",
+    "ai",
+    "vercel-ai-sdk",
+    "tools",
     "codegen",
-    "llm",
     "standard-schema"
   ],
   "type": "module",
@@ -43,10 +43,9 @@
     "@drzl/validation-core": "workspace:^"
   },
   "devDependencies": {
-    "@modelcontextprotocol/client": "^2.0.0",
-    "@modelcontextprotocol/sdk": "^1.30.0",
-    "@modelcontextprotocol/server": "^2.0.0",
+    "@ai-sdk/provider-utils": "^5.0.26",
     "@valibot/to-json-schema": "^1.4.0",
+    "ai": "^7.0.0",
     "arktype": "^2.1.29",
     "tsup": "^8.5.1",
     "typescript": "^5.9.3",
@@ -64,7 +63,7 @@
   "repository": {
     "type": "git",
     "url": "https://github.com/use-drzl/drzl",
-    "directory": "packages/generator-mcp"
+    "directory": "packages/generator-ai"
   },
   "funding": {
     "type": "github",

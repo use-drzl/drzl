@@ -53,6 +53,7 @@
     "zod": "^4.4.3"
   },
   "optionalDependencies": {
+    "@drzl/generator-ai": "workspace:^",
     "@drzl/generator-mcp": "workspace:^",
     "@drzl/generator-next": "workspace:^"
   },
