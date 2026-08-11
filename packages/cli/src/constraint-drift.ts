@@ -58,6 +58,13 @@ export interface DriftEntry {
    * than by each deriving the set again.
    */
   fix?: string;
+  /**
+   * Why there is no single statement, where there is not.
+   *
+   * Present exactly when `fix` is absent on a `schema-only` entry. A gap with neither reads as an
+   * oversight rather than as a dialect that genuinely cannot do it in one line.
+   */
+  noFix?: string;
 }
 
 export interface ConstraintDriftReport {
@@ -121,6 +128,68 @@ function derivedName(table: string, column: string): string {
   return `${table}_${column}_check`;
 }
 
+/**
+ * Dialects that take `ALTER TABLE ... ADD CONSTRAINT ... CHECK (...)`.
+ *
+ * SQLite is the one that does not, and it is a syntax error rather than a no-op. Measured on
+ * 2026-08-11 against `node:sqlite`:
+ *
+ *     ALTER TABLE users ADD CONSTRAINT users_status_check CHECK (status IN ('draft','live'))
+ *       -> near "CONSTRAINT": syntax error
+ *
+ *     ALTER TABLE users ADD COLUMN extra TEXT CHECK (extra IN ('a','b'))
+ *       -> accepted
+ *
+ * So SQLite takes an inline CHECK on a *new* column and has no way to add one to an existing
+ * column: the documented route is the twelve-step table rebuild. Printing the `ALTER TABLE` anyway
+ * would be a statement that cannot run, which is worse than printing nothing, so this generator
+ * says what SQLite actually needs instead of guessing.
+ *
+ * `unknown` is absent deliberately. The analyzer says `unknown` when it could not tell which
+ * database this is, and emitting DDL for a database nobody has named is exactly the kind of
+ * confident guess that ends up in a migration.
+ */
+const ADD_CONSTRAINT_DIALECTS = new Set([
+  'postgres',
+  'cockroach',
+  'gel',
+  'mysql',
+  'singlestore',
+  'mssql',
+]);
+
+/** What closes a `schema-only` gap on this dialect, or nothing where there is no one statement. */
+function fixFor(
+  dialect: string,
+  table: string,
+  column: string,
+  values: string[]
+): string | undefined {
+  if (!ADD_CONSTRAINT_DIALECTS.has(dialect)) return undefined;
+  return (
+    `ALTER TABLE ${table} ADD CONSTRAINT ${derivedName(table, column)} ` +
+    `CHECK (${column} IN (${sqlLiterals(values)}));`
+  );
+}
+
+/**
+ * Why a dialect has no one-statement fix, for the report to say rather than stay silent.
+ *
+ * A gap with no `fix` and no explanation reads as an oversight. Naming the reason is what turns it
+ * into something the reader can act on, even though acting on it is more work here.
+ */
+function noFixReason(dialect: string): string {
+  if (dialect === 'sqlite') {
+    return (
+      'SQLite cannot add a CHECK to an existing column: ALTER TABLE ... ADD CONSTRAINT is a ' +
+      'syntax error there. Closing this means rebuilding the table, which is the twelve-step ' +
+      'procedure SQLite documents: create the new table with the constraint, copy the rows, drop ' +
+      'the old one, rename.'
+    );
+  }
+  return `no statement is emitted for the "${dialect}" dialect, which this report cannot name a fix for`;
+}
+
 export function buildConstraintDriftReport(
   analysis: Analysis,
   schemaPath: string
@@ -166,9 +235,10 @@ export function buildConstraintDriftReport(
         reason:
           `the column is declared ${column.sqlType}, which holds any text; the set exists only ` +
           `in the generated schemas`,
-        fix:
-          `ALTER TABLE ${table.name} ADD CONSTRAINT ${derivedName(table.name, column.name)} ` +
-          `CHECK (${column.name} IN (${sqlLiterals(values)}));`,
+        ...(() => {
+          const fix = fixFor(analysis.dialect, table.name, column.name, values);
+          return fix ? { fix } : { noFix: noFixReason(analysis.dialect) };
+        })(),
       });
     }
   }
@@ -267,6 +337,8 @@ export function renderConstraintDriftReport(
       if (e.fix) {
         out.push(chalk.dim('      Close it with:'));
         out.push(`      ${e.fix}`);
+      } else if (e.noFix) {
+        out.push(chalk.dim(wrap(e.noFix, '      ', '      Not one statement here: ')));
       }
       out.push('');
     }
@@ -301,5 +373,63 @@ export function renderConstraintDriftReport(
         `${plural(report.counts.databaseOnly, 'constraint')} only the database does.`
     )
   );
+  return out.join('\n');
+}
+
+/**
+ * The same ledger as statements alone, for redirecting into a migration.
+ *
+ * A second renderer beside the human one rather than a flag inside it, so a report and a migration
+ * cannot disagree about what they claim: both read the same `DriftEntry[]`.
+ *
+ * Only the `schema-only` side appears. The other side is a list of things no SQL can fix, because
+ * the database is already enforcing them.
+ *
+ * Nothing at all is emitted when there is no drift, so a redirect leaves an empty file rather than
+ * a file of comments that looks like a migration with its statements deleted.
+ */
+export function renderConstraintDriftSql(report: ConstraintDriftReport): string {
+  const gaps = report.entries.filter((e) => e.side === 'schema-only');
+  if (!gaps.length) return '';
+
+  const out: string[] = [];
+  const runnable = gaps.filter((g) => g.fix);
+  const unrunnable = gaps.filter((g) => !g.fix);
+
+  out.push(`-- Generated by drzl doctor --constraints --sql`);
+  out.push(`-- ${report.schema}, ${report.dialect}`);
+  out.push(
+    `-- ${runnable.length} constraint(s) your schemas enforce and the database does not.`
+  );
+  if (unrunnable.length) {
+    out.push(
+      `-- ${unrunnable.length} more cannot be closed by one statement on this dialect; see below.`
+    );
+  }
+  out.push('');
+
+  // Sorted, so the file is stable between runs and diffs cleanly.
+  const byPlace = (a: DriftEntry, b: DriftEntry) =>
+    a.table.localeCompare(b.table) || a.columns.join().localeCompare(b.columns.join());
+
+  for (const g of [...runnable].sort(byPlace)) {
+    out.push(`-- ${g.table}.${g.columns.join(', ')}: ${g.reason}`);
+    out.push(g.fix!);
+    out.push('');
+  }
+
+  if (unrunnable.length) {
+    out.push('-- The rest, which this dialect cannot do in one statement:');
+    for (const g of [...unrunnable].sort(byPlace)) {
+      out.push(`--`);
+      out.push(`--   ${g.table}.${g.columns.join(', ')}`);
+      out.push(`--   ${g.rule}`);
+      for (const line of (g.noFix ?? '').match(/.{1,88}(\s|$)/g) ?? []) {
+        out.push(`--   ${line.trim()}`);
+      }
+    }
+    out.push('');
+  }
+
   return out.join('\n');
 }

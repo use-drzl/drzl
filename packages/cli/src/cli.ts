@@ -64,6 +64,7 @@ import { buildDoctorReport, renderDoctorReport } from './doctor.js';
 import {
   buildConstraintDriftReport,
   renderConstraintDriftReport,
+  renderConstraintDriftSql,
 } from './constraint-drift.js';
 import { snapshotAll } from './drift.js';
 import {
@@ -283,6 +284,7 @@ withOutputFlags(
       '--constraints',
       'report what each side enforces that the other does not, instead of the usual findings'
     )
+    .option('--sql', 'with --constraints, emit the statements alone, for redirecting to a migration')
 ).action(async (schema: string | undefined, opts: any) => {
   const out = outputFor(opts);
   {
@@ -322,6 +324,16 @@ withOutputFlags(
        * would be noise; a set the generated schemas restrict and the database does not is a real
        * gap with a real `ALTER TABLE` beside it.
        */
+      // A flag that silently turns another one on is the kind of thing that later reads as a bug,
+      // so this refuses rather than implying `--constraints`.
+      if (opts.sql && !opts.constraints) {
+        const msg = '--sql reports the constraint drift as statements, so it needs --constraints.';
+        if (opts.json) out.jsonData(jsonFailure('doctor', 'DRZL_CLI_DOCTOR', msg));
+        else out.error('Doctor failed (DRZL_CLI_DOCTOR):', msg);
+        process.exit(EXIT_FAILED);
+        return;
+      }
+
       if (opts.constraints) {
         /**
          * An unreadable schema is reported as unreadable, not as clean.
@@ -349,6 +361,14 @@ withOutputFlags(
 
         const drift = buildConstraintDriftReport(analysis, schemaLabel);
         const driftCode = opts.strict && drift.counts.schemaOnly ? EXIT_FINDINGS : EXIT_OK;
+        if (opts.sql) {
+          // Statements alone, no prose and no colour, so `> migration.sql` produces a file that
+          // runs. Empty when there is no drift, rather than a file of comments that looks like a
+          // migration whose statements were deleted.
+          out.data(renderConstraintDriftSql(drift));
+          process.exit(driftCode);
+          return;
+        }
         if (opts.json)
           out.data(
             JSON.stringify({ command: 'doctor', exitCode: driftCode, ...drift }, null, 2)
