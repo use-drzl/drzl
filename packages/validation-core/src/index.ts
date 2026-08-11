@@ -422,6 +422,62 @@ export function parsesToADate(expr: string): string {
  */
 export const CODEPOINT_LENGTH = '[...v].length';
 
+/**
+ * The digits of an integer, as a regex literal for an emitted module.
+ *
+ * A bigint cannot cross JSON as a number: `JSON.stringify(1n)` throws on the way out, and a
+ * `number` loses precision past 2^53. So every generator that puts a bigint column on a wire spells
+ * it as its decimal digits, and they all spell it the same way from here.
+ */
+export const BIGINT_DIGITS_PATTERN = String.raw`/^-?\d+$/`;
+
+/** The name of the recursive JSON schema a valibot module defines when it has a json column. */
+export const VALIBOT_JSON_CONST = 'DrzlJsonValue';
+
+/**
+ * The JSON value space for valibot, emitted once into any module that needs it.
+ *
+ * Valibot has no `json()` built-in, unlike zod 4, and `v.any()` accepts `undefined`, `NaN`, bigints
+ * and every class instance, none of which survive the round trip through a json column. So the
+ * space is spelled out, recursively, with `v.finite()` so `Infinity` is rejected rather than
+ * written out as `null`.
+ *
+ * Shared rather than copied because two kinds of generator need the same text: the standalone
+ * valibot generator, whose json column is a value the driver hands back, and the route generators,
+ * whose json column arrives from `JSON.parse` on a request body. The value space is the same in
+ * both directions, and two copies of it would be two things to keep in step.
+ */
+export const VALIBOT_JSON_SOURCE = `type ${VALIBOT_JSON_CONST}Type =
+  | string
+  | number
+  | boolean
+  | null
+  | ${VALIBOT_JSON_CONST}Type[]
+  | { [key: string]: ${VALIBOT_JSON_CONST}Type };
+
+const ${VALIBOT_JSON_CONST}: v.GenericSchema<${VALIBOT_JSON_CONST}Type> = v.lazy(() =>
+  v.union([
+    v.string(),
+    v.pipe(v.number(), v.finite()),
+    v.boolean(),
+    v.null(),
+    v.array(${VALIBOT_JSON_CONST}),
+    v.pipe(
+      // The plain-object test comes before the record, not after it. A valibot pipe passes the
+      // *output* of each step onward, and \`v.record\` outputs a freshly built object, so a check
+      // placed after it inspects that new object and reports every input as plain. A Date sailed
+      // through: it has no own enumerable keys, so the record accepted it and rebuilt it as \`{}\`.
+      v.custom<Record<string, ${VALIBOT_JSON_CONST}Type>>((o) => {
+        if (typeof o !== 'object' || o === null || Array.isArray(o)) return false;
+        const p = Object.getPrototypeOf(o);
+        return p === Object.prototype || p === null;
+      }, 'not a plain object'),
+      v.record(v.string(), ${VALIBOT_JSON_CONST})
+    ),
+  ])
+);
+`;
+
 export function isIntegerColumn(c: Column): boolean {
   if (typeof c.integer === 'boolean') return c.integer;
   return c.dbType === 'INTEGER' || (c.min !== undefined && c.max !== undefined);

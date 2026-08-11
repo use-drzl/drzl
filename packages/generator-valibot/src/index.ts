@@ -23,6 +23,8 @@ import {
   CONSTRAINTS_MODULE,
   NUMERIC_CANON_NAME,
   NUMERIC_CANON_SOURCE,
+  VALIBOT_JSON_CONST,
+  VALIBOT_JSON_SOURCE,
   importSpecifier,
   insertColumns,
   isIntegerColumn,
@@ -259,47 +261,15 @@ function vChecks(c: Column, checks: ColumnCheck[]): string[] {
     });
 }
 
-/** Name of the recursive JSON schema emitted into a file that has any json column. */
-const JSON_CONST = 'DrzlJsonValue';
-
 /**
- * A recursive definition of the JSON value space, emitted once per file.
+ * The recursive JSON schema this module defines when a table has a json column.
  *
- * Valibot has no `json()` built-in, and `v.any()` accepted `undefined`, `NaN`, bigints and every
- * class instance, none of which survive the round trip through a json column. The shape mirrors
- * what `drizzle-orm/valibot` builds, with one addition: `v.finite()`, so `Infinity` is rejected
- * rather than written out as `null`.
+ * The text lives in `@drzl/validation-core` because the route generators emit the same thing for
+ * the same column: a json value is a json value whether the driver handed it back or `JSON.parse`
+ * built it from a request body.
  */
-const JSON_PREAMBLE = `type ${JSON_CONST}Type =
-  | string
-  | number
-  | boolean
-  | null
-  | ${JSON_CONST}Type[]
-  | { [key: string]: ${JSON_CONST}Type };
-
-const ${JSON_CONST}: v.GenericSchema<${JSON_CONST}Type> = v.lazy(() =>
-  v.union([
-    v.string(),
-    v.pipe(v.number(), v.finite()),
-    v.boolean(),
-    v.null(),
-    v.array(${JSON_CONST}),
-    v.pipe(
-      // The plain-object test comes before the record, not after it. A valibot pipe passes the
-      // *output* of each step onward, and \`v.record\` outputs a freshly built object, so a check
-      // placed after it inspects that new object and reports every input as plain. A Date sailed
-      // through: it has no own enumerable keys, so the record accepted it and rebuilt it as \`{}\`.
-      v.custom<Record<string, ${JSON_CONST}Type>>((o) => {
-        if (typeof o !== 'object' || o === null || Array.isArray(o)) return false;
-        const p = Object.getPrototypeOf(o);
-        return p === Object.prototype || p === null;
-      }, 'not a plain object'),
-      v.record(v.string(), ${JSON_CONST})
-    ),
-  ])
-);
-`;
+const JSON_CONST = VALIBOT_JSON_CONST;
+const JSON_PREAMBLE = VALIBOT_JSON_SOURCE;
 
 /**
  * A column whose value is structured rather than scalar.

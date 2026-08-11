@@ -40,7 +40,20 @@ function keyColumns(table: Table): Column[] | null {
  */
 function serviceKeyExpressible(c: Column): boolean {
   if (c.enumValues && c.enumValues.length) return true;
-  return ['number', 'string', 'boolean', 'Date'].includes(c.tsType);
+  // `bigint` joined the list when the routers stopped calling it `unknown`. It has a wire form,
+  // its decimal digits, and the conversion back is exact, so the call below can be written.
+  return ['number', 'string', 'boolean', 'Date', 'bigint'].includes(c.tsType);
+}
+
+/**
+ * One key column as the service wants it, from the input as the wire carries it.
+ *
+ * Only `bigint` differs from the identity. It crosses as digits, because `JSON.stringify(1n)`
+ * throws and a `number` loses precision past 2^53, and the service's parameter is a real `bigint`.
+ * The input schema's pattern is what makes `BigInt()` total here: nothing else reaches this line.
+ */
+function serviceKeyArg(c: Column): string {
+  return c.tsType === 'bigint' ? `BigInt(input.${c.name})` : `input.${c.name}`;
 }
 
 /** The zod spelling of one key column, for the input this template writes before the generator rewrites it. */
@@ -56,7 +69,10 @@ function zodKeyExpr(c: Column): string {
             ? 'z.boolean()'
             : c.tsType === 'Date'
               ? 'z.date()'
-              : 'z.unknown()';
+              : // Digits, which is how a bigint crosses JSON at all; see `serviceKeyArg`.
+                c.tsType === 'bigint'
+                ? String.raw`z.string().regex(/^-?\d+$/)`
+                : 'z.unknown()';
   return c.nullable ? `${base}.nullable()` : base;
 }
 
@@ -252,7 +268,7 @@ export const dbMiddleware = os
     // compile (the input schema carries unknown there, the service parameter is typed).
     const key = keyColumns(table);
     const keyable = !!key && key.every(serviceKeyExpressible);
-    const keyArgs = key ? key.map((c) => `input.${c.name}`).join(', ') : '';
+    const keyArgs = key ? key.map(serviceKeyArg).join(', ') : '';
     const keyFields = key ? key.map((c) => `${c.name}: ${zodKeyExpr(c)}`).join(', ') : '';
     const keyInput = `z.object({ ${keyFields} })`;
     const updateInput = `z.object({ ${keyFields}, data: z.any() })`;

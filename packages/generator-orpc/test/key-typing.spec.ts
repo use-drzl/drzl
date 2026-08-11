@@ -243,25 +243,23 @@ describe('the service template reaches the service through the real key', () => 
     );
   });
 
-  it('falls back to a throwing stub when a key column has no typed transport, and says why', async () => {
-    // The input carries z.unknown() for the bigint key, and unknown is not assignable to the
-    // service's typed parameter, so the call would not compile.
+  it('wires a bigint key through its digits, which convert back exactly', async () => {
+    // This case used to be the throwing stub, on the strength of a bigint having no JSON
+    // transport. It has one: its decimal digits, pinned by the input schema, and `BigInt()` on a
+    // string that pattern admitted is total. So the call is written rather than refused.
     const source = await router(ledgers, { template: '@drzl/template-orpc-service' });
-    expect(source).toContain('.input(z.object({ seq: z.unknown() }))');
+    expect(source).toContain(String.raw`seq: z.string().regex(/^-?\d+$/)`);
     expect(source).toContain('return await LedgerService.getAll();');
     expect(source).toContain('return await LedgerService.create(input);');
-    for (const method of ['getById', 'update(', 'delete(']) {
-      expect(source, method).not.toContain(`LedgerService.${method}`);
-    }
-    expect(source).toContain('DRZL cannot type its column seq');
-    expect(source).toMatch(/throw new Error\('Not implemented: get ledgers\.'\)/);
+    expect(source).toContain('return await LedgerService.getById(BigInt(input.seq));');
+    expect(source).not.toContain('Not implemented: get ledgers.');
   });
 
-  it('leaves the standard template stubs as stubs for the same key', async () => {
-    // Nothing in a stub body touches the service, so the wide input is a contract hole worth a
-    // note in the service template only; the standard bodies stay what they were.
+  it('gives the standard template the same typed input, whose bodies stay stubs', async () => {
+    // Nothing in a standard stub body touches a service, so the input is the whole of what this
+    // template can get wrong, and it is now the wire form rather than `unknown`.
     const source = await router(ledgers, { template: 'standard' });
-    expect(source).toContain('.input(z.object({ seq: z.unknown() }))');
+    expect(source).toContain(String.raw`seq: z.string().regex(/^-?\d+$/)`);
     expect(source).toContain('return null');
   });
 });
