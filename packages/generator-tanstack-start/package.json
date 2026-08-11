@@ -1,6 +1,6 @@
 {
   "name": "@drzl/generator-tanstack-start",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "private": false,
   "license": "Apache-2.0",
   "description": "Generate TanStack Start server functions from a Drizzle schema, one module per table, with the reads on GET and the writes on POST and every payload validated by the schemas DRZL already emits.",
