@@ -11,12 +11,12 @@ useForm({ validators: { onChange: InsertusersSchema } });
 ```
 
 That absence is deliberate and was settled by measurement rather than taste. The three gaps a
-package might claim to close are all structural: the validator's type contract wants the
-schema's input type assignable to your form state (a one-line cast, measured below), the parsed
-output of a schema is discarded by design (`standardSchemaValidators` reads `issues` and
-nothing else, so conversion is one `parse` call in your submit handler), and the
-submission-wedge below lives in `FormApi`'s submit mechanics, not in anything a generated
-wrapper could reach. The rest of this page is the measured TanStack-specific behavior against
+package might claim to close are all structural: the validator's type contract wants the schema's
+input type to *be* your form state, which is a question about where your defaults come from rather
+than about the schema, the parsed output of a schema is discarded by design
+(`standardSchemaValidators` reads `issues` and nothing else, so conversion is one `parse` call in
+your submit handler), and the submission-wedge below lives in `FormApi`'s submit mechanics, not in
+anything a generated wrapper could reach. The rest of this page is the measured TanStack-specific behavior against
 real emitted schemas.
 
 Measured 2026-08-08 with `@tanstack/react-form` 1.33.3, `@tanstack/form-core` 1.33.3 (react
@@ -62,25 +62,31 @@ export default defineConfig({
 
 ## The wiring
 
-zod, with the whole-table schema on `onChange` (the wedge section below is the reason it is
-not on `onSubmit`), the one-line validator cast from the type grid, and conversion done
-explicitly at submit:
+zod, with the whole-table schema on `onChange` (the wedge section below is the reason it is not on
+`onSubmit`), and conversion done explicitly at submit. Nothing is cast: the form's state **is** the
+schema's input type, which is what TanStack's contract asks for and what makes
+`validators: { onChange: schema }` work with no wrapper.
 
 ```tsx
 import { useForm } from '@tanstack/react-form';
-import type { StandardSchemaV1 } from '@tanstack/react-form';
+import { z } from 'zod';
 import { InsertusersSchema } from '../validators/zod/users.zod';
 
-const defaults = {
-  name: '', bio: null as string | null, age: 0, price: 0, amount: '',
-  views: 0n, publishedAt: '', bornOn: '', status: '',
+// The state the schema accepts, written once. Annotating rather than inferring is the whole trick:
+// it makes the form's state and the validator's input the same type, which is what TanStack's
+// contract asks for. Reading it is also useful now that every column states its input:
+//   { name: string; bio?: string | null; age: number; price: number; amount: string;
+//     views: bigint; publishedAt: string | number | Date; bornOn: string; status: 'draft' | 'live' }
+const defaults: z.input<typeof InsertusersSchema> = {
+  name: '', bio: null, age: 0, price: 0, amount: '',
+  views: 0n, publishedAt: '', bornOn: '', status: 'draft',
 };
 
 export function NewUserForm() {
   const form = useForm({
     defaultValues: defaults,
     validators: {
-      onChange: InsertusersSchema as unknown as StandardSchemaV1<typeof defaults, unknown>,
+      onChange: InsertusersSchema,
     },
     onSubmit: ({ value }) => {
       // `value` is the raw form state, never the schema's output (measured below).
@@ -122,10 +128,11 @@ export function NewUserForm() {
 ```
 
 valibot is identical apart from the import and the parse spelling (`v.parse(InsertusersSchema,
-value)`). arktype drops the cast (its `Type` is callable, so it satisfies the function branch
-of the validator union as-is, measured in the type grid) and its "parse" keeps wire spellings:
-`const out = InsertusersSchema(value)` returns `ArkErrors` on failure and the (unconverted)
-value on success.
+value)`), with `v.InferInput<typeof InsertusersSchema>` in place of `z.input`. arktype uses
+`typeof InsertusersSchema.inferIn` and its "parse" keeps wire spellings:
+`const out = InsertusersSchema(value)` returns `ArkErrors` on failure and the (unconverted) value on
+success. ArkType also satisfies the validator slot through a second route, being callable, which is
+why the type grid records it compiling even where the input types do not line up.
 
 ## Validation gates, values do not flow
 
@@ -162,22 +169,29 @@ verdicts through `useForm` and `new FormApi`:
 | arktype insert schema, same defaults | **compiles, for the wrong reason**: a `Type` is callable with an `unknown` parameter, so it satisfies the *function* branch of the validator union; runtime still takes the standard-schema path, but `errorMap.onChange` is then typed as `ArkErrors \| <output>` while the runtime value is the path-keyed record below |
 | zod update schema on a loaded full row (edit form) | **rejected**: all-optional input not assignable to the row type |
 | any schema, no `defaultValues` | compiles, and `form.state.values` is `unknown`: **no inference flows from the schema** |
-| `defaultValues` cast to the schema's input type (`z.input<...>` / `v.InferInput<...>` / `.inferIn`) | compiles with no validator cast; the timestamp state is `string \| number \| Date` in all three libraries, so a keystroke handler narrows rather than casting. zod used to be the outlier here, reporting `unknown`, until its date columns stopped being a `z.preprocess` |
+| `defaultValues` **declared as** the schema's input type (`z.input<...>` / `v.InferInput<...>` / `.inferIn`) | **compiles, with no cast anywhere**, and is the recipe in the wiring above. The timestamp state is `string \| number \| Date` in all three libraries, so a keystroke handler narrows with a `typeof` check. zod used to be the outlier here, reporting `unknown`, until its date columns stopped being a `z.preprocess` |
 | validator cast one line: `InsertusersSchema as unknown as StandardSchemaV1<typeof defaults, unknown>` | compiles, keeps wire-typed state, and `errorMap.onSubmit?.['publishedAt']?.[0]?.message` stays typed (`StandardSchemaV1Issue[]` per key) |
 | field-level `InsertusersSchema.shape.age` on the `age` field | compiles; `field.state.meta.errors[0]?.message` is issue-typed |
 | field-level `.entries.age` (valibot), `.get('age')` (arktype) | compiles, both |
 | field-level `InsertusersSchema.shape.publishedAt` on a string-typed field | **rejected**: the field's input is `string \| number \| Date` and the constraint wants `StandardSchemaV1<string, unknown>` exactly, the same invariance as the first row |
 
-The cast recipe in the wiring above is the honest one: it keeps ordinary wire-typed state,
-keeps issue-typed error maps, and changes nothing at runtime. Casting `defaultValues` to the
-schema input instead is legal, and now costs the same in all three libraries: every keystroke
-handler sees `string | number | Date` and narrows.
+The recipe in the wiring above is the last row, and it is the one TanStack's own documentation
+describes: pass the schema straight into the validator slot. It needs no cast because the form's
+state is declared as the schema's input, so the two types are the same type rather than two types
+that have to be reconciled.
 
-Worth being plain about why the cast is still here. It is not that the schema's input is vague:
-DRZL's date columns state theirs. It is that TanStack's constraint holds the input type in a
-property rather than in a parameter, so the check is invariant, and a schema whose input is wider
-than the form's state is rejected exactly as one whose input is narrower would be. No schema
-shape removes it; this was measured both ways rather than assumed.
+The rows above it are what happens when the state is declared independently of the schema. That is
+worth understanding rather than avoiding, because the failure looks like a schema problem and is
+not one: TanStack's constraint holds the input type in a property rather than in a parameter, so
+the check is **invariant**. A schema whose input is wider than the form's state is rejected exactly
+as one whose input is narrower would be, and no schema shape removes that. Measured both ways: a
+date column's input as `unknown` and as `Date | number | string` are both rejected against a state
+of `string`.
+
+If you need the state to be something other than the schema's input, say a `Date` picker holding a
+real `Date` where the column also takes a string, that is when the one-line cast
+`InsertusersSchema as unknown as StandardSchemaV1<typeof defaults, unknown>` earns its place. It
+changes nothing at runtime, since the validator reads `issues` and nothing else.
 
 ## Where errors land
 
