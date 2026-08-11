@@ -9,24 +9,29 @@
  *      page, a provider links to its quickstart, a runtime links to the measured table. If an
  *      entry has nowhere honest to point, it does not belong here.
  *   2. Marks render in `currentColor` at one size. The set is mixed by necessity: some names have
- *      a mark in simple-icons and four do not, and a single ink colour is what makes that read as
+ *      a mark in simple-icons and seven do not, and a single ink colour is what makes that read as
  *      a deliberate house style rather than as whatever was available. It also means dark mode is
  *      correct without a second copy of anything.
  *   3. The SVGs are `aria-hidden`. Each one sits beside the visible name it depicts, so exposing
- *      it would make a screen reader say the name twice; the name is the accessible name, and the
- *      four entries with no mark carry their name as ordinary text instead. This is deliberate,
- *      not an oversight.
+ *      it would make a screen reader say the name twice; the entries with no mark carry their
+ *      name as ordinary text instead. This is deliberate, not an oversight.
  */
 import { computed } from 'vue';
 import { useData, withBase } from 'vitepress';
 import { marks } from './marks';
 
 /**
- * The initial, for the four names simple-icons has no mark for.
+ * The initial, for the seven names simple-icons has no mark for.
  *
  * Deliberately a letterform in a box rather than a drawing: it is obviously a monogram and not a
  * claim to be anyone's logo, which is what lets the grid be visually even without inventing or
- * scraping a mark. All four initials differ, so one character is unambiguous here.
+ * scraping a mark.
+ *
+ * The monogram is not unique, and saying so is more useful than pretending otherwise: TypeBox,
+ * TanStack Start and ts-rest all reduce to `T`. Each sits directly beside its own full name, which
+ * is what actually identifies it, so the letter is decoration rather than a label. It stopped being
+ * unique when the fifth no-mark entry arrived, and the comment here claimed it still was until the
+ * eighth.
  */
 function monogram(name: string): string {
   return name.replace(/[^A-Za-z]/g, '').charAt(0).toUpperCase();
@@ -82,6 +87,7 @@ const groups: Group[] = [
       { name: 'h3 and Nitro', mark: 'nuxt', link: '/generators/h3' },
       { name: 'Effect HttpApi', mark: 'effect', link: '/generators/effect-http' },
       { name: 'ts-rest', link: '/generators/ts-rest' },
+      { name: 'Elysia', link: '/generators/elysia' },
     ],
   },
   {

@@ -46,6 +46,17 @@ export default {
     { kind: 'h3', path: './src/generated/h3' },
     // Effect HttpApi, on the effect schemas the config already generates above.
     { kind: 'effect-http', path: './src/generated/effect-http' },
+    // Elysia on the zod schemas, with the import path derived from the zod entry above rather
+    // than spelled out, which is wiring only `elysiaOptions` does.
+    //
+    // Deliberately not TypeBox, though Elysia is the one router whose validator slot accepts one.
+    // TypeBox ships separate `.d.ts` and `.d.mts` declarations branded with distinct unique
+    // symbols and Elysia's types are declared as CommonJS, so under node16 and nodenext the two
+    // resolve to different copies and the schema is not assignable. This stage compiles under all
+    // three resolutions, so the combination it covers is the one that works everywhere. The
+    // TypeBox path has its own compile case, and its own must-fire test for the incompatibility,
+    // in the generator's suite.
+    { kind: 'elysia', path: './src/generated/elysia' },
     // The ts-rest contract, on the zod schemas, with the import path derived from the zod entry
     // above rather than spelled out, which is wiring only `tsRestOptions` does. This is also the
     // entry that puts a release-candidate peer through a real npm install: @ts-rest/core's `latest`

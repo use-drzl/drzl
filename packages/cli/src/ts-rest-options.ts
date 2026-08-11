@@ -26,7 +26,16 @@ type GeneratorConfig = {
   pathPrefix?: string;
   validation?: {
     useShared?: boolean;
-    library?: 'zod' | 'valibot' | 'arktype';
+    /**
+     * Widened to the config's own union rather than to what this generator supports.
+     *
+     * `validation.library` accepts `typebox` because the `elysia` generator can use it: Elysia's
+     * validator slot takes a TypeBox schema natively. No other router can, and the config parser
+     * reports naming it on one of them. This builder therefore falls back rather than passing a
+     * value the generator has no dialect for, which would otherwise reach a `LIBS[lib]` lookup and
+     * come back undefined.
+     */
+    library?: 'zod' | 'valibot' | 'arktype' | 'typebox';
     importPath?: string;
     schemaSuffix?: string;
     affix?: unknown;
@@ -60,7 +69,11 @@ export function tsRestOptions(
   g: GeneratorConfig,
   cfg: { outDir: string; generators: ReadonlyArray<{ kind: string; path?: string }> }
 ): Record<string, unknown> {
-  const library = g.validation?.library ?? 'zod';
+  // `typebox` is accepted by the config for the `elysia` generator alone, and the parser reports
+  // it on any other kind. Falling back keeps the emitted output valid for a config that ignored
+  // that warning, rather than looking up a dialect that does not exist.
+  const configured = g.validation?.library ?? 'zod';
+  const library = configured === 'typebox' ? 'zod' : configured;
   // The sibling that writes the schemas this contract declares. Exactly one, or none: two
   // generators of the same kind mean there is no single source of truth, and the generator's own
   // error is a better answer than picking one of them here.

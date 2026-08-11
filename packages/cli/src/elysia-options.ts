@@ -1,20 +1,26 @@
 /**
- * The options `@drzl/generator-next` receives, built in one place.
+ * The options `@drzl/generator-elysia` receives, built in one place.
  *
  * `generate` and `watch` each dispatch over `cfg.generators` in their own loop, and every branch in
  * both used to assemble its own options object by hand. Four documented options have already been
  * found dead that way, which is why every generator branch now calls a shared builder and a
  * branch-parity spec compares the bytes the two commands write:
- * `packages/cli/test/next-branch-parity.spec.ts` for this one.
+ * `packages/cli/test/elysia-branch-parity.spec.ts` for this one.
  *
- * This builder does one thing none of the others do, and the reason is that this generator has one
- * mode rather than two. It emits no schemas of its own: its actions parse the constrained schemas a
- * validation generator wrote, which is where the CHECK bounds a form reports come from. So
- * `useShared` is not a choice here, and the import path is derived from the sibling generator's own
- * `path` rather than left for the user to repeat. A config that names both generators and nothing
- * else is therefore complete, and a config that points somewhere specific still wins.
+ * Like the `h3`, `next`, `tanstack-start` and `ts-rest` builders, this one has a single mode rather
+ * than two: the generator emits no schemas of its own, so `useShared` is not a choice and the import
+ * path is derived from the sibling validation generator's own `path`.
+ *
+ * It defaults to zod like every other router, and TypeBox is worth a note rather than the default.
+ * Elysia's own `t` *is* TypeBox and this is the only kind whose validator slot accepts a TypeBox
+ * schema, so a Bun project probably wants it. But TypeBox ships separate `.d.ts` and `.d.mts`
+ * declarations whose types are branded with distinct `unique symbol`s, and Elysia's own types are
+ * declared as CommonJS, so under `moduleResolution: node16` or `nodenext` the two resolve to
+ * different copies and a TypeBox schema is not assignable to Elysia's slot. Measured against
+ * elysia@1.4.29 and @sinclair/typebox@0.34.52. It compiles cleanly under `bundler`, which is what
+ * Bun projects use, so the option is worth having and the default is not.
  */
-import { nextOutDir } from './config.js';
+import { elysiaOutDir } from './config.js';
 
 /** A generator entry from the config, loosely typed because the config schema owns its shape. */
 type GeneratorConfig = {
@@ -23,17 +29,10 @@ type GeneratorConfig = {
   outputHeader?: unknown;
   format?: unknown;
   importExtension?: unknown;
+  appName?: string;
+  prefix?: string;
   validation?: {
     useShared?: boolean;
-    /**
-     * Widened to the config's own union rather than to what this generator supports.
-     *
-     * `validation.library` accepts `typebox` because the `elysia` generator can use it: Elysia's
-     * validator slot takes a TypeBox schema natively. No other router can, and the config parser
-     * reports naming it on one of them. This builder therefore falls back rather than passing a
-     * value the generator has no dialect for, which would otherwise reach a `LIBS[lib]` lookup and
-     * come back undefined.
-     */
     library?: 'zod' | 'valibot' | 'arktype' | 'typebox';
     importPath?: string;
     schemaSuffix?: string;
@@ -46,6 +45,7 @@ const VALIDATOR_DEFAULT_DIRS: Record<string, string> = {
   zod: 'src/validators/zod',
   valibot: 'src/validators/valibot',
   arktype: 'src/validators/arktype',
+  typebox: 'src/validators/typebox',
 };
 
 /**
@@ -54,28 +54,24 @@ const VALIDATOR_DEFAULT_DIRS: Record<string, string> = {
  * The two look identical and are resolved against different roots. A `path` is always relative to
  * the project, which is why every generator does `path.resolve(process.cwd(), opts.outputDir)`. An
  * `importPath` beginning with `./` is deliberately relative to the *output* directory instead, so
- * a project that keeps its schemas beside its actions can say `./schemas` and mean it.
+ * a project that keeps its schemas beside its routes can say `./schemas` and mean it.
  *
- * So a `path` of `./out/schemas` copied straight across becomes `out/next/out/schemas`, which
+ * So a `path` of `./out/schemas` copied straight across becomes `out/routes/out/schemas`, which
  * resolves to nothing. Stripping the prefix is what makes the derived value mean what the sibling
- * entry said. Measured twice: once through the packed gate on the MCP generator, once here.
+ * entry said. Measured on the MCP generator through the packed gate, and again since.
  */
 function projectRelative(p: string): string {
   return p.startsWith('./') ? p.slice(2) : p;
 }
 
-export function nextOptions(
+export function elysiaOptions(
   g: GeneratorConfig,
   cfg: { outDir: string; generators: ReadonlyArray<{ kind: string; path?: string }> }
 ): Record<string, unknown> {
-  // `typebox` is accepted by the config for the `elysia` generator alone, and the parser reports
-  // it on any other kind. Falling back keeps the emitted output valid for a config that ignored
-  // that warning, rather than looking up a dialect that does not exist.
-  const configured = g.validation?.library ?? 'zod';
-  const library = configured === 'typebox' ? 'zod' : configured;
-  // The sibling that writes the schemas these actions parse. Exactly one, or none: two generators
-  // of the same kind mean there is no single source of truth, and the generator's own error is a
-  // better answer than picking one of them here.
+  const library = g.validation?.library ?? 'zod';
+  // The sibling that writes the schemas these routes validate with. Exactly one, or none: two
+  // generators of the same kind mean there is no single source of truth, and the generator's own
+  // error is a better answer than picking one of them here.
   const siblings = cfg.generators.filter((s) => s.kind === library);
   const derived =
     siblings.length === 1
@@ -83,7 +79,9 @@ export function nextOptions(
       : undefined;
 
   return {
-    outputDir: nextOutDir(g, cfg),
+    outputDir: elysiaOutDir(g, cfg),
+    appName: g.appName,
+    prefix: g.prefix,
     naming: g.naming,
     outputHeader: g.outputHeader,
     format: g.format,
