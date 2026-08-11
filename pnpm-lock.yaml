@@ -192,6 +192,9 @@ importers:
       '@drzl/generator-mcp':
         specifier: workspace:^
         version: link:../generator-mcp
+      '@drzl/generator-next':
+        specifier: workspace:^
+        version: link:../generator-next
 
   packages/generator-arktype:
     dependencies:
@@ -441,6 +444,31 @@ importers:
       rxjs:
         specifier: ^7.8.2
         version: 7.8.2
+      tsup:
+        specifier: ^8.5.1
+        version: 8.5.1(jiti@2.7.0)(postcss@8.5.23)(supports-color@7.2.0)(typescript@5.9.3)(yaml@2.9.0)
+      typescript:
+        specifier: ^5.9.3
+        version: 5.9.3
+      valibot:
+        specifier: ^1.1.0
+        version: 1.4.2(typescript@5.9.3)
+      zod:
+        specifier: ^4.4.3
+        version: 4.4.3
+
+  packages/generator-next:
+    dependencies:
+      '@drzl/analyzer':
+        specifier: workspace:^
+        version: link:../analyzer
+      '@drzl/validation-core':
+        specifier: workspace:^
+        version: link:../validation-core
+    devDependencies:
+      arktype:
+        specifier: ^2.1.29
+        version: 2.2.3
       tsup:
         specifier: ^8.5.1
         version: 8.5.1(jiti@2.7.0)(postcss@8.5.23)(supports-color@7.2.0)(typescript@5.9.3)(yaml@2.9.0)

@@ -115,6 +115,7 @@
               "nestjs",
               "graphql",
               "mcp",
+              "next",
               "service",
               "zod",
               "valibot",

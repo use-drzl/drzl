@@ -7,6 +7,7 @@ import {
   fastifyOutDir,
   graphqlOutDir,
   mcpOutDir,
+  nextOutDir,
   loadConfig,
   nestjsOutDir,
   resolveConfig,
@@ -745,5 +746,80 @@ describe('@drzl/cli config: the mcp generator', () => {
   it('does not warn on a plain mcp generator', () => {
     const { warnings } = resolveConfig(ConfigSchema.parse(base([{ kind: 'mcp' }])));
     expect(warnings).toEqual([]);
+  });
+});
+
+describe('@drzl/cli config: the next generator', () => {
+  const base = (generators: any[]) => ({ schema: 'src/db/schema.ts', generators });
+
+  it('is a kind the schema accepts', () => {
+    expect(() => ConfigSchema.parse(base([{ kind: 'next' }]))).not.toThrow();
+  });
+
+  it('writes to outDir by default and to path when given one', () => {
+    const cfg = ConfigSchema.parse({ ...base([{ kind: 'next' }]), outDir: 'src/api' });
+    expect(nextOutDir(cfg.generators[0], cfg)).toBe('src/api');
+    const withPath = ConfigSchema.parse({
+      ...base([{ kind: 'next', path: 'src/actions' }]),
+      outDir: 'src/api',
+    });
+    expect(nextOutDir(withPath.generators[0], withPath)).toBe('src/actions');
+  });
+
+  it('is watched-around, so a rebuild does not retrigger itself', () => {
+    const cfg = ConfigSchema.parse({
+      ...base([{ kind: 'next', path: 'src/actions' }]),
+      outDir: 'src/api',
+    });
+    expect(computeGeneratorOutputDirs(cfg, '/proj')).toContain(path.join('/proj', 'src/actions'));
+  });
+
+  it('reports a config with no validation generator to import from', () => {
+    // This generator emits no schemas of its own, so a config naming it alone produces actions
+    // that import from nothing. Said here rather than left to a failed import in the output.
+    const { warnings } = resolveConfig(ConfigSchema.parse(base([{ kind: 'next' }])));
+    expect(warnings.join('\n')).toMatch(/no "zod" generator for it to import from/);
+  });
+
+  it('says nothing once one is there', () => {
+    const { warnings } = resolveConfig(
+      ConfigSchema.parse(base([{ kind: 'zod' }, { kind: 'next' }]))
+    );
+    expect(warnings.filter((w) => w.includes('"next"'))).toEqual([]);
+  });
+
+  it('says nothing when importPath points somewhere drzl does not generate', () => {
+    const { warnings } = resolveConfig(
+      ConfigSchema.parse(
+        base([{ kind: 'next', validation: { importPath: '@acme/schemas' } }])
+      )
+    );
+    expect(warnings.filter((w) => w.includes('"next"'))).toEqual([]);
+  });
+
+  it('follows validation.library when deciding which sibling it needs', () => {
+    const { warnings } = resolveConfig(
+      ConfigSchema.parse(
+        base([{ kind: 'zod' }, { kind: 'next', validation: { library: 'valibot' } }])
+      )
+    );
+    expect(warnings.join('\n')).toMatch(/no "valibot" generator/);
+  });
+
+  it('refuses includeRelations with a warning, because a relation lookup is a route', () => {
+    const { warnings } = resolveConfig(
+      ConfigSchema.parse(base([{ kind: 'zod' }, { kind: 'next', includeRelations: true }]))
+    );
+    expect(warnings.join('\n')).toMatch(/"next" generator sets includeRelations/);
+    expect(warnings.join('\n')).toMatch(/does not read/);
+  });
+
+  it('refuses databaseInjection with a warning, because the handlers are stubs', () => {
+    const { warnings } = resolveConfig(
+      ConfigSchema.parse(
+        base([{ kind: 'zod' }, { kind: 'next', databaseInjection: { enabled: true } }])
+      )
+    );
+    expect(warnings.join('\n')).toMatch(/"next" generator sets databaseInjection/);
   });
 });

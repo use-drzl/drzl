@@ -41,3 +41,6 @@ declare module '@drzl/generator-graphql' {
 declare module '@drzl/generator-mcp' {
   export const MCPGenerator: any;
 }
+declare module '@drzl/generator-next' {
+  export const NextGenerator: any;
+}
