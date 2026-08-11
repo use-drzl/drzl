@@ -1,6 +1,6 @@
 {
   "name": "@drzl/generator-fast-check",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": false,
   "license": "Apache-2.0",
   "description": "Generate fast-check arbitraries from a Drizzle schema, bounded by every CHECK the analyzer parsed, so a property test only draws rows the database would accept.",
