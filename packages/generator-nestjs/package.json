@@ -1,6 +1,6 @@
 {
   "name": "@drzl/generator-nestjs",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "private": false,
   "license": "Apache-2.0",
   "description": "Generate NestJS DTO and entity classes from a Drizzle schema, plain classes carrying a static Standard Schema v1 validator plus an emitted pipe that runs it, with no decorators in the generated code.",
