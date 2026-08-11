@@ -116,6 +116,7 @@
               "graphql",
               "ai",
               "effect-http",
+              "elysia",
               "h3",
               "mcp",
               "next",
@@ -155,6 +156,12 @@
             "type": "string"
           },
           "contractName": {
+            "type": "string"
+          },
+          "appName": {
+            "type": "string"
+          },
+          "prefix": {
             "type": "string"
           },
           "pathPrefix": {
@@ -602,7 +609,8 @@
                 "enum": [
                   "zod",
                   "valibot",
-                  "arktype"
+                  "arktype",
+                  "typebox"
                 ]
               },
               "importPath": {

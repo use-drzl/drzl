@@ -114,6 +114,7 @@ export const GeneratorKindSchema = z.enum([
   'graphql',
   'ai',
   'effect-http',
+  'elysia',
   'h3',
   'mcp',
   'next',
@@ -167,6 +168,16 @@ export const GeneratorSchema = z.object({
   apiName: z.string().optional(),
   /** The identifier the assembled root contract carries. `ts-rest` only, defaults to `'contract'`. */
   contractName: z.string().optional(),
+  /** The identifier the assembled Elysia app is exported as. `elysia` only, defaults to `'app'`. */
+  appName: z.string().optional(),
+  /**
+   * Prefixed to every table's mount point. `elysia` only.
+   *
+   * Passed to Elysia's own `new Elysia({ prefix })` on the assembled app rather than folded into
+   * each module's prefix, because Elysia lifts it into the app's type: the full path is what Eden
+   * Treaty reports.
+   */
+  prefix: z.string().optional(),
   /**
    * Prefixed to every path in the emitted contract. `ts-rest` only.
    *
@@ -426,7 +437,16 @@ export const GeneratorSchema = z.object({
   validation: z
     .object({
       useShared: z.boolean().default(false).optional(),
-      library: z.enum(['zod', 'valibot', 'arktype']).default('zod').optional(),
+      /**
+       * Which validation generator's schemas this generator imports.
+       *
+       * `typebox` is accepted here and works for exactly one kind, `elysia`, whose validator slot
+       * takes a TypeBox schema natively because Elysia's own `t` is TypeBox. Every other router
+       * types its validators as a Standard Schema, which TypeBox does not implement, so a router
+       * wired to one would type against `any` and validate nothing. Naming it on any other kind is
+       * reported below rather than accepted, which is why the enum can be this wide.
+       */
+      library: z.enum(['zod', 'valibot', 'arktype', 'typebox']).default('zod').optional(),
       importPath: z.string().optional(),
       schemaSuffix: z.string().optional(),
       /**
@@ -670,6 +690,7 @@ const ROUTER_KINDS = new Set([
   'h3',
   'effect-http',
   'ts-rest',
+  'elysia',
 ]);
 
 /**
@@ -860,6 +881,17 @@ export function tsRestOutDir(g: { path?: string }, cfg: { outDir: string }): str
   return g.path ?? cfg.outDir;
 }
 
+/**
+ * Where the Elysia generator writes.
+ *
+ * The same rule as the routers, and for the same reason: it writes an `index.ts` barrel of its own,
+ * which is the assembled app. Its own function rather than a call to one of the others, for the
+ * reason `honoOutDir` records.
+ */
+export function elysiaOutDir(g: { path?: string }, cfg: { outDir: string }): string {
+  return g.path ?? cfg.outDir;
+}
+
 function sharedSchemaNames(opts: { affix?: AffixOptions; schemaSuffix?: string }): string[] {
   const resolved = resolveAffix(opts);
   return NAME_MODES.map((mode) => schemaName(mode, AFFIX_PROBE_TABLE, resolved));
@@ -1017,6 +1049,41 @@ export function resolveConfig(cfg: DrzlConfig): { config: DrzlConfig; warnings: 
      * The h3 generator, which has the same single mode as `next` and `tanstack-start`: it emits no
      * schemas of its own, so its options builder turns `useShared` on and derives the import path.
      */
+    /**
+     * TypeBox is a Standard Schema nowhere, and `elysia` is the one kind that does not care.
+     *
+     * Elysia's validator slot is `TSchema | StandardSchemaV1Like`, because its own `t` is TypeBox.
+     * Every other router here types its validators as a Standard Schema alone, so a TypeBox schema
+     * handed to one types against `any` and validates nothing at runtime: it is accepted, and every
+     * request passes. That is the quietest possible failure, so it is reported here rather than
+     * left to the generator, which in most cases would not notice either.
+     */
+    if (g.validation?.library === 'typebox' && g.kind !== 'elysia') {
+      warnings.push(
+        `drzl config: the "${g.kind}" generator sets validation.library to "typebox", which it ` +
+          `cannot validate with. TypeBox does not implement Standard Schema, so the schemas would ` +
+          `be accepted and never checked. Use "zod", "valibot" or "arktype". The "elysia" ` +
+          `generator is the one that takes TypeBox, because Elysia's own "t" is TypeBox.`
+      );
+    }
+
+    if (g.kind === 'elysia') {
+      if (g.includeRelations) {
+        warnings.push(
+          `drzl config: the "elysia" generator sets includeRelations, which it does not read. ` +
+            `Relation lookups are a route this generator does not emit. Remove the flag.`
+        );
+      }
+      const library = g.validation?.library ?? 'zod';
+      if (!g.validation?.importPath && !generators.some((s) => s.kind === library)) {
+        warnings.push(
+          `drzl config: the "elysia" generator validates with the schemas a validation generator ` +
+            `writes, and this config has no "${library}" generator for it to import from. Add ` +
+            `{ kind: "${library}" }, or set validation.importPath to wherever those schemas live.`
+        );
+      }
+    }
+
     /**
      * The Effect HttpApi generator, whose sibling is always the `effect` one: `HttpApi` declares
      * its payloads as Effect Schema and takes nothing else, so there is no library to choose.
@@ -1447,6 +1514,7 @@ export function computeGeneratorOutputDirs(cfg: DrzlConfig, cwd = process.cwd())
     if (g.kind === 'h3') dirs.add(abs(h3OutDir(g, cfg)));
     if (g.kind === 'effect-http') dirs.add(abs(effectHttpOutDir(g, cfg)));
     if (g.kind === 'ts-rest') dirs.add(abs(tsRestOutDir(g, cfg)));
+    if (g.kind === 'elysia') dirs.add(abs(elysiaOutDir(g, cfg)));
     if (g.kind === 'service') dirs.add(abs(g.path ?? 'src/services'));
     if (g.kind === 'zod') dirs.add(abs(g.path ?? 'src/validators/zod'));
     if (g.kind === 'valibot') dirs.add(abs(g.path ?? 'src/validators/valibot'));

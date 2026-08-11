@@ -224,6 +224,7 @@ export default {
           { text: 'h3 and Nitro', link: '/generators/h3' },
           { text: 'Effect HttpApi', link: '/generators/effect-http' },
           { text: 'ts-rest', link: '/generators/ts-rest' },
+          { text: 'Elysia', link: '/generators/elysia' },
         ],
       },
       { text: 'Service classes', link: '/generators/service' },

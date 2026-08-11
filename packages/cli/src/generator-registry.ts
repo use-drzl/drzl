@@ -24,6 +24,7 @@ import {
   aiOutDir,
   effectHttpOutDir,
   tsRestOutDir,
+  elysiaOutDir,
   expressOutDir,
   h3OutDir,
   fastifyOutDir,
@@ -46,6 +47,7 @@ import { jsonSchemaOptions } from './json-schema-options.js';
 import { aiOptions } from './ai-options.js';
 import { effectHttpOptions } from './effect-http-options.js';
 import { tsRestOptions } from './ts-rest-options.js';
+import { elysiaOptions } from './elysia-options.js';
 import { h3Options } from './h3-options.js';
 import { mcpOptions } from './mcp-options.js';
 import { nextOptions } from './next-options.js';
@@ -264,6 +266,14 @@ export const GENERATORS: readonly GeneratorEntry[] = [
     construct: (m, analysis) => new m.TsRestGenerator(analysis),
     outputDir: (g, cfg) => tsRestOutDir(g, cfg),
     options: (g, cfg) => tsRestOptions(g, cfg),
+  },
+  {
+    kind: 'elysia',
+    specifier: '@drzl/generator-elysia',
+    load: () => import('@drzl/generator-elysia'),
+    construct: (m, analysis) => new m.ElysiaGenerator(analysis),
+    outputDir: (g, cfg) => elysiaOutDir(g, cfg),
+    options: (g, cfg) => elysiaOptions(g, cfg),
   },
   {
     kind: 'service',

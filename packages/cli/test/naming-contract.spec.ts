@@ -144,7 +144,10 @@ async function runPair(library: 'zod' | 'valibot' | 'arktype', affix: unknown) {
   const { files } = await new ORPCGenerator(analysis).generate({
     outputDir: apiDir,
     template: 'standard',
-    validation: orpc.validation,
+    // `library` is narrowed back here because the config's union now includes `typebox`, which
+    // only the `elysia` generator can use. This helper is called with the three above, so the
+    // value is one oRPC accepts; stating it keeps that a compile-time fact rather than a habit.
+    validation: { ...orpc.validation, library },
   });
 
   return { root, validatorsDir, files, importPath: '../validators/' + library };
