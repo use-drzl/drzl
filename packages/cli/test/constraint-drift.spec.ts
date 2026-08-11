@@ -12,6 +12,7 @@ import type { Analysis, Column, Table } from '@drzl/analyzer';
 import {
   buildConstraintDriftReport,
   renderConstraintDriftReport,
+  renderConstraintDriftSql,
 } from '../src/constraint-drift.js';
 
 function col(name: string, tsType: string, over: Partial<Column> = {}): Column {
@@ -30,8 +31,8 @@ function table(name: string, over: Partial<Table> & { columns: Column[] }): Tabl
   return { name, tsName: name, unique: [], indexes: [], ...over } as Table;
 }
 
-function analysis(tables: Table[]): Analysis {
-  return { dialect: 'postgres', tables, enums: [], relations: [], issues: [] };
+function analysis(tables: Table[], dialect = 'postgres'): Analysis {
+  return { dialect, tables, enums: [], relations: [], issues: [] } as Analysis;
 }
 
 /** A Drizzle `text('status', { enum: [...] })`: the set lives only in the generated schemas. */
@@ -194,5 +195,117 @@ describe('the rendering', () => {
       buildConstraintDriftReport(analysis([clean]), 'schema.ts')
     );
     expect(text).toContain('No drift.');
+  });
+});
+
+describe('the dialect, which decides whether there is a fix at all', () => {
+  /**
+   * SQLite refuses `ALTER TABLE ... ADD CONSTRAINT` outright.
+   *
+   * Measured 2026-08-11 against `node:sqlite`: `near "CONSTRAINT": syntax error`. It takes an
+   * inline CHECK on a *new* column and has no way to add one to an existing column, so the
+   * documented route is the twelve-step table rebuild.
+   *
+   * The first version of this report emitted the `ALTER TABLE` for every dialect, which meant a
+   * SQLite user was handed a statement that cannot run. Printing nothing would be better than that;
+   * printing the reason is better still.
+   */
+  it('emits no ALTER TABLE for sqlite, and says why', () => {
+    const report = buildConstraintDriftReport(analysis([schemaOnlyEnum], 'sqlite'), 'schema.ts');
+    const gap = report.entries.find((e) => e.side === 'schema-only')!;
+    expect(gap.fix).toBeUndefined();
+    expect(gap.noFix).toContain('SQLite cannot add a CHECK to an existing column');
+  });
+
+  it('emits one for the dialects that take it', () => {
+    for (const dialect of ['postgres', 'mysql', 'cockroach', 'mssql', 'singlestore', 'gel']) {
+      const report = buildConstraintDriftReport(analysis([schemaOnlyEnum], dialect), 'schema.ts');
+      const gap = report.entries.find((e) => e.side === 'schema-only')!;
+      expect(gap.fix, dialect).toContain('ALTER TABLE products ADD CONSTRAINT');
+    }
+  });
+
+  /**
+   * `unknown` gets no statement either, and that is deliberate rather than an oversight.
+   *
+   * The analyzer says `unknown` when it could not tell which database this is. Emitting DDL for a
+   * database nobody has named is exactly the kind of confident guess that ends up in a migration.
+   */
+  it('emits nothing for a dialect the analyzer could not name', () => {
+    const report = buildConstraintDriftReport(analysis([schemaOnlyEnum], 'unknown'), 'schema.ts');
+    expect(report.entries.find((e) => e.side === 'schema-only')!.fix).toBeUndefined();
+  });
+
+  it('names the reason in the human report rather than leaving a blank', () => {
+    const text = renderConstraintDriftReport(
+      buildConstraintDriftReport(analysis([schemaOnlyEnum], 'sqlite'), 'schema.ts')
+    );
+    expect(text).toContain('Not one statement here:');
+    // Not `not.toContain('ALTER TABLE')`: the reason itself names the statement SQLite refuses,
+    // which is the point of the sentence. What must be absent is the offer to run one.
+    expect(text).not.toContain('Close it with:');
+  });
+});
+
+describe('the SQL emission', () => {
+  it('emits runnable statements for a dialect that takes them', () => {
+    const sql = renderConstraintDriftSql(
+      buildConstraintDriftReport(analysis([schemaOnlyEnum]), 'schema.ts')
+    );
+    expect(sql).toContain(
+      "ALTER TABLE products ADD CONSTRAINT products_status_check " +
+        "CHECK (status IN ('draft', 'live', 'archived'));"
+    );
+  });
+
+  it('escapes a quote, so the statement parses', () => {
+    const t = table('t', {
+      columns: [col('label', 'string', { sqlType: 'text', enumValues: ["it's", 'ok'] })],
+    });
+    const sql = renderConstraintDriftSql(buildConstraintDriftReport(analysis([t]), 'schema.ts'));
+    expect(sql).toContain("'it''s'");
+  });
+
+  it('emits comments rather than an unrunnable statement on sqlite', () => {
+    const sql = renderConstraintDriftSql(
+      buildConstraintDriftReport(analysis([schemaOnlyEnum], 'sqlite'), 'schema.ts')
+    );
+    expect(sql).toContain('cannot do in one statement');
+    // The real assertion, and stronger than grepping for a statement that the explanatory comment
+    // legitimately names: every non-blank line is a comment, so redirecting this leaves nothing
+    // that runs.
+    for (const line of sql.split('\n').filter((l) => l.trim())) {
+      expect(line.trimStart().startsWith('--'), line).toBe(true);
+    }
+  });
+
+  /**
+   * Nothing at all when there is no drift.
+   *
+   * A file of comments looks like a migration whose statements were deleted; an empty file is
+   * obviously empty.
+   */
+  it('emits nothing when there is no drift', () => {
+    const clean = table('t', { columns: [col('a', 'number', { sqlType: 'integer' })] });
+    expect(renderConstraintDriftSql(buildConstraintDriftReport(analysis([clean]), 'x.ts'))).toBe('');
+  });
+
+  it('says nothing about the side no SQL can fix', () => {
+    const sql = renderConstraintDriftSql(
+      buildConstraintDriftReport(analysis([keyed]), 'schema.ts')
+    );
+    // Keys and foreign keys are already enforced by the database, so there is nothing to add.
+    expect(sql).toBe('');
+  });
+
+  it('is ordered, so the file is stable between runs', () => {
+    const a = table('zeta', {
+      columns: [col('s', 'string', { sqlType: 'text', enumValues: ['x'] })],
+    });
+    const b = table('alpha', {
+      columns: [col('s', 'string', { sqlType: 'text', enumValues: ['y'] })],
+    });
+    const sql = renderConstraintDriftSql(buildConstraintDriftReport(analysis([a, b]), 'x.ts'));
+    expect(sql.indexOf('ALTER TABLE alpha')).toBeLessThan(sql.indexOf('ALTER TABLE zeta'));
   });
 });
