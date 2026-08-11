@@ -1453,14 +1453,6 @@ function tbHasLengthBranch(lengths: LengthCheck[], sets: Column[][]): boolean {
 
 function tbLengthBranches(lengths: LengthCheck[], cols: Column[]): string[] {
   const byName = new Map(cols.map((c) => [c.name, c]));
-  const OPS: Record<LengthCheck['operator'], string> = {
-    '>=': '>=',
-    '>': '>',
-    '<=': '<=',
-    '<': '<',
-    '=': '===',
-    '<>': '!==',
-  };
   return lengths.flatMap((k) => {
     const col = byName.get(k.column);
     const measure = col && lengthMeasure(col, k);

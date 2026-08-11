@@ -189,14 +189,6 @@ function foldedIntoBounds(c: Column, checks: ColumnCheck[]): Set<ColumnCheck> {
  * decides which, once per column, and the constraint ledger asks it the same question.
  */
 function lengthRefinements(c: Column, lengths: LengthCheck[]): string {
-  const OPS: Record<LengthCheck['operator'], string> = {
-    '>=': '>=',
-    '>': '>',
-    '<=': '<=',
-    '<': '<',
-    '=': '===',
-    '<>': '!==',
-  };
   return lengths
     .filter((k) => k.column === c.name)
     .map((k) => {
