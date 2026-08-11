@@ -222,6 +222,7 @@ export default {
           { text: 'AI SDK', link: '/generators/ai' },
           { text: 'TanStack Start', link: '/generators/tanstack-start' },
           { text: 'h3 and Nitro', link: '/generators/h3' },
+          { text: 'Effect HttpApi', link: '/generators/effect-http' },
         ],
       },
       { text: 'Service classes', link: '/generators/service' },
