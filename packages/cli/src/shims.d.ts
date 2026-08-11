@@ -56,3 +56,6 @@ declare module '@drzl/generator-h3' {
 declare module '@drzl/generator-effect-http' {
   export const EffectHttpGenerator: any;
 }
+declare module '@drzl/generator-ts-rest' {
+  export const TsRestGenerator: any;
+}

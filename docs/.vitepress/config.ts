@@ -223,6 +223,7 @@ export default {
           { text: 'TanStack Start', link: '/generators/tanstack-start' },
           { text: 'h3 and Nitro', link: '/generators/h3' },
           { text: 'Effect HttpApi', link: '/generators/effect-http' },
+          { text: 'ts-rest', link: '/generators/ts-rest' },
         ],
       },
       { text: 'Service classes', link: '/generators/service' },

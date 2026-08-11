@@ -23,6 +23,7 @@
 import {
   aiOutDir,
   effectHttpOutDir,
+  tsRestOutDir,
   expressOutDir,
   h3OutDir,
   fastifyOutDir,
@@ -44,6 +45,7 @@ import { honoOptions } from './hono-options.js';
 import { jsonSchemaOptions } from './json-schema-options.js';
 import { aiOptions } from './ai-options.js';
 import { effectHttpOptions } from './effect-http-options.js';
+import { tsRestOptions } from './ts-rest-options.js';
 import { h3Options } from './h3-options.js';
 import { mcpOptions } from './mcp-options.js';
 import { nextOptions } from './next-options.js';
@@ -254,6 +256,14 @@ export const GENERATORS: readonly GeneratorEntry[] = [
     construct: (m, analysis) => new m.EffectHttpGenerator(analysis),
     outputDir: (g, cfg) => effectHttpOutDir(g, cfg),
     options: (g, cfg) => effectHttpOptions(g, cfg),
+  },
+  {
+    kind: 'ts-rest',
+    specifier: '@drzl/generator-ts-rest',
+    load: () => import('@drzl/generator-ts-rest'),
+    construct: (m, analysis) => new m.TsRestGenerator(analysis),
+    outputDir: (g, cfg) => tsRestOutDir(g, cfg),
+    options: (g, cfg) => tsRestOptions(g, cfg),
   },
   {
     kind: 'service',

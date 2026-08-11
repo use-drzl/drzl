@@ -40,8 +40,13 @@ node -e "
 # @modelcontextprotocol/server, ai and @valibot/to-json-schema are the MCP and AI generators' half
 # of the same rule: the emitted server imports the first, the emitted tools the second, and both
 # reach for the third under valibot.
+#
+# @ts-rest/core is pinned to the 3.53 release candidate rather than left to `latest`, and this is
+# the stage that proves the pin is necessary as well as sufficient. `latest` is 3.52.1, which
+# declares `zod: ^3.22.3` as a peer: npm refuses to put it in the same tree as the zod 4 above,
+# with ERESOLVE. The RC dropped the zod peer and takes any Standard Schema.
 npm install --no-audit --no-fund --loglevel=error \
-  "$TARS"/*.tgz drizzle-orm zod valibot arktype effect @orpc/server @trpc/server hono @hono/standard-validator express @types/express fastify @nestjs/common @modelcontextprotocol/server @valibot/to-json-schema ai @tanstack/react-start h3@^1.15.11 @effect/platform typescript tsx prettier >/dev/null
+  "$TARS"/*.tgz drizzle-orm zod valibot arktype effect @orpc/server @trpc/server hono @hono/standard-validator express @types/express fastify @nestjs/common @modelcontextprotocol/server @valibot/to-json-schema ai @tanstack/react-start h3@^1.15.11 @effect/platform @ts-rest/core@^3.53.0-rc.1 typescript tsx prettier >/dev/null
 
 if [ ! -e node_modules/.bin/drzl ]; then
   echo "FAIL: the drzl bin did not resolve after a real install." >&2

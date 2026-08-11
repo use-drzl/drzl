@@ -118,6 +118,7 @@ export const GeneratorKindSchema = z.enum([
   'mcp',
   'next',
   'tanstack-start',
+  'ts-rest',
   'service',
   'zod',
   'valibot',
@@ -164,6 +165,17 @@ export const GeneratorSchema = z.object({
   h3: z.enum(['v1', 'v2']).optional(),
   /** The identifier the assembled `HttpApi` carries. `effect-http` only, defaults to `'api'`. */
   apiName: z.string().optional(),
+  /** The identifier the assembled root contract carries. `ts-rest` only, defaults to `'contract'`. */
+  contractName: z.string().optional(),
+  /**
+   * Prefixed to every path in the emitted contract. `ts-rest` only.
+   *
+   * Passed through to ts-rest's own `c.router(..., { pathPrefix })` rather than written into each
+   * path, because ts-rest lifts the prefix into the contract's type: a client derived from the
+   * result reports the full path. Writing it into the strings by hand would produce the same
+   * requests and a different type.
+   */
+  pathPrefix: z.string().optional(),
   /** The name and version the emitted MCP server reports at initialize. `mcp` only. */
   serverName: z.string().optional(),
   serverVersion: z.string().optional(),
@@ -657,6 +669,7 @@ const ROUTER_KINDS = new Set([
   'tanstack-start',
   'h3',
   'effect-http',
+  'ts-rest',
 ]);
 
 /**
@@ -833,6 +846,17 @@ export function h3OutDir(g: { path?: string }, cfg: { outDir: string }): string 
  * Its own function rather than a call to one of the others, for the reason `honoOutDir` records.
  */
 export function effectHttpOutDir(g: { path?: string }, cfg: { outDir: string }): string {
+  return g.path ?? cfg.outDir;
+}
+
+/**
+ * Where the ts-rest generator writes.
+ *
+ * The same rule as the routers, and for the same reason: it writes an `index.ts` barrel of its own,
+ * which is the assembled root contract. Its own function rather than a call to one of the others,
+ * for the reason `honoOutDir` records.
+ */
+export function tsRestOutDir(g: { path?: string }, cfg: { outDir: string }): string {
   return g.path ?? cfg.outDir;
 }
 
@@ -1016,6 +1040,32 @@ export function resolveConfig(cfg: DrzlConfig): { config: DrzlConfig; warnings: 
             `validation generator writes, and this config has no "effect" generator for it to ` +
             `import from. Add { kind: "effect" }, or set validation.importPath to wherever those ` +
             `schemas live.`
+        );
+      }
+    }
+
+    if (g.kind === 'ts-rest') {
+      if (g.includeRelations) {
+        warnings.push(
+          `drzl config: the "ts-rest" generator sets includeRelations, which it does not read. ` +
+            `Relation lookups are a route this generator does not declare. Remove the flag.`
+        );
+      }
+      /**
+       * TypeBox and Effect Schema cannot appear in a ts-rest contract: ts-rest types every schema
+       * as a Standard Schema, and neither exposes `~standard` on the schema object, so the contract
+       * would type against `any` and validate nothing. There is no check for that here because
+       * `validation.library` is already the three-library enum, so a config naming either one is
+       * refused by the parser before this runs. The generator carries its own guard for callers
+       * using it as a library, and pins both facts against the real packages in its own suite.
+       */
+      const library = g.validation?.library ?? 'zod';
+      if (!g.validation?.importPath && !generators.some((s) => s.kind === library)) {
+        warnings.push(
+          `drzl config: the "ts-rest" generator declares its contract with the schemas a ` +
+            `validation generator writes, and this config has no "${library}" generator for it ` +
+            `to import from. Add { kind: "${library}" }, or set validation.importPath to ` +
+            `wherever those schemas live.`
         );
       }
     }
@@ -1396,6 +1446,7 @@ export function computeGeneratorOutputDirs(cfg: DrzlConfig, cwd = process.cwd())
     if (g.kind === 'tanstack-start') dirs.add(abs(tanstackStartOutDir(g, cfg)));
     if (g.kind === 'h3') dirs.add(abs(h3OutDir(g, cfg)));
     if (g.kind === 'effect-http') dirs.add(abs(effectHttpOutDir(g, cfg)));
+    if (g.kind === 'ts-rest') dirs.add(abs(tsRestOutDir(g, cfg)));
     if (g.kind === 'service') dirs.add(abs(g.path ?? 'src/services'));
     if (g.kind === 'zod') dirs.add(abs(g.path ?? 'src/validators/zod'));
     if (g.kind === 'valibot') dirs.add(abs(g.path ?? 'src/validators/valibot'));

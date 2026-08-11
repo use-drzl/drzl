@@ -46,6 +46,11 @@ export default {
     { kind: 'h3', path: './src/generated/h3' },
     // Effect HttpApi, on the effect schemas the config already generates above.
     { kind: 'effect-http', path: './src/generated/effect-http' },
+    // The ts-rest contract, on the zod schemas, with the import path derived from the zod entry
+    // above rather than spelled out, which is wiring only `tsRestOptions` does. This is also the
+    // entry that puts a release-candidate peer through a real npm install: @ts-rest/core's `latest`
+    // is 3.52.1, which peers on zod 3 and cannot share a tree with the zod 4 this config emits.
+    { kind: 'ts-rest', path: './src/generated/ts-rest' },
     // The AI SDK tools, on the shared schemas, and on valibot rather than zod on purpose: valibot
     // is the library whose tools carry the emitted adapter, so this is the entry that compiles it.
     {

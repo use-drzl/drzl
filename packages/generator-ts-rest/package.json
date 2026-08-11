@@ -1,0 +1,71 @@
+{
+  "name": "@drzl/generator-ts-rest",
+  "version": "0.1.0",
+  "private": false,
+  "license": "Apache-2.0",
+  "description": "Generate ts-rest contracts from a Drizzle schema, one contract per table plus a root router, with DRZL's own schemas as the body, params, query and response types.",
+  "keywords": [
+    "drizzle",
+    "drizzle-orm",
+    "ts-rest",
+    "contract",
+    "rest",
+    "codegen",
+    "standard-schema"
+  ],
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "sideEffects": false,
+  "scripts": {
+    "build": "tsup src/index.ts --dts --format esm,cjs --external prettier --clean",
+    "lint": "eslint . --ext .ts",
+    "test": "vitest run --testTimeout=20000"
+  },
+  "dependencies": {
+    "@drzl/analyzer": "workspace:^",
+    "@drzl/validation-core": "workspace:^"
+  },
+  "devDependencies": {
+    "@ts-rest/core": "^3.53.0-rc.1",
+    "@ts-rest/core-stable": "npm:@ts-rest/core@3.52.1",
+    "arktype": "^2.1.29",
+    "tsup": "^8.5.1",
+    "typescript": "^5.9.3",
+    "valibot": "^1.1.0",
+    "zod": "^4.4.3"
+  },
+  "engines": {
+    "node": ">=18.17.0"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/",
+    "provenance": true
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/use-drzl/drzl",
+    "directory": "packages/generator-ts-rest"
+  },
+  "funding": {
+    "type": "github",
+    "url": "https://github.com/sponsors/omar-dulaimi"
+  }
+}

@@ -120,6 +120,7 @@
               "mcp",
               "next",
               "tanstack-start",
+              "ts-rest",
               "service",
               "zod",
               "valibot",
@@ -151,6 +152,12 @@
             ]
           },
           "apiName": {
+            "type": "string"
+          },
+          "contractName": {
+            "type": "string"
+          },
+          "pathPrefix": {
             "type": "string"
           },
           "serverName": {
