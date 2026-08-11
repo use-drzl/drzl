@@ -219,6 +219,7 @@ export default {
           { text: 'GraphQL', link: '/generators/graphql' },
           { text: 'MCP', link: '/generators/mcp' },
           { text: 'Next.js', link: '/generators/next' },
+          { text: 'AI SDK', link: '/generators/ai' },
         ],
       },
       { text: 'Service classes', link: '/generators/service' },

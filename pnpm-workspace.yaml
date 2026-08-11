@@ -31,3 +31,6 @@ allowBuilds:
   # against a real database. The install script fetches a prebuilt binding via prebuild-install
   # and compiles only where none exists; without `true` here the module cannot load at all.
   better-sqlite3: true
+
+minimumReleaseAgeExclude:
+  - '@ai-sdk/provider-utils@5.0.26'

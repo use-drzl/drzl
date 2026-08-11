@@ -135,7 +135,7 @@ kit config) at a barrel if you want typed columns over a multi-file schema.
 
 ## Router generators share `outDir`
 
-`orpc`, `trpc`, `hono`, `express`, `fastify`, `nestjs`, `graphql`, `mcp` and `next` all write to the
+`orpc`, `trpc`, `hono`, `express`, `fastify`, `nestjs`, `graphql`, `mcp`, `next` and `ai` all write to the
 top-level `outDir` by default, and every one of them writes an `index.ts` there, so a config
 that runs more than one needs a `path` on all but one of them:
 

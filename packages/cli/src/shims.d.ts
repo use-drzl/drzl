@@ -44,3 +44,6 @@ declare module '@drzl/generator-mcp' {
 declare module '@drzl/generator-next' {
   export const NextGenerator: any;
 }
+declare module '@drzl/generator-ai' {
+  export const AIGenerator: any;
+}

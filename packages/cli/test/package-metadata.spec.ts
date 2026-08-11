@@ -88,6 +88,7 @@ it('found every publishable package', () => {
   expect(publishable.map((p) => p.dir).sort()).toEqual([
     'analyzer',
     'cli',
+    'generator-ai',
     'generator-arktype',
     'generator-effect',
     'generator-express',

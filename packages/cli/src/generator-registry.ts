@@ -21,6 +21,7 @@
  * left as a runtime lookup with nothing declaring the dependency.
  */
 import {
+  aiOutDir,
   expressOutDir,
   fastifyOutDir,
   graphqlOutDir,
@@ -38,6 +39,7 @@ import { loadGenerator } from './generator-loader.js';
 import { graphqlOptions } from './graphql-options.js';
 import { honoOptions } from './hono-options.js';
 import { jsonSchemaOptions } from './json-schema-options.js';
+import { aiOptions } from './ai-options.js';
 import { mcpOptions } from './mcp-options.js';
 import { nextOptions } from './next-options.js';
 import { nestjsOptions } from './nestjs-options.js';
@@ -215,6 +217,15 @@ export const GENERATORS: readonly GeneratorEntry[] = [
     construct: (m, analysis) => new m.NextGenerator(analysis),
     outputDir: (g, cfg) => nextOutDir(g, cfg),
     options: (g, cfg) => nextOptions(g, cfg),
+  },
+  {
+    kind: 'ai',
+    // Optional for the same reason as `mcp` and `next` above, and for the same one release only.
+    specifier: '@drzl/generator-ai',
+    load: () => import('@drzl/generator-ai'),
+    construct: (m, analysis) => new m.AIGenerator(analysis),
+    outputDir: (g, cfg) => aiOutDir(g, cfg),
+    options: (g, cfg) => aiOptions(g, cfg),
   },
   {
     kind: 'service',

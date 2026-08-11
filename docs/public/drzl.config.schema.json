@@ -114,6 +114,7 @@
               "fastify",
               "nestjs",
               "graphql",
+              "ai",
               "mcp",
               "next",
               "service",

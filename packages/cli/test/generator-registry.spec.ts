@@ -107,7 +107,11 @@ describe('the registry against the manifest', () => {
    * and delete it here. `scripts/verify/stages/33-registry-deps.sh` is the half that reports when
    * that edit is due, because it can ask the registry and this cannot.
    */
-  const AWAITING_FIRST_PUBLISH = ['@drzl/generator-mcp', '@drzl/generator-next'];
+  const AWAITING_FIRST_PUBLISH = [
+    '@drzl/generator-ai',
+    '@drzl/generator-mcp',
+    '@drzl/generator-next',
+  ];
 
   it('declares every generator package as a dependency', () => {
     const declared = Object.keys(manifest.dependencies ?? {});
