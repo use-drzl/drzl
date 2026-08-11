@@ -61,6 +61,10 @@ import {
   type ResolvedSchemaSource,
 } from './drizzle-kit.js';
 import { buildDoctorReport, renderDoctorReport } from './doctor.js';
+import {
+  buildConstraintDriftReport,
+  renderConstraintDriftReport,
+} from './constraint-drift.js';
 import { snapshotAll } from './drift.js';
 import {
   describeCounts,
@@ -275,6 +279,10 @@ withOutputFlags(
     .argument('[schema]', 'path to drizzle schema (TS); defaults to the schema in drzl.config')
     .option('-c, --config <path>', 'path to drzl.config, read when no schema argument is given')
     .option('--strict', 'exit 2 when anything is reported', false)
+    .option(
+      '--constraints',
+      'report what each side enforces that the other does not, instead of the usual findings'
+    )
 ).action(async (schema: string | undefined, opts: any) => {
   const out = outputFor(opts);
   {
@@ -304,10 +312,53 @@ withOutputFlags(
         includeRelations: true,
         validateConstraints: true,
       });
-      const report = buildDoctorReport(
-        analysis,
-        Array.isArray(target) ? target.join(', ') : target
-      );
+      const schemaLabel = Array.isArray(target) ? target.join(', ') : target;
+
+      /**
+       * The drift ledger, which answers a different question and so returns early.
+       *
+       * `--strict` counts only the `schema-only` side here. A primary key or a foreign key that no
+       * per-row validator can check is not a defect anyone can fix, so failing a pipeline over one
+       * would be noise; a set the generated schemas restrict and the database does not is a real
+       * gap with a real `ALTER TABLE` beside it.
+       */
+      if (opts.constraints) {
+        /**
+         * An unreadable schema is reported as unreadable, not as clean.
+         *
+         * The drift ledger over an empty analysis is empty, which renders as "No drift" and is the
+         * most misleading thing this command could say: the file was never imported. The check is
+         * the doctor report's own, rather than a second reading of `analysis.issues`, so the two
+         * commands agree about what "could not be read" means.
+         */
+        const preflight = buildDoctorReport(analysis, schemaLabel);
+        const fatal = preflight.findings.filter((f) => f.level === 'error');
+        if (fatal.length) {
+          if (opts.json)
+            out.data(
+              JSON.stringify(
+                { command: 'doctor', exitCode: EXIT_FAILED, ...preflight },
+                null,
+                2
+              )
+            );
+          else out.data(renderDoctorReport(preflight, out.outStyle));
+          process.exit(EXIT_FAILED);
+          return;
+        }
+
+        const drift = buildConstraintDriftReport(analysis, schemaLabel);
+        const driftCode = opts.strict && drift.counts.schemaOnly ? EXIT_FINDINGS : EXIT_OK;
+        if (opts.json)
+          out.data(
+            JSON.stringify({ command: 'doctor', exitCode: driftCode, ...drift }, null, 2)
+          );
+        else out.data(renderConstraintDriftReport(drift, out.outStyle));
+        process.exit(driftCode);
+        return;
+      }
+
+      const report = buildDoctorReport(analysis, schemaLabel);
 
       // An error-level finding means the schema was never read: the file is missing, or importing
       // it threw. There is no report to act on, so that exits like `analyze`'s failure path rather
