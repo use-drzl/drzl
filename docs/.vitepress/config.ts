@@ -1,14 +1,98 @@
+/**
+ * Where the site is served from, which every absolute URL below is built out of.
+ *
+ * `base` is what VitePress prepends to its *own* assets. It does not touch `head`, so an entry
+ * written as `/favicon.ico` ships exactly that and resolves at the domain root, one directory above
+ * where the file is. Every icon and the social card were 404 on the live site for that reason,
+ * measured: `use-drzl.github.io/social-card.png` answered 404 while
+ * `use-drzl.github.io/drzl/social-card.png` answered 200.
+ *
+ * The Open Graph image has a second requirement on top: scrapers do not resolve relative URLs, so
+ * it has to be absolute including the origin.
+ */
+const SITE = 'https://use-drzl.github.io';
+const BASE = '/drzl/';
+const ORIGIN = `${SITE}${BASE}`;
+
+const TITLE = 'DRZL';
+const DESCRIPTION =
+  'DRZL reads your Drizzle schema and generates the validation schemas, API routers and typed ' +
+  'services that go with it. Fourteen generators, one install.';
+
 export default {
-  title: 'DRZL',
+  title: TITLE,
   description: 'Developer tooling for Drizzle ORM',
-  base: '/drzl/',
+  base: BASE,
   head: [
-    ['link', { rel: 'icon', href: '/favicon.ico' }],
-    ['link', { rel: 'apple-touch-icon', href: '/apple-touch-icon.png' }],
-    ['link', { rel: 'icon', type: 'image/png', sizes: '192x192', href: '/icon-192.png' }],
-    ['link', { rel: 'icon', type: 'image/png', sizes: '512x512', href: '/icon-512.png' }],
-    ['meta', { property: 'og:image', content: '/social-card.png' }],
+    // Icons, all under the base. `favicon.ico` carries 16, 32 and 48 as embedded PNGs, for the
+    // browsers and readers that still ask for that name specifically.
+    ['link', { rel: 'icon', href: `${BASE}favicon.ico`, sizes: 'any' }],
+    ['link', { rel: 'icon', type: 'image/png', sizes: '32x32', href: `${BASE}favicon-32.png` }],
+    ['link', { rel: 'icon', type: 'image/png', sizes: '16x16', href: `${BASE}favicon-16.png` }],
+    ['link', { rel: 'apple-touch-icon', sizes: '180x180', href: `${BASE}apple-touch-icon.png` }],
+    ['link', { rel: 'icon', type: 'image/png', sizes: '192x192', href: `${BASE}icon-192.png` }],
+    ['link', { rel: 'icon', type: 'image/png', sizes: '512x512', href: `${BASE}icon-512.png` }],
+    ['meta', { name: 'theme-color', content: '#c7f04a' }],
+
+    // Open Graph, the half that is the same on every page. Title, description and url are per page
+    // and are emitted by `transformHead` below, so there is exactly one of each rather than a site
+    // one and a page one competing.
+    //
+    // `og:image` is absolute because a scraper fetches it from its own machine with no page context
+    // to resolve against; the dimensions are stated so a card can be laid out before the image has
+    // downloaded, and they are the file's real ones rather than the canonical 1200x630.
+    ['meta', { property: 'og:type', content: 'website' }],
+    ['meta', { property: 'og:site_name', content: TITLE }],
+    ['meta', { property: 'og:image', content: `${ORIGIN}social-card.png` }],
+    ['meta', { property: 'og:image:type', content: 'image/png' }],
+    ['meta', { property: 'og:image:width', content: '1280' }],
+    ['meta', { property: 'og:image:height', content: '640' }],
+    [
+      'meta',
+      {
+        property: 'og:image:alt',
+        content: 'DRZL: generate validation schemas, API routers and typed services from a Drizzle schema',
+      },
+    ],
+
+    // The Twitter/X card. `summary_large_image` is the one that shows a 2:1 image rather than a
+    // thumbnail, which is what social-card.png is drawn for.
+    ['meta', { name: 'twitter:card', content: 'summary_large_image' }],
+    ['meta', { name: 'twitter:image', content: `${ORIGIN}social-card.png` }],
+    ['meta', { name: 'twitter:creator', content: '@omardulaimidev' }],
   ],
+  /**
+   * The per-page half of the card.
+   *
+   * A shared link to a generator page should say which generator, not just "DRZL". VitePress calls
+   * this once per page with that page's resolved title and description, so each one carries its own
+   * and the site-level tags stay to the things that do not change.
+   *
+   * `pageData.relativePath` is the source path, so `index.md` and `guide/x.md` become `` and
+   * `guide/x`, which is the URL the built site serves.
+   */
+  transformHead({ pageData }: { pageData: { relativePath: string; title?: string; description?: string; frontmatter?: Record<string, unknown> } }) {
+    const title = pageData.frontmatter?.title ?? pageData.title ?? TITLE;
+    const heading = title === TITLE ? `${TITLE}: code generation for Drizzle ORM` : `${title} | ${TITLE}`;
+    // `??` is not enough here: VitePress hands over an empty string for a page with no description
+    // of its own, and an empty string is not nullish, so every docs page shipped
+    // `og:description=""` the first time this was written. A card with no description is worse than
+    // one carrying the site's.
+    const firstNonEmpty = (...xs: Array<string | undefined>) => xs.find((x) => x && x.trim())!;
+    const description = firstNonEmpty(
+      pageData.frontmatter?.description as string | undefined,
+      pageData.description,
+      DESCRIPTION
+    );
+    const path = pageData.relativePath.replace(/(?:index)?\.md$/, '');
+    return [
+      ['meta', { property: 'og:title', content: heading }],
+      ['meta', { property: 'og:description', content: description }],
+      ['meta', { property: 'og:url', content: `${ORIGIN}${path}` }],
+      ['meta', { name: 'twitter:title', content: heading }],
+      ['meta', { name: 'twitter:description', content: description }],
+    ];
+  },
   themeConfig: {
     logo: { light: '/brand/logo.png', dark: '/brand/logo-dark.png' },
     docFooter: {
