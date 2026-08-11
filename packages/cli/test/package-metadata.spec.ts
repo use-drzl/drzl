@@ -105,6 +105,7 @@ it('found every publishable package', () => {
     'generator-service',
     'generator-tanstack-start',
     'generator-trpc',
+    'generator-ts-rest',
     'generator-typebox',
     'generator-valibot',
     'generator-zod',

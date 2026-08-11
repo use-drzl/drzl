@@ -81,6 +81,7 @@ const groups: Group[] = [
       { name: 'TanStack Start', link: '/generators/tanstack-start' },
       { name: 'h3 and Nitro', mark: 'nuxt', link: '/generators/h3' },
       { name: 'Effect HttpApi', mark: 'effect', link: '/generators/effect-http' },
+      { name: 'ts-rest', link: '/generators/ts-rest' },
     ],
   },
   {

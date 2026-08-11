@@ -82,6 +82,7 @@
   },
   "optionalDependencies": {
     "@drzl/generator-effect-http": "workspace:^",
-    "@drzl/generator-h3": "workspace:^"
+    "@drzl/generator-h3": "workspace:^",
+    "@drzl/generator-ts-rest": "workspace:^"
   }
 }

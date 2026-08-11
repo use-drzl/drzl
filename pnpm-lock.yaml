@@ -207,6 +207,9 @@ importers:
       '@drzl/generator-h3':
         specifier: workspace:^
         version: link:../generator-h3
+      '@drzl/generator-ts-rest':
+        specifier: workspace:^
+        version: link:../generator-ts-rest
 
   packages/generator-ai:
     dependencies:
@@ -686,6 +689,37 @@ importers:
       '@trpc/server':
         specifier: ^11.18.0
         version: 11.18.0(typescript@5.9.3)
+      arktype:
+        specifier: ^2.1.29
+        version: 2.2.3
+      tsup:
+        specifier: ^8.5.1
+        version: 8.5.1(jiti@2.7.0)(postcss@8.5.23)(supports-color@7.2.0)(typescript@5.9.3)(yaml@2.9.0)
+      typescript:
+        specifier: ^5.9.3
+        version: 5.9.3
+      valibot:
+        specifier: ^1.1.0
+        version: 1.4.2(typescript@5.9.3)
+      zod:
+        specifier: ^4.4.3
+        version: 4.4.3
+
+  packages/generator-ts-rest:
+    dependencies:
+      '@drzl/analyzer':
+        specifier: workspace:^
+        version: link:../analyzer
+      '@drzl/validation-core':
+        specifier: workspace:^
+        version: link:../validation-core
+    devDependencies:
+      '@ts-rest/core':
+        specifier: ^3.53.0-rc.1
+        version: 3.53.0-rc.1(@types/node@26.1.2)
+      '@ts-rest/core-stable':
+        specifier: npm:@ts-rest/core@3.52.1
+        version: '@ts-rest/core@3.52.1(@types/node@26.1.2)(zod@4.4.3)'
       arktype:
         specifier: ^2.1.29
         version: 2.2.3
@@ -2366,6 +2400,25 @@ packages:
     hasBin: true
     peerDependencies:
       typescript: '>=5.7.2'
+
+  '@ts-rest/core@3.52.1':
+    resolution: {integrity: sha512-tAjz7Kxq/grJodcTA1Anop4AVRDlD40fkksEV5Mmal88VoZeRKAG8oMHsDwdwPZz+B/zgnz0q2sF+cm5M7Bc7g==}
+    peerDependencies:
+      '@types/node': ^18.18.7 || >=20.8.4
+      zod: ^3.22.3
+    peerDependenciesMeta:
+      '@types/node':
+        optional: true
+      zod:
+        optional: true
+
+  '@ts-rest/core@3.53.0-rc.1':
+    resolution: {integrity: sha512-hDMXqKHSys6w+kXFW1Q6EvN8QgRvtXKXJ2TpYByKI4TquaPjiTOv99aLD26X4LNRzdna8Ci1PVyzr0jYZv0oNQ==}
+    peerDependencies:
+      '@types/node': ^18.18.7 || >=20.8.4
+    peerDependenciesMeta:
+      '@types/node':
+        optional: true
 
   '@tsconfig/node10@1.0.11':
     resolution: {integrity: sha512-DcRjDCujK/kCk/cUe8Xz8ZSpm8mS3mNNpta+jGCA6USEDfktlNvm1+IuZ9eTcDbNk41BHwpHHeW+N1lKCz4zOw==}
@@ -6830,6 +6883,15 @@ snapshots:
   '@trpc/server@11.18.0(typescript@5.9.3)':
     dependencies:
       typescript: 5.9.3
+
+  '@ts-rest/core@3.52.1(@types/node@26.1.2)(zod@4.4.3)':
+    optionalDependencies:
+      '@types/node': 26.1.2
+      zod: 4.4.3
+
+  '@ts-rest/core@3.53.0-rc.1(@types/node@26.1.2)':
+    optionalDependencies:
+      '@types/node': 26.1.2
 
   '@tsconfig/node10@1.0.11': {}
 
