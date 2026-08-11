@@ -91,6 +91,7 @@ it('found every publishable package', () => {
     'generator-ai',
     'generator-arktype',
     'generator-effect',
+    'generator-effect-http',
     'generator-express',
     'generator-fastify',
     'generator-graphql',

@@ -44,6 +44,8 @@ export default {
     { kind: 'tanstack-start', path: './src/generated/tanstack-start' },
     // h3 v1, which is what released Nitro depends on, so this compiles the adapter.
     { kind: 'h3', path: './src/generated/h3' },
+    // Effect HttpApi, on the effect schemas the config already generates above.
+    { kind: 'effect-http', path: './src/generated/effect-http' },
     // The AI SDK tools, on the shared schemas, and on valibot rather than zod on purpose: valibot
     // is the library whose tools carry the emitted adapter, so this is the entry that compiles it.
     {

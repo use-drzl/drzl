@@ -31,6 +31,11 @@ allowBuilds:
   # against a real database. The install script fetches a prebuilt binding via prebuild-install
   # and compiles only where none exists; without `true` here the module cannot load at all.
   better-sqlite3: true
+  # msgpackr-extract arrives under @effect/platform, a devDependency of
+  # @drzl/generator-effect-http. It is an optional native accelerator for msgpackr, which falls
+  # back to its JavaScript path without it, and nothing here encodes msgpack at a volume where the
+  # difference is measurable. `false` keeps installs free of a native compile they do not need.
+  msgpackr-extract: false
 
 minimumReleaseAgeExclude:
   - '@ai-sdk/provider-utils@5.0.26'

@@ -113,6 +113,7 @@ export const GeneratorKindSchema = z.enum([
   'nestjs',
   'graphql',
   'ai',
+  'effect-http',
   'h3',
   'mcp',
   'next',
@@ -161,6 +162,8 @@ export const GeneratorSchema = z.object({
    * schema directly and carries none.
    */
   h3: z.enum(['v1', 'v2']).optional(),
+  /** The identifier the assembled `HttpApi` carries. `effect-http` only, defaults to `'api'`. */
+  apiName: z.string().optional(),
   /** The name and version the emitted MCP server reports at initialize. `mcp` only. */
   serverName: z.string().optional(),
   serverVersion: z.string().optional(),
@@ -653,6 +656,7 @@ const ROUTER_KINDS = new Set([
   'ai',
   'tanstack-start',
   'h3',
+  'effect-http',
 ]);
 
 /**
@@ -822,6 +826,16 @@ export function h3OutDir(g: { path?: string }, cfg: { outDir: string }): string 
   return g.path ?? cfg.outDir;
 }
 
+/**
+ * Where the Effect HttpApi generator writes.
+ *
+ * The same rule as the routers, and for the same reason: it writes an `index.ts` barrel of its own.
+ * Its own function rather than a call to one of the others, for the reason `honoOutDir` records.
+ */
+export function effectHttpOutDir(g: { path?: string }, cfg: { outDir: string }): string {
+  return g.path ?? cfg.outDir;
+}
+
 function sharedSchemaNames(opts: { affix?: AffixOptions; schemaSuffix?: string }): string[] {
   const resolved = resolveAffix(opts);
   return NAME_MODES.map((mode) => schemaName(mode, AFFIX_PROBE_TABLE, resolved));
@@ -979,6 +993,33 @@ export function resolveConfig(cfg: DrzlConfig): { config: DrzlConfig; warnings: 
      * The h3 generator, which has the same single mode as `next` and `tanstack-start`: it emits no
      * schemas of its own, so its options builder turns `useShared` on and derives the import path.
      */
+    /**
+     * The Effect HttpApi generator, whose sibling is always the `effect` one: `HttpApi` declares
+     * its payloads as Effect Schema and takes nothing else, so there is no library to choose.
+     */
+    if (g.kind === 'effect-http') {
+      // `validation.library` is not even offered for this kind: the enum lists the three libraries
+      // a *validator* generator emits, and `effect` is not among them because HttpApi is the only
+      // consumer of Effect Schema here. So any value set on this kind is one that cannot be
+      // honoured, and the builder overrides it, which is the dead-option shape this config reports
+      // rather than accepts.
+      if (g.validation?.library) {
+        warnings.push(
+          `drzl config: the "effect-http" generator sets validation.library, which it does not ` +
+            `read. HttpApi declares its payloads as Effect Schema and takes nothing else, so ` +
+            `there is no library to choose. Remove the key.`
+        );
+      }
+      if (!g.validation?.importPath && !generators.some((s) => s.kind === 'effect')) {
+        warnings.push(
+          `drzl config: the "effect-http" generator declares the Effect Schema modules a ` +
+            `validation generator writes, and this config has no "effect" generator for it to ` +
+            `import from. Add { kind: "effect" }, or set validation.importPath to wherever those ` +
+            `schemas live.`
+        );
+      }
+    }
+
     if (g.kind === 'h3') {
       if (g.includeRelations) {
         warnings.push(
@@ -1354,6 +1395,7 @@ export function computeGeneratorOutputDirs(cfg: DrzlConfig, cwd = process.cwd())
     if (g.kind === 'ai') dirs.add(abs(aiOutDir(g, cfg)));
     if (g.kind === 'tanstack-start') dirs.add(abs(tanstackStartOutDir(g, cfg)));
     if (g.kind === 'h3') dirs.add(abs(h3OutDir(g, cfg)));
+    if (g.kind === 'effect-http') dirs.add(abs(effectHttpOutDir(g, cfg)));
     if (g.kind === 'service') dirs.add(abs(g.path ?? 'src/services'));
     if (g.kind === 'zod') dirs.add(abs(g.path ?? 'src/validators/zod'));
     if (g.kind === 'valibot') dirs.add(abs(g.path ?? 'src/validators/valibot'));

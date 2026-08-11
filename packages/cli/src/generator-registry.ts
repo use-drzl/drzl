@@ -22,6 +22,7 @@
  */
 import {
   aiOutDir,
+  effectHttpOutDir,
   expressOutDir,
   h3OutDir,
   fastifyOutDir,
@@ -42,6 +43,7 @@ import { graphqlOptions } from './graphql-options.js';
 import { honoOptions } from './hono-options.js';
 import { jsonSchemaOptions } from './json-schema-options.js';
 import { aiOptions } from './ai-options.js';
+import { effectHttpOptions } from './effect-http-options.js';
 import { h3Options } from './h3-options.js';
 import { mcpOptions } from './mcp-options.js';
 import { nextOptions } from './next-options.js';
@@ -244,6 +246,14 @@ export const GENERATORS: readonly GeneratorEntry[] = [
     construct: (m, analysis) => new m.H3Generator(analysis),
     outputDir: (g, cfg) => h3OutDir(g, cfg),
     options: (g, cfg) => h3Options(g, cfg),
+  },
+  {
+    kind: 'effect-http',
+    specifier: '@drzl/generator-effect-http',
+    load: () => import('@drzl/generator-effect-http'),
+    construct: (m, analysis) => new m.EffectHttpGenerator(analysis),
+    outputDir: (g, cfg) => effectHttpOutDir(g, cfg),
+    options: (g, cfg) => effectHttpOptions(g, cfg),
   },
   {
     kind: 'service',

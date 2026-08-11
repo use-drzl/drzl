@@ -53,3 +53,6 @@ declare module '@drzl/generator-tanstack-start' {
 declare module '@drzl/generator-h3' {
   export const H3Generator: any;
 }
+declare module '@drzl/generator-effect-http' {
+  export const EffectHttpGenerator: any;
+}

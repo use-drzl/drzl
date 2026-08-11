@@ -115,6 +115,7 @@
               "nestjs",
               "graphql",
               "ai",
+              "effect-http",
               "h3",
               "mcp",
               "next",
@@ -148,6 +149,9 @@
               "v1",
               "v2"
             ]
+          },
+          "apiName": {
+            "type": "string"
           },
           "serverName": {
             "type": "string"

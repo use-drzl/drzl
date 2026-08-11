@@ -80,6 +80,7 @@ const groups: Group[] = [
       { name: 'AI SDK', mark: 'vercel', link: '/generators/ai' },
       { name: 'TanStack Start', link: '/generators/tanstack-start' },
       { name: 'h3 and Nitro', mark: 'nuxt', link: '/generators/h3' },
+      { name: 'Effect HttpApi', mark: 'effect', link: '/generators/effect-http' },
     ],
   },
   {
