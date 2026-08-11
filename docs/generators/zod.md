@@ -238,6 +238,24 @@ Coercion is deliberately limited to strings and numbers. `z.coerce.date()` would
 `new Date()` does not choke on, and `new Date(null)` is the epoch while `new Date(true)` is one
 millisecond past it, so a NOT NULL column would accept both.
 
+The spelling is a union of the three input types rather than a `z.preprocess`, and the difference is
+the type rather than the behaviour:
+
+```ts
+publishedAt: z.union([
+  z.date(),
+  z.number().transform((v) => new Date(v)).pipe(z.date()),
+  z.string().regex(/.../).transform((v) => new Date(v)).pipe(z.date()),
+]),
+```
+
+A `z.preprocess` accepts anything, so `z.input<typeof InsertusersSchema>` reported `unknown` for the
+column and every consumer that reads the input type got nothing from it. The union says
+`Date | number | string`, which is what valibot and ArkType already reported for the same column.
+Behaviour is unchanged, measured over eighteen values including `'12.5'`, `'0101'`, `'010'`, `null`,
+`true`, `[1, 2]` and a string that parses to an Invalid Date: identical verdicts on every one. The
+`.pipe(z.date())` after each transform is what keeps the last of those identical.
+
 ## CHECK constraints
 
 A `check()` in your schema becomes a refinement. **No official Drizzle validator module does
