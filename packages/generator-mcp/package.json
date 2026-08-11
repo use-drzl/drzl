@@ -1,6 +1,6 @@
 {
   "name": "@drzl/generator-mcp",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "private": false,
   "license": "Apache-2.0",
   "description": "Generate Model Context Protocol tools from a Drizzle schema, one module per table, so a language model is told each column's real bounds before it writes a row rather than after the database refuses one.",
