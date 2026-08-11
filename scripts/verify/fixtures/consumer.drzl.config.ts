@@ -35,6 +35,10 @@ export default {
     // depends on: the bounds a model reads come from the zod generator's output above, and this
     // entry is what proves that import resolves in a real install rather than only in this
     // repository's workspace.
+    // The Next.js actions, on the same shared schemas. The import path is *not* set here on
+    // purpose: deriving it from the zod entry above is wiring only `nextOptions` does, and a
+    // fixture that spelled it out would never exercise that.
+    { kind: 'next', path: './src/generated/next' },
     {
       kind: 'mcp',
       path: './src/generated/mcp',

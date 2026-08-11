@@ -27,6 +27,7 @@ import {
   honoOutDir,
   mcpOutDir,
   nestjsOutDir,
+  nextOutDir,
   trpcOutDir,
   type DrzlConfig,
   type GeneratorKind,
@@ -38,6 +39,7 @@ import { graphqlOptions } from './graphql-options.js';
 import { honoOptions } from './hono-options.js';
 import { jsonSchemaOptions } from './json-schema-options.js';
 import { mcpOptions } from './mcp-options.js';
+import { nextOptions } from './next-options.js';
 import { nestjsOptions } from './nestjs-options.js';
 import { orpcOptions } from './orpc-options.js';
 import { serviceOptions } from './service-options.js';
@@ -204,6 +206,15 @@ export const GENERATORS: readonly GeneratorEntry[] = [
     construct: (m, analysis) => new m.MCPGenerator(analysis),
     outputDir: (g, cfg) => mcpOutDir(g, cfg),
     options: (g, cfg) => mcpOptions(g, cfg),
+  },
+  {
+    kind: 'next',
+    // Optional for the same reason as `mcp` above, and for the same one release only.
+    specifier: '@drzl/generator-next',
+    load: () => import('@drzl/generator-next'),
+    construct: (m, analysis) => new m.NextGenerator(analysis),
+    outputDir: (g, cfg) => nextOutDir(g, cfg),
+    options: (g, cfg) => nextOptions(g, cfg),
   },
   {
     kind: 'service',

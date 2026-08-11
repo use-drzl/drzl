@@ -113,6 +113,7 @@ export const GeneratorKindSchema = z.enum([
   'nestjs',
   'graphql',
   'mcp',
+  'next',
   'service',
   'zod',
   'valibot',
@@ -630,7 +631,7 @@ type GeneratorConfig = DrzlConfig['generators'][number];
 
 /** The generators that emit an RPC router, and so share `outDir` and `validation`. */
 /** The generators that import the validation generators' exports by name. */
-const ROUTER_KINDS = new Set(['orpc', 'trpc', 'hono', 'express', 'mcp']);
+const ROUTER_KINDS = new Set(['orpc', 'trpc', 'hono', 'express', 'mcp', 'next']);
 
 /**
  * The routers that can reach a database through the request context.
@@ -748,6 +749,22 @@ export function graphqlOutDir(g: { path?: string }, cfg: { outDir: string }): st
  * authoritative for which.
  */
 export function mcpOutDir(g: { path?: string }, cfg: { outDir: string }): string {
+  return g.path ?? cfg.outDir;
+}
+
+/**
+ * Where the Next.js generator writes.
+ *
+ * The same rule as the routers, and for the same reason: it writes an `index.ts` barrel and a
+ * `form-state.ts` of its own, so a config that runs it beside a router generator has to give at
+ * least one of them a `path`.
+ *
+ * Its own function rather than a call to one of the others, for the reason `honoOutDir` records:
+ * these are separate decisions that happen to agree today, and a reader following
+ * `computeGeneratorOutputDirs` should not have to work out which kind's function is authoritative
+ * for which.
+ */
+export function nextOutDir(g: { path?: string }, cfg: { outDir: string }): string {
   return g.path ?? cfg.outDir;
 }
 
@@ -906,6 +923,32 @@ export function resolveConfig(cfg: DrzlConfig): { config: DrzlConfig; warnings: 
           `Relation lookups are routes, and this generator emits MCP tools rather than routes. ` +
           `Remove the flag.`
       );
+    }
+
+    /**
+     * The Next.js generator, whose unread option is the same one.
+     *
+     * `validation.useShared` is not warned about when it is absent, unlike every other kind: this
+     * generator emits no schemas of its own, so shared is its only mode and the CLI turns it on.
+     * What it does need is a validation generator in the same config to import from, and that is
+     * reported here rather than left to a failed import in the emitted tree.
+     */
+    if (g.kind === 'next') {
+      if (g.includeRelations) {
+        warnings.push(
+          `drzl config: the "next" generator sets includeRelations, which it does not read. ` +
+            `Relation lookups are routes, and this generator emits server actions that parse a ` +
+            `posted form. Remove the flag.`
+        );
+      }
+      const library = g.validation?.library ?? 'zod';
+      if (!g.validation?.importPath && !generators.some((s) => s.kind === library)) {
+        warnings.push(
+          `drzl config: the "next" generator parses the schemas a validation generator writes, ` +
+            `and this config has no "${library}" generator for it to import from. Add ` +
+            `{ kind: "${library}" }, or set validation.importPath to wherever those schemas live.`
+        );
+      }
     }
 
     // Both router generators import the validation generators' exports by name, so both have to
@@ -1201,6 +1244,7 @@ export function computeGeneratorOutputDirs(cfg: DrzlConfig, cwd = process.cwd())
     if (g.kind === 'nestjs') dirs.add(abs(nestjsOutDir(g, cfg)));
     if (g.kind === 'graphql') dirs.add(abs(graphqlOutDir(g, cfg)));
     if (g.kind === 'mcp') dirs.add(abs(mcpOutDir(g, cfg)));
+    if (g.kind === 'next') dirs.add(abs(nextOutDir(g, cfg)));
     if (g.kind === 'service') dirs.add(abs(g.path ?? 'src/services'));
     if (g.kind === 'zod') dirs.add(abs(g.path ?? 'src/validators/zod'));
     if (g.kind === 'valibot') dirs.add(abs(g.path ?? 'src/validators/valibot'));

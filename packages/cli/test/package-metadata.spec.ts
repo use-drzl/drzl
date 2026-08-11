@@ -97,6 +97,7 @@ it('found every publishable package', () => {
     'generator-json-schema',
     'generator-mcp',
     'generator-nestjs',
+    'generator-next',
     'generator-orpc',
     'generator-service',
     'generator-trpc',

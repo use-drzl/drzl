@@ -53,7 +53,8 @@
     "zod": "^4.4.3"
   },
   "optionalDependencies": {
-    "@drzl/generator-mcp": "workspace:^"
+    "@drzl/generator-mcp": "workspace:^",
+    "@drzl/generator-next": "workspace:^"
   },
   "devDependencies": {
     "ajv": "^8.17.1",

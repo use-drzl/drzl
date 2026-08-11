@@ -218,6 +218,7 @@ export default {
           { text: 'NestJS', link: '/generators/nestjs' },
           { text: 'GraphQL', link: '/generators/graphql' },
           { text: 'MCP', link: '/generators/mcp' },
+          { text: 'Next.js', link: '/generators/next' },
         ],
       },
       { text: 'Service classes', link: '/generators/service' },
