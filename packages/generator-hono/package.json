@@ -1,6 +1,6 @@
 {
   "name": "@drzl/generator-hono",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "private": false,
   "license": "Apache-2.0",
   "description": "Generate Hono routes from a Drizzle schema, one route module per table, validated by DRZL's schemas through Hono's own validator middleware.",

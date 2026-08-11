@@ -1,6 +1,6 @@
 {
   "name": "@drzl/generator-trpc",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "private": false,
   "license": "Apache-2.0",
   "description": "Generate tRPC v11 routers from a Drizzle schema, one router per table, wired to DRZL's validation schemas.",
