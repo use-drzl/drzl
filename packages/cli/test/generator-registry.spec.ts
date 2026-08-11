@@ -112,6 +112,7 @@ describe('the registry against the manifest', () => {
   '@drzl/generator-h3',
   '@drzl/generator-ts-rest',
   '@drzl/generator-elysia',
+  '@drzl/generator-seed',
 ];
 
   it('declares every generator package as a dependency', () => {

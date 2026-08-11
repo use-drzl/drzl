@@ -228,6 +228,7 @@ export default {
         ],
       },
       { text: 'Service classes', link: '/generators/service' },
+      { text: 'Seed data', link: '/generators/seed' },
       {
         text: 'Across generators',
         collapsed: true,

@@ -84,6 +84,7 @@
     "@drzl/generator-effect-http": "workspace:^",
     "@drzl/generator-elysia": "workspace:^",
     "@drzl/generator-h3": "workspace:^",
+    "@drzl/generator-seed": "workspace:^",
     "@drzl/generator-ts-rest": "workspace:^"
   }
 }

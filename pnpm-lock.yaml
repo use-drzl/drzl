@@ -210,6 +210,9 @@ importers:
       '@drzl/generator-h3':
         specifier: workspace:^
         version: link:../generator-h3
+      '@drzl/generator-seed':
+        specifier: workspace:^
+        version: link:../generator-seed
       '@drzl/generator-ts-rest':
         specifier: workspace:^
         version: link:../generator-ts-rest
@@ -645,6 +648,25 @@ importers:
       tsup:
         specifier: ^8.5.1
         version: 8.5.1(jiti@2.7.0)(postcss@8.5.6)(supports-color@7.2.0)(typescript@5.9.3)(yaml@2.9.0)
+      typescript:
+        specifier: ^5.9.3
+        version: 5.9.3
+      zod:
+        specifier: ^4.4.3
+        version: 4.4.3
+
+  packages/generator-seed:
+    dependencies:
+      '@drzl/analyzer':
+        specifier: workspace:^
+        version: link:../analyzer
+      '@drzl/validation-core':
+        specifier: workspace:^
+        version: link:../validation-core
+    devDependencies:
+      tsup:
+        specifier: ^8.5.1
+        version: 8.5.1(jiti@2.7.0)(postcss@8.5.23)(supports-color@7.2.0)(typescript@5.9.3)(yaml@2.9.0)
       typescript:
         specifier: ^5.9.3
         version: 5.9.3

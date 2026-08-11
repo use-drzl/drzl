@@ -81,7 +81,7 @@ finding.
 ```
 drzl.config.ts is not valid (DRZL_CFG_002). 2 problems:
   - outDir: expected string, received number (found 123)
-  - generators[0].kind: Invalid option: expected one of "orpc"|"trpc"|"hono"|"express"|"fastify"|"nestjs"|"graphql"|"ai"|"effect-http"|"elysia"|"h3"|"mcp"|"next"|"tanstack-start"|"ts-rest"|"service"|"zod"|"valibot"|"arktype"|"typebox"|"effect"|"json-schema" (found "zed")
+  - generators[0].kind: Invalid option: expected one of "orpc"|"trpc"|"hono"|"express"|"fastify"|"nestjs"|"graphql"|"ai"|"effect-http"|"elysia"|"h3"|"mcp"|"next"|"tanstack-start"|"ts-rest"|"seed"|"service"|"zod"|"valibot"|"arktype"|"typebox"|"effect"|"json-schema" (found "zed")
 ```
 
 Every problem is listed, not just the first, and each names the key path the way you would write

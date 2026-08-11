@@ -67,7 +67,7 @@ this config does not configure:
 
 ```
 --only zodd: there is no generator kind "zodd".
-Valid kinds are: orpc, trpc, hono, express, fastify, nestjs, graphql, ai, effect-http, elysia, h3, mcp, next, tanstack-start, ts-rest, service, zod, valibot, arktype, typebox, effect, json-schema.
+Valid kinds are: orpc, trpc, hono, express, fastify, nestjs, graphql, ai, effect-http, elysia, h3, mcp, next, tanstack-start, ts-rest, seed, service, zod, valibot, arktype, typebox, effect, json-schema.
 ```
 
 ```

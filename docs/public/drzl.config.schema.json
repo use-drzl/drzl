@@ -122,6 +122,7 @@
               "next",
               "tanstack-start",
               "ts-rest",
+              "seed",
               "service",
               "zod",
               "valibot",
@@ -160,6 +161,11 @@
           },
           "appName": {
             "type": "string"
+          },
+          "count": {
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "maximum": 9007199254740991
           },
           "prefix": {
             "type": "string"
