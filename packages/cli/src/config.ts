@@ -113,6 +113,7 @@ export const GeneratorKindSchema = z.enum([
   'nestjs',
   'graphql',
   'ai',
+  'h3',
   'mcp',
   'next',
   'tanstack-start',
@@ -151,6 +152,15 @@ export const GeneratorSchema = z.object({
    * refuses that combination rather than emitting a server that dies on startup.
    */
   sdk: z.enum(['v1', 'v2']).optional(),
+  /**
+   * Which h3 major the emitted route handlers are written against. `h3` only.
+   *
+   * `v1` is the default and is what released Nitro depends on: nitropack 2.13.4 names
+   * `h3: ^1.15.11`, while h3's own `latest` tag is a 2.x release candidate. v1 has no Standard
+   * Schema overload on its validation helpers, so the emitted modules carry an adapter; v2 takes a
+   * schema directly and carries none.
+   */
+  h3: z.enum(['v1', 'v2']).optional(),
   /** The name and version the emitted MCP server reports at initialize. `mcp` only. */
   serverName: z.string().optional(),
   serverVersion: z.string().optional(),
@@ -642,6 +652,7 @@ const ROUTER_KINDS = new Set([
   'next',
   'ai',
   'tanstack-start',
+  'h3',
 ]);
 
 /**
@@ -801,6 +812,16 @@ export function tanstackStartOutDir(g: { path?: string }, cfg: { outDir: string 
   return g.path ?? cfg.outDir;
 }
 
+/**
+ * Where the h3 generator writes.
+ *
+ * The same rule as the routers, and for the same reason: it writes an `index.ts` barrel of its own.
+ * Its own function rather than a call to one of the others, for the reason `honoOutDir` records.
+ */
+export function h3OutDir(g: { path?: string }, cfg: { outDir: string }): string {
+  return g.path ?? cfg.outDir;
+}
+
 function sharedSchemaNames(opts: { affix?: AffixOptions; schemaSuffix?: string }): string[] {
   const resolved = resolveAffix(opts);
   return NAME_MODES.map((mode) => schemaName(mode, AFFIX_PROBE_TABLE, resolved));
@@ -954,6 +975,27 @@ export function resolveConfig(cfg: DrzlConfig): { config: DrzlConfig; warnings: 
      * The TanStack Start generator, which has the same single mode as `next`: it emits no schemas
      * of its own, so `tanstackStartOptions` turns `useShared` on and derives the import path.
      */
+    /**
+     * The h3 generator, which has the same single mode as `next` and `tanstack-start`: it emits no
+     * schemas of its own, so its options builder turns `useShared` on and derives the import path.
+     */
+    if (g.kind === 'h3') {
+      if (g.includeRelations) {
+        warnings.push(
+          `drzl config: the "h3" generator sets includeRelations, which it does not read yet. ` +
+            `Relation lookups are a route this generator does not emit. Remove the flag.`
+        );
+      }
+      const library = g.validation?.library ?? 'zod';
+      if (!g.validation?.importPath && !generators.some((s) => s.kind === library)) {
+        warnings.push(
+          `drzl config: the "h3" generator validates with the schemas a validation generator ` +
+            `writes, and this config has no "${library}" generator for it to import from. Add ` +
+            `{ kind: "${library}" }, or set validation.importPath to wherever those schemas live.`
+        );
+      }
+    }
+
     if (g.kind === 'tanstack-start') {
       if (g.includeRelations) {
         warnings.push(
@@ -1311,6 +1353,7 @@ export function computeGeneratorOutputDirs(cfg: DrzlConfig, cwd = process.cwd())
     if (g.kind === 'next') dirs.add(abs(nextOutDir(g, cfg)));
     if (g.kind === 'ai') dirs.add(abs(aiOutDir(g, cfg)));
     if (g.kind === 'tanstack-start') dirs.add(abs(tanstackStartOutDir(g, cfg)));
+    if (g.kind === 'h3') dirs.add(abs(h3OutDir(g, cfg)));
     if (g.kind === 'service') dirs.add(abs(g.path ?? 'src/services'));
     if (g.kind === 'zod') dirs.add(abs(g.path ?? 'src/validators/zod'));
     if (g.kind === 'valibot') dirs.add(abs(g.path ?? 'src/validators/valibot'));

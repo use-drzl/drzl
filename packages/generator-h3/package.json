@@ -1,0 +1,71 @@
+{
+  "name": "@drzl/generator-h3",
+  "version": "0.0.0",
+  "private": false,
+  "license": "Apache-2.0",
+  "description": "Generate h3 and Nitro route handlers from a Drizzle schema, one module per table, validated by DRZL's own schemas through h3's validation helpers on both major versions.",
+  "keywords": [
+    "drizzle",
+    "drizzle-orm",
+    "h3",
+    "nitro",
+    "nuxt",
+    "codegen",
+    "standard-schema"
+  ],
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "sideEffects": false,
+  "scripts": {
+    "build": "tsup src/index.ts --dts --format esm,cjs --external prettier --clean",
+    "lint": "eslint . --ext .ts",
+    "test": "vitest run --testTimeout=20000"
+  },
+  "dependencies": {
+    "@drzl/analyzer": "workspace:^",
+    "@drzl/validation-core": "workspace:^"
+  },
+  "devDependencies": {
+    "arktype": "^2.1.29",
+    "h3": "^1.15.11",
+    "h3-v2": "npm:h3@^2.0.1-rc.26",
+    "tsup": "^8.5.1",
+    "typescript": "^5.9.3",
+    "valibot": "^1.1.0",
+    "zod": "^4.4.3"
+  },
+  "engines": {
+    "node": ">=18.17.0"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/",
+    "provenance": true
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/use-drzl/drzl",
+    "directory": "packages/generator-h3"
+  },
+  "funding": {
+    "type": "github",
+    "url": "https://github.com/sponsors/omar-dulaimi"
+  }
+}

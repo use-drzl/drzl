@@ -79,5 +79,8 @@
   "funding": {
     "type": "github",
     "url": "https://github.com/sponsors/omar-dulaimi"
+  },
+  "optionalDependencies": {
+    "@drzl/generator-h3": "workspace:^"
   }
 }

@@ -94,6 +94,7 @@ it('found every publishable package', () => {
     'generator-express',
     'generator-fastify',
     'generator-graphql',
+    'generator-h3',
     'generator-hono',
     'generator-json-schema',
     'generator-mcp',

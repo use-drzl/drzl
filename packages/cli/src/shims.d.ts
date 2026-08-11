@@ -50,3 +50,6 @@ declare module '@drzl/generator-ai' {
 declare module '@drzl/generator-tanstack-start' {
   export const TanStackStartGenerator: any;
 }
+declare module '@drzl/generator-h3' {
+  export const H3Generator: any;
+}

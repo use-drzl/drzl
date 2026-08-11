@@ -23,6 +23,7 @@
 import {
   aiOutDir,
   expressOutDir,
+  h3OutDir,
   fastifyOutDir,
   graphqlOutDir,
   honoOutDir,
@@ -41,6 +42,7 @@ import { graphqlOptions } from './graphql-options.js';
 import { honoOptions } from './hono-options.js';
 import { jsonSchemaOptions } from './json-schema-options.js';
 import { aiOptions } from './ai-options.js';
+import { h3Options } from './h3-options.js';
 import { mcpOptions } from './mcp-options.js';
 import { nextOptions } from './next-options.js';
 import { tanstackStartOptions } from './tanstack-start-options.js';
@@ -234,6 +236,14 @@ export const GENERATORS: readonly GeneratorEntry[] = [
     construct: (m, analysis) => new m.TanStackStartGenerator(analysis),
     outputDir: (g, cfg) => tanstackStartOutDir(g, cfg),
     options: (g, cfg) => tanstackStartOptions(g, cfg),
+  },
+  {
+    kind: 'h3',
+    specifier: '@drzl/generator-h3',
+    load: () => import('@drzl/generator-h3'),
+    construct: (m, analysis) => new m.H3Generator(analysis),
+    outputDir: (g, cfg) => h3OutDir(g, cfg),
+    options: (g, cfg) => h3Options(g, cfg),
   },
   {
     kind: 'service',

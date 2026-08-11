@@ -42,6 +42,8 @@ export default {
     // TanStack Start server functions, with the import path derived from the zod entry above
     // rather than spelled out, which is wiring only `tanstackStartOptions` does.
     { kind: 'tanstack-start', path: './src/generated/tanstack-start' },
+    // h3 v1, which is what released Nitro depends on, so this compiles the adapter.
+    { kind: 'h3', path: './src/generated/h3' },
     // The AI SDK tools, on the shared schemas, and on valibot rather than zod on purpose: valibot
     // is the library whose tools carry the emitted adapter, so this is the entry that compiles it.
     {
