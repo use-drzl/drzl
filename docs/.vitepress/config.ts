@@ -220,6 +220,7 @@ export default {
           { text: 'MCP', link: '/generators/mcp' },
           { text: 'Next.js', link: '/generators/next' },
           { text: 'AI SDK', link: '/generators/ai' },
+          { text: 'TanStack Start', link: '/generators/tanstack-start' },
         ],
       },
       { text: 'Service classes', link: '/generators/service' },

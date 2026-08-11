@@ -111,6 +111,7 @@ describe('the registry against the manifest', () => {
     '@drzl/generator-ai',
     '@drzl/generator-mcp',
     '@drzl/generator-next',
+    '@drzl/generator-tanstack-start',
   ];
 
   it('declares every generator package as a dependency', () => {

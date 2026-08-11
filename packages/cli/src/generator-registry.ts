@@ -29,6 +29,7 @@ import {
   mcpOutDir,
   nestjsOutDir,
   nextOutDir,
+  tanstackStartOutDir,
   trpcOutDir,
   type DrzlConfig,
   type GeneratorKind,
@@ -42,6 +43,7 @@ import { jsonSchemaOptions } from './json-schema-options.js';
 import { aiOptions } from './ai-options.js';
 import { mcpOptions } from './mcp-options.js';
 import { nextOptions } from './next-options.js';
+import { tanstackStartOptions } from './tanstack-start-options.js';
 import { nestjsOptions } from './nestjs-options.js';
 import { orpcOptions } from './orpc-options.js';
 import { serviceOptions } from './service-options.js';
@@ -226,6 +228,15 @@ export const GENERATORS: readonly GeneratorEntry[] = [
     construct: (m, analysis) => new m.AIGenerator(analysis),
     outputDir: (g, cfg) => aiOutDir(g, cfg),
     options: (g, cfg) => aiOptions(g, cfg),
+  },
+  {
+    kind: 'tanstack-start',
+    // Optional for the same reason as the three above, and for the same one release only.
+    specifier: '@drzl/generator-tanstack-start',
+    load: () => import('@drzl/generator-tanstack-start'),
+    construct: (m, analysis) => new m.TanStackStartGenerator(analysis),
+    outputDir: (g, cfg) => tanstackStartOutDir(g, cfg),
+    options: (g, cfg) => tanstackStartOptions(g, cfg),
   },
   {
     kind: 'service',

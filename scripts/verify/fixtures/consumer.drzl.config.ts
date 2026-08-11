@@ -39,6 +39,9 @@ export default {
     // purpose: deriving it from the zod entry above is wiring only `nextOptions` does, and a
     // fixture that spelled it out would never exercise that.
     { kind: 'next', path: './src/generated/next' },
+    // TanStack Start server functions, with the import path derived from the zod entry above
+    // rather than spelled out, which is wiring only `tanstackStartOptions` does.
+    { kind: 'tanstack-start', path: './src/generated/tanstack-start' },
     // The AI SDK tools, on the shared schemas, and on valibot rather than zod on purpose: valibot
     // is the library whose tools carry the emitted adapter, so this is the entry that compiles it.
     {

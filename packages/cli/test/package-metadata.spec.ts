@@ -101,6 +101,7 @@ it('found every publishable package', () => {
     'generator-next',
     'generator-orpc',
     'generator-service',
+    'generator-tanstack-start',
     'generator-trpc',
     'generator-typebox',
     'generator-valibot',
