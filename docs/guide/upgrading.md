@@ -266,7 +266,9 @@ export const InsertnotesSchema = Type.Object({
 // @drzl/generator-typebox 0.8.0 and later
 import { Type, Kind, TypeRegistry } from '@sinclair/typebox';
 
-TypeRegistry.Set('DrzlRowCheck', (schema: any, value: any) => schema.assert(value));
+TypeRegistry.Set('DrzlRowCheck', (schema, value) =>
+  (schema as { assert(v: unknown): boolean }).assert(value)
+);
 
 export const InsertnotesSchema = Type.Object({
   title: Type.Intersect([
@@ -274,7 +276,7 @@ export const InsertnotesSchema = Type.Object({
     Type.Unsafe<unknown>({
       [Kind]: 'DrzlRowCheck',
       description: 'at most 10 characters',
-      assert: (v: any) => typeof v !== 'string' || [...v].length <= 10,
+      assert: (v: unknown) => typeof v !== 'string' || [...v].length <= 10,
     }),
   ]),
 });
@@ -284,7 +286,7 @@ A MySQL `tinytext` column emits the same shape with the byte counter in it:
 
 ```ts
       description: 'at most 255 bytes',
-      assert: (v: any) => typeof v !== 'string' || new TextEncoder().encode(v).length <= 255,
+      assert: (v: unknown) => typeof v !== 'string' || new TextEncoder().encode(v).length <= 255,
 ```
 
 Three consequences, each measured:

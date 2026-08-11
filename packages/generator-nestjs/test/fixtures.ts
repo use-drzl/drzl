@@ -112,6 +112,11 @@ export const events = table('events', {
     col('flag', 'boolean'),
     col('big', 'bigint'),
     col('point', '[number, number]', { shape: { kind: 'tuple', length: 2 } }),
+    // A json column and a binary one, the two that used to be `unknown` here while every
+    // standalone validator generator typed them. Both cross JSON in a form of their own: json
+    // natively, binary as base64, which the write side decodes to the bytes the driver wants.
+    col('prefs', 'any', { shape: { kind: 'json' }, nullable: true }),
+    col('blob', 'Uint8Array', { shape: { kind: 'buffer' }, nullable: true }),
     col('note', 'string', { nullable: true }),
   ],
   primaryKey: { columns: ['id'] },

@@ -1,4 +1,9 @@
-import { fileWriter, type FileSink } from '@drzl/validation-core';
+import {
+  VALIBOT_JSON_CONST,
+  VALIBOT_JSON_SOURCE,
+  fileWriter,
+  type FileSink,
+} from '@drzl/validation-core';
 import type { Analysis, Column, Table } from '@drzl/analyzer';
 import type { ImportExtension } from '@drzl/validation-core';
 import {
@@ -161,6 +166,30 @@ interface LibDialect {
   /** A bigint crossing JSON: its decimal digits, kept as a string on both sides. */
   bigint: string;
   unknown: string;
+  /**
+   * A json column, which a request body carries natively. It was `unknown`, which is the widest
+   * thing a schema can say and not true of the column: the standalone validator generators all
+   * type it, so one column had two answers depending on which generator wrote it.
+   */
+  json: string;
+  /** The TypeScript type a json column parses to, for the DTO field beside the schema. */
+  jsonType: string;
+  /** The alias that type needs declared in the module, or nothing when the library names its own. */
+  jsonPreamble?: string;
+  /**
+   * A binary column on the way in. `JSON.stringify(new Uint8Array([1,2]))` is `{"0":1,"1":2}`, not
+   * bytes, so the wire form is base64 and the write side decodes to the `Uint8Array` the driver
+   * wants. The read side keeps a real `Uint8Array`, which is what a controller returns.
+   */
+  binaryWire: string;
+  /** A binary column on the read side. */
+  binaryRead: string;
+  /**
+   * What the write side parses to, which is not the same in every library. zod and valibot
+   * decode the base64 to the `Uint8Array` the driver wants; ArkType has no base64 decoder
+   * (`string.base64.parse` throws on 2.2.3), so it validates the string and hands that over.
+   */
+  binaryInsertType: string;
   enum: (values: string[]) => string;
   nullable: (base: string) => string;
   optional: (base: string) => string;
@@ -195,6 +224,16 @@ const LIB_IMPORTS: Record<Lib, string> = {
   arktype: "import { type } from 'arktype';",
 };
 
+/** The json value space for zod, whose `z.json()` output is mutually assignable with it. */
+const JSON_TYPE_ALIAS = `type DrzlJsonValue =
+  | string
+  | number
+  | boolean
+  | null
+  | DrzlJsonValue[]
+  | { [key: string]: DrzlJsonValue };
+`;
+
 const LIBS: Record<Lib, LibDialect> = {
   zod: {
     number: 'z.number()',
@@ -204,6 +243,12 @@ const LIBS: Record<Lib, LibDialect> = {
     dateInput: 'z.iso.datetime().transform((s) => new Date(s))',
     bigint: `z.string().regex(${BIGINT_DIGITS})`,
     unknown: 'z.unknown()',
+    json: 'z.json()',
+    jsonType: 'DrzlJsonValue',
+    jsonPreamble: JSON_TYPE_ALIAS,
+    binaryWire: 'z.base64().transform((s) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0)))',
+    binaryRead: 'z.instanceof(Uint8Array)',
+    binaryInsertType: 'Uint8Array',
     enum: (vals) => `z.enum([${vals.map(q).join(', ')}] as const)`,
     nullable: (b) => `${b}.nullable()`,
     optional: (b) => `${b}.optional()`,
@@ -226,6 +271,13 @@ const LIBS: Record<Lib, LibDialect> = {
     dateInput: 'v.pipe(v.string(), v.isoTimestamp(), v.transform((s) => new Date(s)))',
     bigint: `v.pipe(v.string(), v.regex(${BIGINT_DIGITS}))`,
     unknown: 'v.unknown()',
+    json: VALIBOT_JSON_CONST,
+    jsonType: `${VALIBOT_JSON_CONST}Type`,
+    jsonPreamble: VALIBOT_JSON_SOURCE,
+    binaryWire:
+      'v.pipe(v.string(), v.base64(), v.transform((s) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0))))',
+    binaryRead: 'v.instance(Uint8Array)',
+    binaryInsertType: 'Uint8Array',
     enum: (vals) => `v.picklist([${vals.map(q).join(', ')}] as const)`,
     nullable: (b) => `v.nullable(${b})`,
     optional: (b) => `v.optional(${b})`,
@@ -250,6 +302,11 @@ const LIBS: Record<Lib, LibDialect> = {
     dateInput: 'string.date.iso.parse',
     bigint: BIGINT_DIGITS,
     unknown: 'unknown',
+    json: 'number | object | string | boolean | null',
+    jsonType: 'string | number | boolean | null | object',
+    binaryWire: 'string.base64',
+    binaryRead: 'TypedArray.Uint8',
+    binaryInsertType: 'string',
     // The surrounding encode adds the quotes, so the union is built with the inner quoting
     // ArkType expects.
     enum: (vals) => vals.map((x) => `'${x.replace(/'/g, "\\'")}'`).join(' | '),
@@ -296,6 +353,10 @@ function keyColumns(table: Table): Column[] | null {
 function isWide(column: Column): boolean {
   if (column.enumValues && column.enumValues.length) return false;
   if (column.shape?.kind === 'tuple' || column.shape?.kind === 'numberObject') return false;
+  // A json or binary column states its wire form now, so what is left here is a column the
+  // analyzer could not type at all: a `customType` without `$type<T>()`.
+  if (column.shape?.kind === 'json' || column.shape?.kind === 'buffer') return false;
+  if (column.tsType === 'Uint8Array') return false;
   return !['number', 'string', 'boolean', 'Date', 'bigint'].includes(column.tsType);
 }
 
@@ -314,6 +375,12 @@ function baseExpr(column: Column, d: LibDialect, mode: Mode): string {
     case 'bigint':
       return d.bigint;
     default:
+      // Shape before type: the analyzer states `json` and `buffer` as shapes, and the tsType beside
+      // them is `any` or `Uint8Array`, neither of which says what crosses the wire.
+      if (column.shape?.kind === 'json') return d.json;
+      if (column.shape?.kind === 'buffer' || column.tsType === 'Uint8Array') {
+        return mode === 'select' ? d.binaryRead : d.binaryWire;
+      }
       return d.unknown;
   }
 }
@@ -369,9 +436,14 @@ function renderSchema(cols: Column[], lib: Lib, mode: Mode): string {
  * the schema. A Date column is `Date` on every mode (the input schema transforms the ISO
  * string); a bigint stays `string`, the wire form JSON can actually carry.
  */
-function fieldType(column: Column): string {
+function fieldType(column: Column, d: LibDialect, mode: Mode | 'params'): string {
   if (column.enumValues && column.enumValues.length) {
     return column.enumValues.map((x) => `'${x.replace(/'/g, "\\'")}'`).join(' | ');
+  }
+  // Shape before type, matching `baseExpr`: the field states the parsed side of what that emits.
+  if (column.shape?.kind === 'json') return d.jsonType;
+  if (column.shape?.kind === 'buffer' || column.tsType === 'Uint8Array') {
+    return mode === 'select' ? 'Uint8Array' : d.binaryInsertType;
   }
   switch (column.tsType) {
     case 'number':
@@ -390,8 +462,10 @@ function fieldType(column: Column): string {
 }
 
 /** The parsed type of a path parameter, matching `LibDialect.coerce`. */
-function paramFieldType(column: Column): string {
-  if (column.enumValues && column.enumValues.length) return fieldType(column);
+function paramFieldType(column: Column, d: LibDialect): string {
+  // A path segment is always a string, so nothing here reaches the shape branches; the dialect is
+  // threaded only because the enum arm shares `fieldType`.
+  if (column.enumValues && column.enumValues.length) return fieldType(column, d, 'params');
   switch (column.tsType) {
     case 'number':
       return 'number';
@@ -403,11 +477,11 @@ function paramFieldType(column: Column): string {
 }
 
 /** One class field line: quoted where the column name is not an identifier. */
-function classField(column: Column, mode: Mode | 'params'): string {
+function classField(column: Column, mode: Mode | 'params', d: LibDialect): string {
   const key = isIdent(column.name) ? column.name : `'${column.name.replace(/'/g, "\\'")}'`;
-  if (mode === 'params') return `  ${key}!: ${paramFieldType(column)};`;
+  if (mode === 'params') return `  ${key}!: ${paramFieldType(column, d)};`;
   const optional = mode === 'update' || (mode === 'insert' && (column.hasDefault || column.nullable));
-  const type = `${fieldType(column)}${column.nullable ? ' | null' : ''}`;
+  const type = `${fieldType(column, d, mode)}${column.nullable ? ' | null' : ''}`;
   return optional ? `  ${key}?: ${type};` : `  ${key}!: ${type};`;
 }
 
@@ -622,7 +696,7 @@ function renderTable(table: Table, opts: GenerateOptions): string {
     mode: Mode | 'params',
     schema: string
   ) => {
-    const fields = cols.map((c) => classField(c, mode)).join('\n');
+    const fields = cols.map((c) => classField(c, mode, d)).join('\n');
     return `/**\n * ${doc}\n */\nexport class ${name} {\n${fields}\n\n  static readonly schema: StandardSchema<${name}> = ${schema};\n}`;
   };
 
@@ -682,10 +756,15 @@ function renderTable(table: Table, opts: GenerateOptions): string {
       `// DRZL could not derive one from the schema, so these DTOs accept any value there.\n`
     : '';
 
+  // The json value space, emitted once into any module that references it. Decided against the
+  // finished text rather than from the column list, the same rule the imports follow.
+  const jsonPreamble =
+    d.jsonPreamble && decided.includes(d.jsonType.split(' ')[0]!) ? `\n${d.jsonPreamble}` : '';
+
   return `// Generated by @drzl/generator-nestjs
 // DTOs for table: ${table.name}
 ${wideNote}${imports.join('\n')}
-
+${jsonPreamble}
 ${decided}
 `;
 }

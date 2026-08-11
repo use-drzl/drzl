@@ -396,6 +396,31 @@ describe.each(['valibot', 'arktype'] as const)('the %s app, the shared policy ro
     }
   });
 
+  /**
+   * The two columns that used to be `z.unknown()` here.
+   *
+   * They are not the same kind of change and it is worth being exact. A body has been through
+   * `JSON.parse`, so a json column's value is a json value by construction and no HTTP request can
+   * tell `z.json()` from `z.unknown()` at runtime: that half is won at the type level, where the
+   * controller now receives a json value rather than `unknown`. The binary column is the half that
+   * does change behaviour, because a `Uint8Array` cannot cross JSON at all and base64 can be got
+   * wrong.
+   */
+  it('takes a json value through, on every shape a body can carry', async () => {
+    const base = { at: '2026-01-02T03:04:05.000Z', flag: true, big: '1', point: [1, 2], note: null };
+    for (const prefs of [{ a: [1, 'two', null] }, [1, 2], 'a string', 7, true, null]) {
+      const res = await req(lib, 'POST', '/events', { ...base, prefs });
+      expect(res.status, JSON.stringify(prefs)).toBe(201);
+    }
+  });
+
+  it('decodes a base64 blob rather than accepting anything', async () => {
+    const base = { at: '2026-01-02T03:04:05.000Z', flag: true, big: '1', point: [1, 2], note: null };
+    expect((await req(lib, 'POST', '/events', { ...base, blob: 'aGVsbG8=' })).status).toBe(201);
+    expect((await req(lib, 'POST', '/events', { ...base, blob: 'not base64!!' })).status).toBe(400);
+    expect((await req(lib, 'POST', '/events', { ...base, blob: 42 })).status).toBe(400);
+  });
+
   it('holds the Date and bigint wire shapes', async () => {
     const good = await req(lib, 'POST', '/events', {
       at: '2026-01-02T03:04:05.000Z',

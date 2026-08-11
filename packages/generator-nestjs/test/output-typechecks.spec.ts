@@ -122,7 +122,8 @@ describe('the emitted tree', () => {
   /**
    * The classes flow out of the barrel at their real member types: an enum column is its
    * members, not a bare string, or the literal below would not typecheck. The events entity
-   * pins the wire decisions: `at` is a Date, `big` is a string.
+   * pins the wire decisions: `at` is a Date, `big` is a string, `prefs` is a json value rather
+   * than `unknown`, and `blob` is real bytes on the read side however base64 arrived.
    */
   it('exports entity and DTO types a consumer can build values against', async () => {
     const probe = `import { CreateUsersDto, UsersEntity, EventsEntity } from './index.js';
@@ -135,6 +136,8 @@ const event: EventsEntity = {
   flag: true,
   big: '9007199254740993',
   point: [1, 2],
+  prefs: { nested: [1, 'two', null] },
+  blob: new Uint8Array([1, 2, 3]),
   note: null,
 };
 export const values = [row, create, event] as const;
