@@ -157,21 +157,27 @@ verdicts through `useForm` and `new FormApi`:
 
 | combination | tsc verdict |
 | ----------- | ----------- |
-| zod insert schema, form-level, wire-typed defaults (`publishedAt: string`) | **rejected**: schema input has `publishedAt: unknown` (the timestamp preprocess), not assignable |
+| zod insert schema, form-level, wire-typed defaults (`publishedAt: string`) | **rejected**: the constraint wants the schema's input to *be* `{ publishedAt: string }`, and the schema's is `string \| number \| Date`. A wider input is not assignable either: `StandardSchemaV1`'s input sits in a property, so the check is invariant rather than contravariant |
 | valibot insert schema, same defaults | **rejected**: input wants `publishedAt: string \| number \| Date` |
 | arktype insert schema, same defaults | **compiles, for the wrong reason**: a `Type` is callable with an `unknown` parameter, so it satisfies the *function* branch of the validator union; runtime still takes the standard-schema path, but `errorMap.onChange` is then typed as `ArkErrors \| <output>` while the runtime value is the path-keyed record below |
 | zod update schema on a loaded full row (edit form) | **rejected**: all-optional input not assignable to the row type |
 | any schema, no `defaultValues` | compiles, and `form.state.values` is `unknown`: **no inference flows from the schema** |
-| `defaultValues` cast to the schema's input type (`z.input<...>` / `v.InferInput<...>` / `.inferIn`) | compiles with no validator cast; the cost: zod's timestamp state becomes `unknown` (`.length` no longer compiles); valibot and arktype give `string \| number \| Date` |
+| `defaultValues` cast to the schema's input type (`z.input<...>` / `v.InferInput<...>` / `.inferIn`) | compiles with no validator cast; the timestamp state is `string \| number \| Date` in all three libraries, so a keystroke handler narrows rather than casting. zod used to be the outlier here, reporting `unknown`, until its date columns stopped being a `z.preprocess` |
 | validator cast one line: `InsertusersSchema as unknown as StandardSchemaV1<typeof defaults, unknown>` | compiles, keeps wire-typed state, and `errorMap.onSubmit?.['publishedAt']?.[0]?.message` stays typed (`StandardSchemaV1Issue[]` per key) |
 | field-level `InsertusersSchema.shape.age` on the `age` field | compiles; `field.state.meta.errors[0]?.message` is issue-typed |
 | field-level `.entries.age` (valibot), `.get('age')` (arktype) | compiles, both |
-| field-level `InsertusersSchema.shape.publishedAt` on a string-typed field | **rejected**: `ZodPreprocess<ZodDate>` input is `unknown`, not `StandardSchemaV1<string, unknown>` |
+| field-level `InsertusersSchema.shape.publishedAt` on a string-typed field | **rejected**: the field's input is `string \| number \| Date` and the constraint wants `StandardSchemaV1<string, unknown>` exactly, the same invariance as the first row |
 
 The cast recipe in the wiring above is the honest one: it keeps ordinary wire-typed state,
 keeps issue-typed error maps, and changes nothing at runtime. Casting `defaultValues` to the
-schema input instead is legal but taxes every keystroke handler with `unknown` (zod) or a
-three-way union (valibot, arktype).
+schema input instead is legal, and now costs the same in all three libraries: every keystroke
+handler sees `string | number | Date` and narrows.
+
+Worth being plain about why the cast is still here. It is not that the schema's input is vague:
+DRZL's date columns state theirs. It is that TanStack's constraint holds the input type in a
+property rather than in a parameter, so the check is invariant, and a schema whose input is wider
+than the form's state is rejected exactly as one whose input is narrower would be. No schema
+shape removes it; this was measured both ways rather than assumed.
 
 ## Where errors land
 

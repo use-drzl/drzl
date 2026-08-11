@@ -444,9 +444,25 @@ function zodExprForColumn(
       // `'12.5'`, `'0101'` and `'010'` were all real dates here and Postgres refuses all three.
       // A string that does not match `COERCIBLE_DATE_STRING` is passed through untouched and the
       // `z.date()` behind it turns it away; see that constant for what was measured and why.
+      // A union of the three input types rather than a `z.preprocess`, which accepts anything and
+      // therefore has an input type of `unknown`. That `unknown` was not a detail: it is what
+      // TanStack Form rejects when a form's own state is wire-typed, and the documented workaround
+      // was `InsertusersSchema as unknown as StandardSchemaV1<...>`, a cast in a user's code caused
+      // by a schema that would not say what it takes. The union says it: `Date | number | string`.
+      //
+      // Behaviour is unchanged, measured over the same values this comment already named plus the
+      // edges a rewrite could plausibly move: a real Date, an ISO string, a date-only string, an
+      // epoch number, `0`, `'12.5'`, `'0101'`, `'010'`, `'1'`, `'hello'`, `null`, `true`, `[1, 2]`,
+      // `undefined`, `NaN`, an Invalid Date, a string that parses to an Invalid Date, and a plain
+      // object. Eighteen cases, identical verdicts.
+      //
+      // The `.pipe(z.date())` on each transform arm is what keeps the last two identical: without
+      // it a string the pattern admits but `new Date` cannot read would come out as an Invalid
+      // Date, where the `z.date()` behind the old preprocess refused it.
       const coerced =
-        `z.preprocess((v) => (typeof v === 'number' || (typeof v === 'string' && ` +
-        `new RegExp(${JSON.stringify(COERCIBLE_DATE_STRING)}).test(v)) ? new Date(v) : v), z.date())`;
+        `z.union([z.date(), z.number().transform((v) => new Date(v)).pipe(z.date()), ` +
+        `z.string().regex(new RegExp(${JSON.stringify(COERCIBLE_DATE_STRING)}))` +
+        `.transform((v) => new Date(v)).pipe(z.date())])`;
       if (coerceDates === 'all') return coerced;
       if (coerceDates === 'none') return 'z.date()';
       // 'input'
