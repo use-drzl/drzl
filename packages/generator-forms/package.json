@@ -43,7 +43,7 @@
     "@drzl/validation-core": "workspace:^"
   },
   "devDependencies": {
-    "@hookform/resolvers": "^5.7.1",
+    "@hookform/resolvers": ">=5.0.0 <=5.4.0",
     "react-hook-form": "^7.85.0",
     "@tanstack/form-core": "^1.33.5",
     "tsup": "^8.5.1",

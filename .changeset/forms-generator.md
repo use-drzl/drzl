@@ -48,3 +48,26 @@ that term belongs to it.
 
 The package spends this release in `optionalDependencies` of `@drzl/cli`, as every new generator
 does.
+
+**`@hookform/resolvers` is capped at 5.4.0**, and that is measured rather than cautious. From 5.4.1
+it declares `@typeschema/main` as an *optional peer*, npm resolves optional peers, and that chain
+pins `zod ^3.23.8` and `valibot ^0.39.0`. DRZL emits zod 4 and valibot 1, so a plain `npm install`
+into a project carrying either fails outright:
+
+```
+npm error Conflicting peer dependency: zod@3.25.76
+npm error   peerOptional zod@"^3.23.8" from @typeschema/zod@0.14.0
+npm error     peerOptional @typeschema/zod@"0.14.0" from @typeschema/main@0.14.1
+npm error       peerOptional @typeschema/main@">=0.13.7" from @hookform/resolvers@5.4.3
+```
+
+Reproduced in the packed gate's consumer tree, which is a real `npm install` for exactly this kind
+of thing. 5.4.0 and earlier declare no `@typeschema` peer and install cleanly, and
+`standardSchemaResolver` has been there since 5.0.0, so the cap costs nothing. The generator's suite
+asserts it against the *installed* copy rather than against the range string, so the day a release
+drops that peer the bound can move and a test says so.
+
+The consumer fixture's install also pins `valibot@^1.1.0` rather than leaving it bare. With no
+constraint npm was free to resolve valibot down to 0.39.0 to satisfy that optional peer, which then
+conflicted with `@drzl/generator-valibot`'s own `valibot >=1.0.0`. Stating the version the tree
+already requires stops npm solving the problem by going backwards.

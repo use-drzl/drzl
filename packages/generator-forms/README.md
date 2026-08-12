@@ -10,7 +10,7 @@ Part of [DRZL](https://github.com/use-drzl/drzl). Full documentation:
 
 ```bash
 npm install -D @drzl/generator-forms
-npm install react-hook-form @hookform/resolvers   # or @tanstack/react-form
+npm install react-hook-form "@hookform/resolvers@>=5.0.0 <=5.4.0"   # or @tanstack/react-form
 ```
 
 ## Use
@@ -26,6 +26,10 @@ export default {
   ],
 } as const;
 ```
+
+The cap on `@hookform/resolvers` is measured: from 5.4.1 it declares `@typeschema/main` as an
+optional peer, whose chain pins zod 3 and valibot 0.39, so `npm install` fails beside the zod 4 and
+valibot 1 DRZL emits. See the docs for the full trace.
 
 ## What it does
 

@@ -20,6 +20,36 @@ expose `~standard` can drive a TanStack one. Asking for the TanStack target with
 is refused rather than emitted, because an options object naming a schema the form cannot read is
 silently ignored at runtime.
 
+## The @hookform/resolvers version matters
+
+```bash
+npm install "@hookform/resolvers@>=5.0.0 <=5.4.0"
+```
+
+That cap is not caution about a number. From **5.4.1** onward `@hookform/resolvers` declares
+`@typeschema/main` as an *optional peer*, npm resolves optional peers, and that chain pins old
+validators:
+
+```
+@hookform/resolvers 5.4.3
+  peerOptional @typeschema/main >=0.13.7
+    peerOptional @typeschema/zod 0.14.0      -> peerOptional zod ^3.23.8
+    peerOptional @typeschema/valibot 0.14.0  -> peerOptional valibot ^0.39.0
+```
+
+DRZL emits zod 4 and valibot 1, so a plain `npm install` into a project carrying either fails:
+
+```
+npm error Conflicting peer dependency: zod@3.25.76
+npm error   peerOptional zod@"^3.23.8" from @typeschema/zod@0.14.0
+```
+
+5.4.0 and earlier declare no `@typeschema` peer and install cleanly. `standardSchemaResolver` has
+been there since 5.0.0, so the cap costs nothing this generator emits. pnpm and yarn resolve
+optional peers differently and may not hit it; the cap is what makes `npm install` work for
+everyone. The generator's suite pins the range, so the day a release drops that peer the bound can
+move and a test says so.
+
 ## The field metadata, which is the point
 
 ```ts
@@ -72,7 +102,7 @@ text the database accepts on every multi-byte character.
 
 ```bash
 npm install -D @drzl/generator-forms
-npm install react-hook-form @hookform/resolvers   # or @tanstack/react-form
+npm install react-hook-form "@hookform/resolvers@>=5.0.0 <=5.4.0"   # or @tanstack/react-form
 ```
 
 ```ts
