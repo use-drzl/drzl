@@ -1,6 +1,7 @@
 import {
   pgTable, pgSchema, pgEnum, text, integer, smallint, bigint, varchar, char, timestamp, date,
   boolean, numeric, doublePrecision, uuid, json, jsonb, index, unique, foreignKey, primaryKey,
+  pgPolicy,
 } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
 
@@ -83,3 +84,37 @@ export const notes = app.table('notes', {
   id: integer('id').primaryKey(),
   body: text('body').notNull(),
 });
+
+// Row-level security, which is the only way `policies` and `rlsEnabled` are anything but empty.
+// Both fields are read off the table rather than off a column, and a comparison of two empty
+// values proves nothing, which is what the vacuity rule in `cross-major.ts` says out loud.
+//
+// One table carries both signals on purpose. `rlsEnabled` is excluded from `meaningful` when it is
+// `false`, so only a table calling `.enableRLS()` exercises it, and the policies here are written
+// to cover every optional field the analyzer normalises: `as` present on one and absent on the
+// other, `to` present on one and absent on the other, and one policy carrying both expressions
+// where the other carries only its `using`.
+//
+// Measured 2026-08-12 on both majors: `pgPolicy` and `pgRole` are exported by each, the policy
+// objects carry the same seven own keys, and `drizzle:EnableRLS` reads the same. So this compares
+// two descriptions that should agree rather than two that were never going to.
+export const guarded = pgTable(
+  'guarded',
+  {
+    id: integer('id').primaryKey(),
+    ownerId: integer('owner_id').notNull(),
+  },
+  (t) => [
+    pgPolicy('guarded_owner_reads', {
+      for: 'select',
+      to: 'authenticated',
+      using: sql`${t.ownerId} = 1`,
+    }),
+    pgPolicy('guarded_owner_writes', {
+      as: 'permissive',
+      for: 'update',
+      using: sql`${t.ownerId} = 1`,
+      withCheck: sql`${t.ownerId} = 1`,
+    }),
+  ]
+).enableRLS();
