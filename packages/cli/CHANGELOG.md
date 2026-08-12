@@ -1,5 +1,245 @@
 # @drzl/cli
 
+## 4.37.0
+
+### Minor Changes
+
+- d702af3: Add `@drzl/generator-forms`, which emits form resolvers and per-field input metadata for
+  [react-hook-form](https://react-hook-form.com) and [TanStack Form](https://tanstack.com/form).
+
+  ```ts
+  generators: [
+    { kind: 'zod', path: './src/validators/zod' },
+    { kind: 'forms', path: './src/forms', target: 'react-hook-form' },
+  ];
+  ```
+
+  **The two libraries want different things**, measured against `react-hook-form` 7.85.0,
+  `@hookform/resolvers` 5.7.1 and `@tanstack/react-form` 1.33.5. react-hook-form needs a resolver, and
+  `standardSchemaResolver` serves zod, valibot and arktype with one import while TypeBox and Effect
+  have dedicated ones in the same package. TanStack Form needs none: a Standard Schema goes straight
+  into `validators: { onChange: schema }`. Asking for the TanStack target with TypeBox or Effect is
+  refused rather than emitted, because an options object naming a schema the form cannot read is
+  silently ignored at runtime.
+
+  **The field metadata is the half that is hard to get anywhere else**, and the reason it needed a new
+  shared helper. `Column.min` and `Column.max` are the column's _type_ range and a `CHECK` does not
+  narrow them: measured, a column with `check('adult', age >= 18)` still reports
+  `min: '-2147483648'`. A form generator reading the column directly would put that on an input for a
+  column the database restricts to 18, which is worse than emitting nothing, because it looks like a
+  bound and the schema beside it would reject what the input accepted.
+
+  So `fieldFacts` is added to `@drzl/validation-core`, beside `classifyTableChecks` and
+  `tableConstraints`, performing the same fold every validation generator already does privately. The
+  emitted `min` on an input and the emitted `.gte()` in the schema now come from one place.
+
+  The same holds for length: `varchar(40)` with `CHECK (length(handle) <= 20)` reports
+  `maxLength: 20`, and an unbounded `text` column with only a length check gets a `maxLength` its type
+  never declared. A byte-count check is not read, because `octet_length` is not a character count and
+  `maxlength` on an input counts characters.
+
+  `select` is off by default: a select schema describes a row that came out of the database, so
+  validating user input against it asks for the generated columns a form never supplies.
+
+  `@drzl/generator-next` drops `forms` from its keywords. `package-metadata.spec.ts` refuses a package
+  that describes itself with another package's name, and now that a dedicated forms generator exists,
+  that term belongs to it.
+
+  The package spends this release in `optionalDependencies` of `@drzl/cli`, as every new generator
+  does.
+
+  **`@hookform/resolvers` is capped at 5.4.0**, and that is measured rather than cautious. From 5.4.1
+  it declares `@typeschema/main` as an _optional peer_, npm resolves optional peers, and that chain
+  pins `zod ^3.23.8` and `valibot ^0.39.0`. DRZL emits zod 4 and valibot 1, so a plain `npm install`
+  into a project carrying either fails outright:
+
+  ```
+  npm error Conflicting peer dependency: zod@3.25.76
+  npm error   peerOptional zod@"^3.23.8" from @typeschema/zod@0.14.0
+  npm error     peerOptional @typeschema/zod@"0.14.0" from @typeschema/main@0.14.1
+  npm error       peerOptional @typeschema/main@">=0.13.7" from @hookform/resolvers@5.4.3
+  ```
+
+  Reproduced in the packed gate's consumer tree, which is a real `npm install` for exactly this kind
+  of thing. 5.4.0 and earlier declare no `@typeschema` peer and install cleanly, and
+  `standardSchemaResolver` has been there since 5.0.0, so the cap costs nothing. The generator's suite
+  asserts it against the _installed_ copy rather than against the range string, so the day a release
+  drops that peer the bound can move and a test says so.
+
+  The consumer fixture's install also pins `valibot@^1.1.0` rather than leaving it bare. With no
+  constraint npm was free to resolve valibot down to 0.39.0 to satisfy that optional peer, which then
+  conflicted with `@drzl/generator-valibot`'s own `valibot >=1.0.0`. Stating the version the tree
+  already requires stops npm solving the problem by going backwards.
+
+- 8f84105: Add `@drzl/generator-openapi-fetch`, which emits a typed [openapi-fetch](https://openapi-ts.dev/openapi-fetch/)
+  client from your Drizzle schema.
+
+  ```ts
+  generators: [
+    { kind: 'zod', path: './src/validators/zod' },
+    { kind: 'openapi-fetch', path: './src/api/client' },
+  ];
+  ```
+
+  ```ts
+  const { data, error } = await client.GET('/users/{id}', { params: { path: { id: 1 } } });
+  if (error)
+    console.error(error.message); //  typed, because the 404 and 400 are declared
+  else console.log(data.email); //             typed from the select schema
+  ```
+
+  **The `paths` type is derived from the document DRZL already emits**, by calling the same builder
+  `@drzl/generator-json-schema` uses and walking its output rather than deriving the routes a second
+  time. A path that exists in one exists in the other by construction, which is the lesson the
+  constraint drift report and its SQL emitter recorded.
+
+  The path parameter is the table's real primary key, so an integer key is `number` and a text key is
+  `string`, and a table with no primary key gets no single-row path at all. Bodies are the insert,
+  update and select types a validation generator already exports.
+
+  **The non-2xx responses are carried, and that is not cosmetic.** Measured against `openapi-fetch`
+  0.17.0: on a `paths` declaring only its `200`, `result.error?.message` is a type error because there
+  is no shape to read; with the `404` and `400` the document already declares, it is typed and needs
+  no cast.
+
+  **The emitted type is not `openapi-typescript`'s, on purpose.** Three shapes were compiled under
+  `strict` and `nodenext`, each with canaries for an undeclared path, an undeclared verb, a wrong
+  path-parameter type and a missing required parameter. All three type identically, and
+  `openapi-typescript`'s own output is 426 lines for a five-path document where the shape emitted here
+  is a fraction of that. Nothing about the typing is weaker for it.
+
+  **One limitation is asserted rather than papered over.** An excess body field compiles:
+  `{ email: 'a@b.c', nope: 1 }` is accepted while `{ email: 7 }` is refused, because TypeScript's
+  excess-property check is lost through openapi-fetch's generic `init` parameter.
+  `openapi-typescript`'s output behaves identically, so nothing the generator emits causes it or can
+  fix it. The suite asserts the limitation, so a release closing it fails a test and the documentation
+  gets corrected rather than quietly going stale.
+
+  Both this generator and `json-schema` read a `document` option and never see each other's config, so
+  they have to be given the same value. `validationStatus` is the one that bites: it lands in the
+  emitted document and in the client's response keys.
+
+  The package spends this release in `optionalDependencies` of `@drzl/cli`, as every new generator
+  does: a package name that has never existed cannot publish through npm's trusted-publisher flow, and
+  naming it as a hard dependency in the release that introduces it breaks `npm i @drzl/cli` for
+  everyone until the first publish lands.
+
+- 331aa82: Read `pgPolicy` in the analyzer, and add `drzl doctor --policies`, which reports the row-level
+  security policies each table carries and what they refuse.
+
+  ```bash
+  drzl doctor --policies
+  ```
+
+  The analyzer read none of this before. A policy names no columns, so it fell through the
+  extra-config traversal's column guard and was dropped in silence, and every generated service was
+  built from a schema DRZL believed had no security rules at all. `Table` now carries `policies` and
+  `rlsEnabled`, including policies attached with `pgPolicy(...).link(table)`, which leave no trace on
+  the table they link to and are found as module exports instead.
+
+  **The headline is a table that returns nothing forever.** With row-level security on and no policy
+  granting a command, that command does not half-work: the read returns zero rows and the write
+  raises `new row violates row-level security policy`. The generated service over it still compiles
+  and its return type still promises rows. Measured against Postgres 18.3 through PGlite: on a table
+  with RLS enabled and no policies, the owner saw two rows, a plain role saw none, and its insert was
+  refused.
+
+  **Three readings this deliberately does not make**, each settled by running it rather than by
+  reading the declaration:
+
+  - **A table with policies and no `.enableRLS()` is not unprotected.** `drizzle:EnableRLS` is
+    independent of the policies, and declaring any policy makes `drizzle-kit` emit
+    `ALTER TABLE ... ENABLE ROW LEVEL SECURITY` on its own. A report keyed on that flag would have
+    told people their security rules were inert while Postgres was enforcing them.
+  - **A write policy with no `WITH CHECK` refuses writes; it does not wave them through.** A lone
+    `FOR INSERT` policy carrying no `WITH CHECK` rejected every insert. This is reported as a door
+    that is shut, which is the opposite of what the obvious reading gives.
+  - **`FOR UPDATE` and `FOR ALL` with a `USING` and no `WITH CHECK` are not defects.** Both fall back
+    to the `USING` expression for the new row: moving a row out of the `USING` set under
+    `FOR UPDATE ... USING (owner_id = 1)` raised the same violation, while the identical policy with
+    `WITH CHECK (true)` allowed it. Flagging those would be a false positive on the most ordinary
+    policy anybody writes.
+
+  A `to` is normalised to role names before it is reported. Drizzle takes a bare string, a `pgRole`
+  object or an array mixing the two, and the middle one stringifies to `[object Object]` in the one
+  field of a security rule nobody can afford to misread.
+
+  The report ends with the fact no schema change fixes: **no generator emits policy awareness**, so a
+  generated read path describes rows the caller may not be allowed to see. That is listed rather than
+  counted as a finding, so `--strict` cannot fail a pipeline nobody can make pass.
+
+  `--constraints` and `--policies` are separate reports and passing both is an error rather than a run
+  that silently picks one. Non-Postgres dialects carry no `rlsEnabled` at all, rather than `false`,
+  so they are absent from the report instead of listed as having row-level security switched off.
+
+  `doctor`'s existing output is unchanged when neither flag is passed.
+
+- 8a1798e: Add `meta: { registryIds: true }` to the zod generator, which gives each emitted schema an `id` and
+  so puts it in zod's registry under a name.
+
+  ```ts
+  { kind: 'zod', path: './src/validators/zod', meta: { registryIds: true } }
+  ```
+
+  Two things follow, both measured against zod 4.4.3. A schema that references another emits
+  `$ref: '#/$defs/usersSelect'` rather than a second copy of it, and the whole registry converts in one
+  call keyed by those names:
+
+  ```ts
+  z.toJSONSchema(z.globalRegistry);
+  // { schemas: { usersInsert: { … }, usersUpdate: { … }, usersSelect: { … } } }
+  ```
+
+  which is the shape an OpenAPI `components.schemas` block wants. That is what "self-describing"
+  means here: a consumer holding the emitted modules can produce a named document without being told
+  what anything is called.
+
+  **The id is built from the qualified table name**, through a new `metaSchemaId` in
+  `@drzl/validation-core`, so `reporting.users` becomes `reporting_usersSelect` while a table in the
+  default schema keeps the short `usersSelect`. That is not tidiness. Two schemas sharing an id do not
+  report the collision: measured, `z.toJSONSchema(registry)` keeps the last one and **silently drops
+  the other**. Two tables, one entry, no warning, and nothing a consumer can check. Any schema
+  declaring two SQL schemas can produce that collision, because `table.name` is the bare name.
+
+  It is a separate flag from `meta: true` because it is the only metadata key with a failure mode.
+  Everything else `meta` writes is inert data a consumer may ignore.
+
+  Off by default, so no existing output changes.
+
+### Patch Changes
+
+- 6a799ce: Promote the six remaining generators from `optionalDependencies` to `dependencies`:
+  `@drzl/generator-h3`, `@drzl/generator-effect-http`, `@drzl/generator-ts-rest`,
+  `@drzl/generator-elysia`, `@drzl/generator-seed` and `@drzl/generator-fast-check`.
+
+  Each spent its introducing release in the optional field, because a package name that has never
+  existed cannot publish through npm's trusted-publisher OIDC flow, and naming it as a hard dependency
+  in the release that introduces it breaks `npm i @drzl/cli` for everyone until the first publish
+  lands. That is not hypothetical: 4.13.0 shipped that way and returned a 404 for every install. All
+  six were published by hand on 2026-08-12 and are on the registry at the same versions this workspace
+  carries, so the exemption is over.
+
+  An optional dependency is one an installer may skip without saying so: `npm install --omit=optional`
+  resolves it to nothing and exits 0. Leaving them there would have made six generator kinds silently
+  absent for anyone who passes that flag.
+
+  `@drzl/cli` now has no `optionalDependencies` block at all, `AWAITING_FIRST_PUBLISH` in
+  `packages/cli/test/generator-registry.spec.ts` is empty again, and
+  `scripts/verify/stages/33-registry-deps.sh` is what reported the promotion was due, by failing on a
+  generator that is optional _and_ on the registry.
+
+  Three comments that carried a count of how many generators were hard dependencies are rewritten to
+  state the property instead. Each had been falsified by the next batch of generators, twice, and the
+  manifest test is where that quantity is actually checked.
+
+- Updated dependencies [d702af3]
+- Updated dependencies [331aa82]
+- Updated dependencies [8a1798e]
+  - @drzl/validation-core@3.23.0
+  - @drzl/generator-next@0.1.1
+  - @drzl/analyzer@1.22.0
+  - @drzl/generator-zod@3.22.0
+
 ## 4.36.0
 
 ### Minor Changes

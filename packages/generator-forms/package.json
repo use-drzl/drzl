@@ -1,6 +1,6 @@
 {
   "name": "@drzl/generator-forms",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": false,
   "license": "Apache-2.0",
   "description": "Generate react-hook-form resolvers, TanStack Form options and per-field input metadata from a Drizzle schema, with the min, max, maxlength and pattern the column really has.",
