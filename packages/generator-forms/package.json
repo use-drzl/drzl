@@ -1,15 +1,16 @@
 {
-  "name": "@drzl/generator-next",
+  "name": "@drzl/generator-forms",
   "version": "0.1.0",
   "private": false,
   "license": "Apache-2.0",
-  "description": "Generate Next.js server actions from a Drizzle schema, one 'use server' module per table, with the FormData readers that turn what a browser posts into what the schemas accept.",
+  "description": "Generate react-hook-form resolvers, TanStack Form options and per-field input metadata from a Drizzle schema, with the min, max, maxlength and pattern the column really has.",
   "keywords": [
     "drizzle",
     "drizzle-orm",
-    "next",
-    "nextjs",
-    "server-actions",
+    "react-hook-form",
+    "tanstack-form",
+    "forms",
+    "validation",
     "codegen"
   ],
   "type": "module",
@@ -42,10 +43,11 @@
     "@drzl/validation-core": "workspace:^"
   },
   "devDependencies": {
-    "arktype": "^2.1.29",
+    "@hookform/resolvers": ">=5.0.0 <=5.4.0",
+    "react-hook-form": "^7.85.0",
+    "@tanstack/form-core": "^1.33.5",
     "tsup": "^8.5.1",
     "typescript": "^5.9.3",
-    "valibot": "^1.1.0",
     "zod": "^4.4.3"
   },
   "engines": {
@@ -59,7 +61,7 @@
   "repository": {
     "type": "git",
     "url": "https://github.com/use-drzl/drzl",
-    "directory": "packages/generator-next"
+    "directory": "packages/generator-forms"
   },
   "funding": {
     "type": "github",

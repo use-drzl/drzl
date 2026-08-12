@@ -39,3 +39,4 @@ allowBuilds:
 
 minimumReleaseAgeExclude:
   - '@ai-sdk/provider-utils@5.0.26'
+  - '@tanstack/form-core@1.33.5'

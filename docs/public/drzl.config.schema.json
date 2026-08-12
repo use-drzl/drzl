@@ -123,6 +123,7 @@
               "tanstack-start",
               "ts-rest",
               "openapi-fetch",
+              "forms",
               "seed",
               "fast-check",
               "service",
@@ -354,8 +355,22 @@
             "enum": [
               "draft-2020-12",
               "openapi-3.1",
-              "openapi-3.0"
+              "openapi-3.0",
+              "react-hook-form",
+              "tanstack-form",
+              "both"
             ]
+          },
+          "modes": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "insert",
+                "update",
+                "select"
+              ]
+            }
           },
           "components": {
             "type": "boolean"

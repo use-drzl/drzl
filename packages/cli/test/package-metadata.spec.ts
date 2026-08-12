@@ -96,6 +96,7 @@ it('found every publishable package', () => {
     'generator-express',
     'generator-fast-check',
     'generator-fastify',
+    'generator-forms',
     'generator-graphql',
     'generator-h3',
     'generator-hono',

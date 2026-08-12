@@ -225,6 +225,7 @@ export default {
           { text: 'Effect HttpApi', link: '/generators/effect-http' },
           { text: 'ts-rest', link: '/generators/ts-rest' },
           { text: 'openapi-fetch', link: '/generators/openapi-fetch' },
+          { text: 'forms', link: '/generators/forms' },
           { text: 'Elysia', link: '/generators/elysia' },
         ],
       },

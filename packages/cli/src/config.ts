@@ -121,6 +121,7 @@ export const GeneratorKindSchema = z.enum([
   'tanstack-start',
   'ts-rest',
   'openapi-fetch',
+  'forms',
   'seed',
   'fast-check',
   'service',
@@ -374,7 +375,30 @@ export const GeneratorSchema = z.object({
    * in JSON Schema, it is ignored, so emitting the wrong dialect produces a document that
    * validates and then accepts the values the constraints exist to reject.
    */
-  target: z.enum(['draft-2020-12', 'openapi-3.1', 'openapi-3.0']).optional(),
+  /**
+   * The `forms` generator reads the same key with its own values: which form library to emit for,
+   * defaulting to `react-hook-form`. One key, two kinds, as `document` already is for
+   * `json-schema` and `openapi-fetch`. A value from the wrong set on the wrong kind is reported
+   * by that generator rather than accepted, since neither shares a value with the other.
+   */
+  target: z
+    .enum([
+      'draft-2020-12',
+      'openapi-3.1',
+      'openapi-3.0',
+      'react-hook-form',
+      'tanstack-form',
+      'both',
+    ])
+    .optional(),
+  /**
+   * Which operations get a resolver. `forms` only, defaults to insert and update.
+   *
+   * `select` is offered because a filter form is a form, but it is off by default: a select
+   * schema describes a row that came out of the database, so validating user input against it
+   * asks for the generated columns a form never supplies.
+   */
+  modes: z.array(z.enum(['insert', 'update', 'select'])).optional(),
   /** Also emit `components.ts` for the `json-schema` generator, ready for an OpenAPI document. */
   components: z.boolean().optional(),
   /**
@@ -709,6 +733,7 @@ const ROUTER_KINDS = new Set([
   'ts-rest',
   'elysia',
   'openapi-fetch',
+  'forms',
 ]);
 
 /**
@@ -907,6 +932,11 @@ export function tsRestOutDir(g: { path?: string }, cfg: { outDir: string }): str
  * document it describes rather than inside a router's output directory.
  */
 export function openApiFetchOutDir(g: { path?: string }, cfg: { outDir: string }): string {
+  return g.path ?? cfg.outDir;
+}
+
+/** Where the form modules go. The same rule again: it writes a barrel of its own. */
+export function formsOutDir(g: { path?: string }, cfg: { outDir: string }): string {
   return g.path ?? cfg.outDir;
 }
 
@@ -1565,6 +1595,7 @@ export function computeGeneratorOutputDirs(cfg: DrzlConfig, cwd = process.cwd())
     if (g.kind === 'ts-rest') dirs.add(abs(tsRestOutDir(g, cfg)));
     if (g.kind === 'elysia') dirs.add(abs(elysiaOutDir(g, cfg)));
     if (g.kind === 'openapi-fetch') dirs.add(abs(openApiFetchOutDir(g, cfg)));
+    if (g.kind === 'forms') dirs.add(abs(formsOutDir(g, cfg)));
     if (g.kind === 'seed') dirs.add(abs(seedOutDir(g, cfg)));
     if (g.kind === 'fast-check') dirs.add(abs(fastCheckOutDir(g, cfg)));
     if (g.kind === 'service') dirs.add(abs(g.path ?? 'src/services'));

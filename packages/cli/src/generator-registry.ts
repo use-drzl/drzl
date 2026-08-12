@@ -25,6 +25,7 @@ import {
   effectHttpOutDir,
   tsRestOutDir,
   openApiFetchOutDir,
+  formsOutDir,
   elysiaOutDir,
   seedOutDir,
   fastCheckOutDir,
@@ -51,6 +52,7 @@ import { aiOptions } from './ai-options.js';
 import { effectHttpOptions } from './effect-http-options.js';
 import { tsRestOptions } from './ts-rest-options.js';
 import { openApiFetchOptions } from './openapi-fetch-options.js';
+import { formsOptions } from './forms-options.js';
 import { elysiaOptions } from './elysia-options.js';
 import { seedOptions } from './seed-options.js';
 import { fastCheckOptions } from './fast-check-options.js';
@@ -285,6 +287,14 @@ export const GENERATORS: readonly GeneratorEntry[] = [
     construct: (m, analysis) => new m.OpenApiFetchGenerator(analysis),
     outputDir: (g, cfg) => openApiFetchOutDir(g, cfg),
     options: (g, cfg) => openApiFetchOptions(g, cfg),
+  },
+  {
+    kind: 'forms',
+    specifier: '@drzl/generator-forms',
+    load: () => import('@drzl/generator-forms'),
+    construct: (m, analysis) => new m.FormsGenerator(analysis),
+    outputDir: (g, cfg) => formsOutDir(g, cfg),
+    options: (g, cfg) => formsOptions(g, cfg),
   },
   {
     kind: 'elysia',

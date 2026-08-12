@@ -240,11 +240,11 @@ the gate compares against every run and a stale line fails it. Nothing else here
 adding a generator.
 
 ```
-    packed 30 package(s)
+    packed 31 package(s)
     bundler ok
     node16 ok
     nodenext ok
-    all 47 documented configs generate and typecheck
+    all 48 documented configs generate and typecheck
     drizzle-orm 1.0.0-rc.4, with its own zod, valibot, arktype and typebox-legacy modules
     1548 column comparisons
     60 documented divergence(s), 30 of them with DRZL accepting something official refuses, 0 stated as a rejection count and a complement

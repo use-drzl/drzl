@@ -59,6 +59,9 @@ declare module '@drzl/generator-effect-http' {
 declare module '@drzl/generator-ts-rest' {
   export const TsRestGenerator: any;
 }
+declare module '@drzl/generator-forms' {
+  export const FormsGenerator: any;
+}
 declare module '@drzl/generator-openapi-fetch' {
   export const OpenApiFetchGenerator: any;
 }

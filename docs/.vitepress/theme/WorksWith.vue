@@ -88,6 +88,8 @@ const groups: Group[] = [
       { name: 'Effect HttpApi', mark: 'effect', link: '/generators/effect-http' },
       { name: 'ts-rest', link: '/generators/ts-rest' },
       { name: 'openapi-fetch', link: '/generators/openapi-fetch' },
+      { name: 'react-hook-form', link: '/generators/forms' },
+      { name: 'TanStack Form', link: '/generators/forms' },
       { name: 'Elysia', link: '/generators/elysia' },
       { name: 'Seed data', link: '/generators/seed' },
       { name: 'fast-check', link: '/generators/fast-check' },
