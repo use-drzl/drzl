@@ -257,6 +257,9 @@
                   },
                   "description": {
                     "type": "boolean"
+                  },
+                  "registryIds": {
+                    "type": "boolean"
                   }
                 },
                 "additionalProperties": false

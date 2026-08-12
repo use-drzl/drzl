@@ -72,6 +72,15 @@ export interface ColumnMetaFacts {
 
 /** What a table's schema adds beside itself. */
 export interface TableMetaFacts {
+  /**
+   * The registry id, present only when asked for.
+   *
+   * zod reads this key out of the same object and registers the schema under it, which is what
+   * makes `z.toJSONSchema` emit a `$ref` instead of inlining a copy, and what gives
+   * `z.toJSONSchema(z.globalRegistry)` a name to file each schema under. See `metaSchemaId` for why
+   * it is built from the qualified table name.
+   */
+  id?: string;
   /** The SQL table name, which is not the Drizzle export name the schema is named after. */
   table: string;
   /**
@@ -122,6 +131,37 @@ export interface MetaFactOptions {
 export interface TableMetaOptions extends MetaFactOptions {
   mode: string;
   dialect?: string;
+  /**
+   * Also give the schema an `id`, which is what puts it in zod's registry under a name.
+   *
+   * Off by default, because it is the one metadata key with a failure mode. Measured against zod
+   * 4.4.3: an `id` makes `z.toJSONSchema` emit `$ref: '#/$defs/<id>'` wherever one schema references
+   * another, and `z.toJSONSchema(z.globalRegistry)` return a `{ schemas: { <id>: ... } }` bundle,
+   * which is what makes a generated document self-describing. But two schemas sharing an id do not
+   * report the collision: measured, `z.toJSONSchema(registry)` keeps the last one and **silently
+   * drops the other**. Two tables, one entry, no warning, and nothing a consumer can check.
+   *
+   * So the id has to be unique across the whole analysis rather than within a file, which is why
+   * `metaSchemaId` builds it from the qualified table name.
+   */
+  id?: string;
+}
+
+/**
+ * The registry id for one table's schema, unique across an analysis.
+ *
+ * Built from the qualified name, because two tables in two SQL schemas share a bare one and zod
+ * does not report the collision: a registry dump silently keeps one of them. `reporting.users` becomes
+ * `reporting_usersSelect`; a table in the default schema keeps the short `usersSelect`, so the
+ * common case reads the way anybody would have written it by hand.
+ *
+ * Anything outside `[A-Za-z0-9_]` becomes `_`, because the id lands in a `$ref` as a JSON Pointer
+ * segment and a `/` or a `~` there means something else entirely.
+ */
+export function metaSchemaId(table: Table, mode: string): string {
+  const qualified = table.schema ? `${table.schema}_${table.name}` : table.name;
+  const safe = qualified.replace(/[^A-Za-z0-9_]/g, '_');
+  return `${safe}${mode.charAt(0).toUpperCase()}${mode.slice(1)}`;
 }
 
 /**
@@ -208,6 +248,7 @@ export function tableMetaFacts(table: Table, opts: TableMetaOptions): TableMetaF
   const pk = table.primaryKey?.columns ?? [];
   const unique = (table.unique ?? []).map((k) => k.columns).filter((c) => c.length > 0);
   const facts: TableMetaFacts = {
+    ...(opts.id ? { id: opts.id } : {}),
     table: table.name,
     ...(table.schema ? { schema: table.schema } : {}),
     ...(opts.dialect ? { dialect: opts.dialect } : {}),

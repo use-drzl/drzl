@@ -35,6 +35,7 @@ import {
   resolveConfiguredImport,
   buildNestedPlan,
   tableMetaFacts,
+  metaSchemaId,
   COERCIBLE_DATE_STRING,
   COLUMN_FORMATS,
   importSpecifier,
@@ -71,6 +72,15 @@ type Mode = 'insert' | 'update' | 'select';
 interface MetaPlan {
   /** Also write prose, which is what an OpenAPI viewer renders. Its own flag; see the option. */
   description: boolean;
+  /**
+   * Also give each schema an `id`, which registers it in zod's registry under that name.
+   *
+   * Its own flag rather than part of `meta`, because it is the one metadata key with a failure
+   * mode: two schemas sharing an id make a registry dump silently drop one, with no warning.
+   * `metaSchemaId` builds it from the qualified table name so an analysis cannot produce two the
+   * same.
+   */
+  registryIds: boolean;
   /** A fact about the analysis rather than about any one table, so it travels with the plan. */
   dialect?: string;
 }
@@ -89,9 +99,9 @@ function metaCall(facts: object): string {
 
 function resolveMeta(opt: ZodGenerateOptions['meta'], dialect?: string): MetaPlan | undefined {
   if (!opt) return undefined;
-  if (opt === true) return { description: false, dialect };
+  if (opt === true) return { description: false, registryIds: false, dialect };
   if (opt.enabled === false) return undefined;
-  return { description: !!opt.description, dialect };
+  return { description: !!opt.description, registryIds: !!opt.registryIds, dialect };
 }
 
 /**
@@ -749,6 +759,7 @@ function renderNestedObject(
           mode,
           dialect: meta.dialect,
           description: meta.description,
+          ...(meta.registryIds ? { id: metaSchemaId(node.table, mode) } : {}),
         })
       )
     : '';
@@ -874,7 +885,12 @@ function renderTableSchemas(
   const tableMetaFor = (mode: Mode) =>
     meta
       ? metaCall(
-          tableMetaFacts(table, { mode, dialect: meta.dialect, description: meta.description })
+          tableMetaFacts(table, {
+            mode,
+            dialect: meta.dialect,
+            description: meta.description,
+            ...(meta.registryIds ? { id: metaSchemaId(table, mode) } : {}),
+          })
         )
       : '';
   // A type-only import: it disappears at build time, so this adds no runtime dependency on the
@@ -1000,7 +1016,7 @@ export interface ZodGenerateOptions extends ValidationGenerateOptions {
    * destination outside itself, and the placement question this answers had to be measured against
    * zod's own clone-versus-wrap behaviour rather than reasoned about. See the docs page.
    */
-  meta?: boolean | { enabled?: boolean; description?: boolean };
+  meta?: boolean | { enabled?: boolean; description?: boolean; registryIds?: boolean };
   /**
    * Also emit `constraints.ts`: every CHECK, unique constraint, primary and foreign key on each
    * table, as plain data, plus `constraintForIssue` to map a validation issue back to the
