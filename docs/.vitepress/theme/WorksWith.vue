@@ -87,6 +87,7 @@ const groups: Group[] = [
       { name: 'h3 and Nitro', mark: 'nuxt', link: '/generators/h3' },
       { name: 'Effect HttpApi', mark: 'effect', link: '/generators/effect-http' },
       { name: 'ts-rest', link: '/generators/ts-rest' },
+      { name: 'openapi-fetch', link: '/generators/openapi-fetch' },
       { name: 'Elysia', link: '/generators/elysia' },
       { name: 'Seed data', link: '/generators/seed' },
       { name: 'fast-check', link: '/generators/fast-check' },

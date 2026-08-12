@@ -122,6 +122,7 @@
               "next",
               "tanstack-start",
               "ts-rest",
+              "openapi-fetch",
               "seed",
               "fast-check",
               "service",
@@ -161,6 +162,9 @@
             "type": "string"
           },
           "appName": {
+            "type": "string"
+          },
+          "clientName": {
             "type": "string"
           },
           "count": {

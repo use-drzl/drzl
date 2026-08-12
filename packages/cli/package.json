@@ -85,5 +85,8 @@
   "funding": {
     "type": "github",
     "url": "https://github.com/sponsors/omar-dulaimi"
+  },
+  "optionalDependencies": {
+    "@drzl/generator-openapi-fetch": "workspace:^"
   }
 }

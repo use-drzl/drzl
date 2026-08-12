@@ -69,6 +69,10 @@ export default {
     // entry that puts a release-candidate peer through a real npm install: @ts-rest/core's `latest`
     // is 3.52.1, which peers on zod 3 and cannot share a tree with the zod 4 this config emits.
     { kind: 'ts-rest', path: './src/generated/ts-rest' },
+    // The openapi-fetch client, on the same zod schemas. This is the entry that compiles the
+    // emitted `paths` type against real openapi-fetch through a real npm install, which is the
+    // only place the client and the document it is derived from are built by the same run.
+    { kind: 'openapi-fetch', path: './src/generated/openapi-fetch' },
     // The AI SDK tools, on the shared schemas, and on valibot rather than zod on purpose: valibot
     // is the library whose tools carry the emitted adapter, so this is the entry that compiles it.
     {
