@@ -159,10 +159,14 @@ export const GENERATORS: readonly GeneratorEntry[] = [
     //
     // The side effect was invisible and lasted longer than the reason: tsup externalises
     // `dependencies` and `peerDependencies` and bundles everything else, so those eight travelled
-    // inside `dist` while the other six were resolved from `node_modules`. All fourteen are on the
-    // registry now and all fourteen are `dependencies`, which is what makes every one of them a
-    // package that can genuinely be absent, and `loadGenerator` tell absence apart from failure
-    // for every kind rather than for six of them.
+    // inside `dist` while the rest were resolved from `node_modules`. Every generator package is on
+    // the registry now and every one is a `dependencies` entry, which is what makes each of them a
+    // package that can genuinely be absent, and `loadGenerator` tell absence apart from failure for
+    // every kind rather than for some of them.
+    //
+    // Counted nowhere on purpose. This paragraph twice carried a number that the next batch of
+    // generators falsified, and `packages/cli/test/generator-registry.spec.ts` asserts the property
+    // against the manifest, which is where a quantity belongs.
     specifier: '@drzl/generator-trpc',
     load: () => import('@drzl/generator-trpc'),
     construct: (m, analysis) => new m.TRPCGenerator(analysis),
@@ -214,9 +218,10 @@ export const GENERATORS: readonly GeneratorEntry[] = [
     // This one and the three below spent one release each in `optionalDependencies`, because a
     // package that has never existed cannot publish through npm's trusted-publisher OIDC flow and
     // naming it as a hard dependency in the release that introduces it breaks `npm i @drzl/cli`
-    // for everyone until the first publish lands. All four are on the registry now, so all four
-    // are ordinary dependencies. `scripts/verify/stages/33-registry-deps.sh` gates both halves of
-    // that rule and is what reported the promotion was due.
+    // for everyone until the first publish lands. The six generators added after them went the
+    // same way and were promoted the same way once their first versions were published by hand.
+    // Nothing here is optional any more. `scripts/verify/stages/33-registry-deps.sh` gates both
+    // halves of that rule and is what reported each promotion was due.
     specifier: '@drzl/generator-mcp',
     load: () => import('@drzl/generator-mcp'),
     construct: (m, analysis) => new m.MCPGenerator(analysis),

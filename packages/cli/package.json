@@ -32,18 +32,24 @@
     "@drzl/generator-ai": "workspace:^",
     "@drzl/generator-arktype": "workspace:^",
     "@drzl/generator-effect": "workspace:^",
+    "@drzl/generator-effect-http": "workspace:^",
+    "@drzl/generator-elysia": "workspace:^",
     "@drzl/generator-express": "workspace:^",
+    "@drzl/generator-fast-check": "workspace:^",
     "@drzl/generator-fastify": "workspace:^",
     "@drzl/generator-graphql": "workspace:^",
+    "@drzl/generator-h3": "workspace:^",
     "@drzl/generator-hono": "workspace:^",
     "@drzl/generator-json-schema": "workspace:^",
     "@drzl/generator-mcp": "workspace:^",
     "@drzl/generator-nestjs": "workspace:^",
     "@drzl/generator-next": "workspace:^",
     "@drzl/generator-orpc": "workspace:^",
+    "@drzl/generator-seed": "workspace:^",
     "@drzl/generator-service": "workspace:^",
     "@drzl/generator-tanstack-start": "workspace:^",
     "@drzl/generator-trpc": "workspace:^",
+    "@drzl/generator-ts-rest": "workspace:^",
     "@drzl/generator-typebox": "workspace:^",
     "@drzl/generator-valibot": "workspace:^",
     "@drzl/generator-zod": "workspace:^",
@@ -79,13 +85,5 @@
   "funding": {
     "type": "github",
     "url": "https://github.com/sponsors/omar-dulaimi"
-  },
-  "optionalDependencies": {
-    "@drzl/generator-effect-http": "workspace:^",
-    "@drzl/generator-elysia": "workspace:^",
-    "@drzl/generator-fast-check": "workspace:^",
-    "@drzl/generator-h3": "workspace:^",
-    "@drzl/generator-seed": "workspace:^",
-    "@drzl/generator-ts-rest": "workspace:^"
   }
 }
