@@ -313,7 +313,7 @@ for (const t of tables) {
 // sites are MySQL-gated, so "set only on MySQL" is the part of the old sentence that held.
 const REQUIRED = [
   'rows', 'parents', 'children', 'pairs', 'notes', 'mtext', 'matrix', 'arrays', 'defaulted',
-  'checked', 'nullable',
+  'checked', 'nullable', 'guarded',
 ];
 const missing = REQUIRED.filter((t) => !a.tables[t] || !b.tables[t]);
 if (missing.length) {
@@ -326,6 +326,14 @@ if (!compared) diffs.push('no column was described on both sides, so nothing was
 // stop parsing them while something else went on carrying one.
 if (!(a.tables.checked?.checks ?? []).length) {
   diffs.push('the checked table parsed no CHECK expressions, so nothing was compared');
+}
+// The same specific-as-well-as-general rule for row-level security, and for the same reason: the
+// vacuity rule below is satisfied by any table carrying a policy, and `guarded` is the table whose
+// entire purpose is to carry them. Its two policies between them cover every optional field the
+// analyzer normalises, so an empty list here is a fixture that stopped testing the normalisation
+// rather than a schema that stopped having policies.
+if (!(a.tables.guarded?.policies ?? []).length) {
+  diffs.push('the guarded table parsed no policies, so nothing was compared');
 }
 for (const [field, sawValue] of seen) {
   const noun = field.startsWith('table:') ? 'table' : 'column';

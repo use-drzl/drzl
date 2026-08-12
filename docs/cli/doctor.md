@@ -7,19 +7,19 @@ Usage:
 ::: code-group
 
 ```bash [pnpm]
-pnpm dlx @drzl/cli doctor [schema] [--json] [--strict] [-c drzl.config.ts]
+pnpm dlx @drzl/cli doctor [schema] [--json] [--strict] [--constraints [--sql]] [--policies] [-c drzl.config.ts]
 ```
 
 ```bash [npm]
-npx @drzl/cli doctor [schema] [--json] [--strict] [-c drzl.config.ts]
+npx @drzl/cli doctor [schema] [--json] [--strict] [--constraints [--sql]] [--policies] [-c drzl.config.ts]
 ```
 
 ```bash [yarn]
-yarn dlx @drzl/cli doctor [schema] [--json] [--strict] [-c drzl.config.ts]
+yarn dlx @drzl/cli doctor [schema] [--json] [--strict] [--constraints [--sql]] [--policies] [-c drzl.config.ts]
 ```
 
 ```bash [bun]
-bunx @drzl/cli doctor [schema] [--json] [--strict] [-c drzl.config.ts]
+bunx @drzl/cli doctor [schema] [--json] [--strict] [--constraints [--sql]] [--policies] [-c drzl.config.ts]
 ```
 
 :::
@@ -119,6 +119,98 @@ Four CHECK cases are distinguished, because they have different fixes:
 A constraint DRZL **does** translate is not listed. `age >= 18` folds into `.gte(18)` and
 `start_date < end_date` becomes an object-level refinement, and listing those would bury the ones
 that matter.
+
+## Other reports
+
+Two flags replace the findings above with a different report over the same analysis. They are
+separate reports rather than extra sections, and passing both is an error rather than a run that
+silently picks one.
+
+### `--constraints`
+
+What the database enforces that the generated schemas do not, and the reverse.
+
+```bash
+npx @drzl/cli doctor src/db/schema.ts --constraints
+```
+
+The half worth your attention is the second one, because it can lose data. A Drizzle
+`text(name, { enum: [...] })` column is a plain `text` column: the generated schema refuses
+anything outside the set, and a migration, a `psql` session or any other client writes past it. A
+native `pgEnum` carries the enum's type name as its SQL type and **is** enforced by the database,
+so the two are told apart and only the first is reported.
+
+Add `--sql` to emit the closing statements alone, with no prose and no colour, for redirecting
+into a migration:
+
+```bash
+npx @drzl/cli doctor src/db/schema.ts --constraints --sql > migrations/0002_checks.sql
+```
+
+SQLite gets no statement: `ALTER TABLE ... ADD CONSTRAINT` is a syntax error there, so the gap
+carries the reason instead. Neither does `unknown`, because emitting DDL for a database nobody has
+named is the kind of guess that ends up in a migration.
+
+Under `--strict` only the schema-only side counts. A primary key or a foreign key that no per-row
+validator can check is not a defect anyone can fix.
+
+### `--policies`
+
+The row-level security policies each table carries, and what they refuse.
+
+```bash
+npx @drzl/cli doctor src/db/schema.ts --policies
+```
+
+```
+DRZL row-level security  src/db/schema.ts
+postgres, 2 tables under RLS, 2 policies
+
+These tables refuse the operation your generated code performs
+  A table under row-level security permits only what a policy grants. The generated service
+  still compiles and its return type still promises rows.
+
+  - audit_log everything
+      row-level security is on and no permissive policy grants anything, so every read returns
+      zero rows and every write is refused, for every role but the table's owner and any role
+      with BYPASSRLS
+      Close it: declare a policy, or drop the row-level security on this table
+
+  - posts insert
+      row-level security is on and no permissive policy grants INSERT, so every insert is
+      refused for every role but the table's owner and any role with BYPASSRLS
+      Close it: the policy "anyone_inserts" names INSERT but grants nothing; give it a WITH
+      CHECK expression
+```
+
+A table with row-level security on and nothing granting a command does not half-work: the read
+returns zero rows and the write raises `new row violates row-level security policy`. The generated
+service over it still compiles and its return type still promises rows, which is why this is worth
+a report of its own.
+
+Three readings this deliberately does **not** make, each settled by running it against Postgres
+rather than by reading the declaration:
+
+- **A table with policies and no `.enableRLS()` is not unprotected.** Declaring any policy makes
+  `drizzle-kit` emit `ALTER TABLE ... ENABLE ROW LEVEL SECURITY` on its own, so the flag says
+  nothing about the running database and a report keyed on it would tell you your rules were inert
+  while Postgres enforced them.
+- **A write policy with no `WITH CHECK` is not a hole.** A lone `FOR INSERT` policy carrying no
+  `WITH CHECK` refuses **every** insert. It is reported as a door that is shut, not one left open.
+- **`FOR UPDATE` and `FOR ALL` with a `USING` and no `WITH CHECK` are not defects at all.** Both
+  fall back to the `USING` expression for the new row, so the most ordinary policy anybody writes
+  is not flagged.
+
+The report ends with the fact no schema change fixes: **no generator emits policy awareness.** A
+generated read path describes rows the caller may not be allowed to see, and a reader of the
+emitted types will believe otherwise. That is listed rather than counted as a finding, so
+`--strict` cannot fail a pipeline nobody can make pass.
+
+Whether a policy applies to the role your application connects as is the one question the report
+cannot answer for you, so every policy's `TO` is printed.
+
+Non-Postgres dialects have no row-level security to declare, and their tables are absent from this
+report rather than listed as having it switched off.
 
 ## Exit codes
 

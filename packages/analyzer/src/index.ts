@@ -377,6 +377,46 @@ export interface ForeignKey {
   onUpdate?: string;
 }
 
+/**
+ * A row-level security policy, from Drizzle's `pgPolicy`.
+ *
+ * Postgres only. There is no MySQL or SQLite equivalent, and those tables do not carry the
+ * `drizzle:EnableRLS` symbol at all rather than carrying it as `false`, which is why
+ * `Table.rlsEnabled` is absent there instead of reading as "RLS is off".
+ */
+export interface Policy {
+  name: string;
+  /**
+   * `permissive`, where policies OR together, or `restrictive`, where they AND. Absent where the
+   * declaration did not say, which Postgres reads as permissive.
+   */
+  as?: string;
+  /** The command it applies to: `all`, `select`, `insert`, `update` or `delete`. */
+  for?: string;
+  /**
+   * The roles it applies to, always as a list.
+   *
+   * `to` is polymorphic in Drizzle: a bare string, a `pgRole` object, or an array mixing the two.
+   * Measured 2026-08-12 against drizzle-orm 0.45.2. Normalised to role names here, so no reader has
+   * to ask which of the three it got and none of them stringifies to `[object Object]`.
+   */
+  to?: string[];
+  /** The `USING` expression, which decides the rows a read can see. Rendered as text. */
+  using?: string;
+  /** The `WITH CHECK` expression, which decides the rows a write may produce. Rendered as text. */
+  withCheck?: string;
+  /**
+   * Set when the policy reached this table through `pgPolicy(...).link(table)` rather than through
+   * the table's own third argument.
+   *
+   * A linked policy is not reachable from the table object: measured, the table it links to gains
+   * no extra-config entry and carries no reference to it. It is found as a module export instead,
+   * which means one linked from a module the schema never exports is invisible to DRZL. That is the
+   * one gap in this list, and it is why the flag is reported rather than dropped.
+   */
+  linked?: boolean;
+}
+
 export interface Table {
   name: string;
   tsName: string;
@@ -406,6 +446,24 @@ export interface Table {
   indexes: Index[];
   checks?: Check[];
   foreignKeys?: ForeignKey[];
+  /**
+   * The row-level security policies declared on the table, in declaration order.
+   *
+   * Absent where the dialect has none to declare. Present and empty is a different fact from
+   * absent: it says this is a Postgres table that declares no policy, which is what
+   * `rlsEnabled: true` beside it turns into a defect.
+   */
+  policies?: Policy[];
+  /**
+   * Whether the table calls `.enableRLS()`, from `drizzle:EnableRLS`.
+   *
+   * Absent on every dialect but Postgres, which does not carry the symbol at all. Present and
+   * `false` therefore means "a Postgres table that did not call it", which is **not** the same as
+   * "row-level security is off in the database": measured 2026-08-12, declaring any policy makes
+   * drizzle-kit emit `ALTER TABLE ... ENABLE ROW LEVEL SECURITY` regardless of this flag. Nothing
+   * should report a table as unprotected on the strength of this alone.
+   */
+  rlsEnabled?: boolean;
   /**
    * Set when the relation refuses writes, which today means a materialized view. Insert and
    * update schemas are not emitted for one, because the database will always refuse the
@@ -1477,6 +1535,36 @@ export function isDrizzleView(val: any): boolean {
 }
 
 /**
+ * Whether a value is a `pgPolicy`.
+ *
+ * Keyed off `drizzle:entityKind`, as everywhere else in this file, because `constructor.name` does
+ * not survive minification. Matched on the suffix rather than on the exact `PgPolicy` to keep the
+ * dialect prefix from mattering, which is the same shape the unique-constraint branch uses.
+ */
+function isPolicy(val: any): boolean {
+  return /Policy$/.test(String(val?.constructor?.[Symbol.for('drizzle:entityKind')] ?? ''));
+}
+
+/**
+ * A policy's `to` as a flat list of role names.
+ *
+ * Measured 2026-08-12: `to` is a bare string, a `pgRole` object carrying its name, or an array
+ * mixing the two. Reading it as written puts `[object Object]` in a report that names who a rule
+ * applies to, which is the one field of a security rule nobody can afford to misread.
+ */
+function readRoleNames(to: unknown): string[] {
+  const one = (v: unknown): string | undefined => {
+    if (typeof v === 'string') return v || undefined;
+    const name = (v as any)?.name;
+    return typeof name === 'string' && name ? name : undefined;
+  };
+  const list = Array.isArray(to) ? to : to == null ? [] : [to];
+  // Deduplicated, because the two spellings reach the same role: `to: ['authenticated', myRole]`
+  // where `myRole` is `pgRole('authenticated')` names it twice, and Postgres grants it once.
+  return Array.from(new Set(list.map(one).filter((v): v is string => !!v)));
+}
+
+/**
  * Whether an export is a Relations v2 definition, from `defineRelations(schema, (r) => ...)`.
  *
  * v2 returns a plain object keyed by table name, each entry `{ table, name, relations }`, with
@@ -1794,6 +1882,31 @@ export class SchemaAnalyzer {
       })
       .join('')
       .trim();
+  }
+
+  /**
+   * Normalise one `pgPolicy` into the reported shape.
+   *
+   * Everything is read off the instance directly. Measured 2026-08-12 against drizzle-orm 0.45.2, a
+   * `PgPolicy` carries `as`, `for`, `to`, `using`, `withCheck`, `_linkedTable` and `name` as own
+   * keys, and the ones the declaration omitted are present as `undefined`. So presence has to be
+   * tested by value: `'withCheck' in policy` is true for every policy ever declared and would report
+   * each of them as constraining its writes.
+   */
+  private readPolicy(entry: any, toTs: (n: unknown) => string): Policy {
+    const text = (v: unknown) => (v == null ? undefined : this.renderSql(v, toTs));
+    const str = (v: unknown) => (typeof v === 'string' && v ? v : undefined);
+    return {
+      name: String(entry?.name ?? ''),
+      ...(str(entry?.as) ? { as: entry.as as string } : {}),
+      ...(str(entry?.for) ? { for: entry.for as string } : {}),
+      ...(() => {
+        const to = readRoleNames(entry?.to);
+        return to.length ? { to } : {};
+      })(),
+      ...(entry?.using != null ? { using: text(entry.using) } : {}),
+      ...(entry?.withCheck != null ? { withCheck: text(entry.withCheck) } : {}),
+    };
   }
 
   /** A value produced by Drizzle's `relations()` helper: a source table plus a callback. */
@@ -2658,6 +2771,7 @@ export class SchemaAnalyzer {
     const unique: Key[] = [];
     const indexes: Index[] = [];
     const checks: Check[] = [];
+    const policies: Policy[] = [];
     const foreignKeys: ForeignKey[] = [];
     const pkCols: string[] = [];
     const uniqueGroups = new Map<string, string[]>();
@@ -2855,6 +2969,10 @@ export class SchemaAnalyzer {
 
     const name = (this.getSymbol(tbl, 'drizzle:Name') as string) || tsName;
     const schema = this.getSymbol(tbl, 'drizzle:Schema') as string | undefined;
+    // `false` is a real answer here and `undefined` is a different one, so this is read as a value
+    // rather than for truthiness: a Postgres table that never called `.enableRLS()` says `false`,
+    // and a MySQL or SQLite table, which cannot be asked, says nothing.
+    const rlsEnabled = this.getSymbol(tbl, 'drizzle:EnableRLS');
 
     const toTs = this.dbToTsNames(columnsObj);
 
@@ -2892,6 +3010,14 @@ export class SchemaAnalyzer {
       // A check keeps `name` and a SQL `value` on the builder itself and has no `config`.
       if (entry?.value?.queryChunks && entry?.name !== undefined) {
         checks.push({ name: entry.name, expression: this.renderSql(entry.value, toTs) });
+        continue;
+      }
+
+      // A policy names no columns, so it reached the bottom of this loop and was dropped by the
+      // `cols.length` guard. That was harmless and it was also the whole reason DRZL could not say
+      // anything about row-level security.
+      if (isPolicy(entry)) {
+        policies.push(this.readPolicy(entry, toTs));
         continue;
       }
 
@@ -2960,6 +3086,11 @@ export class SchemaAnalyzer {
       indexes: [...(pkCols.length ? ([{ columns: pkCols }] as Index[]) : []), ...indexes],
       checks,
       foreignKeys,
+      // Only where the dialect has row-level security at all. `drizzle:EnableRLS` is absent on
+      // MySQL and SQLite tables rather than false, and reporting `rlsEnabled: false` for every
+      // SQLite table would answer a question that dialect cannot be asked. Both fields are decided
+      // by the same test so a table never carries one without the other.
+      ...(typeof rlsEnabled === 'boolean' ? { policies, rlsEnabled } : {}),
       // A materialized view refuses every write, so the generators skip its insert and update
       // schemas rather than describe an operation the database will always reject.
       ...(isReadOnlyRelation(tbl) ? { readOnly: true } : {}),
@@ -3115,6 +3246,13 @@ export class SchemaAnalyzer {
     const columnEnums: Enum[] = [];
     // Views, held aside for the read-only pass that runs once the dialect is known.
     const viewTables: Table[] = [];
+    // Policies exported on their own and attached with `.link(table)`, held aside for the same
+    // reason the enums are: the export that links one may be read before the table it links to.
+    const linkedPolicies: any[] = [];
+    // The table object each analysed table came from, so a linked policy can be matched back to it
+    // by identity. Matching by name would attach a policy to the wrong table wherever two schemas
+    // hold tables of the same bare name.
+    const tableSources = new Map<any, Table>();
 
     // Identify table-like exports by presence of Drizzle symbols
     for (const [name, val] of Object.entries(exportsObj)) {
@@ -3123,6 +3261,7 @@ export class SchemaAnalyzer {
         if (cols && typeof cols === 'object') {
           const table = this.analyzeTable(name, val, issues);
           tables.push(table);
+          tableSources.set(val, table);
           if (isDrizzleView(val)) viewTables.push(table);
 
           // Enum capture is deliberately outside any relations guard. It used to sit inside
@@ -3164,6 +3303,11 @@ export class SchemaAnalyzer {
           if (opts.includeRelations) {
             relations.push(...readRelationsV2(val, issues));
           }
+        } else if (isPolicy(val)) {
+          // `pgPolicy(...).link(table)`. Measured 2026-08-12: linking leaves no trace on the table
+          // it links to, whose extra-config callback stays empty, so this export is the only place
+          // the policy exists. Read here, attached below.
+          linkedPolicies.push(val);
         } else {
           // Detect exported enums (e.g., pgEnum('name', [...]))
           const ev = (val as any)?.enumValues;
@@ -3199,6 +3343,33 @@ export class SchemaAnalyzer {
       if (enums.some((e) => JSON.stringify(e.values) === key)) continue;
       if (enums.some((e) => e.name === candidate.name)) continue;
       enums.push(candidate);
+    }
+
+    // Attach the separately-exported policies, once every table has been seen.
+    //
+    // A policy declared in a table's third argument is found while that table is analysed. One
+    // built with `pgPolicy(...).link(table)` is not: the table gains nothing from being linked to,
+    // so the export is the only place it appears. Without this pass a schema that keeps its
+    // policies in a separate file reads as a schema with no policies, and the report built on that
+    // would state a table denies every row while Postgres was happily serving them.
+    for (const raw of linkedPolicies) {
+      const target = raw?._linkedTable;
+      const table = target ? tableSources.get(target) : undefined;
+      // A policy linked to a table this module does not export is one DRZL cannot place. Saying so
+      // is the honest answer; guessing at a table by name is how a security rule ends up reported
+      // against the wrong one.
+      if (!table || !table.policies) {
+        issues.push({
+          code: 'DRZL_ANL_POLICY_UNLINKED',
+          level: 'warn',
+          message: `Policy "${String(raw?.name ?? '')}" is linked to a table this schema does not export.`,
+          path: String(raw?.name ?? ''),
+          hint: 'Export the table it links to, so DRZL can report the policy against it.',
+        });
+        continue;
+      }
+      const toTs = this.dbToTsNames(this.getSymbol(target, 'drizzle:Columns') ?? {});
+      table.policies.push({ ...this.readPolicy(raw, toTs), linked: true });
     }
 
     // Which dialect the schema is written against.
