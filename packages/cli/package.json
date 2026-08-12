@@ -87,6 +87,7 @@
     "url": "https://github.com/sponsors/omar-dulaimi"
   },
   "optionalDependencies": {
+    "@drzl/generator-forms": "workspace:^",
     "@drzl/generator-openapi-fetch": "workspace:^"
   }
 }

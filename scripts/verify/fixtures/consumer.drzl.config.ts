@@ -73,6 +73,9 @@ export default {
     // emitted `paths` type against real openapi-fetch through a real npm install, which is the
     // only place the client and the document it is derived from are built by the same run.
     { kind: 'openapi-fetch', path: './src/generated/openapi-fetch' },
+    // The form resolvers and field metadata, on the same zod schemas, emitting both targets so the
+    // react-hook-form resolver and the TanStack Form options are both compiled by the consumer.
+    { kind: 'forms', path: './src/generated/forms', target: 'both' },
     // The AI SDK tools, on the shared schemas, and on valibot rather than zod on purpose: valibot
     // is the library whose tools carry the emitted adapter, so this is the entry that compiles it.
     {

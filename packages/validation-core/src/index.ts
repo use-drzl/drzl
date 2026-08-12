@@ -14,6 +14,7 @@ export * from './branding.js';
 export * from './checks.js';
 export * from './constraints.js';
 export * from './emit.js';
+export * from './fields.js';
 export * from './files.js';
 export * from './meta.js';
 export * from './naming.js';
