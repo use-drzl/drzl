@@ -847,6 +847,43 @@ SelectusersSchema.meta().primaryKey; // ['id']
 Off by default. Every byte lands in your bundle, and on a narrow table this roughly doubles the
 emitted size: measured on a ten-column table, about 48 bytes per field and 156 per schema.
 
+### `registryIds`: making the document self-describing
+
+```ts
+{ kind: 'zod', path: './src/validators/zod', meta: { registryIds: true } }
+```
+
+Adds an `id` to each schema's metadata, which is what puts it in zod's registry under a name. Two
+things follow, both measured on zod 4.4.3.
+
+A schema that references another emits a reference rather than a second copy of it:
+
+```jsonc
+// with registryIds
+{ "properties": { "author": { "$ref": "#/$defs/usersSelect" } }, "$defs": { "usersSelect": { … } } }
+
+// without, which is the default
+{ "properties": { "author": { "type": "object", "properties": { … } } } }
+```
+
+And the whole registry converts in one call, keyed by those names, which is the shape an OpenAPI
+`components.schemas` block wants:
+
+```ts
+z.toJSONSchema(z.globalRegistry);
+// { schemas: { usersInsert: { … }, usersUpdate: { … }, usersSelect: { … } } }
+```
+
+**The id is built from the qualified table name**, so `reporting.users` becomes
+`reporting_usersSelect` while a table in the default schema keeps the short `usersSelect`. That is
+not tidiness. Two schemas sharing an id do not report the collision: measured,
+`z.toJSONSchema(registry)` keeps the last one and **silently drops the other**. Two tables, one
+entry, no warning, and nothing a consumer can check. Any schema with two SQL schemas can produce
+that collision, because `table.name` is the bare name.
+
+Separate from `meta: true` because it is the only metadata key with a failure mode. Everything else
+is inert data a consumer may ignore.
+
 ### Why it is attached last in the chain
 
 This is the one design decision worth knowing about, because it looks wrong until you measure it.

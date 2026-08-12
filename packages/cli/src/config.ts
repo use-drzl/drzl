@@ -293,7 +293,26 @@ export const GeneratorSchema = z.object({
   meta: z
     .union([
       z.boolean(),
-      z.object({ enabled: z.boolean().optional(), description: z.boolean().optional() }).strict(),
+      z
+        .object({
+          enabled: z.boolean().optional(),
+          description: z.boolean().optional(),
+          /**
+           * Also give each schema an `id`, which registers it in zod's registry under that name.
+           *
+           * `z.toJSONSchema` then emits `$ref: '#/$defs/<id>'` wherever one schema references
+           * another instead of inlining a copy, and `z.toJSONSchema(z.globalRegistry)` returns a
+           * `{ schemas: { <id>: ... } }` bundle, which is what makes a generated document
+           * self-describing.
+           *
+           * Off by default because it is the one metadata key with a failure mode. Measured on zod
+           * 4.4.3, two schemas sharing an id make a registry dump silently drop one of them, with
+           * no warning. The id is built from the qualified table name, so an analysis cannot
+           * produce two the same.
+           */
+          registryIds: z.boolean().optional(),
+        })
+        .strict(),
     ])
     .optional(),
   /**
