@@ -29,8 +29,8 @@
  * **The default generator was a router (66).** `@drzl/generator-zod` is a hard dependency of
  * `@drzl/cli`, so it is on disk beside the CLI that scaffolds this config. That used to be the
  * whole rule, because six of the seven route generators were `optionalDependencies` an installer
- * skips when they are missing; all fourteen are hard dependencies now, so being installed no
- * longer tells one kind from another. What `INIT_GENERATOR_CHOICES` still offers is the set this
+ * skips when they are missing; every generator package is a hard dependency now, so being
+ * installed no longer tells one kind from another. What `INIT_GENERATOR_CHOICES` still offers is the set this
  * file knows how to write a config for, and a test asserts every entry against `package.json` so
  * a kind the CLI does not depend on cannot be added to the list.
  *
@@ -62,8 +62,8 @@ export interface InitGeneratorChoice {
  *
  * Every kind here is a `dependencies` entry of `@drzl/cli`, enforced against `package.json` by
  * `init.spec.ts`, so a config this command writes never names a package the CLI does not bring
- * with it. That used to exclude eight kinds on its own, when they were `optionalDependencies` an
- * installer skips; every kind clears it now, and it stays as the floor rather than as the filter.
+ * with it. That used to exclude the kinds sitting in `optionalDependencies`, which an installer
+ * skips; every kind clears it now, and it stays as the floor rather than as the filter.
  *
  * What the list is short for is this file: `generatorLine` writes two shapes, an oRPC entry and a
  * validator entry with a `path`, and `ROUTER_KINDS` is the one kind the scaffold adds an `outDir`
