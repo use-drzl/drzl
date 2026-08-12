@@ -173,3 +173,84 @@ describe('drzl doctor', () => {
     expect(r.stdout + r.stderr).toMatch(/schema/i);
   }, 120_000);
 });
+
+/**
+ * `--policies`, spawned for the same reason the rest of this file is: the unit file beside it
+ * exercises the report builder and would not notice a flag that was never registered, a `--json`
+ * branch printing the human page, or an exit code that fails a pipeline nobody can make pass.
+ */
+describe('drzl doctor --policies', () => {
+  /** RLS on with nothing granting a read, and one policy that names INSERT and grants nothing. */
+  const RLS = `
+import { sql } from 'drizzle-orm';
+import { integer, pgPolicy, pgTable, serial, text } from 'drizzle-orm/pg-core';
+export const auditLog = pgTable('audit_log', {
+  id: serial('id').primaryKey(),
+  action: text('action').notNull(),
+}).enableRLS();
+export const posts = pgTable('posts', {
+  id: serial('id').primaryKey(),
+  ownerId: integer('owner_id').notNull(),
+}, (t) => [
+  pgPolicy('owner_reads', { for: 'select', to: 'authenticated', using: sql\`\${t.ownerId} = 1\` }),
+  pgPolicy('anyone_inserts', { for: 'insert' }),
+]);
+`;
+
+  it('reports the tables under RLS and exits 0', async () => {
+    const dir = await project('policies', RLS);
+    const r = await cli(['doctor', 'src/db/schema.ts', '--policies'], dir);
+    // Zero without --strict, like every other doctor mode: a schema using RLS is normal.
+    expect(r.code, r.stdout + r.stderr).toBe(0);
+    expect(r.stdout).toContain('audit_log');
+    expect(r.stdout).toContain('anyone_inserts');
+    expect(r.stdout).toContain('to authenticated');
+    // The claim the measurements settled, in the output a user reads. Whitespace is collapsed
+    // first: the page wraps to the terminal, and this sentence lands across two lines.
+    expect(r.stdout.replace(/\s+/g, ' ')).toContain('every insert is refused');
+    expect(r.stdout).not.toContain('undefined');
+  }, 120_000);
+
+  it('says so on a schema that uses no row-level security', async () => {
+    const dir = await project('policies-clean', CLEAN);
+    const r = await cli(['doctor', 'src/db/schema.ts', '--policies'], dir);
+    expect(r.code, r.stdout + r.stderr).toBe(0);
+    expect(r.stdout).toContain('No table in this schema uses row-level security');
+
+    const strict = await cli(['doctor', 'src/db/schema.ts', '--policies', '--strict'], dir);
+    expect(strict.code, 'a schema with no policies passes --strict').toBe(0);
+  }, 120_000);
+
+  it('exits 2 under --strict when there are findings', async () => {
+    const dir = await project('policies-strict', RLS);
+    const r = await cli(['doctor', 'src/db/schema.ts', '--policies', '--strict'], dir);
+    expect(r.code).toBe(2);
+  }, 120_000);
+
+  it('emits the report as JSON under --json, and nothing else on stdout', async () => {
+    const dir = await project('policies-json', RLS);
+    const r = await cli(['doctor', 'src/db/schema.ts', '--policies', '--json'], dir);
+    expect(r.code).toBe(0);
+    const parsed = JSON.parse(r.stdout);
+    expect(parsed.command).toBe('doctor');
+    expect(parsed.dialect).toBe('postgres');
+    expect(parsed.counts.withRls).toBe(2);
+    expect(parsed.counts.findings).toBe(parsed.findings.length);
+    expect(parsed.ignoredByGeneratedCode).toEqual(['audit_log', 'posts']);
+  }, 120_000);
+
+  it('refuses --constraints and --policies together rather than picking one', async () => {
+    const dir = await project('policies-both', RLS);
+    const r = await cli(['doctor', 'src/db/schema.ts', '--policies', '--constraints'], dir);
+    expect(r.code).toBe(1);
+    expect(r.stdout + r.stderr).toContain('separate reports');
+  }, 120_000);
+
+  it('reports an unreadable schema as unreadable, not as using no row-level security', async () => {
+    const dir = await project('policies-missing', CLEAN);
+    const r = await cli(['doctor', 'src/db/nope.ts', '--policies'], dir);
+    expect(r.code).toBe(1);
+    expect(r.stdout + r.stderr).not.toContain('No table in this schema uses row-level security');
+    expect(r.stdout + r.stderr).toContain('nope.ts');
+  }, 120_000);
+});

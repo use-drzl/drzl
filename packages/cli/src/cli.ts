@@ -66,6 +66,7 @@ import {
   renderConstraintDriftReport,
   renderConstraintDriftSql,
 } from './constraint-drift.js';
+import { buildPolicyReport, renderPolicyReport } from './policy-report.js';
 import { snapshotAll } from './drift.js';
 import {
   describeCounts,
@@ -285,6 +286,10 @@ withOutputFlags(
       'report what each side enforces that the other does not, instead of the usual findings'
     )
     .option('--sql', 'with --constraints, emit the statements alone, for redirecting to a migration')
+    .option(
+      '--policies',
+      'report the row-level security policies each table carries, and what they refuse'
+    )
 ).action(async (schema: string | undefined, opts: any) => {
   const out = outputFor(opts);
   {
@@ -334,15 +339,27 @@ withOutputFlags(
         return;
       }
 
-      if (opts.constraints) {
-        /**
-         * An unreadable schema is reported as unreadable, not as clean.
-         *
-         * The drift ledger over an empty analysis is empty, which renders as "No drift" and is the
-         * most misleading thing this command could say: the file was never imported. The check is
-         * the doctor report's own, rather than a second reading of `analysis.issues`, so the two
-         * commands agree about what "could not be read" means.
-         */
+      // Two reports of two different things, and each returns early with its own exit code. Running
+      // both would have to pick one of those to be the command's answer, so this refuses instead of
+      // silently letting whichever branch comes first win.
+      if (opts.constraints && opts.policies) {
+        const msg =
+          '--constraints and --policies are separate reports. Run one, then the other.';
+        if (opts.json) out.jsonData(jsonFailure('doctor', 'DRZL_CLI_DOCTOR', msg));
+        else out.error('Doctor failed (DRZL_CLI_DOCTOR):', msg);
+        process.exit(EXIT_FAILED);
+        return;
+      }
+
+      /**
+       * An unreadable schema is reported as unreadable, not as clean.
+       *
+       * Either ledger over an empty analysis is empty, which renders as "No drift" or as "No table
+       * uses row-level security" and is the most misleading thing this command could say: the file
+       * was never imported. The check is the doctor report's own, rather than a second reading of
+       * `analysis.issues`, so every mode agrees about what "could not be read" means.
+       */
+      if (opts.constraints || opts.policies) {
         const preflight = buildDoctorReport(analysis, schemaLabel);
         const fatal = preflight.findings.filter((f) => f.level === 'error');
         if (fatal.length) {
@@ -358,7 +375,9 @@ withOutputFlags(
           process.exit(EXIT_FAILED);
           return;
         }
+      }
 
+      if (opts.constraints) {
         const drift = buildConstraintDriftReport(analysis, schemaLabel);
         const driftCode = opts.strict && drift.counts.schemaOnly ? EXIT_FINDINGS : EXIT_OK;
         if (opts.sql) {
@@ -375,6 +394,28 @@ withOutputFlags(
           );
         else out.data(renderConstraintDriftReport(drift, out.outStyle));
         process.exit(driftCode);
+        return;
+      }
+
+      /**
+       * The row-level security report.
+       *
+       * `--strict` counts every finding here, unlike `--constraints` which counts only one of its
+       * two sides. Both findings this raises are defects in the schema with something to do about
+       * them: a table that refuses the operation the generated code performs, and a policy that
+       * grants nothing. The one fact that is *not* a schema defect, that DRZL's own output ignores
+       * policies entirely, is deliberately not a finding, so it cannot fail a pipeline nobody can
+       * make pass.
+       */
+      if (opts.policies) {
+        const policies = buildPolicyReport(analysis, schemaLabel);
+        const policyCode = opts.strict && policies.counts.findings ? EXIT_FINDINGS : EXIT_OK;
+        if (opts.json)
+          out.data(
+            JSON.stringify({ command: 'doctor', exitCode: policyCode, ...policies }, null, 2)
+          );
+        else out.data(renderPolicyReport(policies, out.outStyle));
+        process.exit(policyCode);
         return;
       }
 
