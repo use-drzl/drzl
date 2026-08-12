@@ -120,6 +120,7 @@ export const GeneratorKindSchema = z.enum([
   'next',
   'tanstack-start',
   'ts-rest',
+  'openapi-fetch',
   'seed',
   'fast-check',
   'service',
@@ -172,6 +173,13 @@ export const GeneratorSchema = z.object({
   contractName: z.string().optional(),
   /** The identifier the assembled Elysia app is exported as. `elysia` only, defaults to `'app'`. */
   appName: z.string().optional(),
+  /**
+   * The factory the emitted client exports. `openapi-fetch` only, defaults to `'createApiClient'`.
+   *
+   * A factory rather than a constructed client, because a client carries a `baseUrl` and a `fetch`
+   * and neither is a fact about a Drizzle schema.
+   */
+  clientName: z.string().optional(),
   /** How many rows each generated seed function returns by default. `seed` only, defaults to 10. */
   count: z.number().int().positive().optional(),
   /**
@@ -376,6 +384,11 @@ export const GeneratorSchema = z.object({
    * `true` is the short form. The object form carries the three things a Drizzle schema genuinely
    * cannot say: what the API is called, where it is served, and which status code that particular
    * server answers a request that fails its schema with.
+   *
+   * **The `openapi-fetch` generator reads the same key**, and the two have to be given the same
+   * value where both are configured. They are separate generators and nothing checks one against
+   * the other, so different options produce a client that describes a different API from the
+   * document beside it. The one that bites is `validationStatus`, which lands in both outputs.
    */
   document: z
     .union([
@@ -695,6 +708,7 @@ const ROUTER_KINDS = new Set([
   'effect-http',
   'ts-rest',
   'elysia',
+  'openapi-fetch',
 ]);
 
 /**
@@ -882,6 +896,17 @@ export function effectHttpOutDir(g: { path?: string }, cfg: { outDir: string }):
  * for the reason `honoOutDir` records.
  */
 export function tsRestOutDir(g: { path?: string }, cfg: { outDir: string }): string {
+  return g.path ?? cfg.outDir;
+}
+
+/**
+ * Where the openapi-fetch client goes.
+ *
+ * The same rule again. It writes one module, `client.ts`, rather than a barrel, but a client is a
+ * thing a project imports by path and giving it its own `path` is what lets it sit beside the
+ * document it describes rather than inside a router's output directory.
+ */
+export function openApiFetchOutDir(g: { path?: string }, cfg: { outDir: string }): string {
   return g.path ?? cfg.outDir;
 }
 
@@ -1539,6 +1564,7 @@ export function computeGeneratorOutputDirs(cfg: DrzlConfig, cwd = process.cwd())
     if (g.kind === 'effect-http') dirs.add(abs(effectHttpOutDir(g, cfg)));
     if (g.kind === 'ts-rest') dirs.add(abs(tsRestOutDir(g, cfg)));
     if (g.kind === 'elysia') dirs.add(abs(elysiaOutDir(g, cfg)));
+    if (g.kind === 'openapi-fetch') dirs.add(abs(openApiFetchOutDir(g, cfg)));
     if (g.kind === 'seed') dirs.add(abs(seedOutDir(g, cfg)));
     if (g.kind === 'fast-check') dirs.add(abs(fastCheckOutDir(g, cfg)));
     if (g.kind === 'service') dirs.add(abs(g.path ?? 'src/services'));

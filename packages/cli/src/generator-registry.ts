@@ -24,6 +24,7 @@ import {
   aiOutDir,
   effectHttpOutDir,
   tsRestOutDir,
+  openApiFetchOutDir,
   elysiaOutDir,
   seedOutDir,
   fastCheckOutDir,
@@ -49,6 +50,7 @@ import { jsonSchemaOptions } from './json-schema-options.js';
 import { aiOptions } from './ai-options.js';
 import { effectHttpOptions } from './effect-http-options.js';
 import { tsRestOptions } from './ts-rest-options.js';
+import { openApiFetchOptions } from './openapi-fetch-options.js';
 import { elysiaOptions } from './elysia-options.js';
 import { seedOptions } from './seed-options.js';
 import { fastCheckOptions } from './fast-check-options.js';
@@ -275,6 +277,14 @@ export const GENERATORS: readonly GeneratorEntry[] = [
     construct: (m, analysis) => new m.TsRestGenerator(analysis),
     outputDir: (g, cfg) => tsRestOutDir(g, cfg),
     options: (g, cfg) => tsRestOptions(g, cfg),
+  },
+  {
+    kind: 'openapi-fetch',
+    specifier: '@drzl/generator-openapi-fetch',
+    load: () => import('@drzl/generator-openapi-fetch'),
+    construct: (m, analysis) => new m.OpenApiFetchGenerator(analysis),
+    outputDir: (g, cfg) => openApiFetchOutDir(g, cfg),
+    options: (g, cfg) => openApiFetchOptions(g, cfg),
   },
   {
     kind: 'elysia',
