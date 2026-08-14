@@ -28,9 +28,6 @@
     "lint": "eslint . --ext .ts",
     "test": "vitest run --testTimeout=20000"
   },
-  "dependencies": {
-    "@drzl/analyzer": "workspace:^"
-  },
   "devDependencies": {
     "tsup": "^8.5.1",
     "typescript": "^5.9.3"
