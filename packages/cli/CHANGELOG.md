@@ -1,5 +1,86 @@
 # @drzl/cli
 
+## 4.38.0
+
+### Minor Changes
+
+- f69ed0d: Recognise authentication tables by their shape, and say so before a generator publishes them.
+
+  The leak this addresses is already documented on `tables.exclude`: every generator loops over every
+  table it finds, Better Auth puts `user`, `session`, `account` and `verification` alongside your own,
+  and `account` holds `accessToken`, `refreshToken`, `idToken` and `password`. The manual answer
+  already existed. What was missing was anything that told you, so the exclusion only happened if you
+  already knew.
+
+  That same comment rejects the obvious way to detect them, and the objection is right:
+
+  > Auth table names are all renameable, so a built-in list would miss renamed tables and, worse,
+  > silently skip an ordinary table that happened to be called `user`, which is usually the
+  > application's main entity.
+
+  So the match is on **shape rather than name**, which answers both halves rather than one. A table
+  renamed to `auth_sessions` still carries `token`, `expiresAt` and a user reference; an ordinary
+  `users` table carries none of `account`'s provider columns. The conventional name only raises
+  confidence, never establishes it, and `user` is reported only when another auth table is present,
+  because on its own it is almost certainly the application's own. Column names are compared with
+  separators and case ignored, so `user_id` and `userId` both match, and the report quotes whichever
+  the table really uses. Signatures taken from `getAuthTables({})` on `better-auth@1.6.28`.
+
+  Nothing about what is generated changes. Silently skipping a table because it looked like an auth
+  table is the failure the original decision was protecting against, and it stays protected against:
+
+  - `drzl doctor` gains a section naming each match, the columns it matched on, and the credential
+    columns a generated read route would return.
+  - `drzl generate` warns for the tables carrying a credential, and only for those that survived the
+    filter, so a config that already excludes them says nothing.
+
+  Both print the `exclude` line that closes it. One defect found on the way, by running the suggestion
+  rather than reading it: the first version printed `tables: { exclude: [...] }`, and `exclude` sits at
+  the top level of the config, so the parser ignored it and the warning kept firing after the user had
+  done exactly what it asked. A suggestion that does not work is worse than no suggestion, so a test
+  now parses the suggested key with the config schema itself.
+
+- c89aeaa: Add `@drzl/generator-pothos`: a Pothos schema builder generated from a Drizzle schema, one object
+  type per table, each checked against the row type it came from.
+
+  DRZL already emits GraphQL SDL. SDL is a string: it describes a schema and cannot be extended, so a
+  resolver written against it is checked by nothing. A Pothos builder is code, and
+  `t.exposeString('emial')` is a compile error here where it silently returns `undefined` there. That
+  is the whole reason to emit one, and it is why the emission uses `builder.objectType('Users', ...)`
+  against a `SchemaBuilder<{ Objects }>` generic rather than `builder.objectRef('Users').implement`,
+  which is the shorter form and checks nothing.
+
+  Both GraphQL generators agree exactly on which type each column gets. The same column described two
+  ways by two DRZL generators is worse than either description on its own, so `Int` appears only where
+  declared bounds prove 32 bits, a uuid is `ID`, and `Date`, `bigint` and json are registered scalars.
+
+  **Nullability is stated on every field, and that is not verbosity.** Pothos defaults every field to
+  nullable, so a `NOT NULL` column written as a bare `t.exposeString('email')` reaches clients as
+  `String` and every one of them null-checks a field that cannot be null. The obvious fix,
+  `defaultFieldNullability: false` on the builder, does not compile:
+
+  ```
+  error TS2353: Object literal may only specify known properties, and
+  'defaultFieldNullability' does not exist in type 'RemoveNeverKeys<SchemaBuilderOptions<...>>'
+  ```
+
+  That option is legal only on a builder with no type parameter, which runs in Pothos's v3
+  compatibility mode. On a v4 generic, which is what a generated builder is, it types as `never`,
+  because there it exists only to opt _into_ nullable. Removing it and running the schema shows the
+  runtime default is nullable in both shapes, so the central switch is unavailable exactly where it
+  would help. Every emitted field therefore says which it is, which also lets a reader see a column's
+  nullability without knowing anything about the builder.
+
+  Getting there took a wrong turn worth recording: the first measurement was taken on the `objectRef`
+  shape, where `defaultFieldNullability: false` works, and that shape is not what the generator emits.
+  A measurement taken on a shape the generator does not produce describes nothing.
+
+  Stub resolvers throw rather than returning an empty array, because a caller reading `[]` cannot tell
+  "no rows" from "nobody wrote this yet".
+
+  `@drzl/cli` gains the `pothos` kind. Like the `seed` and `fast-check` generators it reads nothing
+  from a validation generator: the object types are checked against row interfaces it writes itself.
+
 ## 4.37.0
 
 ### Minor Changes
