@@ -1,6 +1,6 @@
 {
   "name": "@drzl/generator-next",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": false,
   "license": "Apache-2.0",
   "description": "Generate Next.js server actions from a Drizzle schema, one 'use server' module per table, with the FormData readers that turn what a browser posts into what the schemas accept.",
