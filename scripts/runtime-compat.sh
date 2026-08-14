@@ -123,6 +123,46 @@ for runtime in bun deno; do
   echo "    $runtime output is byte-identical to node"
 done
 
+# The file count quoted in docs/guide/runtimes.md, read back and compared against this run.
+#
+# That paragraph had already rotted once. It described "all 14 generators" and "47 files" long after
+# the config above had been cut to six generators, and nothing noticed, because the page credits this
+# script with re-measuring it while no gate ever read the page. A number in prose that nothing
+# compares is a number that goes stale silently, so this compares it.
+#
+# Matched with awk on a literal substring rather than a regex: `grep` is ugrep on at least one
+# maintainer's machine and rejects patterns GNU grep accepts, and a detector that silently matches
+# nothing would pass this check forever.
+emitted=$(find "$WORK/out-node" -type f | wc -l | tr -d ' ')
+documented=$(awk '
+  {
+    marker = "the emitted tree is **"
+    i = index($0, marker)
+    if (i > 0) {
+      rest = substr($0, i + length(marker))
+      n = ""
+      for (j = 1; j <= length(rest); j++) {
+        c = substr(rest, j, 1)
+        if (c >= "0" && c <= "9") { n = n c } else { break }
+      }
+      if (n != "") { print n; exit }
+    }
+  }' "$ROOT/docs/guide/runtimes.md")
+
+if [ -z "$documented" ]; then
+  echo "FAIL: no file count found in docs/guide/runtimes.md." >&2
+  echo "      This check looks for the literal text 'the emitted tree is **' followed by digits." >&2
+  echo "      If that sentence was reworded, reword this matcher with it rather than deleting it." >&2
+  exit 1
+fi
+
+if [ "$emitted" != "$documented" ]; then
+  echo "FAIL: docs/guide/runtimes.md says the emitted tree is $documented files, this run wrote $emitted." >&2
+  echo "      Update the page, or the config above changed and the page has not caught up." >&2
+  exit 1
+fi
+echo "    docs/guide/runtimes.md quotes $documented files, which is what this run wrote"
+
 # Importing proves nothing about behaviour, so each generator gets a value it must accept and two it
 # must reject. `badRange` is well typed and violates the CHECK constraint, which is what separates
 # "the module loaded" from "the schema still validates".

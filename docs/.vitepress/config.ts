@@ -17,7 +17,7 @@ const ORIGIN = `${SITE}${BASE}`;
 const TITLE = 'DRZL';
 const DESCRIPTION =
   'DRZL reads your Drizzle schema and generates the validation schemas, API routers and typed ' +
-  'services that go with it. Fourteen generators, one install.';
+  'services that go with it. Twenty-seven generators, one install.';
 
 export default {
   title: TITLE,

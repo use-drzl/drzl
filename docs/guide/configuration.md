@@ -136,9 +136,10 @@ kit config) at a barrel if you want typed columns over a multi-file schema.
 ## Router generators share `outDir`
 
 `orpc`, `trpc`, `hono`, `express`, `fastify`, `nestjs`, `graphql`, `mcp`, `next`, `ai`,
-`tanstack-start`, `h3`, `effect-http`, `ts-rest`, `elysia`, `openapi-fetch`, `forms`, `seed` and `fast-check` all write to the
-top-level `outDir` by default, and every one of them writes an `index.ts` there, so a config
-that runs more than one needs a `path` on all but one of them:
+`tanstack-start`, `h3`, `effect-http`, `ts-rest`, `elysia`, `openapi-fetch`, `forms`, `seed`,
+`fast-check` and `pothos` all write to the top-level `outDir` by default. Nineteen of them write an
+`index.ts` there and `openapi-fetch` writes a `client.ts`, so a config that runs more than one needs
+a `path` on all but one of them:
 
 ```ts
 generators: [

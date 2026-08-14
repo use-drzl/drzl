@@ -118,11 +118,15 @@ present and working on all three.
 This is the claim worth making, and it is the one that keeps CI honest: a developer who generates
 under Bun and a CI job that checks under Node must not disagree.
 
-Over a config running all 14 generators, the emitted tree is **47 files, identical SHA-256 on all
-three runtimes**. `drzl analyze --json`, `drzl doctor`, `--help`, `--version`, the `init` config and
-the `generate:orpc` and `generate:trpc` trees are byte-identical too. The only differences anywhere
-in the captured output are an elapsed-milliseconds line and absolute paths, neither of which is
-written to a file.
+Over the config `scripts/runtime-compat.sh` runs, which is six validator generators against a
+one-table schema carrying an enum and a `CHECK`, the emitted tree is **12 files, byte-identical on
+all three runtimes**. `drzl analyze --json` is compared byte for byte as well, because it is the
+analyzer's whole output and the thing every generator is built on.
+
+That file count is not prose. `scripts/runtime-compat.sh` reads it back out of this page and fails if
+its own run disagrees, because this paragraph had already rotted once: it described fourteen
+generators and forty-seven files long after the script had been cut down to six, and nothing noticed
+because no gate read it.
 
 Everything in this section is re-measured by `scripts/runtime-compat.sh`, which packs the tarballs,
 installs them with npm into an empty project, generates under all three runtimes, compares the bytes
