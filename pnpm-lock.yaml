@@ -977,10 +977,6 @@ importers:
         version: 5.9.3
 
   packages/template-standard:
-    dependencies:
-      '@drzl/analyzer':
-        specifier: workspace:^
-        version: link:../analyzer
     devDependencies:
       tsup:
         specifier: ^8.5.1
