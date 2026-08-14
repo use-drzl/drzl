@@ -1,5 +1,11 @@
 /**
- * Why this generator requires `@ts-rest/core` 3.53.0-rc.0 or newer.
+ * Why this generator requires `@ts-rest/core` 3.53.0-rc.1 or newer.
+ *
+ * The declared floor is rc.1, which is what `package.json` asks for and what these tests run
+ * against. The Standard Schema support itself landed one release earlier: rc.0 exports
+ * `isStandardSchema`, `validateAgainstStandardSchema` and `parseAsStandardSchema`, and does not
+ * export `checkZodSchema` at all. Measured 2026-08-14. The floor is rc.1 rather than rc.0 because
+ * that is the version this package pins and tests; nothing here has been run against rc.0.
  *
  * Depending on a release candidate is a real cost, so the reason is pinned here rather than left in
  * a comment. Both halves are must-fire tests: if a later ts-rest fixes either one, these fail and

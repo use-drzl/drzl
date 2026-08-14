@@ -50,7 +50,7 @@ The barrel is a route table rather than a mounted app: Nitro discovers handlers 
 by a different one, and a bare h3 project mounts them by hand, so any single choice would be wrong
 for the other two.
 
-Full documentation: https://drzl.dev/generators/h3
+Full documentation: https://use-drzl.github.io/drzl/generators/h3
 
 ## Licence
 

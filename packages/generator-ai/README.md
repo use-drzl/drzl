@@ -63,7 +63,7 @@ await generateText({ model, tools: allTools, prompt: 'Add a user called Omar who
 `allTools` is one flat object, which is what `generateText` and `streamText` take. Each table also
 exports its own set.
 
-Full documentation: https://drzl.dev/generators/ai
+Full documentation: https://use-drzl.github.io/drzl/generators/ai
 
 ## Licence
 

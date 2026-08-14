@@ -51,7 +51,7 @@ string, because `JSON.stringify(1n)` throws and a number loses precision past 2^
 Stub resolvers throw rather than returning an empty array: a caller reading `[]` cannot tell "no
 rows" from "nobody wrote this yet".
 
-Full documentation: https://drzl.dev/generators/pothos
+Full documentation: https://use-drzl.github.io/drzl/generators/pothos
 
 ## Licence
 

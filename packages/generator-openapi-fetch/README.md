@@ -4,7 +4,7 @@ A typed [openapi-fetch](https://openapi-ts.dev/openapi-fetch/) client, generated
 schema.
 
 Part of [DRZL](https://github.com/use-drzl/drzl). Full documentation:
-[Generators → openapi-fetch](https://drzl.dev/generators/openapi-fetch).
+[Generators → openapi-fetch](https://use-drzl.github.io/drzl/generators/openapi-fetch).
 
 ## Install
 

@@ -89,6 +89,6 @@ generators: [
 ];
 ```
 
-See [the Effect generator docs](https://drzl.dev/generators/effect) for the column table, the
+See [the Effect generator docs](https://use-drzl.github.io/drzl/generators/effect) for the column table, the
 character-count rule and how `NaN` and the infinities are handled, which runs the opposite way here
 from every other validator DRZL emits.

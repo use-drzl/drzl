@@ -43,7 +43,7 @@ The barrel chains every group into one `HttpApi`, which is what lets `HttpApiCli
 client that knows every endpoint. Written as separate statements it would compile and describe
 nothing.
 
-Full documentation: https://drzl.dev/generators/effect-http
+Full documentation: https://use-drzl.github.io/drzl/generators/effect-http
 
 ## Licence
 

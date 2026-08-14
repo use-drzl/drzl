@@ -46,7 +46,7 @@ a `customType` column with no `$type<T>()` is one the analyzer cannot type, so i
 `unknown` and Start refuses the whole function. Give the column a type in your Drizzle schema.
 `Date` is fine, and so is everything else DRZL emits.
 
-Full documentation: https://drzl.dev/generators/tanstack-start
+Full documentation: https://use-drzl.github.io/drzl/generators/tanstack-start
 
 ## Licence
 

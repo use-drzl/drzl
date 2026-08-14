@@ -16,7 +16,7 @@ import {
  * parameters, query and every response status. Server and client are both derived from it, so the
  * contract is the whole artefact and there is no handler to stub.
  *
- * This generator requires `@ts-rest/core` 3.53.0-rc.0 or newer, which is a release candidate, and
+ * This generator requires `@ts-rest/core` 3.53.0-rc.1 or newer, which is a release candidate, and
  * that floor is not conservatism about a version number. Measured against the registry and against
  * both packages on 2026-08-11:
  *
@@ -568,7 +568,7 @@ function renderBarrel(
 // This is the whole artefact: \`initServer().router(${name}, { ... })\` implements it and
 // \`initClient(${name}, { baseUrl })\` consumes it, both typed from this object alone.
 //
-// Requires @ts-rest/core 3.53.0-rc.0 or newer. Earlier versions type a contract's schemas as zod 3
+// Requires @ts-rest/core 3.53.0-rc.1 or newer. Earlier versions type a contract's schemas as zod 3
 // and cannot be installed beside the zod 4 DRZL emits; they also treat any schema without a
 // \`.safeParse\` method as no schema at all, so a valibot or arktype contract would silently
 // validate nothing.

@@ -53,7 +53,7 @@ declared bound still wins.
 
 An expression the parser cannot read is named in the emitted module rather than silently dropped.
 
-Full documentation: https://drzl.dev/generators/seed
+Full documentation: https://use-drzl.github.io/drzl/generators/seed
 
 ## Licence
 

@@ -54,7 +54,7 @@ An unconstrained column stays unconstrained here. `@drzl/generator-seed` narrows
 to a readable window because a fixture is there to be looked at; a property test wants the awkward
 values, so only what the column genuinely cannot hold is excluded.
 
-Full documentation: https://drzl.dev/generators/fast-check
+Full documentation: https://use-drzl.github.io/drzl/generators/fast-check
 
 ## Licence
 

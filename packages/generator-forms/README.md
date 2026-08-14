@@ -4,7 +4,7 @@ Form resolvers and per-field input metadata, generated from your Drizzle schema,
 [react-hook-form](https://react-hook-form.com) and [TanStack Form](https://tanstack.com/form).
 
 Part of [DRZL](https://github.com/use-drzl/drzl). Full documentation:
-[Generators → Forms](https://drzl.dev/generators/forms).
+[Generators → Forms](https://use-drzl.github.io/drzl/generators/forms).
 
 ## Install
 
