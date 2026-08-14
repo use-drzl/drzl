@@ -87,6 +87,11 @@ import {
   staleWarning,
   writeManifest,
 } from './manifest.js';
+import {
+  rebuildSignature,
+  sameAsLast,
+  type RebuildSignature,
+} from './rebuild-fingerprint.js';
 import { unifiedDiff } from './unified-diff.js';
 import { createRebuildScheduler, resolveDebounce } from './watch-loop.js';
 import { GeneratorNotInstalledError } from './generator-loader.js';
@@ -1510,6 +1515,13 @@ program
       });
 
     let lastFiles: string[] = [];
+    /**
+     * What the last rebuild was built from, so one that would change nothing can be skipped.
+     *
+     * Beside `lastFiles` because it is the same kind of state: what the previous pass produced, and
+     * what the next one compares itself against.
+     */
+    let lastSignature: RebuildSignature | undefined;
 
     /**
      * One generator finishing a watch rebuild, reported the same way for every kind.
@@ -1642,6 +1654,32 @@ program
           }
           return;
         }
+
+        /**
+         * A save that changes nothing a generator reads does not rebuild.
+         *
+         * Every save re-runs every generator over every table, and that is most of what a rebuild
+         * costs: measured at about 6.9 ms per table of generation on a warm process, so a sixty
+         * table schema spends roughly 450 ms, of which analysis is around 35 ms. Re-analysing is
+         * not the part worth avoiding.
+         *
+         * Plenty of saves change nothing a generator reads. A comment, a reformat, an edit to a
+         * helper beside the tables, or a column name typed and deleted again all re-trigger the
+         * watcher and all produce byte-identical output. `EmitPlan` already declines to *write* an
+         * unchanged file; what it cannot avoid is producing the content to compare.
+         *
+         * This is the cheap half of incremental watch and deliberately not the whole of it.
+         * Regenerating only the tables that moved would need every generator to accept a subset of
+         * the analysis while still emitting a complete barrel, which is a change to the contract
+         * all of them implement.
+         */
+        const signature = rebuildSignature(analysis, cfg.generators);
+        if (sameAsLast(lastSignature, signature)) {
+          if (opts.json) out.jsonData({ event: 'generate_skipped', reason: 'no change' });
+          else out.note(out.errStyle.gray('No change to anything a generator reads. Skipped.'));
+          return;
+        }
+        lastSignature = signature;
 
         for (const g of selectGenerators(cfg.generators, selection.kinds)) {
           // The registry, the same list `generate` dispatches over. Two hand-written copies of
