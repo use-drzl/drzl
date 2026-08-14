@@ -1,6 +1,6 @@
 {
   "name": "@drzl/generator-seed",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "private": false,
   "license": "Apache-2.0",
   "description": "Generate constraint-satisfying seed rows from a Drizzle schema, built to satisfy every CHECK the analyzer parsed rather than found by retrying.",
