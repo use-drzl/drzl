@@ -33,7 +33,7 @@ Zero‑friction codegen for Drizzle ORM. Analyze your schema. Generate validatio
 - Generators: Zod, Valibot, ArkType, TypeBox and Effect Schema validation; JSON Schema and OpenAPI;
   typed CRUD services; routers for oRPC, tRPC, Hono, Express, Fastify, NestJS and GraphQL; and an
   MCP server whose tools carry the table's CHECK constraints into what a model is allowed to write.
-  Fourteen in all, and installing `@drzl/cli` brings every one of them
+  Twenty-seven in all, and installing `@drzl/cli` brings every one of them
 - Batteries: formatting, naming, reusable/shared schemas, relation support
 - Monorepo: pnpm workspace, lockstep releases with Changesets
 

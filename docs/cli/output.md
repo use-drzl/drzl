@@ -297,7 +297,13 @@ written without one.
 
 The one command whose `--json` is a stream rather than a document, because a watch never finishes.
 One JSON object per line on stdout, each with an `event` key: `watching`, `trigger`,
-`watch_config_applied`, `analyze_complete`, `generate_complete`, `diff`, `error`.
+`watch_config_applied`, `analyze_complete`, `generate_complete`, `generate_skipped`, `diff`,
+`error`.
+
+`generate_skipped` carries a `reason` and is emitted in place of `generate_complete` when nothing a
+generator reads has changed since the last rebuild. A save that touches only a comment produces one,
+so a consumer counting `generate_complete` events to decide a rebuild happened has to count this one
+too, or it will read a skipped rebuild as a watcher that stopped responding.
 
 ## Exit codes
 

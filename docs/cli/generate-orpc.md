@@ -16,8 +16,8 @@ This command keeps working until 5.0 and prints one line on stderr naming the re
 goes through the output layer, so `--quiet` and `--json` both drop it.
 
 The split it comes from was chronological rather than principled: `generate:orpc` shipped when oRPC
-was the only generator, `generate:trpc` arrived with the tRPC generator, and the twelve generators
-added since added no command at all. `--only` names all fourteen.
+was the only generator, `generate:trpc` arrived with the tRPC generator, and every generator added
+since added no command at all. `--only` names all of them.
 :::
 
 Quickly generate oRPC routers without a config.

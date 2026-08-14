@@ -82,9 +82,9 @@ It will not write a `schema` naming a file that is not on disk.
 ## What it scaffolds
 
 The default is **Zod validators**. Every generator `@drzl/cli` depends on is installed by
-definition alongside the CLI that scaffolded the config, and that is all fourteen of them; the five
-in the list are the ones whose config entry `init` knows how to write. The other nine work exactly
-as well, and you add their entry by hand from the page documenting each.
+definition alongside the CLI that scaffolded the config, and that is all twenty-seven of them; the
+five in the list are the ones whose config entry `init` knows how to write. The other twenty-two work
+exactly as well, and you add their entry by hand from the page documenting each.
 
 ```ts
 import type { DrzlConfigInput } from '@drzl/cli/config';

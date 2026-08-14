@@ -4,7 +4,11 @@ Generates typed CRUD service classes per table (Drizzle or stub).
 
 Key options:
 
-- `outDir`, `dataAccess`, `dbImportPath`, `schemaImportPath`
+- `path` (default `src/services`), `dataAccess`, `dbImportPath`, `schemaImportPath`
+
+  `outDir` is the generator package's own option name, filled in by the CLI from `path`. Writing
+  `outDir` on a generator entry is an unknown key: it is warned about and ignored, and the output
+  lands in `src/services` anyway.
 - `databaseInjection`: make services accept a database instance (serverless‑friendly)
 
 See the [package README](https://github.com/use-drzl/drzl/blob/master/packages/generator-service/README.md) for details.

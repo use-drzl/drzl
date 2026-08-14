@@ -7,7 +7,7 @@ separately.
 { kind: 'zod', path: 'src/validators/zod', nestedSchemas: true }
 ```
 
-Available on all four validation generators, off by default. With it off, the emitted output is
+Available on all five validation generators, off by default. With it off, the emitted output is
 byte-for-byte what it was before.
 
 A whole config, with every generator that takes the option:
@@ -21,6 +21,7 @@ export default {
     { kind: 'valibot', path: 'src/validators/valibot', nestedSchemas: true },
     { kind: 'arktype', path: 'src/validators/arktype', nestedSchemas: true },
     { kind: 'typebox', path: 'src/validators/typebox', nestedSchemas: true, nestedDepth: 2 },
+    { kind: 'effect', path: 'src/validators/effect', nestedSchemas: true },
   ],
 };
 ```

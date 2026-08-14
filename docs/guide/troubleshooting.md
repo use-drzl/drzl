@@ -183,9 +183,10 @@ on `fastify`, `includeRelations` on `nestjs`, `validation` on `graphql`. The opt
 config schema, so `DRZL_CFG_002` cannot catch it; it just has no effect on that generator, and the
 warning names both the generator and the key.
 
-Two of them are failures rather than warnings, because the result would not compile: a router
-generator whose `validation.schemaSuffix` or `validation.affix` disagrees with the validation
-generator it imports schemas from. Those messages print both spellings and both exports, since the
+One of them is a failure rather than a warning, because the result would not compile: a router
+generator whose `validation.affix` disagrees with the validation generator it imports schemas from.
+The matching `validation.schemaSuffix` disagreement is a warning and the run continues, which is
+deliberate rather than an oversight. Those messages print both spellings and both exports, since the
 whole problem is that the two disagree.
 
 ## The schema

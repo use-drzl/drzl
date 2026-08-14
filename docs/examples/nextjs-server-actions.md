@@ -213,7 +213,7 @@ Staleness is the obvious objection, and `--check` answers it. The example's buil
 ```
 
 where `check:generated` is `drzl generate --check`. It regenerates, compares against what is on
-disk, restores the tree either way, and exits `1` on any difference. A hand-edited generated file
+disk, restores the tree either way, and exits `2` on any difference. A hand-edited generated file
 and a schema changed without regenerating both fail the build. See
 [`generate --check`](/cli/generate#check-fail-ci-when-generated-output-is-stale).
 

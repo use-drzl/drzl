@@ -210,7 +210,7 @@ Behavior:
   only the paths that were written
 
 `--only` takes the kinds a config uses, read from the same list the config parser is built from, so
-an unknown one is refused by name rather than matching nothing. With `--schema` and no config file
+an unknown one is refused by name rather than matching nothing. With `--only` and no config file
 present, a minimal config is built in memory, which is how one generator runs with no config at
 all:
 
@@ -342,8 +342,8 @@ A watch has no answer to give, so everything human it prints goes to stderr. Exi
 is no config, when the schema path cannot be resolved, or when `--only` or `--pipeline` names
 something that is not a generator kind.
 
-`--pipeline` reaches all fourteen kinds now. It listed seven, and the other seven matched nothing
-at all, so `drzl watch --pipeline generate-zod` ran and regenerated nothing. See
+`--pipeline` reaches every kind now. It used to carry a list of seven, and anything outside that
+list matched nothing at all, so `drzl watch --pipeline generate-zod` ran and regenerated nothing. See
 [Watch](/cli/watch).
 
 ### init

@@ -58,8 +58,8 @@ running, because the config is reloaded every time and adding the generator to i
 
 ### `--pipeline` is the older spelling
 
-`--pipeline generate-<kind>` still works and now reaches **all fourteen kinds**. It used to list
-seven, and the other seven matched nothing at all: `drzl watch --pipeline generate-zod` started,
+`--pipeline generate-<kind>` still works and now reaches **every kind**. It used to carry a list of
+seven, and anything outside it matched nothing at all: `drzl watch --pipeline generate-zod` started,
 printed its watch list, and then regenerated nothing for as long as it ran, with no error and
 nothing wrong with the config. That was true for `service`, `zod`, `valibot`, `arktype`, `typebox`,
 `effect` and `json-schema`.
@@ -67,8 +67,10 @@ nothing wrong with the config. That was true for `service`, `zod`, `valibot`, `a
 A `--pipeline` value that is not a pipeline is now an error rather than a silent no-op, so a typo
 stops the watcher instead of leaving it running and idle.
 
-`--pipeline analyze` is unchanged: it reports the analysis and runs no generator. Passing both
-`--pipeline` and `--only` is refused, because they say the same thing.
+`--pipeline analyze` is unchanged: it reports the analysis and runs no generator. Passing `--only`
+alongside a *narrowing* pipeline, meaning `analyze` or `generate-<kind>`, is refused, because the two
+say different things about the same run. `--pipeline all` is not narrowing and combines with `--only`
+without complaint.
 
 ## One rebuild at a time
 
@@ -88,8 +90,10 @@ inside one burst was 9ms, from a tool rewriting two files back to back. Without 
 same bursts spread out to at most 121ms, from format-on-save. 200ms covers the widest of them and
 is short enough that a save still feels immediate.
 
-`--debounce 0` is allowed and means "rebuild on the next tick". A value that is not a number is
-now refused with a warning instead of being silently replaced by 200.
+`--debounce 0` is allowed and means "rebuild on the next tick". A value that is not a non-negative
+number falls back to 200ms and says so on stderr, rather than being replaced silently. The notice
+goes through the ordinary warning channel, so `--json` and `--quiet` drop it and the fallback is
+silent again under either.
 
 ## Clearing the screen
 
@@ -106,8 +110,12 @@ terminal cleared nothing.
 
 A watch never finishes, so it has no answer to give: everything human it prints goes to stderr, and
 stdout carries only the `--json` event stream. Each line is one object with an `event` key, one of
-`watching`, `trigger`, `watch_config_applied`, `analyze_complete`, `generate_complete`, `diff` or
-`error`.
+`watching`, `trigger`, `watch_config_applied`, `analyze_complete`, `generate_complete`,
+`generate_skipped`, `diff` or `error`.
+
+`generate_skipped` replaces `generate_complete` when the fingerprint of everything a generator reads
+matches the previous rebuild, and carries a `reason`. It is the common case while editing: a comment,
+a reformat or an edit to a helper beside the tables all re-trigger the watcher and change nothing.
 
 ```bash
 drzl watch --json | jq -r 'select(.event == "generate_complete") | .kind'

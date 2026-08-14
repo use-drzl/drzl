@@ -68,9 +68,12 @@ stub handlers for `create` and `update` throw rather than returning their input:
 shape, where they are required. A body that only throws has type `never`, which honours any
 contract and says plainly that the work is not done.
 
-TypeBox is the one validator DRZL generates that cannot be used here. tRPC recognises a validator
-through Standard Schema, and `@sinclair/typebox` does not implement it. `validation.library` accepts
-`zod`, `valibot` and `arktype`.
+`validation.library` accepts `zod`, `valibot` and `arktype`, so three of the six schema generators
+cannot drive a tRPC router. They fail differently, which is worth knowing before you go looking for
+the option. TypeBox is the one blocked on its own account: tRPC recognises a validator through
+Standard Schema and `@sinclair/typebox` does not implement it. `effect` and `json-schema` are simply
+not values `validation.library` takes, so there is no entry to write, and Effect Schema does
+implement Standard Schema, so that is a gap in the option rather than in Effect.
 
 ## A `Date` column, and the transformer question
 

@@ -29,8 +29,9 @@ somewhere you do not control.
 ## Form validation
 
 Every schema DRZL emits in zod, valibot or arktype spelling carries
-[Standard Schema v1](https://standardschema.dev), so there is no `@drzl/*` package to install for
-a form. Wiring one is a single property:
+[Standard Schema v1](https://standardschema.dev), so wiring a form is a single property.
+[`@drzl/generator-forms`](/generators/forms) emits that property per table, with the field metadata
+a control needs beside it:
 
 ```tsx
 useForm({ resolver: zodResolver(InsertusersSchema) }); // React Hook Form
