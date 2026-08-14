@@ -4,7 +4,8 @@ TanStack Form v1 accepts [Standard Schema v1](https://standardschema.dev) valida
 on every validator slot, form-level and field-level, sync and async. Every schema DRZL emits in
 zod, valibot or arktype spelling carries that interface
 ([measured on all twelve combinations](/examples/react-hook-form)), so wiring a table's form is
-one property and there is no `@drzl/*` package for it:
+one property. [`@drzl/generator-forms`](/generators/forms) emits that property ready made, along with
+the per-field metadata this page argues is the harder half:
 
 ```tsx
 useForm({ validators: { onChange: InsertusersSchema } });

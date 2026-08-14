@@ -3,16 +3,21 @@
 Every schema DRZL emits in zod, valibot or arktype spelling carries [Standard Schema
 v1](https://standardschema.dev): `InsertusersSchema['~standard']` is present on insert, update,
 select and nested exports alike (measured on all twelve combinations). React Hook Form's own
-resolver package understands that interface directly, so wiring a table's form is one line and
-there is no `@drzl/*` package for it:
+resolver package understands that interface directly, so wiring a table's form is one line:
 
 ```tsx
 useForm({ resolver: zodResolver(InsertusersSchema) });
 ```
 
-That absence is deliberate and was settled by measurement rather than taste. A per-table
-resolver export would wrap one call. It could not close the real gaps either, because the work
-a form actually needs sits in `register()`, and React Hook Form applies `valueAsNumber`,
+This page is the pipeline either side of that line, measured. The gaps it describes below are the
+argument that produced [`@drzl/generator-forms`](/generators/forms), which emits the per-table
+resolver *and* the per-field `control`, `required`, `nullable`, `min`, `max` and `integer` metadata
+those gaps are about. Read this page for why the metadata is the interesting half; read that one for
+the generator that emits it.
+
+The gaps are real, which is the point. A per-table resolver export on its own would wrap one call,
+and would close none of them, because the work a form actually needs sits in `register()`, and
+React Hook Form applies `valueAsNumber`,
 `valueAsDate` and `setValueAs` to the input's string **before any resolver runs**. The rest of
 this page is the measured behavior of that pipeline against real emitted schemas, and the
 handful of traps worth knowing about.

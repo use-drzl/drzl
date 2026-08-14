@@ -121,10 +121,12 @@ This writes validators to `src/validators/zod`, routers to `src/api`, and servic
 
 Notes
 
-- Seven generators emit routers or an API surface, and each is its own generator rather than a
-  template: oRPC, tRPC, Hono, Express, Fastify, NestJS and GraphQL. Only oRPC takes templates, which
-  is why the step above installs one. See [Adapters](/adapters/overview) for which to reach for.
-- You do not install generators. All fourteen are dependencies of `@drzl/cli`, so the install in
+- Eighteen generators emit routers or an API surface, and each is its own generator rather than a
+  template: oRPC, tRPC, Hono, Express, Fastify, NestJS, GraphQL, Pothos, MCP, Next.js, the AI SDK,
+  TanStack Start, h3, Effect HttpApi, ts-rest, openapi-fetch, forms and Elysia. Only oRPC takes
+  templates, which is why the step above installs one. See [Adapters](/adapters/overview) for which
+  to reach for.
+- You do not install generators. All twenty-seven are dependencies of `@drzl/cli`, so the install in
   step 1 already brought every one of them. What you may need is the **validation library itself**,
   in your own app: `zod`, `valibot`, `arktype`, `@sinclair/typebox` or `effect`, since the generated
   files import from it. `effect` is an optional peer and is never installed for you; see

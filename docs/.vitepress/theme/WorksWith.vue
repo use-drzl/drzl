@@ -9,7 +9,7 @@
  *      page, a provider links to its quickstart, a runtime links to the measured table. If an
  *      entry has nowhere honest to point, it does not belong here.
  *   2. Marks render in `currentColor` at one size. The set is mixed by necessity: some names have
- *      a mark in simple-icons and seven do not, and a single ink colour is what makes that read as
+ *      a mark in simple-icons and thirteen do not, and a single ink colour is what makes that read as
  *      a deliberate house style rather than as whatever was available. It also means dark mode is
  *      correct without a second copy of anything.
  *   3. The SVGs are `aria-hidden`. Each one sits beside the visible name it depicts, so exposing
@@ -21,7 +21,7 @@ import { useData, withBase } from 'vitepress';
 import { marks } from './marks';
 
 /**
- * The initial, for the seven names simple-icons has no mark for.
+ * The initial, for the thirteen names simple-icons has no mark for.
  *
  * Deliberately a letterform in a box rather than a drawing: it is obviously a monogram and not a
  * claim to be anyone's logo, which is what lets the grid be visually even without inventing or
@@ -40,7 +40,7 @@ function monogram(name: string): string {
 interface Entry {
   /** The visible, and accessible, name. */
   name: string;
-  /** Key into the vendored marks. Omitted for the four names simple-icons has no mark for. */
+  /** Key into the vendored marks. Omitted for the thirteen names simple-icons has no mark for. */
   mark?: string;
   /** The page that backs the claim. */
   link: string;
@@ -71,7 +71,7 @@ const groups: Group[] = [
   {
     id: 'routers',
     title: 'Routers and servers',
-    note: 'One generator kind each, emitting the router or the app that framework expects.',
+    note: 'One generator kind each, emitting the router or the app that framework expects, except react-hook-form and TanStack Form, which are the two targets of the one forms kind.',
     entries: [
       { name: 'oRPC', link: '/generators/orpc' },
       { name: 'tRPC', mark: 'trpc', link: '/generators/trpc' },
@@ -99,7 +99,7 @@ const groups: Group[] = [
   {
     id: 'databases',
     title: 'Databases',
-    note: 'Four dialects the analyzer reads. The first three are asked a real server on every commit; the providers below them have quickstarts.',
+    note: 'The dialects shown here. The analyzer reads seven; the first three below are asked a real server on every commit, and the providers under them have quickstarts.',
     entries: [
       { name: 'Postgres', mark: 'postgresql', link: '/guide/verification#three-real-databases' },
       { name: 'MySQL', mark: 'mysql', link: '/guide/verification#three-real-databases' },
@@ -192,11 +192,12 @@ function href(link: string): string {
       </div>
 
       <p class="aside">
-        Forms are deliberately not in the grid, because there is no generator to put there. Every
-        schema DRZL emits in zod, valibot or arktype spelling carries Standard Schema v1, which
         <a :href="href('/examples/react-hook-form')">React Hook Form</a> and
-        <a :href="href('/examples/tanstack-form')">TanStack Form</a> both accept directly, so wiring
-        a table's form is one line and needs no <code>@drzl/*</code> package at all.
+        <a :href="href('/examples/tanstack-form')">TanStack Form</a> are the two targets of one
+        <code>forms</code> kind rather than a generator each. Every schema DRZL emits in zod,
+        valibot or arktype spelling carries Standard Schema v1, which both accept directly, so the
+        resolver is one line either way; what the generator adds is the per-field metadata a control
+        needs, which is the half you would otherwise write by hand.
       </p>
       <p class="footnote">
         Product names and marks belong to their owners, and appear here only to say which software

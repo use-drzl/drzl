@@ -30,6 +30,10 @@ Every one is satisfied by construction, so there is no retry loop.
 
 ## Setup
 
+```bash
+npm install -D @drzl/generator-seed
+```
+
 ```ts
 // drzl.config.ts
 export default {

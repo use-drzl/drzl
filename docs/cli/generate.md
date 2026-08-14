@@ -87,8 +87,8 @@ npx @drzl/cli generate --schema src/db/schema.ts --only orpc
 `--schema` names the schema module, overriding the config's `schema` and the drizzle-kit fallback,
 exactly as `-s` does for [`explain`](/cli/explain). With `--only` and **no config file present**, a
 minimal config is built in memory instead, which is what makes the line above a complete command:
-it emits what `drzl generate:orpc src/db/schema.ts` emits, byte for byte, and it works for all
-fourteen kinds rather than the two that had a command of their own.
+it emits what `drzl generate:orpc src/db/schema.ts` emits, byte for byte, and it works for every
+kind rather than the two that had a command of their own.
 
 Everything the config route offers is still there, because there is a real config underneath: it is
 the same run, so `--check`, `--dry-run` and the drift verdicts all apply. Output goes where the

@@ -48,7 +48,7 @@ output directory.
 
 ```ts
 import createClient, { type ClientOptions } from "openapi-fetch";
-import type { InsertusersInput, SelectusersOutput, UpdateusersInput } from "../validators/zod/index.js";
+import type { InsertusersInput, SelectusersOutput, UpdateusersInput } from "../../validators/zod/index.js";
 
 export interface ApiError {
   error: string;
@@ -144,7 +144,7 @@ So the emitted type is the third. Nothing about the typing is weaker for it, and
 short enough to read.
 
 If you would rather use `openapi-typescript`, nothing here stops you: emit the document with
-`{ kind: 'json-schema', document: true, format: 'json' }` and point the tool at `openapi.json`.
+`{ kind: 'json-schema', document: { format: 'json' } }` and point the tool at `openapi.json`.
 
 ## Keep `document` in step
 

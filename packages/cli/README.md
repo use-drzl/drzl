@@ -37,8 +37,8 @@ Analyze your Drizzle schema and generate validation, services, and routers.
 - Generate: `pnpm dlx @drzl/cli generate -c drzl.config.ts`
 - Watch: `pnpm dlx @drzl/cli watch -c drzl.config.ts`
 
-All fourteen generators ship as dependencies of this package, so installing it is the only install
-you need to run any of them.
+All twenty-seven generators ship as dependencies of this package, so installing it is the only
+install you need to run any of them.
 
 ## Minimal config
 

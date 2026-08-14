@@ -105,7 +105,7 @@ Four CHECK cases are distinguished, because they have different fixes:
 
 - **Not translated.** The shared parser refused the expression and says why: `contains OR`,
   `right side is not a literal`, and so on. See the skip list in
-  [Generators → Zod](/generators/zod#check-constraints); the same parser serves all four validation
+  [Generators → Zod](/generators/zod#check-constraints); the same parser serves all five validation
   generators.
 - **Names a column the table does not have.** Usually a typo, or a constraint that spans two tables.
 - **Compares an array or structured column against a scalar literal.** `tags = '{}'` on a `text[]`

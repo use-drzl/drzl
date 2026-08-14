@@ -270,9 +270,12 @@ adding a generator.
 Named rather than papered over, because a stage that quietly does not reach something is
 indistinguishable from one that passes.
 
-- **Two of the CLI's generator kinds miss part of the sweep.** `typebox` and `json-schema` are
-  generated and compiled by the parity stage under `module nodenext` alone, so neither reaches the
-  `bundler` and `node16` legs of the moduleResolution sweep.
+- **Seven of the CLI's generator kinds miss part of the sweep.** The sweep typechecks what
+  `scripts/verify/fixtures/consumer.drzl.config.ts` emits, and that config names twenty of the
+  twenty-seven kinds. `typebox` and `json-schema` are generated and compiled by the parity stage
+  under `module nodenext` alone, so neither reaches the `bundler` and `node16` legs. `hono`,
+  `express`, `fastify`, `nestjs` and `graphql` are in no config the packed gate generates from, so
+  the sweep never sees them at all.
 - **One MySQL cap cannot be probed at all.** Telling a byte budget from a character count needs a
   string over the cap in bytes and under it in characters, and UTF-8 spends at most three bytes per
   UTF-16 unit. For `longtext` that needs more units than V8 will put in a string. The run prints

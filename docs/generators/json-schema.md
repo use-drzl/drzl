@@ -7,7 +7,7 @@ index barrel.
 { kind: 'json-schema', path: 'src/validators/json-schema' }
 ```
 
-The other four generators each target one validation library, so the output is only useful to a
+The other five generators each target one validation library, so the output is only useful to a
 TypeScript program that installs that library. JSON Schema is the format everything else already
 reads: OpenAPI documents, API gateways, form builders, contract tests, and validators in other
 languages.

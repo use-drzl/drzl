@@ -36,6 +36,11 @@ A column that cannot hold a NaN never gets one; a column that can, still does.
 
 ## Setup
 
+```bash
+npm install -D @drzl/generator-fast-check
+npm install -D fast-check
+```
+
 ```ts
 // drzl.config.ts
 export default {

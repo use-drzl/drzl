@@ -1,8 +1,8 @@
 # Adapters (Overview)
 
-DRZL is adapter agnostic: seven generators target a different stack each, and you pick per config
-entry. Only the oRPC generator is template driven, for the reason given under "How it works" below;
-the other six ship without a hook API on purpose rather than pending.
+DRZL is adapter agnostic: eighteen generators target a different stack each, and you pick per
+config entry. Only the oRPC generator is template driven, for the reason given under "How it works"
+below; every other one ships without a hook API on purpose rather than pending.
 
 Current support:
 
@@ -15,17 +15,22 @@ Current support:
   controllers stay yours)
 - GraphQL, via `generator-graphql` (SDL typeDefs, resolver stubs, enum value maps and scalar
   configs consumable by any GraphQL server; the resolvers stay yours)
+- Pothos, MCP, Next.js, the AI SDK, TanStack Start, h3 and Nitro, Effect HttpApi, ts-rest,
+  openapi-fetch, forms and Elysia, each via its own `generator-*` package. See the
+  "APIs and routers" section of the sidebar for a page on each.
 
 Planned/possible adapters (community interest welcome):
 
-- Next.js, and more
+- Ask for one. Next.js was listed here as planned long after `@drzl/generator-next` shipped, which
+  is the failure mode this section has: it is a list of absences, and nothing makes it notice when
+  one of them stops being absent.
 
 How it works:
 
 - The oRPC generator is driven by a template interface (hooks) that tells it how to name files,
   export router identifiers, inject imports and a prelude, and render procedure code. You can write
   custom templates to adapt it to your runtime or conventions.
-- The other six take no template module, and that is deliberate rather than pending.
+- Every other one takes no template module, and that is deliberate rather than pending.
   `ORPCTemplateHooks` hands back oRPC source text (`os.handler(...)`, `ORPCError`), none of which is
   valid in a tRPC, Hono, Express, Fastify, NestJS or GraphQL file, so a template written against
   that interface would emit something that does not compile. Each ships without a hook API rather

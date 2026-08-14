@@ -31,9 +31,11 @@ Thanks for your interest in contributing! This guide explains how to set up your
 
 - `analyzer`: Drizzle schema analysis
 - `cli`: drzl CLI
-- `generator-*`: the fourteen code generators (oRPC, tRPC, Hono, Express, Fastify, NestJS, GraphQL,
-  service, zod, valibot, arktype, typebox, effect, json-schema). All fourteen are dependencies of
-  `cli`, so a consumer installing `@drzl/cli` gets every one
+- `generator-*`: the twenty-seven code generators. `GeneratorKindSchema` in
+  `packages/cli/src/config.ts` is the list worth trusting; this line spelled out fourteen of them for
+  long enough that the count became wrong twice over, which is the argument against repeating it
+  here. All twenty-seven are dependencies of `cli`, so a consumer installing `@drzl/cli` gets every
+  one
 - `template-*`: oRPC templates
 - `validation-core`: shared validation codegen helpers
 

@@ -20,16 +20,17 @@ import { formatCode, importSpecifier } from '@drzl/validation-core';
  * `Objects` map. Emitting the first would give up the only thing this generator has that the SDL
  * generator does not.
  *
- * Field nullability depends on which of those two shapes is used, and that cost a wrong turn here.
- * Measured against `@pothos/core@4.13.1`: a builder with **no type parameter** runs in v3
- * compatibility and defaults every field to *nullable*, so a bare `t.exposeString('email')` prints
- * `String` and `defaultFieldNullability: false` is what gets `String!`. A builder with a v4 generic,
- * which is what this emits, already defaults to non-null, and that same option types as `never`
- * there, because it exists only to opt *into* nullable.
+ * Field nullability cost a wrong turn here, twice, and the second one survived in this comment for a
+ * while. Measured against `@pothos/core@4.13.1`, on the v4 generic shape this actually emits: a bare
+ * `t.exposeString('bare')` prints `bare: String`, so the runtime default is *nullable*. It is
+ * nullable on the no-type-parameter shape too. `defaultFieldNullability: false` would be the central
+ * switch for that, but on a v4 generic it types as `never`, because there it exists only to opt
+ * *into* nullable. So the switch is unavailable exactly where it would help.
  *
- * The first measurement was taken on the ref shape and so did not describe the emission at all. No
- * option is set now, every field is non-null unless marked, and a test asserts both directions
- * against the schema this generator actually produces.
+ * The first wrong turn measured the `objectRef` shape, which this generator does not emit. The
+ * second wrote "a v4 generic already defaults to non-null" here, which the probe in
+ * `test/schema.spec.ts` contradicts on every run. No option is set, every field states its own
+ * `nullable`, and that test fails if Pothos ever changes the default.
  *
  * The scalar decisions are taken from `@drzl/generator-graphql` rather than reinvented, because the
  * same column described two ways by two DRZL generators is worse than either description. In
@@ -364,12 +365,12 @@ ${scalarDefs ? `${scalarDefs}\n` : ''}
  * The schema builder.
  *
  * No \`defaultFieldNullability\` here, and that is worth stating because the obvious reading says
- * there should be. A builder constructed with no type parameter runs in v3 compatibility, where
- * fields default to *nullable* and that option is what makes a NOT NULL column print \`String!\`. A
- * builder with a v4 generic, which is what this is, already defaults to non-null, and the option
- * types as \`never\` there: it exists only to opt *into* nullable.
+ * there should be. Pothos defaults a field to *nullable*, and that option is the central switch that
+ * would change it. On a builder with a v4 generic, which is what this is, the option types as
+ * \`never\`: there it exists only to opt *into* nullable, so the switch is unavailable exactly where
+ * it would help.
  *
- * So every field below is non-null unless it says otherwise, and the nullable columns say so.
+ * So every field below states its own \`nullable\` rather than relying on a default.
  */
 export const builder = new SchemaBuilder<{
 ${scalarBlock}  Objects: {
