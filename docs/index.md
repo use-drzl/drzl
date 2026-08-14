@@ -2,7 +2,7 @@
 layout: home
 title: DRZL
 titleTemplate: Code generation for Drizzle ORM
-description: DRZL reads your Drizzle schema and generates the validation schemas, API routers and typed services that go with it. Fourteen generators, one install.
+description: DRZL reads your Drizzle schema and generates the validation schemas, API routers and typed services that go with it. Twenty-seven generators, one install.
 ---
 
 ## Constraints, and what they cost

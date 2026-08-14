@@ -271,7 +271,7 @@ onBeforeUnmount(() => {
     </div>
 
     <ul class="drzl-facts">
-      <li>14 generators</li>
+      <li>27 generators</li>
       <li>1 install</li>
       <li>0 runtime dependencies added</li>
       <li>Node, Bun and Deno</li>
