@@ -88,6 +88,7 @@
   },
   "optionalDependencies": {
     "@drzl/generator-forms": "workspace:^",
-    "@drzl/generator-openapi-fetch": "workspace:^"
+    "@drzl/generator-openapi-fetch": "workspace:^",
+    "@drzl/generator-pothos": "workspace:^"
   }
 }

@@ -76,6 +76,10 @@ export default {
     // The form resolvers and field metadata, on the same zod schemas, emitting both targets so the
     // react-hook-form resolver and the TanStack Form options are both compiled by the consumer.
     { kind: 'forms', path: './src/generated/forms', target: 'both' },
+    // The Pothos builder, which reads nothing from a validation generator: its object types are
+    // checked against row interfaces it writes itself. This entry is what proves @pothos/core and
+    // graphql resolve from a real install rather than only from this workspace.
+    { kind: 'pothos', path: './src/generated/pothos' },
     // The AI SDK tools, on the shared schemas, and on valibot rather than zod on purpose: valibot
     // is the library whose tools carry the emitted adapter, so this is the entry that compiles it.
     {

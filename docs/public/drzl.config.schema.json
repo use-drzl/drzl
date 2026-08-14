@@ -126,6 +126,7 @@
               "forms",
               "seed",
               "fast-check",
+              "pothos",
               "service",
               "zod",
               "valibot",

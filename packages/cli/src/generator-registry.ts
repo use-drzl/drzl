@@ -29,6 +29,7 @@ import {
   elysiaOutDir,
   seedOutDir,
   fastCheckOutDir,
+  pothosOutDir,
   expressOutDir,
   h3OutDir,
   fastifyOutDir,
@@ -56,6 +57,7 @@ import { formsOptions } from './forms-options.js';
 import { elysiaOptions } from './elysia-options.js';
 import { seedOptions } from './seed-options.js';
 import { fastCheckOptions } from './fast-check-options.js';
+import { pothosOptions } from './pothos-options.js';
 import { h3Options } from './h3-options.js';
 import { mcpOptions } from './mcp-options.js';
 import { nextOptions } from './next-options.js';
@@ -319,6 +321,14 @@ export const GENERATORS: readonly GeneratorEntry[] = [
     construct: (m, analysis) => new m.FastCheckGenerator(analysis),
     outputDir: (g, cfg) => fastCheckOutDir(g, cfg),
     options: (g, cfg) => fastCheckOptions(g, cfg),
+  },
+  {
+    kind: 'pothos',
+    specifier: '@drzl/generator-pothos',
+    load: () => import('@drzl/generator-pothos'),
+    construct: (m, analysis) => new m.PothosGenerator(analysis),
+    outputDir: (g, cfg) => pothosOutDir(g, cfg),
+    options: (g, cfg) => pothosOptions(g, cfg),
   },
   {
     kind: 'service',

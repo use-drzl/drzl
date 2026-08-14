@@ -124,6 +124,7 @@ export const GeneratorKindSchema = z.enum([
   'forms',
   'seed',
   'fast-check',
+  'pothos',
   'service',
   'zod',
   'valibot',
@@ -990,6 +991,17 @@ export function fastCheckOutDir(g: { path?: string }, cfg: { outDir: string }): 
   return g.path ?? cfg.outDir;
 }
 
+/**
+ * Where the Pothos generator writes.
+ *
+ * The same rule as the routers, and for the same reason: it writes an `index.ts` barrel of its own,
+ * which is the assembled schema. Its own function rather than a call to one of the others, for the
+ * reason `honoOutDir` records.
+ */
+export function pothosOutDir(g: { path?: string }, cfg: { outDir: string }): string {
+  return g.path ?? cfg.outDir;
+}
+
 function sharedSchemaNames(opts: { affix?: AffixOptions; schemaSuffix?: string }): string[] {
   const resolved = resolveAffix(opts);
   return NAME_MODES.map((mode) => schemaName(mode, AFFIX_PROBE_TABLE, resolved));
@@ -1617,6 +1629,7 @@ export function computeGeneratorOutputDirs(cfg: DrzlConfig, cwd = process.cwd())
     if (g.kind === 'forms') dirs.add(abs(formsOutDir(g, cfg)));
     if (g.kind === 'seed') dirs.add(abs(seedOutDir(g, cfg)));
     if (g.kind === 'fast-check') dirs.add(abs(fastCheckOutDir(g, cfg)));
+    if (g.kind === 'pothos') dirs.add(abs(pothosOutDir(g, cfg)));
     if (g.kind === 'service') dirs.add(abs(g.path ?? 'src/services'));
     if (g.kind === 'zod') dirs.add(abs(g.path ?? 'src/validators/zod'));
     if (g.kind === 'valibot') dirs.add(abs(g.path ?? 'src/validators/valibot'));

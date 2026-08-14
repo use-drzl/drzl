@@ -46,7 +46,7 @@ node -e "
 # declares `zod: ^3.22.3` as a peer: npm refuses to put it in the same tree as the zod 4 above,
 # with ERESOLVE. The RC dropped the zod peer and takes any Standard Schema.
 npm install --no-audit --no-fund --loglevel=error \
-  "$TARS"/*.tgz drizzle-orm zod valibot@^1.1.0 arktype effect @orpc/server @trpc/server hono @hono/standard-validator express @types/express fastify @nestjs/common @modelcontextprotocol/server @valibot/to-json-schema ai @tanstack/react-start h3@^1.15.11 @effect/platform @ts-rest/core@^3.53.0-rc.1 openapi-fetch react-hook-form '@hookform/resolvers@>=5.0.0 <=5.4.0' @tanstack/form-core elysia @sinclair/typebox fast-check typescript tsx prettier >/dev/null
+  "$TARS"/*.tgz drizzle-orm zod valibot@^1.1.0 arktype effect @orpc/server @trpc/server hono @hono/standard-validator express @types/express fastify @nestjs/common @modelcontextprotocol/server @valibot/to-json-schema ai @tanstack/react-start h3@^1.15.11 @effect/platform @ts-rest/core@^3.53.0-rc.1 openapi-fetch react-hook-form '@hookform/resolvers@>=5.0.0 <=5.4.0' @tanstack/form-core elysia @sinclair/typebox fast-check @pothos/core typescript tsx prettier >/dev/null
 
 if [ ! -e node_modules/.bin/drzl ]; then
   echo "FAIL: the drzl bin did not resolve after a real install." >&2
