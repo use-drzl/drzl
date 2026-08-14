@@ -130,6 +130,9 @@ importers:
       '@drzl/generator-fastify':
         specifier: workspace:^
         version: link:../generator-fastify
+      '@drzl/generator-forms':
+        specifier: workspace:^
+        version: link:../generator-forms
       '@drzl/generator-graphql':
         specifier: workspace:^
         version: link:../generator-graphql
@@ -151,9 +154,15 @@ importers:
       '@drzl/generator-next':
         specifier: workspace:^
         version: link:../generator-next
+      '@drzl/generator-openapi-fetch':
+        specifier: workspace:^
+        version: link:../generator-openapi-fetch
       '@drzl/generator-orpc':
         specifier: workspace:^
         version: link:../generator-orpc
+      '@drzl/generator-pothos':
+        specifier: workspace:^
+        version: link:../generator-pothos
       '@drzl/generator-seed':
         specifier: workspace:^
         version: link:../generator-seed
@@ -218,16 +227,6 @@ importers:
       typescript:
         specifier: ^5.9.3
         version: 5.9.3
-    optionalDependencies:
-      '@drzl/generator-forms':
-        specifier: workspace:^
-        version: link:../generator-forms
-      '@drzl/generator-openapi-fetch':
-        specifier: workspace:^
-        version: link:../generator-openapi-fetch
-      '@drzl/generator-pothos':
-        specifier: workspace:^
-        version: link:../generator-pothos
 
   packages/generator-ai:
     dependencies:

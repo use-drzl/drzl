@@ -37,6 +37,7 @@
     "@drzl/generator-express": "workspace:^",
     "@drzl/generator-fast-check": "workspace:^",
     "@drzl/generator-fastify": "workspace:^",
+    "@drzl/generator-forms": "workspace:^",
     "@drzl/generator-graphql": "workspace:^",
     "@drzl/generator-h3": "workspace:^",
     "@drzl/generator-hono": "workspace:^",
@@ -44,7 +45,9 @@
     "@drzl/generator-mcp": "workspace:^",
     "@drzl/generator-nestjs": "workspace:^",
     "@drzl/generator-next": "workspace:^",
+    "@drzl/generator-openapi-fetch": "workspace:^",
     "@drzl/generator-orpc": "workspace:^",
+    "@drzl/generator-pothos": "workspace:^",
     "@drzl/generator-seed": "workspace:^",
     "@drzl/generator-service": "workspace:^",
     "@drzl/generator-tanstack-start": "workspace:^",
@@ -85,10 +88,5 @@
   "funding": {
     "type": "github",
     "url": "https://github.com/sponsors/omar-dulaimi"
-  },
-  "optionalDependencies": {
-    "@drzl/generator-forms": "workspace:^",
-    "@drzl/generator-openapi-fetch": "workspace:^",
-    "@drzl/generator-pothos": "workspace:^"
   }
 }
