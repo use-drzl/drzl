@@ -1,6 +1,6 @@
 {
   "name": "@drzl/generator-openapi-fetch",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "private": false,
   "license": "Apache-2.0",
   "description": "Generate a typed openapi-fetch client from a Drizzle schema, with the paths type derived from the same document DRZL emits so the two cannot disagree.",

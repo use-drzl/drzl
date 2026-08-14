@@ -1,6 +1,6 @@
 {
   "name": "@drzl/generator-pothos",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "private": false,
   "license": "Apache-2.0",
   "description": "Generate a Pothos schema builder from a Drizzle schema, one object type per table, with each row type checked against the columns it came from.",

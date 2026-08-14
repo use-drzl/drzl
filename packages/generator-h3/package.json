@@ -1,6 +1,6 @@
 {
   "name": "@drzl/generator-h3",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": false,
   "license": "Apache-2.0",
   "description": "Generate h3 and Nitro route handlers from a Drizzle schema, one module per table, validated by DRZL's own schemas through h3's validation helpers on both major versions.",
