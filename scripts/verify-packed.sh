@@ -103,6 +103,7 @@ STAGES=(
   registry-deps
   provenance
   docs-numbers
+  edge-runtime
   summary
 )
 
