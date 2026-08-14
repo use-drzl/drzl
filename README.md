@@ -103,8 +103,20 @@ Runtime
 - `packages/generator-express`: Express 5 router generator
 - `packages/generator-fastify`: Fastify 5 plugin generator
 - `packages/generator-nestjs`: NestJS DTO and entity class generator
-- `packages/generator-graphql`: GraphQL SDL and resolver-stub generator\n- `packages/generator-effect-http`: Effect Platform HttpApi generator\n- `packages/generator-h3`: h3 and Nitro route handler generator
-- `packages/generator-elysia`: Elysia route generator\n- `packages/generator-seed`: constraint-satisfying seed data generator\n- `packages/generator-fast-check`: constraint-bounded fast-check arbitrary generator\n- `packages/generator-pothos`: Pothos schema builder generator\n- `packages/generator-ts-rest`: ts-rest contract generator\n- `packages/generator-openapi-fetch`: typed openapi-fetch client generator\n- `packages/generator-forms`: react-hook-form and TanStack Form resolver and field-metadata generator\n- `packages/generator-ai`: AI SDK tool generator\n- `packages/generator-mcp`: Model Context Protocol tool generator\n- `packages/generator-next`: Next.js server action generator\n- `packages/generator-tanstack-start`: TanStack Start server function generator
+- `packages/generator-graphql`: GraphQL SDL and resolver-stub generator
+- `packages/generator-effect-http`: Effect Platform HttpApi generator
+- `packages/generator-h3`: h3 and Nitro route handler generator
+- `packages/generator-elysia`: Elysia route generator
+- `packages/generator-seed`: constraint-satisfying seed data generator
+- `packages/generator-fast-check`: constraint-bounded fast-check arbitrary generator
+- `packages/generator-pothos`: Pothos schema builder generator
+- `packages/generator-ts-rest`: ts-rest contract generator
+- `packages/generator-openapi-fetch`: typed openapi-fetch client generator
+- `packages/generator-forms`: react-hook-form and TanStack Form resolver and field-metadata generator
+- `packages/generator-ai`: AI SDK tool generator
+- `packages/generator-mcp`: Model Context Protocol tool generator
+- `packages/generator-next`: Next.js server action generator
+- `packages/generator-tanstack-start`: TanStack Start server function generator
 - `packages/generator-service`: typed service generator
 - `packages/generator-zod`: Zod generator
 - `packages/generator-valibot`: Valibot generator
