@@ -61,6 +61,7 @@ import {
   type ResolvedSchemaSource,
 } from './drizzle-kit.js';
 import { buildDoctorReport, renderDoctorReport } from './doctor.js';
+import { authTableWarnings } from './auth-tables.js';
 import {
   buildConstraintDriftReport,
   renderConstraintDriftReport,
@@ -789,6 +790,10 @@ withOutputFlags(
       analysis.tables = filterTables(narrowed.tables, cfg);
       for (const w of [...narrowed.warnings, ...filterWarnings]) warn(w);
       for (const w of wideColumnWarning(analysis.issues)) warn(w);
+      // After the filter, so a config that already excludes these says nothing. Every generator
+      // loops over every table it is given, and an auth table holds credentials, so this is the
+      // one warning here about what the output would expose rather than about what it cannot type.
+      for (const w of authTableWarnings(analysis)) warn(w);
       // Item 71, after the filters so it can tell the two empty states apart, and before
       // `--check` snapshots anything so a check on a schema that produces nothing fails rather
       // than comparing an empty tree with itself and reporting it up to date.
