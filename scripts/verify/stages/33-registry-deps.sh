@@ -59,8 +59,8 @@ for pkg in packages/*/package.json; do
   for dep in $opt; do
     if npm view "$dep" version >/dev/null 2>&1; then
       echo "    FAIL: $owner lists $dep as an optionalDependency, but it is on the registry now." >&2
-      echo "          Promote it to dependencies and drop it from AWAITING_FIRST_PUBLISH in" >&2
-      echo "          packages/cli/test/generator-registry.spec.ts." >&2
+      echo "          Promote it to dependencies and drop it from the packages list in" >&2
+      echo "          scripts/awaiting-first-publish.json." >&2
       missing=1
     fi
   done
