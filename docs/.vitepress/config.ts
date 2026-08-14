@@ -283,6 +283,7 @@ export default {
         collapsed: true,
         items: [
           { text: 'How it is verified', link: '/guide/verification' },
+          { text: 'Edge runtimes', link: '/guide/edge-runtimes' },
           { text: 'Compared with the first-party validators', link: '/guide/comparison' },
           { text: 'Benchmarks', link: '/guide/benchmarks' },
         ],
