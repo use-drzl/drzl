@@ -74,3 +74,6 @@ declare module '@drzl/generator-seed' {
 declare module '@drzl/generator-fast-check' {
   export const FastCheckGenerator: any;
 }
+declare module '@drzl/generator-pothos' {
+  export const PothosGenerator: any;
+}

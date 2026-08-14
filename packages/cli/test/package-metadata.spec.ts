@@ -106,6 +106,7 @@ it('found every publishable package', () => {
     'generator-next',
     'generator-openapi-fetch',
     'generator-orpc',
+    'generator-pothos',
     'generator-seed',
     'generator-service',
     'generator-tanstack-start',

@@ -110,6 +110,7 @@ describe('the registry against the manifest', () => {
   const AWAITING_FIRST_PUBLISH: string[] = [
     '@drzl/generator-forms',
     '@drzl/generator-openapi-fetch',
+    '@drzl/generator-pothos',
   ];
 
   it('declares every generator package as a dependency', () => {

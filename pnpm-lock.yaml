@@ -225,6 +225,9 @@ importers:
       '@drzl/generator-openapi-fetch':
         specifier: workspace:^
         version: link:../generator-openapi-fetch
+      '@drzl/generator-pothos':
+        specifier: workspace:^
+        version: link:../generator-pothos
 
   packages/generator-ai:
     dependencies:
@@ -735,6 +738,28 @@ importers:
       zod:
         specifier: ^4.4.3
         version: 4.4.3
+
+  packages/generator-pothos:
+    dependencies:
+      '@drzl/analyzer':
+        specifier: workspace:^
+        version: link:../analyzer
+      '@drzl/validation-core':
+        specifier: workspace:^
+        version: link:../validation-core
+    devDependencies:
+      '@pothos/core':
+        specifier: ^4.13.1
+        version: 4.13.1(graphql@17.0.2)
+      graphql:
+        specifier: ^17.0.2
+        version: 17.0.2
+      tsup:
+        specifier: ^8.5.1
+        version: 8.5.1(jiti@2.7.0)(postcss@8.5.23)(supports-color@7.2.0)(typescript@5.9.3)(yaml@2.9.0)
+      typescript:
+        specifier: ^5.9.3
+        version: 5.9.3
 
   packages/generator-seed:
     dependencies:
@@ -2123,6 +2148,11 @@ packages:
 
   '@pinojs/redact@0.4.0':
     resolution: {integrity: sha512-k2ENnmBugE/rzQfEcdWHcCY+/FM3VLzH9cYEsbdsoqrvzAKRhUZeRNhAZvB8OitQJ1TBed3yqWtdjzS6wJKBwg==}
+
+  '@pothos/core@4.13.1':
+    resolution: {integrity: sha512-2hkLxmvrT7VnbiWAfYhfF09PjaHeflZ5HrBHYzU6Tn/P9tDviuZS7IS5xO4k/KnK5GkRo3YxDzXyn+HnkEkVNw==}
+    peerDependencies:
+      graphql: ^16.10.0 || ^17.0.0
 
   '@rolldown/binding-android-arm64@1.1.5':
     resolution: {integrity: sha512-lZg8fqIv2v7FF237bwMgzGZEJvGL79/s5knJ/i6FmsGF4XXlzccZ4jb+TrFIxtSSxFtIpdsgrPZeMk1I9AFcyQ==}
@@ -6684,6 +6714,10 @@ snapshots:
   '@oxc-project/types@0.139.0': {}
 
   '@pinojs/redact@0.4.0': {}
+
+  '@pothos/core@4.13.1(graphql@17.0.2)':
+    dependencies:
+      graphql: 17.0.2
 
   '@rolldown/binding-android-arm64@1.1.5':
     optional: true
