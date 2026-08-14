@@ -1,0 +1,48 @@
+# Delete the Actions caches a branch created, once its pull request is closed.
+#
+# Written after the repository's cache store reached 5.6 GB across 56 entries. Nothing failed
+# outright, because a full store makes a cache *save* warn and skip rather than error, but every run
+# past that point installed from the network with no restore, so the whole gate got slower for no
+# benefit. GitHub evicts by least-recent-use against a per-repository ceiling, which keeps the
+# number bounded and does nothing about a store that is mostly dead branches.
+#
+# A pnpm store for this workspace is around 100 MB per key, and a feature branch produces one per
+# job that installs. Deleting them when the branch is done is what keeps the entries that are
+# actually read, which are master's, resident.
+name: cache-prune
+
+on:
+  pull_request:
+    types: [closed]
+  # Monthly, for the caches no pull request owns: pushes to master, and anything left behind by a
+  # branch that was deleted without one.
+  schedule:
+    - cron: '0 4 1 * *'
+  workflow_dispatch:
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  prune:
+    runs-on: ubuntu-latest
+    steps:
+      # `--ref` takes the merge ref, which is what a `pull_request` run caches under. A branch with
+      # no caches is not an error: the loop reads an empty list and does nothing.
+      - name: Delete this pull request's caches
+        if: github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          REF: refs/pull/${{ github.event.pull_request.number }}/merge
+        run: |
+          gh cache list --ref "$REF" --limit 100 --json id --jq '.[].id' \
+            | while read -r id; do gh cache delete "$id" || true; done
+
+      - name: Delete every cache
+        if: github.event_name != 'pull_request'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: gh cache delete --all --succeed-on-no-caches
