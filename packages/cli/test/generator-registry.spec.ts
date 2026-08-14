@@ -107,11 +107,20 @@ describe('the registry against the manifest', () => {
    * and delete it here. `scripts/verify/stages/33-registry-deps.sh` is the half that reports when
    * that edit is due, because it can ask the registry and this cannot.
    */
-  const AWAITING_FIRST_PUBLISH: string[] = [
-    '@drzl/generator-forms',
-    '@drzl/generator-openapi-fetch',
-    '@drzl/generator-pothos',
-  ];
+  /**
+   * The packages whose first version has not reached the registry yet.
+   *
+   * Read from `scripts/awaiting-first-publish.json` rather than written out here, because the
+   * nightly registry check needs the same list and a copy in two languages is a copy that drifts.
+   * The nightly is what fails when an entry goes stale; this file is what fails when an entry and
+   * the CLI's manifest disagree.
+   */
+  const AWAITING_FIRST_PUBLISH: string[] = JSON.parse(
+    fs.readFileSync(
+      path.join(import.meta.dirname, '..', '..', '..', 'scripts', 'awaiting-first-publish.json'),
+      'utf8'
+    )
+  ).packages;
 
   it('declares every generator package as a dependency', () => {
     const declared = Object.keys(manifest.dependencies ?? {});
