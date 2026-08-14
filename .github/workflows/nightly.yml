@@ -39,18 +39,67 @@ jobs:
       - name: Every version on master exists on the registry
         run: |
           set -o pipefail
-          behind=0
+
+          # A name absent from the registry has two causes that need opposite responses. A release
+          # that failed to publish is a bug and this job exists to catch it. A brand-new package
+          # whose first version has not been published by hand yet is expected, because npm trusted
+          # publishing cannot authenticate a name that has never existed. They are indistinguishable
+          # from the outside, so the second one is written down.
+          #
+          # Same file packages/cli/test/generator-registry.spec.ts reads. Two copies of this list in
+          # two languages would drift, and the copy that drifted would be the one granting exemptions.
+          awaiting=$(node -p "JSON.parse(require('fs').readFileSync('scripts/awaiting-first-publish.json','utf8')).packages.join(' ')")
+          listed() { case " $awaiting " in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
+
+          behind=0   # published before, master is ahead: a release that did not publish
+          missing=0  # never published and not written down: a package nobody has published at all
+          stale=0    # written down as unpublished, but the registry has it now
+
           for pkg in packages/*/package.json; do
-            private=$(node -p "require('./$pkg').private === true")
+            # `node -p` renders a boolean through util.inspect, which wraps it in colour escapes
+            # whenever it thinks stdout is a terminal. The comparison below then never matches and a
+            # private package is checked against the registry it was never going to be on. Writing
+            # the string directly is never inspected and never coloured. Names and versions are
+            # already strings, which `-p` prints raw, which is why only this one was affected.
+            private=$(node -e "process.stdout.write(String(require('./$pkg').private === true))")
             [ "$private" = "true" ] && continue
             name=$(node -p "require('./$pkg').name")
             want=$(node -p "require('./$pkg').version")
-            have=$(npm view "$name" version 2>/dev/null || echo "")
-            if [ "$want" != "$have" ]; then
-              echo "    $name: master has $want, the registry serves ${have:-nothing}"
+
+            # A 404 means the name has never existed. Any other failure means npm could not answer,
+            # and reporting that as "never published" would turn a network blip into a false alarm
+            # against a package that is fine.
+            if out=$(npm view "$name" version 2>&1); then
+              have=$(printf '%s\n' "$out" | tail -1)
+            elif printf '%s\n' "$out" | grep -qi "E404"; then
+              have=""
+            else
+              echo "::error title=registry unreachable::npm view $name failed for a reason that is not a 404, so this run cannot tell a missing package from an unanswered query."
+              printf '%s\n' "$out"
+              exit 1
+            fi
+
+            if [ -n "$have" ] && listed "$name"; then
+              echo "    $name: the registry serves $have, so its first publish has already happened"
+              stale=1
+              continue
+            fi
+
+            [ "$want" = "$have" ] && continue
+
+            if [ -z "$have" ]; then
+              if listed "$name"; then
+                echo "    $name: awaiting its first publish by hand, master has $want"
+              else
+                echo "    $name: master has $want and this name has never been on the registry"
+                missing=1
+              fi
+            else
+              echo "    $name: master has $want, the registry serves $have"
               behind=1
             fi
           done
+
           if [ "$behind" = 1 ]; then
             echo "::error title=release never published::master carries versions the registry does not have. A squash-merged release PR is bot-authored, so no workflow fires. Recover with: gh workflow run release.yml --ref master -f dry_run=false"
             {
@@ -62,8 +111,36 @@ jobs:
               echo
               echo "Recover with a manual dispatch of release.yml, dry_run false."
             } >> "$GITHUB_STEP_SUMMARY"
-            exit 1
           fi
+
+          if [ "$missing" = 1 ]; then
+            echo "::error title=package never published::a package on master has never existed on the registry and is not recorded as awaiting its first publish. Publish its first version by hand, then add it to scripts/awaiting-first-publish.json, or promote it if it is already published."
+            {
+              echo "### A package on master has never been published"
+              echo
+              echo "npm trusted publishing cannot authenticate a name that has never existed, so the"
+              echo "first version of a new package is published by hand and every later one by CI."
+              echo
+              echo "Publish it, or record it in \`scripts/awaiting-first-publish.json\` so this job"
+              echo "stops guessing which of the two situations it is looking at."
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+          if [ "$stale" = 1 ]; then
+            echo "::error title=first publish happened::a package recorded as awaiting its first publish is now on the registry. Remove it from scripts/awaiting-first-publish.json and promote it out of the CLI's optionalDependencies."
+            {
+              echo "### A first publish happened and the record was not updated"
+              echo
+              echo "The packages above are listed in \`scripts/awaiting-first-publish.json\` and the"
+              echo "registry now serves them. The entry exempts them from this check, so leaving it"
+              echo "there hides the next real failure for that package."
+              echo
+              echo "Delete the entry and move the package from the CLI's \`optionalDependencies\` to"
+              echo "its \`dependencies\`, which is the promotion the entry was standing in for."
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+          if [ "$behind" = 1 ] || [ "$missing" = 1 ] || [ "$stale" = 1 ]; then exit 1; fi
           echo "    every published package on master matches the registry"
 
   pins:

@@ -1,0 +1,13 @@
+{
+  "why": "npm trusted publishing cannot authenticate a package name that has never existed, so the first version of a brand-new package is published by hand and every later one by CI. Until that happens the name is absent from the registry, which is indistinguishable from a release that failed to publish unless it is written down. This is that record. Both the nightly registry check and packages/cli/test/generator-registry.spec.ts read it, so an entry that is added or removed is added or removed once.",
+  "rules": [
+    "A package listed here is declared in the CLI's optionalDependencies, never its dependencies, because a hard dependency on an unpublishable name breaks `npm i @drzl/cli` for everyone.",
+    "An entry must be deleted the moment its first version reaches the registry. Both readers fail while a published package is still listed, so the promotion reports itself instead of waiting to be noticed.",
+    "A package that is absent from the registry and absent from this list is a failure, not an exemption. That is the release-never-published case the nightly exists to catch."
+  ],
+  "packages": [
+    "@drzl/generator-forms",
+    "@drzl/generator-openapi-fetch",
+    "@drzl/generator-pothos"
+  ]
+}
