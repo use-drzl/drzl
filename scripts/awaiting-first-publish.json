@@ -5,9 +5,5 @@
     "An entry must be deleted the moment its first version reaches the registry. Both readers fail while a published package is still listed, so the promotion reports itself instead of waiting to be noticed.",
     "A package that is absent from the registry and absent from this list is a failure, not an exemption. That is the release-never-published case the nightly exists to catch."
   ],
-  "packages": [
-    "@drzl/generator-forms",
-    "@drzl/generator-openapi-fetch",
-    "@drzl/generator-pothos"
-  ]
+  "packages": []
 }
