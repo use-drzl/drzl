@@ -951,6 +951,9 @@ importers:
         specifier: workspace:^
         version: link:../validation-core
     devDependencies:
+      drizzle-orm:
+        specifier: ^0.45.2
+        version: 0.45.2(@types/better-sqlite3@7.6.13)(better-sqlite3@12.11.1)(mysql2@3.23.2(@types/node@26.1.2))
       drizzle-orm-v1:
         specifier: npm:drizzle-orm@1.0.0-rc.4
         version: drizzle-orm@1.0.0-rc.4(@sinclair/typebox@0.34.52)(@types/better-sqlite3@7.6.13)(arktype@2.2.3)(better-sqlite3@12.11.1)(effect@3.22.1)(mysql2@3.23.2(@types/node@26.1.2))(valibot@1.4.2(typescript@5.9.3))(zod@4.4.3)
