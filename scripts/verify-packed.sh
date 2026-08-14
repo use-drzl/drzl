@@ -104,6 +104,7 @@ STAGES=(
   provenance
   docs-numbers
   edge-runtime
+  troubleshooting
   summary
 )
 
