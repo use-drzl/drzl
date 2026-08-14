@@ -57,7 +57,7 @@ Optionality is not one spelling. zod and valibot wrap the value; ArkType marks t
 `type({ 'limit?': 'string.numeric.parse' })`. Emitting the value-wrapped form for all three left
 ArkType's paging required on every list route.
 
-Full documentation: https://drzl.dev/generators/ts-rest
+Full documentation: https://use-drzl.github.io/drzl/generators/ts-rest
 
 ## Licence
 

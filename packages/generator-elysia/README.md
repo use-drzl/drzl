@@ -53,7 +53,7 @@ and a one-label host throws off the offset. Use `http://localhost/users`.
 `app.listen(3000)` under Bun, or hand `app.handle` a `Request` anywhere else. The second form is what
 this package's tests use, which is why they run on plain Node with no adapter and no server.
 
-Full documentation: https://drzl.dev/generators/elysia
+Full documentation: https://use-drzl.github.io/drzl/generators/elysia
 
 ## Licence
 
