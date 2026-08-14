@@ -284,6 +284,7 @@ export default {
         items: [
           { text: 'How it is verified', link: '/guide/verification' },
           { text: 'Edge runtimes', link: '/guide/edge-runtimes' },
+          { text: 'Stale output', link: '/guide/stale-output' },
           { text: 'Compared with the first-party validators', link: '/guide/comparison' },
           { text: 'Benchmarks', link: '/guide/benchmarks' },
         ],

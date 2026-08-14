@@ -79,6 +79,14 @@ import {
   type EmittedFile,
   type FileVerdict,
 } from './emit-plan.js';
+import {
+  nextManifestFiles,
+  pruneStale,
+  readManifest,
+  staleFiles,
+  staleWarning,
+  writeManifest,
+} from './manifest.js';
 import { unifiedDiff } from './unified-diff.js';
 import { createRebuildScheduler, resolveDebounce } from './watch-loop.js';
 import { GeneratorNotInstalledError } from './generator-loader.js';
@@ -648,6 +656,11 @@ withOutputFlags(
       'regenerate and fail if the result differs from what is on disk, without changing it'
     )
     .option('--dry-run', 'report what would be written, and write nothing', false)
+    .option(
+      '--prune',
+      'delete files a previous run wrote that this one did not, and nothing else',
+      false
+    )
 ).action(async (opts: any) => {
   const out = outputFor(opts);
   /**
@@ -932,6 +945,32 @@ withOutputFlags(
           changes: e.changes.map((c) => ({ file: displayPath(c.file), status: c.status })),
         }));
 
+      /**
+       * What the last run wrote, and what this one no longer owns.
+       *
+       * Read here rather than earlier because nothing before this point can be compared against it.
+       * A file the previous manifest recorded and this run did not write is one whose table was
+       * renamed or removed: it still compiles and still exports a schema, and it describes
+       * something the database does not have.
+       *
+       * Under `--check` and `--dry-run` the manifest is read and reported and never written, for
+       * the same reason those modes write no schemas: they promise to leave the tree alone.
+       */
+      const previousManifest = await readManifest(process.cwd());
+      const writtenNow = plan.files.map((f) => f.file);
+      const stale = await staleFiles(previousManifest, writtenNow, process.cwd());
+
+      let stillStale = stale;
+      if (opts.prune && !planning) {
+        const removed = await pruneStale(process.cwd(), stale);
+        for (const file of removed) out.warn(`drzl generate: removed stale ${file}`);
+        const gone = new Set(removed);
+        stillStale = stale.filter((s) => !gone.has(s.file));
+      } else {
+        const warning = staleWarning(stale);
+        if (warning) warn(warning);
+      }
+
       if (planning) {
         // The claim `--dry-run` and `--check` make, checked rather than asserted. `existing` is the
         // snapshot taken before any generator ran, so anything that differs now was written by a
@@ -946,6 +985,22 @@ withOutputFlags(
           else out.error(message);
           process.exit(EXIT_FAILED);
         }
+      }
+
+      /**
+       * Recorded only on a run that actually wrote.
+       *
+       * `--check` and `--dry-run` leave the manifest exactly as they found it: recording a run that
+       * wrote nothing would tell the next one that every file is stale, and offering to delete the
+       * whole output because someone ran `--check` is the worst thing this feature could do.
+       */
+      if (!planning) {
+        await writeManifest(
+          process.cwd(),
+          nextManifestFiles(writtenNow, stillStale, process.cwd()).map((f) =>
+            path.resolve(process.cwd(), f)
+          )
+        );
       }
 
       if (opts.check) {
