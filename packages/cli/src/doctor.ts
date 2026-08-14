@@ -39,6 +39,7 @@
  */
 import type { Analysis, Column, Issue, Table } from '@drzl/analyzer';
 import { lengthMeasure, parseCheck, type LengthCheck } from '@drzl/validation-core';
+import { detectAuthTables, excludeSuggestion } from './auth-tables.js';
 import { Chalk, type ChalkInstance } from 'chalk';
 
 /**
@@ -77,6 +78,15 @@ export type DoctorFindingKind =
    * the parser reading an expression must not be the same event as the report forgetting it.
    */
   | 'check-uncountable'
+  /**
+   * A table that looks like an authentication library's, which a generator would publish.
+   *
+   * Every generator loops over every table it finds, so an auth table sharing the schema file gets
+   * unauthenticated CRUD like anything else, and Better Auth's `account` holds `accessToken`,
+   * `refreshToken`, `idToken` and `password`. `tables.exclude` has always been the answer; nothing
+   * said the answer was needed.
+   */
+  | 'auth-table'
   /** A table the generators cannot key. */
   | 'no-primary-key'
   /** A table keyed on more columns than the generators use. */
@@ -394,6 +404,31 @@ export function buildDoctorReport(analysis: Analysis, schemaPath: string): Docto
     });
   }
 
+  /**
+   * Auth tables, matched on shape rather than on name.
+   *
+   * The name-based version of this was considered and rejected on `tables.exclude`, for two reasons
+   * that both hold: names are renameable, and an ordinary table called `user` is usually the
+   * application's main entity. Matching the shape answers both. See `auth-tables.ts`.
+   */
+  for (const match of detectAuthTables(analysis)) {
+    const secrets = match.secrets.length
+      ? ` It holds ${match.secrets.map((c) => `\`${c}\``).join(', ')}, which a generated read ` +
+        `route would return to whoever calls it.`
+      : '';
+    findings.push({
+      kind: 'auth-table',
+      // A warning rather than an error: this is a real leak and it is also a guess about someone
+      // else's schema, and a doctor that failed the build on a guess would be switched off.
+      level: 'warn',
+      table: match.table,
+      message:
+        `"${match.table}" matches the shape of an authentication library's ${match.model} table ` +
+        `(${match.matched.join(', ')}).${secrets}`,
+      hint: `Keep it out of every generator with ${excludeSuggestion([match])}.`,
+    });
+  }
+
   for (const i of analysis.issues) {
     if (i.code !== 'DRZL_ANL_UNKNOWN_COLUMN') continue;
     findings.push({
@@ -436,6 +471,11 @@ const SECTIONS: Array<{ kinds: DoctorFindingKind[]; title: string; why: string }
     kinds: ['unknown-column'],
     title: 'Columns DRZL cannot type',
     why: 'These get a validator that accepts any value.',
+  },
+  {
+    kinds: ['auth-table'],
+    title: 'Tables that look like an authentication library\'s',
+    why: 'Every generator loops over every table it finds, so these get routes too.',
   },
   {
     kinds: ['check-declined', 'check-unknown-column', 'check-not-scalar', 'check-uncountable'],
