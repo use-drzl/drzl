@@ -216,6 +216,49 @@ drizzle-kit config instead, whose `schema` is a string or an array of them and i
 drizzle-kit expands it. There, every file that is missing is named in the same run rather than one
 per run.
 
+### `DRZL_ANL_POLICY_UNLINKED`: a policy points at a table this schema does not export
+
+```
+Policy "owner_reads" is linked to a table this schema does not export.
+Export the table it links to, so DRZL can report the policy against it.
+```
+
+A warning, not an error: everything else in the schema is read normally and the run continues.
+
+`pgPolicy` is declared against a table, and DRZL reports policies per table, so a policy whose table
+is not among the module's exports has nowhere to be reported. That usually means the table lives in
+another file that the schema entry point does not re-export, which is easy to do when policies are
+kept in a file of their own.
+
+DRZL will not guess at the table by name. A policy is a security rule, and reporting one against the
+wrong table is worse than not reporting it: you would read a page saying `users` is protected when
+the rule is attached to something else. Export the table and the policy is placed correctly.
+
+### `DRZL_ANL_NOFILE`: the schema file is not there, as `analyze` reports it
+
+```
+drzl analyze src/db/scehma.ts
+{
+  "dialect": "unknown",
+  "tables": [],
+  "issues": [
+    { "code": "DRZL_ANL_NOFILE", "level": "error", "message": "Schema file not found: src/db/scehma.ts" }
+  ]
+}
+```
+
+The same condition as `DRZL_SCHEMA_001` above, reached through a different command and reported
+differently, which is worth knowing because the difference is easy to misread.
+
+`generate` refuses: it prints the error, writes nothing and exits non-zero. `analyze` answers the
+question it was asked, which is "what is in this schema", and the honest answer for a file that is
+not there is an analysis with nothing in it. So it prints a complete document with empty `tables`
+and the error in `issues`, and exits 1.
+
+The exit code is the part to act on in a script. A pipeline that reads `tables` and ignores both
+`issues` and the status will see an empty schema and carry on as though the file were empty rather
+than missing.
+
 ### `DRZL_SCHEMA_001`: the schema will not import
 
 ```
