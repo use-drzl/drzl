@@ -44,3 +44,8 @@ packages/*/test/fuzz/.tmp-run-*
 # The fuzzer writes its generated schema beside itself, because a bare `drizzle-orm/pg-core` only
 # resolves against the importing file's location and a system temp directory resolves nothing.
 packages/*/test/fuzz/.tmp-*
+
+# Brand asset generator: fetched typefaces and extracted marks, both derived
+scripts/brand/.fonts/
+scripts/brand/out/
+scripts/brand/__pycache__/
