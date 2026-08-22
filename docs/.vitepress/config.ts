@@ -94,7 +94,11 @@ export default {
     ];
   },
   themeConfig: {
-    logo: { light: '/brand/logo.png', dark: '/brand/logo-dark.png' },
+    // The bolt alone, not the full lockup. VitePress draws this at about 24px
+    // beside the site title, so the lockup's wordmark would land at roughly
+    // 3px, directly next to the word DRZL already rendered as live text.
+    // brand/logo.png keeps the lockup for places with room to show it.
+    logo: { light: '/brand/mark.png', dark: '/brand/mark-dark.png' },
     docFooter: {
       prev: '← Previous',
       next: 'Next →',

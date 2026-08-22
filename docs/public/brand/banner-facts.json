@@ -1,0 +1,32 @@
+{
+  "generators": 27,
+  "names": [
+    "ai",
+    "arktype",
+    "effect",
+    "effect-http",
+    "elysia",
+    "express",
+    "fast-check",
+    "fastify",
+    "forms",
+    "graphql",
+    "h3",
+    "hono",
+    "json-schema",
+    "mcp",
+    "nestjs",
+    "next",
+    "openapi-fetch",
+    "orpc",
+    "pothos",
+    "seed",
+    "service",
+    "tanstack-start",
+    "trpc",
+    "ts-rest",
+    "typebox",
+    "valibot",
+    "zod"
+  ]
+}

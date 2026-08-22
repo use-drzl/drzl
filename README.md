@@ -1,6 +1,9 @@
 <p align="center">
-  <img src="docs/public/banner.png" alt="DRZL: Zero‑friction codegen for Drizzle ORM" width="1200" />
-
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/public/banner.png">
+    <img src="docs/public/banner-light.png" width="960"
+         alt="DRZL: code generation for Drizzle ORM. Twenty-seven generators, one install." />
+  </picture>
 </p>
 
 <div align="center">
