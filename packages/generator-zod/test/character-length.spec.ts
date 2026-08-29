@@ -1,11 +1,11 @@
 /**
  * A `varchar(n)` limit counts characters, not UTF-16 code units.
  *
- * Postgres and MySQL count `varchar(n)` in characters. Every JavaScript validator counts
- * `.length`, which is UTF-16 code units. The two agree until the text leaves the basic plane, and
- * then they do not, so `z.string().max(10)` refuses eight emoji that `varchar(10)` accepts.
+ * Postgres and MySQL count `varchar(n)` in characters. Before zod 4.5, `.max()` counted `.length`,
+ * which is UTF-16 code units. The two agree until the text leaves the basic plane, and then they do
+ * not, so zod 4.4's `z.string().max(10)` refused eight emoji that `varchar(10)` accepts.
  *
- * Measured against Postgres through PGlite, for `varchar(10)`:
+ * Measured against Postgres through PGlite, for `varchar(10)`, with zod 4.4's `.max`:
  *
  *    3 emoji   db accepts    .max(10) accepts
  *    8 emoji   db accepts    .max(10) REFUSES
@@ -13,7 +13,10 @@
  *   11 emoji   db refuses    .max(10) refuses
  *
  * `[...v].length` counts code points, which is what the database counts, and agrees on all four.
- * `drizzle-orm/zod` emits `.max(n)` and refuses the middle two.
+ * zod 4.5.0 (colinhacks/zod#6441) moved `.min()`, `.max()` and `.length()` to code points as well,
+ * so `drizzle-orm/zod`'s `.max(n)` now takes the middle two on a current zod. The predicate stays
+ * because it reads the same on every zod this package supports, and these assertions are about
+ * what DRZL emits, which is the same either way.
  */
 import { describe, it, expect } from 'vitest';
 import { ZodGenerator } from '../src/index';
@@ -60,8 +63,8 @@ describe('a varchar(10) column', () => {
     expect(f.safeParse('abcdefghij').success, 'ten plain characters').toBe(true);
     expect(f.safeParse('abcdefghijk').success, 'eleven plain characters').toBe(false);
 
-    // The cases `.max(10)` gets wrong: eight emoji are eight characters to the database and
-    // sixteen UTF-16 units to JavaScript.
+    // The cases a UTF-16 `.max(10)` gets wrong: eight emoji are eight characters to the database
+    // and sixteen UTF-16 units to JavaScript's `.length`.
     expect(f.safeParse(THUMB.repeat(8)).success, 'eight emoji, which the database accepts').toBe(
       true
     );

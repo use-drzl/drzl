@@ -193,8 +193,10 @@ function foldedIntoBounds(c: Column, checks: ColumnCheck[]): Set<ColumnCheck> {
  * `.refine()` calls for the `length(col)` and `octet_length(col)` constraints naming this column.
  *
  * A character count is counted in code points, because Postgres counts characters. The same reason
- * `varchar(n)` is not `.max(n)`: `.length` is UTF-16 units and would refuse text the database
- * accepts. A byte count is the UTF-8 encoding of a string and the plain `.length` of a `bytea`'s
+ * `varchar(n)` is not `.max(n)`: before zod 4.5, `.max` counted `.length`, UTF-16 units, and would
+ * refuse text the database accepts. zod 4.5 counts code points there too, so the two now agree, and
+ * the explicit predicate stays because it means the same thing on every zod this package supports
+ * (`>=4.0.0`). A byte count is the UTF-8 encoding of a string and the plain `.length` of a `bytea`'s
  * Uint8Array, which are two different expressions for the same SQL function. `lengthMeasure`
  * decides which, once per column, and the constraint ledger asks it the same question.
  */
@@ -419,9 +421,11 @@ function zodExprForColumn(
       // not. Only formats verified against Postgres appear here, so nothing valid is turned away.
       const pattern = c.format ? COLUMN_FORMATS[c.format] : undefined;
       if (pattern) return `z.string().regex(new RegExp(${JSON.stringify(pattern)}))`;
-      // Not `.max(n)`. A `varchar(n)` limit is n *characters*, and `.max` counts UTF-16 units, so
-      // it refuses eight emoji in a `varchar(10)` the database is happy with. All four generators
-      // count code points now; see `CODEPOINT_LENGTH` in validation-core for the measurements.
+      // Not `.max(n)`. A `varchar(n)` limit is n *characters*, and before zod 4.5 `.max` counted
+      // UTF-16 units, refusing eight emoji in a `varchar(10)` the database is happy with. zod 4.5
+      // counts code points in `.max` as well, and the predicate is kept because it reads the same
+      // on every supported zod. All four generators count code points; see `CODEPOINT_LENGTH` in
+      // validation-core for the measurements.
       // Two different measurements, and a column can carry either. `varchar(n)` counts
       // characters in both Postgres and MySQL; MySQL's TEXT family counts bytes, so a tinytext
       // takes 255 ascii characters and only 63 thumbs-up ones. Both verified against the servers.

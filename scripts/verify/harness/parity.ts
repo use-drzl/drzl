@@ -416,11 +416,20 @@ const ALLOWED: Record<string, Waiver> = {
   // for rather than ignoring it, so that schema rejects every valid uuid in any project that has
   // not populated `FormatRegistry` first. This generator emits a pattern, which needs no setup.
   'pg/typebox/c_uuid': { libs: ['typebox'], modes: MODE_NAMES, why: 'official uses an unregistered `format`, which rejects every uuid', divergence: { '*/*': `L: uuid | T: ` } },
-  // A character limit counts *characters*; official counts `.length`, which is UTF-16 units, so
-  // it refuses three emoji in a `char(4)` the database accepts. Measured against Postgres: three
-  // emoji insert into a `char(4)` and read back as four code points, which are seven UTF-16 units.
-  'pg/c_char': { libs: LIB_NAMES, modes: MODE_NAMES, why: 'character limit counts code points; official counts UTF-16 units', divergence: { '*/*': `L: 3 emoji | T: ` } },
-  'mysql/m_char': { libs: LIB_NAMES, modes: MODE_NAMES, why: 'as pg/c_char', divergence: { '*/*': `L: 3 emoji | T: ` } },
+  // A character limit counts *characters*. Measured against Postgres: three emoji insert into a
+  // `char(4)` and read back as four code points, which are seven UTF-16 units. The official
+  // valibot, arktype and typebox modules cap the column with their declarative length forms, which
+  // count `.length`, UTF-16 units, so they refuse those three emoji.
+  //
+  // zod is not in this list any more. zod 4.5.0 (2026-08-28, colinhacks/zod#6441) changed `.min()`,
+  // `.max()` and `.length()` to count Unicode code points, so the official zod module's `.max(4)`
+  // now agrees with the `[...v].length` predicate DRZL emits. The parity tree installs zod at
+  // `latest`, so this waiver measured four libraries on 2026-08-28 and three on 2026-08-29 with no
+  // change to the repo, which is what the nightly is for. Against a zod older than 4.5 the zod
+  // pairings would diverge again and fail as unlisted, naming this column, which is the right
+  // failure: the banner above prints the installed zod, so that run explains itself.
+  'pg/c_char': { libs: ['valibot', 'arktype', 'typebox'], modes: MODE_NAMES, why: 'character limit counts code points; official valibot, arktype and typebox count UTF-16 units (zod counts code points since 4.5)', divergence: { '*/*': `L: 3 emoji | T: ` } },
+  'mysql/m_char': { libs: ['valibot', 'arktype', 'typebox'], modes: MODE_NAMES, why: 'as pg/c_char', divergence: { '*/*': `L: 3 emoji | T: ` } },
   // MySQL's TEXT family is capped in bytes and official caps it in UTF-16 units, so official takes
   // a 100 emoji string that is 200 units and 400 bytes into a `tinytext` whose budget is 255. DRZL
   // emits the byte check and refuses it. A real MySQL 8 on a utf8mb4 client is the authority and
@@ -1071,6 +1080,22 @@ if (typeof drizzleVersion !== 'string' || drizzleVersion.split('.')[0] !== '1') 
   process.exit(1);
 }
 console.log(`    drizzle-orm ${drizzleVersion}, with its own zod, valibot, arktype and typebox-legacy modules`);
+// The libraries both sides validate with, read off disk the same way. This tree installs them at
+// `latest`, so a divergence that appears with no change to the repo is almost always one of these
+// moving, and a log that does not say which version ran cannot be read back for that. zod 4.5.0
+// changed string length to count code points and took a day of digging to attribute from a log
+// that named only drizzle-orm.
+const installed = (name: string): string => {
+  try {
+    return JSON.parse(readFileSync(`node_modules/${name}/package.json`, 'utf8')).version;
+  } catch {
+    return 'absent';
+  }
+};
+console.log(
+  `    zod ${installed('zod')}, valibot ${installed('valibot')}, arktype ${installed('arktype')}, ` +
+    `@sinclair/typebox ${installed('@sinclair/typebox')}: the libraries both sides validate with`
+);
 
 for (const d of DIALECTS) {
   const loaded: Record<string, Record<string, any>> = {};

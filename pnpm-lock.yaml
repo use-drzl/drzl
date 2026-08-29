@@ -61,7 +61,7 @@ importers:
         version: 19.2.8(react@19.2.8)
       zod:
         specifier: ^4.4.3
-        version: 4.4.3
+        version: 4.5.2
     devDependencies:
       '@drzl/cli':
         specifier: workspace:*
@@ -93,7 +93,7 @@ importers:
         version: 0.45.2(@types/better-sqlite3@7.6.13)(better-sqlite3@12.11.1)(mysql2@3.23.2(@types/node@26.1.2))
       drizzle-orm-v1:
         specifier: npm:drizzle-orm@1.0.0-rc.4
-        version: drizzle-orm@1.0.0-rc.4(@sinclair/typebox@0.34.52)(@types/better-sqlite3@7.6.13)(arktype@2.2.3)(better-sqlite3@12.11.1)(effect@3.22.1)(mysql2@3.23.2(@types/node@26.1.2))(valibot@1.4.2(typescript@5.9.3))(zod@4.4.3)
+        version: drizzle-orm@1.0.0-rc.4(@sinclair/typebox@0.34.52)(@types/better-sqlite3@7.6.13)(arktype@2.2.3)(better-sqlite3@12.11.1)(effect@3.22.1)(mysql2@3.23.2(@types/node@26.1.2))(valibot@1.4.2(typescript@5.9.3))(zod@4.5.2)
       tsup:
         specifier: ^8.5.1
         version: 8.5.1(jiti@2.7.0)(postcss@8.5.6)(supports-color@7.2.0)(typescript@5.9.3)(yaml@2.9.0)
@@ -210,7 +210,7 @@ importers:
         version: 9.4.1
       zod:
         specifier: ^4.4.3
-        version: 4.4.3
+        version: 4.5.2
     devDependencies:
       ajv:
         specifier: ^8.17.1
@@ -239,13 +239,13 @@ importers:
     devDependencies:
       '@ai-sdk/provider-utils':
         specifier: ^5.0.26
-        version: 5.0.26(zod@4.4.3)
+        version: 5.0.26(zod@4.5.2)
       '@valibot/to-json-schema':
         specifier: ^1.4.0
         version: 1.7.1(valibot@1.4.2(typescript@5.9.3))
       ai:
         specifier: ^7.0.0
-        version: 7.0.58(zod@4.4.3)
+        version: 7.0.58(zod@4.5.2)
       arktype:
         specifier: ^2.1.29
         version: 2.2.3
@@ -260,7 +260,7 @@ importers:
         version: 1.4.2(typescript@5.9.3)
       zod:
         specifier: ^4.4.3
-        version: 4.4.3
+        version: 4.5.2
 
   packages/generator-arktype:
     dependencies:
@@ -295,7 +295,7 @@ importers:
     devDependencies:
       drizzle-orm-v1:
         specifier: npm:drizzle-orm@1.0.0-rc.4
-        version: drizzle-orm@1.0.0-rc.4(@sinclair/typebox@0.34.52)(@types/better-sqlite3@7.6.13)(arktype@2.2.3)(better-sqlite3@12.11.1)(effect@3.22.1)(mysql2@3.23.2(@types/node@26.1.2))(valibot@1.4.2(typescript@5.9.3))(zod@4.4.3)
+        version: drizzle-orm@1.0.0-rc.4(@sinclair/typebox@0.34.52)(@types/better-sqlite3@7.6.13)(arktype@2.2.3)(better-sqlite3@12.11.1)(effect@3.22.1)(mysql2@3.23.2(@types/node@26.1.2))(valibot@1.4.2(typescript@5.9.3))(zod@4.5.2)
       effect:
         specifier: ^3.22.1
         version: 3.22.1
@@ -357,7 +357,7 @@ importers:
         version: 1.4.2(typescript@5.9.3)
       zod:
         specifier: ^4.4.3
-        version: 4.4.3
+        version: 4.5.2
 
   packages/generator-express:
     dependencies:
@@ -388,7 +388,7 @@ importers:
         version: 1.4.2(typescript@5.9.3)
       zod:
         specifier: ^4.4.3
-        version: 4.4.3
+        version: 4.5.2
 
   packages/generator-fast-check:
     dependencies:
@@ -457,7 +457,7 @@ importers:
         version: 5.9.3
       zod:
         specifier: ^4.4.3
-        version: 4.4.3
+        version: 4.5.2
 
   packages/generator-graphql:
     dependencies:
@@ -513,7 +513,7 @@ importers:
         version: 1.4.2(typescript@5.9.3)
       zod:
         specifier: ^4.4.3
-        version: 4.4.3
+        version: 4.5.2
 
   packages/generator-hono:
     dependencies:
@@ -529,7 +529,7 @@ importers:
         version: 0.4.0(@standard-schema/spec@1.1.0)(hono@4.13.1)
       '@hono/zod-validator':
         specifier: ^0.9.0
-        version: 0.9.0(hono@4.13.1)(zod@4.4.3)
+        version: 0.9.0(hono@4.13.1)(zod@4.5.2)
       arktype:
         specifier: ^2.1.29
         version: 2.2.3
@@ -547,7 +547,7 @@ importers:
         version: 1.4.2(typescript@5.9.3)
       zod:
         specifier: ^4.4.3
-        version: 4.4.3
+        version: 4.5.2
 
   packages/generator-json-schema:
     dependencies:
@@ -569,7 +569,7 @@ importers:
         version: 3.0.1(ajv@8.20.0)
       drizzle-orm-v1:
         specifier: npm:drizzle-orm@1.0.0-rc.4
-        version: drizzle-orm@1.0.0-rc.4(@sinclair/typebox@0.34.52)(@types/better-sqlite3@7.6.13)(arktype@2.2.3)(better-sqlite3@12.11.1)(effect@3.22.1)(mysql2@3.23.2(@types/node@26.1.2))(valibot@1.4.2(typescript@5.9.3))(zod@4.4.3)
+        version: drizzle-orm@1.0.0-rc.4(@sinclair/typebox@0.34.52)(@types/better-sqlite3@7.6.13)(arktype@2.2.3)(better-sqlite3@12.11.1)(effect@3.22.1)(mysql2@3.23.2(@types/node@26.1.2))(valibot@1.4.2(typescript@5.9.3))(zod@4.5.2)
       tsup:
         specifier: ^8.5.1
         version: 8.5.1(jiti@2.7.0)(postcss@8.5.23)(supports-color@7.2.0)(typescript@5.9.3)(yaml@2.9.0)
@@ -591,7 +591,7 @@ importers:
         version: 2.0.0
       '@modelcontextprotocol/sdk':
         specifier: ^1.30.0
-        version: 1.30.0(supports-color@7.2.0)(zod@4.4.3)
+        version: 1.30.0(supports-color@7.2.0)(zod@4.5.2)
       '@modelcontextprotocol/server':
         specifier: ^2.0.0
         version: 2.0.0
@@ -612,7 +612,7 @@ importers:
         version: 1.4.2(typescript@5.9.3)
       zod:
         specifier: ^4.4.3
-        version: 4.4.3
+        version: 4.5.2
 
   packages/generator-nestjs:
     dependencies:
@@ -652,7 +652,7 @@ importers:
         version: 1.4.2(typescript@5.9.3)
       zod:
         specifier: ^4.4.3
-        version: 4.4.3
+        version: 4.5.2
 
   packages/generator-next:
     dependencies:
@@ -677,7 +677,7 @@ importers:
         version: 1.4.2(typescript@5.9.3)
       zod:
         specifier: ^4.4.3
-        version: 4.4.3
+        version: 4.5.2
 
   packages/generator-openapi-fetch:
     dependencies:
@@ -702,7 +702,7 @@ importers:
         version: 5.9.3
       zod:
         specifier: ^4.4.3
-        version: 4.4.3
+        version: 4.5.2
 
   packages/generator-orpc:
     dependencies:
@@ -736,7 +736,7 @@ importers:
         version: 5.9.3
       zod:
         specifier: ^4.4.3
-        version: 4.4.3
+        version: 4.5.2
 
   packages/generator-pothos:
     dependencies:
@@ -777,7 +777,7 @@ importers:
         version: 5.9.3
       zod:
         specifier: ^4.4.3
-        version: 4.4.3
+        version: 4.5.2
 
   packages/generator-service:
     dependencies:
@@ -799,7 +799,7 @@ importers:
         version: 0.45.2(@types/better-sqlite3@7.6.13)(better-sqlite3@12.11.1)(mysql2@3.23.2(@types/node@26.1.2))
       drizzle-orm-v1:
         specifier: npm:drizzle-orm@1.0.0-rc.4
-        version: drizzle-orm@1.0.0-rc.4(@sinclair/typebox@0.34.52)(@types/better-sqlite3@7.6.13)(arktype@2.2.3)(better-sqlite3@12.11.1)(effect@3.22.1)(mysql2@3.23.2(@types/node@26.1.2))(valibot@1.4.2(typescript@5.9.3))(zod@4.4.3)
+        version: drizzle-orm@1.0.0-rc.4(@sinclair/typebox@0.34.52)(@types/better-sqlite3@7.6.13)(arktype@2.2.3)(better-sqlite3@12.11.1)(effect@3.22.1)(mysql2@3.23.2(@types/node@26.1.2))(valibot@1.4.2(typescript@5.9.3))(zod@4.5.2)
       mysql2:
         specifier: ^3.23.2
         version: 3.23.2(@types/node@26.1.2)
@@ -836,7 +836,7 @@ importers:
         version: 1.4.2(typescript@5.9.3)
       zod:
         specifier: ^4.4.3
-        version: 4.4.3
+        version: 4.5.2
 
   packages/generator-trpc:
     dependencies:
@@ -864,7 +864,7 @@ importers:
         version: 1.4.2(typescript@5.9.3)
       zod:
         specifier: ^4.4.3
-        version: 4.4.3
+        version: 4.5.2
 
   packages/generator-ts-rest:
     dependencies:
@@ -880,7 +880,7 @@ importers:
         version: 3.53.0-rc.1(@types/node@26.1.2)
       '@ts-rest/core-stable':
         specifier: npm:@ts-rest/core@3.52.1
-        version: '@ts-rest/core@3.52.1(@types/node@26.1.2)(zod@4.4.3)'
+        version: '@ts-rest/core@3.52.1(@types/node@26.1.2)(zod@4.5.2)'
       arktype:
         specifier: ^2.1.29
         version: 2.2.3
@@ -895,7 +895,7 @@ importers:
         version: 1.4.2(typescript@5.9.3)
       zod:
         specifier: ^4.4.3
-        version: 4.4.3
+        version: 4.5.2
 
   packages/generator-typebox:
     dependencies:
@@ -911,7 +911,7 @@ importers:
         version: 0.34.52
       drizzle-orm-v1:
         specifier: npm:drizzle-orm@1.0.0-rc.4
-        version: drizzle-orm@1.0.0-rc.4(@sinclair/typebox@0.34.52)(@types/better-sqlite3@7.6.13)(arktype@2.2.3)(better-sqlite3@12.11.1)(effect@3.22.1)(mysql2@3.23.2(@types/node@26.1.2))(valibot@1.4.2(typescript@5.9.3))(zod@4.4.3)
+        version: drizzle-orm@1.0.0-rc.4(@sinclair/typebox@0.34.52)(@types/better-sqlite3@7.6.13)(arktype@2.2.3)(better-sqlite3@12.11.1)(effect@3.22.1)(mysql2@3.23.2(@types/node@26.1.2))(valibot@1.4.2(typescript@5.9.3))(zod@4.5.2)
       tsup:
         specifier: ^8.5.1
         version: 8.5.1(jiti@2.7.0)(postcss@8.5.23)(supports-color@7.2.0)(typescript@5.9.3)(yaml@2.9.0)
@@ -930,7 +930,7 @@ importers:
     devDependencies:
       drizzle-orm-v1:
         specifier: npm:drizzle-orm@1.0.0-rc.4
-        version: drizzle-orm@1.0.0-rc.4(@sinclair/typebox@0.34.52)(@types/better-sqlite3@7.6.13)(arktype@2.2.3)(better-sqlite3@12.11.1)(effect@3.22.1)(mysql2@3.23.2(@types/node@26.1.2))(valibot@1.4.2(typescript@5.9.3))(zod@4.4.3)
+        version: drizzle-orm@1.0.0-rc.4(@sinclair/typebox@0.34.52)(@types/better-sqlite3@7.6.13)(arktype@2.2.3)(better-sqlite3@12.11.1)(effect@3.22.1)(mysql2@3.23.2(@types/node@26.1.2))(valibot@1.4.2(typescript@5.9.3))(zod@4.5.2)
       tsup:
         specifier: ^8.5.1
         version: 8.5.1(jiti@2.7.0)(postcss@8.5.6)(supports-color@7.2.0)(typescript@5.9.3)(yaml@2.9.0)
@@ -955,7 +955,7 @@ importers:
         version: 0.45.2(@types/better-sqlite3@7.6.13)(better-sqlite3@12.11.1)(mysql2@3.23.2(@types/node@26.1.2))
       drizzle-orm-v1:
         specifier: npm:drizzle-orm@1.0.0-rc.4
-        version: drizzle-orm@1.0.0-rc.4(@sinclair/typebox@0.34.52)(@types/better-sqlite3@7.6.13)(arktype@2.2.3)(better-sqlite3@12.11.1)(effect@3.22.1)(mysql2@3.23.2(@types/node@26.1.2))(valibot@1.4.2(typescript@5.9.3))(zod@4.4.3)
+        version: drizzle-orm@1.0.0-rc.4(@sinclair/typebox@0.34.52)(@types/better-sqlite3@7.6.13)(arktype@2.2.3)(better-sqlite3@12.11.1)(effect@3.22.1)(mysql2@3.23.2(@types/node@26.1.2))(valibot@1.4.2(typescript@5.9.3))(zod@4.5.2)
       tsup:
         specifier: ^8.5.1
         version: 8.5.1(jiti@2.7.0)(postcss@8.5.6)(supports-color@7.2.0)(typescript@5.9.3)(yaml@2.9.0)
@@ -964,7 +964,7 @@ importers:
         version: 5.9.3
       zod:
         specifier: ^4.1.13
-        version: 4.4.3
+        version: 4.5.2
 
   packages/template-orpc-service:
     dependencies:
@@ -5567,38 +5567,38 @@ packages:
     peerDependencies:
       zod: ^3.25.28 || ^4
 
-  zod@4.4.3:
-    resolution: {integrity: sha512-ytENFjIJFl2UwYglde2jchW2Hwm4GJFLDiSXWdTrJQBIN9Fcyp7n4DhxJEiWNAJMV1/BqWfW/kkg71UDcHJyTQ==}
+  zod@4.5.2:
+    resolution: {integrity: sha512-XkYXCol10+ba/6F/cueWV+TezUeOqXW0hdeJt5CdXjTYeAgAQg5N03RQdJ80mhfFE72+pblvYMW4wy2Qp4Qbrg==}
 
   zwitch@2.0.4:
     resolution: {integrity: sha512-bXE4cR/kVZhKZX/RjPEflHaKVhUVl85noU3v6b8apfQEc1x4A+zBxjZ4lN8LqGd6WZ3dl98pY4o717VFmoPp+A==}
 
 snapshots:
 
-  '@ai-sdk/gateway@4.0.46(zod@4.4.3)':
+  '@ai-sdk/gateway@4.0.46(zod@4.5.2)':
     dependencies:
       '@ai-sdk/provider': 4.0.7
-      '@ai-sdk/provider-utils': 5.0.25(zod@4.4.3)
+      '@ai-sdk/provider-utils': 5.0.25(zod@4.5.2)
       '@vercel/oidc': 3.2.0
-      zod: 4.4.3
+      zod: 4.5.2
 
-  '@ai-sdk/provider-utils@5.0.25(zod@4.4.3)':
+  '@ai-sdk/provider-utils@5.0.25(zod@4.5.2)':
     dependencies:
       '@ai-sdk/provider': 4.0.7
       '@standard-schema/spec': 1.1.0
       '@workflow/serde': 4.1.0
       eventsource-parser: 3.1.0
       undici: 7.29.0
-      zod: 4.4.3
+      zod: 4.5.2
 
-  '@ai-sdk/provider-utils@5.0.26(zod@4.4.3)':
+  '@ai-sdk/provider-utils@5.0.26(zod@4.5.2)':
     dependencies:
       '@ai-sdk/provider': 4.0.7
       '@standard-schema/spec': 1.1.0
       '@workflow/serde': 4.1.0
       eventsource-parser: 3.1.0
       undici: 7.29.0
-      zod: 4.4.3
+      zod: 4.5.2
 
   '@ai-sdk/provider@4.0.7':
     dependencies:
@@ -6278,10 +6278,10 @@ snapshots:
       '@standard-schema/spec': 1.1.0
       hono: 4.13.1
 
-  '@hono/zod-validator@0.9.0(hono@4.13.1)(zod@4.4.3)':
+  '@hono/zod-validator@0.9.0(hono@4.13.1)(zod@4.5.2)':
     dependencies:
       hono: 4.13.1
-      zod: 4.4.3
+      zod: 4.5.2
 
   '@hookform/resolvers@5.4.0(react-hook-form@7.85.0(react@19.2.8))':
     dependencies:
@@ -6468,13 +6468,13 @@ snapshots:
       eventsource-parser: 3.1.0
       jose: 6.2.8
       pkce-challenge: 5.0.1
-      zod: 4.4.3
+      zod: 4.5.2
 
   '@modelcontextprotocol/core@2.0.0':
     dependencies:
-      zod: 4.4.3
+      zod: 4.5.2
 
-  '@modelcontextprotocol/sdk@1.30.0(supports-color@7.2.0)(zod@4.4.3)':
+  '@modelcontextprotocol/sdk@1.30.0(supports-color@7.2.0)(zod@4.5.2)':
     dependencies:
       '@hono/node-server': 2.1.0(hono@4.13.1)
       ajv: 8.20.0
@@ -6491,15 +6491,15 @@ snapshots:
       json-schema-typed: 8.0.2
       pkce-challenge: 5.0.1
       raw-body: 3.0.2
-      zod: 4.4.3
-      zod-to-json-schema: 3.25.2(zod@4.4.3)
+      zod: 4.5.2
+      zod-to-json-schema: 3.25.2(zod@4.5.2)
     transitivePeerDependencies:
       - supports-color
 
   '@modelcontextprotocol/server@2.0.0':
     dependencies:
       '@modelcontextprotocol/core': 2.0.0
-      zod: 4.4.3
+      zod: 4.5.2
 
   '@msgpackr-extract/msgpackr-extract-darwin-arm64@3.0.4':
     optional: true
@@ -7017,7 +7017,7 @@ snapshots:
       jiti: 2.7.0
       magic-string: 0.30.21
       prettier: 3.9.6
-      zod: 4.4.3
+      zod: 4.5.2
     transitivePeerDependencies:
       - supports-color
 
@@ -7031,7 +7031,7 @@ snapshots:
       '@tanstack/router-utils': 1.162.2(supports-color@7.2.0)
       chokidar: 5.0.0
       unplugin: 3.3.0(esbuild@0.27.7)(rolldown@1.1.5)(rollup@4.62.3)(vite@8.1.5(@types/node@26.1.2)(esbuild@0.27.7)(jiti@2.7.0)(yaml@2.9.0))
-      zod: 4.4.3
+      zod: 4.5.2
     optionalDependencies:
       '@tanstack/react-router': 1.170.25(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
       vite: 8.1.5(@types/node@26.1.2)(esbuild@0.27.7)(jiti@2.7.0)(yaml@2.9.0)
@@ -7088,7 +7088,7 @@ snapshots:
       ufo: 1.6.4
       vitefu: 1.1.3(vite@8.1.5(@types/node@26.1.2)(esbuild@0.27.7)(jiti@2.7.0)(yaml@2.9.0))
       xmlbuilder2: 4.0.3
-      zod: 4.4.3
+      zod: 4.5.2
     optionalDependencies:
       vite: 8.1.5(@types/node@26.1.2)(esbuild@0.27.7)(jiti@2.7.0)(yaml@2.9.0)
     transitivePeerDependencies:
@@ -7140,10 +7140,10 @@ snapshots:
     dependencies:
       typescript: 5.9.3
 
-  '@ts-rest/core@3.52.1(@types/node@26.1.2)(zod@4.4.3)':
+  '@ts-rest/core@3.52.1(@types/node@26.1.2)(zod@4.5.2)':
     optionalDependencies:
       '@types/node': 26.1.2
-      zod: 4.4.3
+      zod: 4.5.2
 
   '@ts-rest/core@3.53.0-rc.1(@types/node@26.1.2)':
     optionalDependencies:
@@ -7579,12 +7579,12 @@ snapshots:
 
   acorn@8.17.0: {}
 
-  ai@7.0.58(zod@4.4.3):
+  ai@7.0.58(zod@4.5.2):
     dependencies:
-      '@ai-sdk/gateway': 4.0.46(zod@4.4.3)
+      '@ai-sdk/gateway': 4.0.46(zod@4.5.2)
       '@ai-sdk/provider': 4.0.7
-      '@ai-sdk/provider-utils': 5.0.25(zod@4.4.3)
-      zod: 4.4.3
+      '@ai-sdk/provider-utils': 5.0.25(zod@4.5.2)
+      zod: 4.5.2
 
   ajv-draft-04@1.0.0(ajv@8.20.0):
     optionalDependencies:
@@ -7912,7 +7912,7 @@ snapshots:
       better-sqlite3: 12.11.1
       mysql2: 3.23.2(@types/node@26.1.2)
 
-  drizzle-orm@1.0.0-rc.4(@sinclair/typebox@0.34.52)(@types/better-sqlite3@7.6.13)(arktype@2.2.3)(better-sqlite3@12.11.1)(effect@3.22.1)(mysql2@3.23.2(@types/node@26.1.2))(valibot@1.4.2(typescript@5.9.3))(zod@4.4.3):
+  drizzle-orm@1.0.0-rc.4(@sinclair/typebox@0.34.52)(@types/better-sqlite3@7.6.13)(arktype@2.2.3)(better-sqlite3@12.11.1)(effect@3.22.1)(mysql2@3.23.2(@types/node@26.1.2))(valibot@1.4.2(typescript@5.9.3))(zod@4.5.2):
     optionalDependencies:
       '@sinclair/typebox': 0.34.52
       '@types/better-sqlite3': 7.6.13
@@ -7921,7 +7921,7 @@ snapshots:
       effect: 3.22.1
       mysql2: 3.23.2(@types/node@26.1.2)
       valibot: 1.4.2(typescript@5.9.3)
-      zod: 4.4.3
+      zod: 4.5.2
 
   dunder-proto@1.0.1:
     dependencies:
@@ -9876,10 +9876,10 @@ snapshots:
 
   yoctocolors@2.2.0: {}
 
-  zod-to-json-schema@3.25.2(zod@4.4.3):
+  zod-to-json-schema@3.25.2(zod@4.5.2):
     dependencies:
-      zod: 4.4.3
+      zod: 4.5.2
 
-  zod@4.4.3: {}
+  zod@4.5.2: {}
 
   zwitch@2.0.4: {}
