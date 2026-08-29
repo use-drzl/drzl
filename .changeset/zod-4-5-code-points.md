@@ -27,8 +27,9 @@ The lockfile moves zod from 4.4.3 to 4.5.2, so the repository's own tests run on
 installs. That is what surfaced the three test failures fixed alongside, none of which the nightly
 could reach because it fails earlier.
 
-One published number moves with it. The ground-truth stage's `agree with the database` line goes
-from `drizzle-orm 1041` to `1042`, because the official zod module's `.max(4)` now accepts the
-three-emoji probe a real Postgres accepts. The per-column divergence counts, 60 with 30 accepting on
-the v1 line and 54 with 27 on 0.4x, do not move, since narrowing which libraries a waiver names does
-not change how many columns it covers.
+Two published numbers move with it, for one reason. The ground-truth stage's `agree with the
+database` line goes from `drizzle-orm 1041` to `1042`, because the official zod module's `.max(4)`
+now accepts the three-emoji probe a real Postgres accepts, and the tally beneath it goes from `DRZL
+closer than drizzle-orm on 62` to `61`, because that is the probe official caught up on. The
+per-column divergence counts, 60 with 30 accepting on the v1 line and 54 with 27 on 0.4x, do not
+move, since narrowing which libraries a waiver names does not change how many columns it covers.
