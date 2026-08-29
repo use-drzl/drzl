@@ -93,8 +93,10 @@ divergence attached.
 
 ## Character limits count characters
 
-A `varchar(n)` limit is n **characters**. Every JavaScript validator counts `.length`, which is
-UTF-16 code units, and the two agree only until the text leaves the basic plane:
+A `varchar(n)` limit is n **characters**. Before zod 4.5, `.max()` counted `.length`, which is
+UTF-16 code units, and the two agree only until the text leaves the basic plane. zod 4.5 counts
+code points there too; the emitted predicate reads the same on every supported zod, which is why it
+stays:
 
 ```ts
 name: z.string().refine((v) => [...v].length <= 10, { message: 'at most 10 characters' }),

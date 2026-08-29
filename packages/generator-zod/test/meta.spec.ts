@@ -244,11 +244,21 @@ describe('a nested schema', () => {
 });
 
 describe('the JSON Schema it produces', () => {
-  it('puts the metadata of a nullable column beside anyOf, not inside one arm', async () => {
+  it('puts the metadata of a nullable column on the property, not inside a union arm', async () => {
     const { mod } = await emit({ meta: true });
     const doc: any = z.toJSONSchema(mod.Selectuser_accountsSchema);
-    expect(doc.properties.bio.sqlType).toBe('text');
-    expect(doc.properties.bio.anyOf.some((a: any) => 'sqlType' in a)).toBe(false);
+    const bio = doc.properties.bio;
+    expect(bio.sqlType).toBe('text');
+    // How zod spells "nullable" in JSON Schema moved in 4.5: `anyOf: [{ type: 'string' },
+    // { type: 'null' }]` became `type: ['string', 'null']`. Either way the null must be there, and
+    // the metadata must sit on the property rather than inside an arm, which is the claim this
+    // test exists for. Written to hold on both spellings so a zod bump cannot turn it into a
+    // TypeError on a missing `anyOf`, which is what it was.
+    const arms: any[] = bio.anyOf ?? [];
+    const admitsNull =
+      arms.some((a) => a.type === 'null') || (Array.isArray(bio.type) && bio.type.includes('null'));
+    expect(admitsNull, 'the nullable column admits null in its JSON Schema').toBe(true);
+    expect(arms.some((a) => 'sqlType' in a)).toBe(false);
   });
 
   it('carries the table facts at the document root', async () => {

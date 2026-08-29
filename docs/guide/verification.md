@@ -250,7 +250,7 @@ adding a generator.
     1548 column comparisons
     60 documented divergence(s), 30 of them with DRZL accepting something official refuses, 0 stated as a rejection count and a complement
     1476 probes against a real Postgres (41 columns)
-    agree with the database: DRZL 1103, drizzle-orm 1041
+    agree with the database: DRZL 1103, drizzle-orm 1042
     DRZL closer than drizzle-orm on 62, further on 0
     403 rows read back through the driver (41 columns)
     rejected by DRZL: 66, of which drizzle-orm also rejects: 66

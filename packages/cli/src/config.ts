@@ -45,24 +45,33 @@ export const NamingSchema = z
  * `z.toJSONSchema` drops along with the `.superRefine` that states it. `validateAffix` remains
  * the enforcing copy, and its message is the one a user sees.
  */
+const AFFIX_VALUE_MESSAGE =
+  'Expected a string to use for every mode, or an object with any of the keys "insert", ' +
+  '"update" and "select". Those keys are lowercase, matching the mode names drzl uses ' +
+  'everywhere else.';
+
 const affixValueSchema = (pattern: string) =>
   z.union(
     [
       z.string().meta({ pattern }),
+      // The message is on the object as well as on the union, and both are needed. zod 4.4
+      // reported every failure of this union with the union's own `error`. zod 4.5 surfaces a
+      // strict object's `unrecognized_keys` issue through the union instead, so a config carrying
+      // `{ Insert: 'Create' }` printed zod's bare `Unrecognized key: "Insert"` and never named the
+      // lowercase keys it wanted. The union's copy still covers a value that is neither a string
+      // nor an object. Measured on 4.4.3 and 4.5.2; packages/cli/test/config.spec.ts pins it.
       z
-        .object({
-          insert: z.string().meta({ pattern }).optional(),
-          update: z.string().meta({ pattern }).optional(),
-          select: z.string().meta({ pattern }).optional(),
-        })
+        .object(
+          {
+            insert: z.string().meta({ pattern }).optional(),
+            update: z.string().meta({ pattern }).optional(),
+            select: z.string().meta({ pattern }).optional(),
+          },
+          { error: AFFIX_VALUE_MESSAGE }
+        )
         .strict(),
     ],
-    {
-      error:
-        'Expected a string to use for every mode, or an object with any of the keys "insert", ' +
-        '"update" and "select". Those keys are lowercase, matching the mode names drzl uses ' +
-        'everywhere else.',
-    }
+    { error: AFFIX_VALUE_MESSAGE }
   );
 
 const AffixPartSchema = z

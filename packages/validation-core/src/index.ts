@@ -396,11 +396,13 @@ export function parsesToADate(expr: string): string {
 /**
  * Why a character limit is not `.max(n)`.
  *
- * Postgres and MySQL count `varchar(n)` in **characters**; every JavaScript validator counts
- * `.length`, which is UTF-16 code units. They agree until the text leaves the basic plane, and
- * then they do not: `varchar(10)` accepts ten emoji, and `.max(10)` refuses eight of them.
+ * Postgres and MySQL count `varchar(n)` in **characters**. The declarative length forms in
+ * valibot, ArkType and TypeBox count `.length`, which is UTF-16 code units, and so did zod's
+ * `.min()`, `.max()` and `.length()` before 4.5.0, which moved them to code points
+ * (colinhacks/zod#6441). The two counts agree until the text leaves the basic plane, and then
+ * they do not: `varchar(10)` accepts ten emoji, and a UTF-16 `.max(10)` refuses eight of them.
  *
- * Verified against Postgres through PGlite, for `varchar(10)`:
+ * Verified against Postgres through PGlite, for `varchar(10)`, with zod 4.4's `.max`:
  *
  *   3 emoji   db accepts   .max(10) accepts
  *   8 emoji   db accepts   .max(10) REFUSES
