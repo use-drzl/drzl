@@ -358,9 +358,10 @@ age: z.number().int().gte(18).lte(2147483647).nullable(),
 
 Byte for byte what `CHECK (age >= 18)` emits, because the two constrain exactly the same rows: a
 CHECK already passes when it evaluates to NULL, and every operator here yields NULL when its
-column is NULL. The guard is dropped only when the predicate _names_ the guarded column and holds
-no null test of its own, which is what makes the reduction sound; `a IS NULL OR b > 0` is refused,
-since with `a` null it accepts every `b`.
+column is NULL. The guard is dropped only when every part of the predicate _names_ the guarded
+column and the predicate holds no null test of its own, which is what makes the reduction sound;
+`a IS NULL OR b > 0` and `a IS NULL OR (a > 0 AND b > 0)` are refused, since with `a` null both
+accept every `b`.
 
 `s IS DISTINCT FROM 'x'` reads the same way. `NULL IS DISTINCT FROM 'x'` is TRUE and `NULL <> 'x'`
 is NULL, and a CHECK passes on both, so it emits exactly what `s <> 'x'` emits.

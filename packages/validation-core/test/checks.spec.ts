@@ -441,6 +441,30 @@ describe('a null guard in front of a predicate', () => {
     expect(rejected('a IS NULL OR b > 0')).toMatch(/does not name/);
   });
 
+  it.each([
+    'a IS NULL OR (a > 0 AND b > 0)',
+    "a IS NULL OR (a > 0 AND b IN ('x'))",
+    'a IS NULL OR (a > 0 AND length(b) > 0)',
+    'a IS NULL OR (a > 0 AND cardinality(b) > 0)',
+    'a IS NULL OR (a > 0 AND b < c)',
+    'a IS NULL OR (a < b AND b < c)',
+    'a IS NULL OR ((b IS NULL OR b > 0) AND a > 0)',
+    'a IS NULL OR b IS NULL OR (a > 0 AND b > 0)',
+    'a IS NULL OR b IS NULL OR (a < b AND a > 0)',
+    'a IS NULL OR b IS NULL OR (a < b AND b > 0)',
+  ])('refuses %s, where a part does not name every guarded column', (expr) => {
+    // With a guarded column NULL every row passes, whatever the other columns hold, and each part
+    // of the conjunction is enforced on its own.
+    expect(rejected(expr)).toMatch(/does not name/);
+  });
+
+  it('reduces when every part names every guarded column', () => {
+    const r = parseCheck("s IS NULL OR (s IN ('a','b') AND length(s) > 0)");
+    expect(r.ok && r.sets).toHaveLength(1);
+    expect(r.ok && r.lengths).toHaveLength(1);
+    expect(parseCheck('a IS NULL OR b IS NULL OR a < b').ok).toBe(true);
+  });
+
   it('refuses a guard in front of a null test, which is not NULL-yielding', () => {
     // `a IS NULL OR a IS NOT NULL` is true of every row. Reducing it to `a IS NOT NULL` would
     // refuse every NULL the database takes.

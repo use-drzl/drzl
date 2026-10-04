@@ -529,19 +529,16 @@ function literal(raw: string): { value: string; kind: 'number' | 'string' } | un
   return undefined;
 }
 
-/** Every column a parsed check talks about, in no particular order. */
-function columnsOf(parsed: Extract<ParsedCheck, { ok: true }>): Set<string> {
-  const out = new Set<string>();
-  for (const c of parsed.checks) out.add(c.column);
-  for (const s of parsed.sets ?? []) out.add(s.column);
-  for (const l of parsed.lengths ?? []) out.add(l.column);
-  for (const a of parsed.cardinalities ?? []) out.add(a.column);
-  for (const n of parsed.nulls ?? []) out.add(n.column);
-  for (const r of parsed.rows ?? []) {
-    out.add(r.left);
-    out.add(r.right);
-  }
-  return out;
+/** The columns each part of a parsed check talks about, one entry per part. */
+function columnsOfEachPart(parsed: Extract<ParsedCheck, { ok: true }>): string[][] {
+  return [
+    ...parsed.checks.map((c) => [c.column]),
+    ...(parsed.sets ?? []).map((s) => [s.column]),
+    ...(parsed.lengths ?? []).map((l) => [l.column]),
+    ...(parsed.cardinalities ?? []).map((a) => [a.column]),
+    ...(parsed.nulls ?? []).map((n) => [n.column]),
+    ...(parsed.rows ?? []).map((r) => [r.left, r.right]),
+  ];
 }
 
 /**
@@ -563,9 +560,11 @@ function columnsOf(parsed: Extract<ParsedCheck, { ok: true }>): Set<string> {
  *
  * **A null guard.** `col IS NULL OR P` states nothing beyond `P` when `P` is NULL exactly when
  * `col` is, because a CHECK already passes on NULL. Every operator this parser reads is strict:
- * it yields NULL whenever any column it names is NULL. So the guard is dropped, and the soundness
- * condition is that `P` *names* the guarded column and contains no null test of its own, which is
- * the one predicate here that answers FALSE rather than NULL.
+ * it yields NULL whenever any column it names is NULL. So the guard is dropped when every part of
+ * `P` *names* every guarded column and `P` contains no null test of its own, which is the one
+ * predicate here that answers FALSE rather than NULL. Every part, because each part is enforced on
+ * its own: in `a IS NULL OR (a > 0 AND b > 0)`, `b > 0` would refuse rows where `a` is NULL, which
+ * the database takes. The test is sufficient rather than exact, and errs toward refusing.
  */
 function parseDisjunction(branches: string[], name?: string): ParsedCheck {
   const guarded: string[] = [];
@@ -594,12 +593,12 @@ function parseDisjunction(branches: string[], name?: string): ParsedCheck {
       ok: false,
       reason: 'a null test guarded by IS NULL, which is true of every row rather than a narrowing',
     };
-  const named = columnsOf(reduced);
-  const stray = guarded.filter((g) => !named.has(g));
+  const parts = columnsOfEachPart(reduced);
+  const stray = guarded.filter((g) => parts.some((columns) => !columns.includes(g)));
   if (stray.length)
     return {
       ok: false,
-      reason: `${stray.map((s) => `"${s}"`).join(' and ')} IS NULL guards a predicate that does not name it`,
+      reason: `${stray.map((s) => `"${s}"`).join(' and ')} IS NULL guards a part of the predicate that does not name it`,
     };
   return reduced;
 }

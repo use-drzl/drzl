@@ -141,6 +141,18 @@ describe('a null guard in front of a predicate', () => {
     expect(guarded.SelecttSchema.safeParse({ age: null }).success).toBe(true);
   });
 
+  it('does not turn a conjunct on another column into a rule on that column', async () => {
+    // With `purpose` NULL the database takes the row whatever `kind` holds, so `kind = 'hold'`
+    // is a rule about the row, not about `kind`.
+    const m = await schemasFor(
+      [col('kind', { nullable: false }), col('purpose')],
+      [{ expression: "purpose IS NULL OR (kind = 'hold' AND purpose IN ('storage', 'settling'))" }]
+    );
+    expect(m.SelecttSchema.safeParse({ kind: 'other', purpose: null }).success).toBe(true);
+    expect(m.InserttSchema.safeParse({ kind: 'other', purpose: null }).success).toBe(true);
+    expect(m.SelecttSchema.safeParse({ kind: 'hold', purpose: 'storage' }).success).toBe(true);
+  });
+
   it('does not read a narrowing out of the guard it dropped', async () => {
     // The guard branch is what makes NULL legal, so taking it as `IS NOT NULL` would invert the
     // constraint and refuse every NULL the database takes.
